@@ -1,0 +1,48 @@
+[package]
+name = "nasw"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Niri Audio Switcher - Automatically switch audio based on active windows"
+license = "MIT"
+repository = "https://github.com/ledati16/nasw"
+keywords = ["niri", "pipewire", "audio", "wayland"]
+categories = ["multimedia::audio", "command-line-utilities"]
+
+[dependencies]
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+# Async runtime - minimal features for Unix socket + signals
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal"] }
+
+# Configuration and serialization
+toml = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Pattern matching for window rules
+regex = "1"
+
+# Error handling with context
+anyhow = "1"
+
+# Desktop notifications
+notify-rust = "4"
+
+# Structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# XDG config directory
+dirs = "5"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
