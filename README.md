@@ -39,6 +39,8 @@ High-level features (extracted from src/main.rs):
 - Connects to Niri via UNIX socket (NIRI_SOCKET env var expected); listens to Niri event stream to react to window open/close/change events.
 - Logging with tracing and configurable log level.
 
+https://github.com/user-attachments/assets/1c8d7018-de76-43f5-b8bb-7fcaccb38de6
+
 Limitations & requirements
 --------------------------
 - Requires PipeWire to be running and pw-* utilities (pw-dump, pw-metadata, pw-cli) to be available on PATH.
