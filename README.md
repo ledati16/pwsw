@@ -7,7 +7,7 @@ This **project was generated entirely with large language models** and "vibe cod
 Important points:
 - The code is **100% LLM generated** and was not written by an experienced Rust developer.
 - It has <ins>**NOT** been peer reviewed</ins> by anyone with Rust experience (not even a beginner).
-- While I am reasonably confident the program works as intended and there is no intentionally generated malicious code, use with caution.
+- While I am confident the program works as intended and there is no malicious code, use with caution.
 - [Discussions](https://github.com/ledati16/nasw/discussions) are left open on this repository for community review and feedback. If you want to confirm the code is harmless and functional or have reviewed it yourself, please check/post there.
 - I consider this program feature-complete for my personal needs and do not intend to maintain or fix bugs.
 - If you want to maintain this project, please consider forking and renaming it (and possibly linking back to this page).
