@@ -11,7 +11,7 @@ Important points:
 - [Discussions](https://github.com/ledati16/nasw/discussions) are left open on this repository for community review and feedback. If you want to confirm the code is harmless and functional or have reviewed it yourself, please check/post there.
 - I consider this program feature-complete for my personal needs and do not intend to maintain or fix bugs.
 - If you want to maintain this project, please consider forking and renaming it (and possibly linking back to this page).
-- _Do NOT package or distribute this program for Linux distributions (including AUR-like PKGBUILDs) unless a peer review by someone experienced in Rust confirms it is safe and functional._
+- _You should NOT package or distribute this program for Linux distributions (including AUR-like PKGBUILDs) unless a peer review by someone experienced in Rust confirms it is safe and functional._
 
 This project is a niche, unreviewed tool similar in spirit to [Belphemur/SoundSwitch](https://github.com/Belphemur/SoundSwitch) but specifically targeted at Niri + PipeWire.
 
