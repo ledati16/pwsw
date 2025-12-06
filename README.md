@@ -19,7 +19,6 @@ Project Overview
 ----------------
 **NASW** (***N***iri ***A***udio ***Sw***itcher) is a small command-line/daemon utility that automatically switches PipeWire audio sinks based on active windows reported by the Niri compositor.
 
-High-level features (extracted from src/main.rs):
 - Automatic sink switching based on matching window rules (app_id and optional title regex).
 - Per-rule notifications (via notify-rust) when switches occur (configurable).
 - Support for "profile switching" for sinks that require changing device profiles (uses pw-cli).
