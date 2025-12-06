@@ -1,39 +1,39 @@
-# NASW (Niri Audio Switcher)
+# NASW <ins>N</ins>iri <ins>A</ins>udio <ins>Sw</ins>itcher)
 
 WARNING — LLM‑GENERATED CODE
 ----------------------------
-This project was generated entirely with large language models and "vibe coded" by a person who does not know or understand the Rust programming language (or any other programming language). It was produced over the course of dozens of prompts and back-and-forth conversations using Claude.ai Sonnet 4.5 and later refactored with Opus 4.5 models.
+This **project was generated entirely with large language models** and "vibe coded" _by a person who does not know or understand the Rust programming language_ (or any other programming language). It was produced over the course of dozens of prompts and back-and-forth conversations using Claude.ai Sonnet 4.5 and later refactored with Opus 4.5 models.
 
 Important points:
-- The code is 100% LLM generated and was not written by an experienced Rust developer.
-- It has NOT been peer reviewed by anyone with Rust experience (not even a beginner).
+- The code is **100% LLM generated** and was not written by an experienced Rust developer.
+- It has <ins>**NOT** been peer reviewed</ins> by anyone with Rust experience (not even a beginner).
 - While I am reasonably confident the program works as intended and there is no intentionally generated malicious code, use with caution.
-- Discussions are left open on this repository for community review and feedback. Please check Discussions if you want to confirm the code is harmless and functional.
+- [Discussions](https://github.com/ledati16/nasw/discussions) are left open on this repository for community review and feedback. If you want to confirm the code is harmless and functional or have reviewed it yourself, please check/post there.
 - I consider this program feature-complete for my personal needs and do not intend to maintain or fix bugs.
 - If you want to maintain this project, please consider forking and renaming it (and possibly linking back to this page).
-- Do NOT package or distribute this for Linux distributions (including AUR-like PKGBUILDs) unless a peer review by someone experienced in Rust confirms it is safe and functional.
+- _Do NOT package or distribute this program for Linux distributions (including AUR-like PKGBUILDs) unless a peer review by someone experienced in Rust confirms it is safe and functional._
 
 This project is a niche, unreviewed tool similar in spirit to [Belphemur/SoundSwitch](https://github.com/Belphemur/SoundSwitch) but specifically targeted at Niri + PipeWire.
 
 Project Overview
 ----------------
-NASW (Niri Audio Switcher) is a small command-line/daemon utility that automatically switches PipeWire audio sinks based on active windows reported by the Niri compositor.
+**NASW** (***N***iri ***A***udio ***Sw***itcher) is a small command-line/daemon utility that automatically switches PipeWire audio sinks based on active windows reported by the Niri compositor.
 
 High-level features (extracted from src/main.rs):
 - Automatic sink switching based on matching window rules (app_id and optional title regex).
 - Per-rule notifications (via notify-rust) when switches occur (configurable).
 - Support for "profile switching" for sinks that require changing device profiles (uses pw-cli).
 - Uses PipeWire native tools:
-  - pw-dump to discover current objects and sinks,
-  - pw-metadata to set the default sink,
-  - pw-cli to switch device profiles.
+  - _pw-dump_ to discover current objects and sinks,
+  - _pw-metadata_ to set the default sink,
+  - _pw-cli_ to switch device profiles.
 - Maintains a tracked set of "active" windows that matched rules; when those windows close or stop matching, NASW returns to the next appropriate sink (most recently opened matching window has priority; fallback is configured default).
 - One-shot CLI operations:
-  - --check-config: Validate configuration and show summary
-  - --list-sinks: Discover available audio outputs (including those that require profile switching)
-  - --set-sink SINK: Change the default sink (smart toggle supported)
-  - --next-sink / --prev-sink: Cycle configured sinks
-  - --get-sink: Show current configured sink (JSON option for status bars)
+  - _--check-config_: Validate configuration and show summary
+  - _--list-sinks_: Discover available audio outputs (including those that require profile switching)
+  - _--set-sink_: Change the default sink - smart toggle (back-and-forth) supported
+  - _--next-sink_ / _--prev-sink_: Cycle configured sinks
+  - _--get-sink_: Show current configured sink (JSON option for status bars)
 - JSON output options for integration with status bars (includes icons).
 - Configuration via a TOML file (default created under XDG config dir: nasw/config.toml). Settings support toggles for notifications, smart toggle behavior, reset on startup, and log level.
 - Connects to Niri via UNIX socket (NIRI_SOCKET env var expected); listens to Niri event stream to react to window open/close/change events.
@@ -42,13 +42,13 @@ High-level features (extracted from src/main.rs):
 Limitations & requirements
 --------------------------
 - Requires PipeWire to be running and pw-* utilities (pw-dump, pw-metadata, pw-cli) to be available on PATH.
-- Designed for use with the Niri compositor (expects NIRI_SOCKET env var and Niri's EventStream).
+- Designed for use with the [Niri compositor](https://github.com/YaLTeR/niri) (expects NIRI_SOCKET env var and Niri's EventStream).
 - Uses desktop notifications via notify-rust (may require a running notification daemon on the host).
 - Because the code was generated by LLMs and has not been peer reviewed, it may contain bugs or incorrect assumptions. Use on a non-critical machine or inside a container until validated.
 
 Example configuration
 ---------------------
-Place this at $XDG_CONFIG_HOME/nasw/config.toml (usually ~/.config/nasw/config.toml). This is the default config used by the program if none exists.
+Found at _$XDG_CONFIG_HOME/nasw/config.toml_ (usually ~/.config/nasw/config.toml). This is the default config used by the program if none exists.
 
 ```toml
 # NASW (Niri Audio Switcher) Configuration
@@ -126,11 +126,11 @@ Typical build steps:
 Running
 -------
 - One-shot commands (no daemon):
-  - List sinks: nasw --list-sinks
-  - Check config: nasw --check-config
-  - Set sink: nasw --set-sink "Headphones"
-  - Get current: nasw --get-sink
-  - Cycle sinks: nasw --next-sink / nasw --prev-sink
+  - List sinks: ```nasw --list-sinks```
+  - Check config: ```nasw --check-config```
+  - Set sink: ```nasw --set-sink "Headphones"```
+  - Get current: ```nasw --get-sink```
+  - Cycle sinks: ```nasw --next-sink``` / ```nasw --prev-sink```
 
 - Daemon mode (requires NIRI_SOCKET environment variable pointing to Niri socket):
   - export NIRI_SOCKET=/run/user/1000/niri.sock
@@ -138,6 +138,6 @@ Running
 
 Notes
 -----
-- If no config exists, the program will create the default config at $XDG_CONFIG_HOME/nasw/config.toml.
-- Use nasw --list-sinks to discover active sinks and profile-switch-only sinks before editing your config.
+- If no config exists, the program will generate the default config at $XDG_CONFIG_HOME/nasw/config.toml.
+- Use ```nasw --list-sinks``` to discover active sinks and profile-switch-only sinks before editing your config.
 - Because this repository is LLM-generated and not peer-reviewed, test carefully and prefer non-critical environments until validated.
