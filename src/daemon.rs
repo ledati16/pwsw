@@ -7,7 +7,7 @@ use anyhow::Result;
 use tokio::signal;
 use tracing::{error, info, warn};
 
-use crate::compositor::{Compositor, NiriCompositor};
+use crate::compositor;
 use crate::config::Config;
 use crate::notification::send_notification;
 use crate::pipewire::PipeWire;
@@ -41,8 +41,9 @@ pub async fn run(config: Config) -> Result<()> {
         }
     }
 
-    // Connect to compositor
-    let mut compositor = NiriCompositor::new()?;
+    // Detect and connect to compositor
+    let mut compositor = compositor::detect()?;
+    info!("Detected compositor: {}", compositor.name());
     compositor.connect().await?;
 
     if state.config.settings.notify_daemon {
