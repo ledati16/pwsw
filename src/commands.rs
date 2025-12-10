@@ -166,7 +166,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
             println!("Already on: {}", default.desc);
             return Ok(());
         }
-        info!("Toggle -> default: {}", default.desc);
+        info!("Toggle → default: {}", default.desc);
         PipeWire::activate_sink(&default.name)?;
         println!("Switched to: {}", default.desc);
 

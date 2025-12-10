@@ -338,7 +338,7 @@ notify = true
 
     /// Print a human-readable summary of the configuration
     pub fn print_summary(&self) {
-        println!("Configuration valid\n");
+        println!("✓ Configuration valid\n");
 
         println!("Settings:");
         println!("  reset_on_startup: {}", self.settings.reset_on_startup);
