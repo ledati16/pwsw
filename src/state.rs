@@ -64,7 +64,7 @@ impl State {
 
     /// Update the current sink name in state
     pub fn update_sink(&mut self, new_sink_name: String) {
-        debug!("State: {} -> {}", self.current_sink_name, new_sink_name);
+        debug!("State: {} → {}", self.current_sink_name, new_sink_name);
         self.current_sink_name = new_sink_name;
     }
 
@@ -128,7 +128,7 @@ impl State {
         let was_tracked = self.is_window_tracked(id);
 
         if let Some((sink_name, sink_desc, trigger_desc, rule_notify)) = matched {
-            info!("Rule matched: '{}' -> {}", app_id, sink_desc);
+            info!("Rule matched: '{}' → {}", app_id, sink_desc);
 
             // Only update opened_at for new windows, preserve original time for existing
             if !was_tracked {
@@ -204,7 +204,7 @@ pub fn switch_audio(
 
     if notify {
         let message = match custom_desc {
-            Some(d) => format!("{} -> {}", desc, d),
+            Some(d) => format!("{} → {}", desc, d),
             None => desc.to_string(),
         };
         if let Err(e) = send_notification("Audio Output", &message, icon) {

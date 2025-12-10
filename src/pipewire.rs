@@ -422,7 +422,7 @@ impl PipeWire {
             ))?;
 
         info!(
-            "Switching profile: {} -> {} (device: {})",
+            "Switching profile: {} → {} (device: {})",
             profile_sink.profile_name, sink_name, profile_sink.device_name
         );
 
