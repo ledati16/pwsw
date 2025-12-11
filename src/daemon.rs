@@ -41,10 +41,9 @@ pub async fn run(config: Config) -> Result<()> {
         }
     }
 
-    // Detect and connect to compositor
-    let mut compositor = compositor::detect()?;
-    info!("Detected compositor: {}", compositor.name());
-    compositor.connect().await?;
+    // Spawn compositor event thread
+    let mut window_events = compositor::spawn_compositor_thread()?;
+    info!("Compositor event thread started");
 
     if state.config.settings.notify_daemon {
         if let Err(e) = send_notification("NASW Started", "Audio switcher running", None) {
@@ -57,21 +56,9 @@ pub async fn run(config: Config) -> Result<()> {
     // Main event loop
     loop {
         tokio::select! {
-            result = compositor.next_event() => {
-                match result {
-                    Ok(Some(event)) => {
-                        if let Err(e) = state.process_event(event) {
-                            error!("Event error: {:#}", e);
-                        }
-                    }
-                    Ok(None) => {
-                        warn!("{} event stream ended", compositor.name());
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Stream error: {:#}", e);
-                        break;
-                    }
+            Some(event) = window_events.recv() => {
+                if let Err(e) = state.process_event(event) {
+                    error!("Event processing error: {:#}", e);
                 }
             }
             _ = signal::ctrl_c() => {
