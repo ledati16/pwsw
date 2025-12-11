@@ -49,6 +49,16 @@ pub enum WindowEvent {
 /// - No Wayland display connection can be established
 /// - No supported window management protocol is available
 ///
+/// # Channel Behavior
+///
+/// The returned receiver will yield `None` (channel closed) when:
+/// - The compositor disconnects
+/// - The Wayland thread encounters a fatal error
+/// - The compositor shuts down
+///
+/// Callers should handle channel closure gracefully by breaking out of
+/// their event loop and performing cleanup.
+///
 /// # Protocol Detection
 ///
 /// The function tries protocols in this order:
