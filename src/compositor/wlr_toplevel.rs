@@ -207,9 +207,16 @@ pub fn run_event_loop(
 
     let mut state = WlrToplevelState::new(tx);
 
-    // Main event loop
+    // Main event loop - dispatches Wayland events
+    // This will return an error if the compositor disconnects or the connection breaks
     loop {
-        event_queue.blocking_dispatch(&mut state)
-            .context("Wayland event dispatch failed")?;
+        match event_queue.blocking_dispatch(&mut state) {
+            Ok(_) => continue,
+            Err(e) => {
+                // Connection closed or compositor shut down
+                debug!("Wayland event dispatch ended: {}", e);
+                return Err(e).context("Wayland event dispatch failed");
+            }
+        }
     }
 }

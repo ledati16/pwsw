@@ -92,35 +92,37 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
                 info!("wlr-foreign-toplevel event loop ended normally");
             }
             Err(e) => {
-                // If wlr-foreign-toplevel isn't available, try plasma
-                if let Some(msg) = e.downcast_ref::<String>() {
-                    if msg.contains("not available") || msg.contains("protocol not available") {
-                        info!("wlr-foreign-toplevel not available, trying plasma protocol...");
-                        
-                        match plasma::run_event_loop(conn_clone, tx) {
-                            Ok(()) => {
-                                info!("Plasma window management event loop ended normally");
-                            }
-                            Err(plasma_err) => {
-                                error!(
-                                    "No supported window management protocol found.\n\
-                                     Tried:\n\
-                                     - zwlr_foreign_toplevel_manager_v1: {}\n\
-                                     - org_kde_plasma_window_management: {}\n\n\
-                                     Supported compositors:\n\
-                                     - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (wlr-foreign-toplevel)\n\
-                                     - KDE Plasma/KWin (plasma-window-management)\n\n\
-                                     GNOME/Mutter is not supported (no window management protocol exposed).",
-                                    e, plasma_err
-                                );
-                            }
-                        }
-                        return;
-                    }
-                }
+                // Check if this is a "protocol not available" error
+                let error_msg = format!("{:#}", e);
+                let is_protocol_unavailable = error_msg.contains("not available") 
+                    || error_msg.contains("protocol not available")
+                    || error_msg.contains("not advertised");
                 
-                // Some other error occurred
-                error!("Wayland event loop error: {:#}", e);
+                if is_protocol_unavailable {
+                    info!("wlr-foreign-toplevel not available, trying plasma protocol...");
+                    
+                    match plasma::run_event_loop(conn_clone, tx) {
+                        Ok(()) => {
+                            info!("Plasma window management event loop ended normally");
+                        }
+                        Err(plasma_err) => {
+                            error!(
+                                "No supported window management protocol found.\n\
+                                 Tried:\n\
+                                 - zwlr_foreign_toplevel_manager_v1: {}\n\
+                                 - org_kde_plasma_window_management: {}\n\n\
+                                 Supported compositors:\n\
+                                 - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (wlr-foreign-toplevel)\n\
+                                 - KDE Plasma/KWin (plasma-window-management)\n\n\
+                                 GNOME/Mutter is not supported (no window management protocol exposed).",
+                                e, plasma_err
+                            );
+                        }
+                    }
+                } else {
+                    // Some other error occurred (connection issue, etc.)
+                    error!("Wayland event loop error: {:#}", e);
+                }
             }
         }
     });
