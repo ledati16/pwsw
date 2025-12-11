@@ -126,59 +126,65 @@ enum Protocol {
 /// widely supported.
 fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     use wayland_client::globals::{registry_queue_init, GlobalListContents};
-    
+    use tracing::debug;
+
     // Temporary state for registry detection
     #[derive(Default)]
-    struct RegistryState {
-        has_wlr_foreign_toplevel: bool,
-        has_plasma_window_management: bool,
-    }
-    
-    // Implement Dispatch for registry to detect available protocols
+    struct RegistryState;
+
+    // Implement Dispatch for registry
     impl wayland_client::Dispatch<wl_registry::WlRegistry, GlobalListContents> for RegistryState {
         fn event(
-            state: &mut Self,
+            _state: &mut Self,
             _proxy: &wl_registry::WlRegistry,
-            event: wl_registry::Event,
+            _event: wl_registry::Event,
             _data: &GlobalListContents,
             _conn: &Connection,
             _qh: &wayland_client::QueueHandle<Self>,
         ) {
-            use wl_registry::Event;
-            
-            if let Event::Global { name: _, interface, version: _ } = event {
-                match interface.as_str() {
-                    "zwlr_foreign_toplevel_manager_v1" => {
-                        state.has_wlr_foreign_toplevel = true;
-                    }
-                    "org_kde_plasma_window_management" => {
-                        state.has_plasma_window_management = true;
-                    }
-                    _ => {}
-                }
-            }
+            // Events are handled automatically by GlobalList
         }
     }
-    
+
     // Initialize registry to enumerate available globals
-    let (_, mut event_queue) = registry_queue_init::<RegistryState>(conn)
+    let (globals, mut event_queue) = registry_queue_init::<RegistryState>(conn)
         .context("Failed to initialize Wayland registry")?;
-    
+
     let mut state = RegistryState::default();
-    
+
     // Do a roundtrip to get all globals
     event_queue.roundtrip(&mut state)
         .context("Failed to roundtrip registry")?;
-    
+
+    // Check the GlobalList for available protocols
+    let contents = globals.contents();
+    let mut has_wlr_foreign_toplevel = false;
+    let mut has_plasma_window_management = false;
+
+    contents.with_list(|list| {
+        for global in list {
+            debug!("Found global: {} (version {})", global.interface, global.version);
+            match global.interface.as_str() {
+                "zwlr_foreign_toplevel_manager_v1" => {
+                    has_wlr_foreign_toplevel = true;
+                }
+                "org_kde_plasma_window_management" => {
+                    has_plasma_window_management = true;
+                }
+                _ => {}
+            }
+        }
+    });
+
     // Check for protocols in order of preference
-    if state.has_wlr_foreign_toplevel {
+    if has_wlr_foreign_toplevel {
         return Ok(Protocol::WlrForeignToplevel);
     }
-    
-    if state.has_plasma_window_management {
+
+    if has_plasma_window_management {
         return Ok(Protocol::PlasmaWindowManagement);
     }
-    
+
     // No supported protocol found
     anyhow::bail!(
         "No supported window management protocol found.\n\
