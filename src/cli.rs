@@ -12,38 +12,38 @@ use clap::{Parser, Subcommand};
 #[command(version)]
 #[command(about = "PipeWire Switcher - Automatically switch audio sinks based on active windows")]
 #[command(after_help = "\
-BEHAVIOR:
-  - The daemon monitors window events and switches audio sinks based on configured rules
-  - When a matching window opens, switches to that rule's sink
-  - When multiple windows match rules, the most recently opened takes priority
-  - When all matching windows close, returns to the default sink
-  - Supports profile switching for analog/digital outputs on the same card
+GETTING STARTED:
+  1. pwsw validate         Check config file syntax
+  2. pwsw list-sinks       See available audio outputs
+  3. pwsw daemon           Start the daemon
+  4. pwsw                  Check status
 
-DAEMON MANAGEMENT:
-  pwsw daemon              Run the daemon in background (detached)
-  pwsw daemon --foreground Run in foreground with logs to stderr
-  pwsw status              Query daemon status (or just: pwsw)
-  pwsw reload              Tell daemon to reload config
-  pwsw shutdown            Gracefully stop the daemon
+DAEMON CONTROL:
+  daemon               Start daemon in background
+  daemon --foreground  Start with logs visible (for debugging)
+  shutdown             Stop the daemon
 
-QUERY COMMANDS:
-  pwsw list-sinks          List available PipeWire sinks
-  pwsw list-windows        Show windows currently tracked by daemon
-  pwsw validate            Validate config file (local, no daemon needed)
+QUERYING (requires running daemon):
+  [no subcommand]     Show status, uptime, and current audio output
+  status              Same as above (supports --json)
+  list-windows        Show all open windows (tracked vs untracked)
+  test-rule PATTERN   Test regex against windows (checks app_id & title)
 
-TEST COMMANDS:
-  pwsw test-rule PATTERN   Test a regex pattern against current windows
+QUERYING (no daemon needed):
+  list-sinks          List available PipeWire audio outputs
+  validate            Check config file syntax
 
-FUTURE:
-  pwsw tui                 Terminal UI (not yet implemented)
+HOW IT WORKS:
+  The daemon monitors Wayland windows and switches audio outputs based on
+  rules in your config file. Most recently opened matching window wins.
+  When all matching windows close, returns to default output.
 
-IPC SOCKET:
-  $XDG_RUNTIME_DIR/pwsw.sock (or /tmp/pwsw-$UID.sock)
+CONFIG & IPC:
+  Config: ~/.config/pwsw/config.toml
+  Socket: $XDG_RUNTIME_DIR/pwsw.sock
 
-PIPEWIRE INTEGRATION:
-  Uses pw-dump for JSON queries, pw-metadata for setting defaults.
-  Supports profile switching via pw-cli for analog/digital outputs.
-  Node names are stable across reboots (unlike numeric IDs).")]
+  After editing config, restart the daemon:
+    pwsw shutdown && pwsw daemon")]
 pub struct Args {
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -52,53 +52,50 @@ pub struct Args {
 /// Available subcommands
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run the daemon (monitors windows and switches audio)
+    /// Start the daemon (background by default)
     Daemon {
-        /// Run in foreground with logs to stderr
+        /// Run in foreground with logs visible
         #[arg(short, long)]
         foreground: bool,
     },
-    
-    /// Query daemon status via IPC
+
+    /// Show daemon status, uptime, and current audio output
     Status {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    
-    /// Tell daemon to reload config file
-    Reload,
-    
-    /// Gracefully shutdown the daemon
+
+    /// Stop the daemon gracefully
     Shutdown,
-    
-    /// List available PipeWire sinks
+
+    /// List available PipeWire audio outputs
     ListSinks {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    
-    /// Show windows currently tracked by daemon
+
+    /// Show all open windows (tracked vs untracked)
     ListWindows {
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    
-    /// Validate config file (local, no daemon needed)
+
+    /// Check config file syntax (no daemon needed)
     Validate,
-    
-    /// Test a regex pattern against current windows
+
+    /// Test regex pattern against all windows (app_id & title)
     TestRule {
-        /// The regex pattern to test
+        /// Regex pattern to test
         pattern: String,
-        
+
         /// Output in JSON format
         #[arg(long)]
         json: bool,
     },
-    
+
     /// Terminal UI (not yet implemented)
     Tui,
 }
