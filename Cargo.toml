@@ -3,10 +3,10 @@ name = "nasw"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.70"
-description = "Niri Audio Switcher - Automatically switch audio based on active windows"
+description = "Wayland Audio Switcher - Automatically switch audio based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/nasw"
-keywords = ["niri", "pipewire", "audio", "wayland"]
+keywords = ["wayland", "pipewire", "audio", "sway", "niri"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
