@@ -79,7 +79,7 @@ pub fn get_socket_path() -> Result<PathBuf> {
 
 /// Clean up stale socket file
 /// Checks if socket exists and if daemon is actually running
-pub fn cleanup_stale_socket() -> Result<()> {
+pub async fn cleanup_stale_socket() -> Result<()> {
     let socket_path = get_socket_path()?;
     
     if !socket_path.exists() {
@@ -87,13 +87,16 @@ pub fn cleanup_stale_socket() -> Result<()> {
     }
     
     // Try to connect - if it fails, the socket is stale
-    match std::os::unix::net::UnixStream::connect(&socket_path) {
-        Ok(_) => {
+    match tokio::time::timeout(
+        Duration::from_millis(100),
+        tokio::net::UnixStream::connect(&socket_path)
+    ).await {
+        Ok(Ok(_)) => {
             // Socket is alive, don't remove it
             Ok(())
         }
-        Err(_) => {
-            // Socket exists but can't connect - it's stale
+        Ok(Err(_)) | Err(_) => {
+            // Socket exists but can't connect or timed out - it's stale
             debug!("Removing stale socket: {:?}", socket_path);
             std::fs::remove_file(&socket_path)
                 .with_context(|| format!("Failed to remove stale socket: {:?}", socket_path))?;
@@ -215,7 +218,7 @@ impl IpcServer {
         let socket_path = get_socket_path()?;
         
         // Clean up any stale socket
-        cleanup_stale_socket()?;
+        cleanup_stale_socket().await?;
         
         // Bind the listener
         let listener = UnixListener::bind(&socket_path)

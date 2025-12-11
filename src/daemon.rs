@@ -6,6 +6,7 @@
 use anyhow::Result;
 use std::time::Instant;
 use tokio::signal;
+use tokio::sync::broadcast;
 use tracing::{error, info, warn};
 
 use crate::compositor;
@@ -33,6 +34,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     let start_time = Instant::now();
     let mut state = State::new(config)?;
+    
+    // Create shutdown channel
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
     // Reset to default on startup if configured
     if state.config.settings.reset_on_startup {
@@ -86,6 +90,7 @@ pub async fn run(config: Config) -> Result<()> {
                 let tracked_windows = state.get_tracked_windows();
                 let most_recent_window = state.get_most_recent_window()
                     .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name));
+                let shutdown_signal = shutdown_tx.clone();
                 
                 tokio::spawn(async move {
                     if let Err(e) = handle_ipc_request(
@@ -96,6 +101,7 @@ pub async fn run(config: Config) -> Result<()> {
                         most_recent_window,
                         tracked_windows,
                         config,
+                        shutdown_signal,
                     ).await {
                         error!("IPC request handling error: {:#}", e);
                     }
@@ -103,7 +109,15 @@ pub async fn run(config: Config) -> Result<()> {
             }
             
             _ = signal::ctrl_c() => {
-                info!("Shutting down");
+                info!("Shutting down (Ctrl-C)");
+                if state.config.settings.notify_daemon {
+                    let _ = send_notification("PWSW Stopped", "Audio switcher stopped", None);
+                }
+                break;
+            }
+            
+            _ = shutdown_rx.recv() => {
+                info!("Shutting down (IPC request)");
                 if state.config.settings.notify_daemon {
                     let _ = send_notification("PWSW Stopped", "Audio switcher stopped", None);
                 }
@@ -124,6 +138,7 @@ async fn handle_ipc_request(
     active_window: Option<String>,
     tracked_windows: Vec<(String, String)>,
     config: Config,
+    shutdown_tx: broadcast::Sender<()>,
 ) -> Result<()> {
     let request = ipc::read_request(stream).await?;
     
@@ -146,11 +161,11 @@ async fn handle_ipc_request(
         Request::Reload => {
             match Config::load() {
                 Ok(_new_config) => {
-                    info!("Config reloaded successfully");
-                    // Note: We can't actually update the state here because we're in a separate task.
-                    // A full implementation would require a channel to send reload requests to the main loop.
+                    info!("Config validated successfully");
+                    // Note: Full reload would require restarting the daemon or implementing
+                    // a more complex state update mechanism via channels to the main loop.
                     Response::Ok {
-                        message: "Config validated. Note: Full reload requires daemon restart for now.".to_string(),
+                        message: "Config validated successfully. Full reload requires daemon restart.".to_string(),
                     }
                 }
                 Err(e) => {
@@ -203,8 +218,11 @@ async fn handle_ipc_request(
                 message: "Daemon shutting down...".to_string(),
             }).await?;
             
-            // Exit the process
-            std::process::exit(0);
+            // Signal shutdown to main loop
+            let _ = shutdown_tx.send(());
+            
+            // Return without sending another response
+            return Ok(());
         }
     };
     
