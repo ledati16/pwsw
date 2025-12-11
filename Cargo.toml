@@ -6,7 +6,7 @@ rust-version = "1.70"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/pwsw"
-keywords = ["wayland", "pipewire", "audio", "sway", "hyprland", "niri", "plasma"]
+keywords = ["wayland", "pipewire", "audio", "window-manager", "audio-routing"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
