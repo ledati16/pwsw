@@ -14,7 +14,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 clap = { version = "4", features = ["derive"] }
 
 # Async runtime - minimal features for Unix socket + signals
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
 
 # Wayland protocol support
 wayland-client = "0.31"

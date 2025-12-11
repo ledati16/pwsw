@@ -28,6 +28,8 @@ pub struct ActiveWindow {
     /// Description of what triggered this (e.g., "Steam Big Picture")
     pub trigger_desc: String,
     pub opened_at: Instant,
+    pub app_id: String,
+    pub title: String,
 }
 
 impl State {
@@ -82,11 +84,13 @@ impl State {
     }
 
     /// Track a new window
-    pub fn track_window(&mut self, id: u64, sink_name: String, trigger_desc: String) {
+    pub fn track_window(&mut self, id: u64, sink_name: String, trigger_desc: String, app_id: String, title: String) {
         self.active_windows.insert(id, ActiveWindow {
             sink_name,
             trigger_desc,
             opened_at: Instant::now(),
+            app_id,
+            title,
         });
     }
 
@@ -132,7 +136,7 @@ impl State {
 
             // Only update opened_at for new windows, preserve original time for existing
             if !was_tracked {
-                self.track_window(id, sink_name.clone(), trigger_desc.clone());
+                self.track_window(id, sink_name.clone(), trigger_desc.clone(), app_id.to_string(), title.to_string());
 
                 if self.should_switch_sink(&sink_name) {
                     let notify = self.config.should_notify_switch(rule_notify);
@@ -188,6 +192,19 @@ impl State {
         }
 
         Ok(())
+    }
+    
+    /// Get the most recent active window (for status reporting)
+    pub fn get_most_recent_window(&self) -> Option<&ActiveWindow> {
+        self.active_windows.values()
+            .max_by_key(|w| w.opened_at)
+    }
+    
+    /// Get a list of tracked windows (app_id, title pairs)
+    pub fn get_tracked_windows(&self) -> Vec<(String, String)> {
+        self.active_windows.values()
+            .map(|w| (w.app_id.clone(), w.title.clone()))
+            .collect()
     }
 }
 
