@@ -72,17 +72,14 @@ impl Dispatch<org_kde_plasma_window_management::OrgKdePlasmaWindowManagement, ()
     ) {
         use org_kde_plasma_window_management::Event;
 
-        match event {
-            Event::Window { id: window_id } => {
-                // New window announced - window_id is a u32 directly
-                trace!("New plasma window: {}", window_id);
-                
-                state.windows.insert(window_id, PlasmaWindow {
-                    id: window_id as u64,
-                    ..Default::default()
-                });
-            }
-            _ => {}
+        if let Event::Window { id: window_id } = event {
+            // New window announced - window_id is a u32 directly
+            trace!("New plasma window: {}", window_id);
+            
+            state.windows.insert(window_id, PlasmaWindow {
+                id: window_id as u64,
+                ..Default::default()
+            });
         }
     }
 }

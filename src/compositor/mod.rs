@@ -128,18 +128,10 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     use wayland_client::globals::{registry_queue_init, GlobalListContents};
     
     // Temporary state for registry detection
+    #[derive(Default)]
     struct RegistryState {
         has_wlr_foreign_toplevel: bool,
         has_plasma_window_management: bool,
-    }
-    
-    impl Default for RegistryState {
-        fn default() -> Self {
-            Self {
-                has_wlr_foreign_toplevel: false,
-                has_plasma_window_management: false,
-            }
-        }
     }
     
     // Implement Dispatch for registry to detect available protocols
