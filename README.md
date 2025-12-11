@@ -1,4 +1,4 @@
-# NASW - Wayland Audio Switcher
+# PWSW - PipeWire Switcher
 
 WARNING — LLM‑GENERATED CODE
 ----------------------------
@@ -8,7 +8,7 @@ Important points:
 - The code is **100% LLM generated** and was not written by an experienced Rust developer.
 - It has <ins>**NOT** been peer reviewed</ins> by anyone with Rust experience (not even a beginner).
 - While I am confident the program works as intended and there is no malicious code, use with caution.
-- [Discussions](https://github.com/ledati16/nasw/discussions) are left open on this repository for community review and feedback. If you want to confirm the code is harmless and functional or have reviewed it yourself, please check/post there.
+- [Discussions](https://github.com/ledati16/pwsw/discussions) are left open on this repository for community review and feedback. If you want to confirm the code is harmless and functional or have reviewed it yourself, please check/post there.
 - I consider this program feature-complete for my personal needs and do not intend to maintain or fix bugs.
 - If you want to maintain this project, please consider forking and renaming it (and possibly linking back to this page).
 - _You should NOT package or distribute this program for Linux distributions (including AUR-like PKGBUILDs) unless a peer review by someone experienced in Rust confirms it is safe and functional._
@@ -17,7 +17,7 @@ This project is a niche, unreviewed tool similar in spirit to [Belphemur/SoundSw
 
 Project Overview
 ----------------
-**NASW** is a small command-line/daemon utility that automatically switches PipeWire audio sinks based on active windows reported by Wayland compositors using standard protocols.
+**PWSW** is a small command-line/daemon utility that automatically switches PipeWire audio sinks based on active windows reported by Wayland compositors using standard protocols.
 
 - Automatic sink switching based on matching window rules (app_id and optional title regex).
 - Per-rule notifications (via notify-rust) when switches occur (configurable).
@@ -26,7 +26,7 @@ Project Overview
   - _pw-dump_ to discover current objects and sinks,
   - _pw-metadata_ to set the default sink,
   - _pw-cli_ to switch device profiles.
-- Maintains a tracked set of "active" windows that matched rules; when those windows close or stop matching, NASW returns to the next appropriate sink (most recently opened matching window has priority; fallback is configured default).
+- Maintains a tracked set of "active" windows that matched rules; when those windows close or stop matching, PWSW returns to the next appropriate sink (most recently opened matching window has priority; fallback is configured default).
 - One-shot CLI operations:
   - _--check-config_: Validate configuration and show summary
   - _--list-sinks_: Discover available audio outputs (including those that require profile switching)
@@ -34,7 +34,7 @@ Project Overview
   - _--next-sink_ / _--prev-sink_: Cycle configured sinks
   - _--get-sink_: Show current configured sink (JSON option for status bars)
 - JSON output options for integration with status bars (includes icons).
-- Configuration via a TOML file (default created under XDG config dir: nasw/config.toml). Settings support toggles for notifications, smart toggle behavior, reset on startup, and log level.
+- Configuration via a TOML file (default created under XDG config dir: pwsw/config.toml). Settings support toggles for notifications, smart toggle behavior, reset on startup, and log level.
 - Connects to Wayland compositors via standard window management protocols (see below).
 - Logging with tracing and configurable log level.
 
@@ -42,7 +42,7 @@ https://github.com/user-attachments/assets/1c8d7018-de76-43f5-b8bb-7fcaccb38de6
 
 Supported Compositors
 ---------------------
-NASW uses standard Wayland protocols for window management, which means it works with multiple compositors without compositor-specific code:
+PWSW uses standard Wayland protocols for window management, which means it works with multiple compositors without compositor-specific code:
 
 ### Via wlr-foreign-toplevel-management protocol:
 - **Sway** - i3-compatible tiling compositor
@@ -60,8 +60,8 @@ NASW uses standard Wayland protocols for window management, which means it works
 ### Not Supported:
 - **GNOME/Mutter** - Does not expose window management protocols to clients
 
-**Why Wayland protocols?**  
-Instead of using compositor-specific IPC (like Niri's Unix socket or Sway's i3-ipc), NASW uses standardized Wayland protocols that are supported by many compositors. This provides broader compatibility with less code.
+**Why Wayland protocols?**
+Instead of using compositor-specific IPC (like Niri's Unix socket or Sway's i3-ipc), PWSW uses standardized Wayland protocols that are supported by many compositors. This provides broader compatibility with less code.
 
 Limitations & Requirements
 --------------------------
@@ -72,11 +72,12 @@ Limitations & Requirements
 
 Example configuration
 ---------------------
-Found at _$XDG_CONFIG_HOME/nasw/config.toml_ (usually ~/.config/nasw/config.toml). This is the default config used by the program if none exists.
+Found at _$XDG_CONFIG_HOME/pwsw/config.toml_ (usually ~/.config/pwsw/config.toml). This is the default config used by the program if none exists.
 
 ```toml
-# NASW (Niri Audio Switcher) Configuration
+# PWSW (PipeWire Switcher) Configuration
 #
+# Automatically switches audio sinks based on active windows.
 # Uses PipeWire native tools for audio control.
 # Supports profile switching for analog/digital outputs.
 
@@ -90,7 +91,7 @@ status_bar_icons = false   # If true, custom icons only apply to --get-sink --js
 log_level = "info"         # error, warn, info, debug, trace
 
 # Audio sinks
-# Find available sinks with: nasw --list-sinks
+# Find available sinks with: pwsw --list-sinks
 #
 # Icons are auto-detected from sink description (e.g., "HDMI" → video-display).
 # Set 'icon' to override with any icon name your system supports.
@@ -111,9 +112,7 @@ icon = "audio-headphones"
 #   Sway/River/etc: swaymsg -t get_tree
 #   Hyprland: hyprctl clients
 #   Niri: niri msg windows
-#   KDE: qdbus org.kde.KWin /KWin org.kde.KWin.showDebugConsole (shows app_id)
-#
-# Or use a Wayland inspector like wlr-randr or similar tools
+#   KDE Plasma: Use KDE's window inspector
 #
 # Regex patterns (for app_id and title fields):
 #   "firefox"     - matches anywhere in string
@@ -150,25 +149,25 @@ Typical build steps:
    - cargo build --release
 
 3. The built binary will be at:
-   - target/release/nasw
-   - Or, if you install with cargo install --path . it will go to ~/.cargo/bin/nasw
+   - target/release/pwsw
+   - Or, if you install with cargo install --path . it will go to ~/.cargo/bin/pwsw
 
 Running
 -------
 - One-shot commands (no daemon):
-  - List sinks: ```nasw --list-sinks```
-  - Check config: ```nasw --check-config```
-  - Set sink: ```nasw --set-sink "Headphones"```
-  - Get current: ```nasw --get-sink```
-  - Cycle sinks: ```nasw --next-sink``` / ```nasw --prev-sink```
+  - List sinks: ```pwsw --list-sinks```
+  - Check config: ```pwsw --check-config```
+  - Set sink: ```pwsw --set-sink "Headphones"```
+  - Get current: ```pwsw --get-sink```
+  - Cycle sinks: ```pwsw --next-sink``` / ```pwsw --prev-sink```
 
 - Daemon mode (monitors window events and switches audio automatically):
-  - Simply run: ```./target/release/nasw```
+  - Simply run: ```./target/release/pwsw```
   - The daemon will automatically connect to your Wayland compositor
   - Requires a compositor that supports wlr-foreign-toplevel or plasma-window-management protocol
 
 Notes
 -----
-- If no config exists, the program will generate the default config at $XDG_CONFIG_HOME/nasw/config.toml.
-- Use ```nasw --list-sinks``` to discover active sinks and profile-switch-only sinks before editing your config.
+- If no config exists, the program will generate the default config at $XDG_CONFIG_HOME/pwsw/config.toml.
+- Use ```pwsw --list-sinks``` to discover active sinks and profile-switch-only sinks before editing your config.
 - Because this repository is LLM-generated and not peer-reviewed, test carefully and prefer non-critical environments until validated.

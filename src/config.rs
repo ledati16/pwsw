@@ -268,19 +268,20 @@ impl Config {
         Ok(())
     }
 
-    /// Get the XDG config path for NASW
+    /// Get the XDG config path for PWSW
     pub fn get_config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not determine config directory")?
-            .join("nasw");
+            .join("pwsw");
         fs::create_dir_all(&config_dir)
             .with_context(|| format!("Failed to create config dir: {:?}", config_dir))?;
         Ok(config_dir.join("config.toml"))
     }
 
     fn create_default_config(path: &PathBuf) -> Result<()> {
-        let default_config = r#"# NASW (Niri Audio Switcher) Configuration
+        let default_config = r#"# PWSW (PipeWire Switcher) Configuration
 #
+# Automatically switches audio sinks based on active windows.
 # Uses PipeWire native tools for audio control.
 # Supports profile switching for analog/digital outputs.
 
@@ -294,7 +295,7 @@ status_bar_icons = false   # If true, custom icons only apply to --get-sink --js
 log_level = "info"         # error, warn, info, debug, trace
 
 # Audio sinks
-# Find available sinks with: nasw --list-sinks
+# Find available sinks with: pwsw --list-sinks
 #
 # Icons are auto-detected from sink description (e.g., "HDMI" → video-display).
 # Set 'icon' to override with any icon name your system supports.
@@ -311,7 +312,11 @@ desc = "Headphones"
 icon = "audio-headphones"
 
 # Window rules
-# Find app_id and title with: niri msg windows
+# Find app_id and title with compositor-specific tools:
+#   Sway/River/etc: swaymsg -t get_tree
+#   Hyprland: hyprctl clients
+#   Niri: niri msg windows
+#   KDE Plasma: Use KDE's window inspector
 #
 # Regex patterns (for app_id and title fields):
 #   "firefox"     - matches anywhere in string
