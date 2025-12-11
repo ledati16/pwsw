@@ -4,13 +4,13 @@
 
 use clap::Parser;
 
-/// NASW - Niri Audio Switcher
+/// PWSW - PipeWire Switcher
 ///
-/// Automatically switch audio based on active windows.
+/// Automatically switch audio sinks based on active windows.
 #[derive(Parser)]
-#[command(name = "nasw")]
+#[command(name = "pwsw")]
 #[command(version)]
-#[command(about = "Niri Audio Switcher - Automatically switch audio based on active windows")]
+#[command(about = "PipeWire Switcher - Automatically switch audio sinks based on active windows")]
 #[command(after_help = "\
 BEHAVIOR:
   - On startup, queries the current system default sink
