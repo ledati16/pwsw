@@ -1,7 +1,12 @@
 //! KDE Plasma window-management protocol implementation
 //!
 //! This protocol is supported by KWin (KDE Plasma's window manager).
-//! Currently a stub implementation - can be expanded if needed.
+//!
+//! ## Testing Note
+//!
+//! The Plasma protocol implementation uses `proxy.id().protocol_id()` to track windows,
+//! which may not always match the window IDs from the manager's `Window` event.
+//! This implementation needs testing on actual KDE Plasma to verify correctness.
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
@@ -9,7 +14,7 @@ use tracing::{debug, trace, warn};
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_registry, wl_output, wl_surface},
+    protocol::{wl_registry, wl_output},
 };
 use wayland_protocols_plasma::plasma_window_management::client::{
     org_kde_plasma_window_management, org_kde_plasma_window,
@@ -167,19 +172,6 @@ impl Dispatch<wl_output::WlOutput, ()> for PlasmaState {
         _state: &mut Self,
         _proxy: &wl_output::WlOutput,
         _event: wl_output::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-        // No-op
-    }
-}
-
-impl Dispatch<wl_surface::WlSurface, ()> for PlasmaState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wl_surface::WlSurface,
-        _event: wl_surface::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
