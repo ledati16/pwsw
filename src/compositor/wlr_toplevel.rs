@@ -139,7 +139,12 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
             Event::Closed => {
                 debug!("Toplevel {} closed", handle_id);
                 if let Some(window) = state.toplevels.remove(&handle_id) {
-                    state.send_event(WindowEvent::Closed { id: window.id });
+                    // Only send Closed if we previously sent Opened
+                    if window.done_received {
+                        state.send_event(WindowEvent::Closed { id: window.id });
+                    } else {
+                        debug!("Window {} closed before initial done event, not emitting Closed", handle_id);
+                    }
                 }
             }
             Event::State { state: _ } => {
