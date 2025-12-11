@@ -14,27 +14,7 @@ async fn main() -> Result<()> {
     match args.command {
         // Daemon mode
         None | Some(Command::Daemon { .. }) => {
-            let foreground = matches!(
-                args.command,
-                Some(Command::Daemon { foreground: true })
-            );
-            
             let config = Config::load()?;
-            
-            // Initialize logging for daemon
-            let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
-                });
-
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .init();
-            
-            if foreground {
-                tracing::info!("Running in foreground mode");
-            }
-            
             daemon::run(config).await
         }
         
