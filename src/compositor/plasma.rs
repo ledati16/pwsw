@@ -75,7 +75,7 @@ impl Dispatch<org_kde_plasma_window_management::OrgKdePlasmaWindowManagement, ()
         match event {
             Event::Window { id: window_id } => {
                 // New window announced - window_id is a u32 directly
-                debug!("New plasma window: {}", window_id);
+                trace!("New plasma window: {}", window_id);
                 
                 state.windows.insert(window_id, PlasmaWindow {
                     id: window_id as u64,
@@ -107,12 +107,15 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.title = title;
                     if window.ready {
-                        let event = WindowEvent::Changed {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        };
-                        state.send_event(event);
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Changed {
+                            id,
+                            app_id,
+                            title,
+                        });
                     }
                 }
             }
@@ -121,12 +124,15 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.app_id = app_id;
                     if window.ready {
-                        let event = WindowEvent::Changed {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        };
-                        state.send_event(event);
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Changed {
+                            id,
+                            app_id,
+                            title,
+                        });
                     }
                 }
             }
@@ -134,18 +140,26 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 // All initial properties sent
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.ready = true;
-                    let event = WindowEvent::Opened {
-                        id: window.id,
-                        app_id: window.app_id.clone(),
-                        title: window.title.clone(),
-                    };
-                    state.send_event(event);
+                    let id = window.id;
+                    let app_id = window.app_id.clone();
+                    let title = window.title.clone();
+                    debug!("Window opened: id={}, app_id='{}', title='{}'", id, app_id, title);
+                    state.send_event(WindowEvent::Opened {
+                        id,
+                        app_id,
+                        title,
+                    });
                 }
             }
             Event::Unmapped => {
-                debug!("Plasma window {} unmapped (closed)", handle_id);
                 if let Some(window) = state.windows.remove(&handle_id) {
-                    state.send_event(WindowEvent::Closed { id: window.id });
+                    // Only send Closed if we previously sent Opened
+                    if window.ready {
+                        debug!("Window closed: id={}", window.id);
+                        state.send_event(WindowEvent::Closed { id: window.id });
+                    } else {
+                        debug!("Window {} closed before initial state event, not emitting Closed", handle_id);
+                    }
                 }
             }
             _ => {}
