@@ -1,16 +1,16 @@
 //! Compositor abstraction layer
 //!
-//! Provides a trait-based interface for different Wayland compositors.
-//! Currently supports Niri and Sway, with Hyprland planned.
+//! Provides window event streams from Wayland compositors using standard protocols:
+//! - wlr-foreign-toplevel-management (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire)
+//! - plasma-window-management (KDE Plasma/KWin)
 
-mod niri;
-mod sway;
-
-pub use niri::NiriCompositor;
-pub use sway::SwayCompositor;
+mod wlr_toplevel;
+mod plasma;
 
 use anyhow::{Context, Result};
-use std::env;
+use tokio::sync::mpsc;
+use tracing::{error, info};
+use wayland_client::Connection;
 
 /// Window event from a compositor
 #[derive(Debug, Clone)]
@@ -33,86 +33,97 @@ pub enum WindowEvent {
     },
 }
 
-/// Trait for compositor implementations
+/// Spawn a dedicated thread for Wayland event processing
 ///
-/// Each compositor (Niri, Sway, Hyprland) implements this trait
-/// to provide window event streams in a unified format.
-#[allow(async_fn_in_trait)] // We control all implementations
-pub trait Compositor {
-    /// Get the compositor name for logging
-    fn name(&self) -> &'static str;
-
-    /// Connect to the compositor's IPC socket
-    async fn connect(&mut self) -> Result<()>;
-
-    /// Get the next window event (async)
-    ///
-    /// Returns Ok(None) when the event stream ends.
-    async fn next_event(&mut self) -> Result<Option<WindowEvent>>;
-}
-
-// ============================================================================
-// Compositor Enum (for runtime dispatch)
-// ============================================================================
-
-/// Enum wrapper for compositor implementations
+/// This function connects to the Wayland display, detects which protocols are available,
+/// and spawns a dedicated thread to run the Wayland event loop. Window events are sent
+/// back to the caller via an unbounded mpsc channel.
 ///
-/// Since async traits aren't dyn-compatible, we use an enum for runtime dispatch.
-/// This is efficient (no heap allocation) and type-safe.
-pub enum AnyCompositor {
-    Niri(NiriCompositor),
-    Sway(SwayCompositor),
-}
-
-impl AnyCompositor {
-    /// Get the compositor name for logging
-    pub fn name(&self) -> &'static str {
-        match self {
-            AnyCompositor::Niri(c) => c.name(),
-            AnyCompositor::Sway(c) => c.name(),
-        }
-    }
-
-    /// Connect to the compositor's IPC socket
-    pub async fn connect(&mut self) -> Result<()> {
-        match self {
-            AnyCompositor::Niri(c) => c.connect().await,
-            AnyCompositor::Sway(c) => c.connect().await,
-        }
-    }
-
-    /// Get the next window event
-    pub async fn next_event(&mut self) -> Result<Option<WindowEvent>> {
-        match self {
-            AnyCompositor::Niri(c) => c.next_event().await,
-            AnyCompositor::Sway(c) => c.next_event().await,
-        }
-    }
-}
-
-/// Detect which compositor is running and create the appropriate instance
+/// # Returns
 ///
-/// Checks environment variables to determine the running compositor:
-/// - NIRI_SOCKET → Niri
-/// - SWAYSOCK → Sway
-pub fn detect() -> Result<AnyCompositor> {
-    // Check for Niri first (more specific)
-    if env::var("NIRI_SOCKET").is_ok() {
-        let compositor = NiriCompositor::new()?;
-        return Ok(AnyCompositor::Niri(compositor));
-    }
+/// An unbounded receiver for `WindowEvent`s from the compositor.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - No Wayland display connection can be established
+/// - No supported window management protocol is available
+///
+/// # Protocol Detection
+///
+/// The function tries protocols in this order:
+/// 1. `zwlr_foreign_toplevel_manager_v1` (wlroots-based compositors)
+/// 2. `org_kde_plasma_window_management` (KDE Plasma/KWin)
+///
+/// # Supported Compositors
+///
+/// - **Sway** - wlr-foreign-toplevel
+/// - **Hyprland** - wlr-foreign-toplevel  
+/// - **Niri** - wlr-foreign-toplevel
+/// - **River** - wlr-foreign-toplevel
+/// - **Wayfire** - wlr-foreign-toplevel
+/// - **labwc** - wlr-foreign-toplevel
+/// - **dwl** - wlr-foreign-toplevel
+/// - **hikari** - wlr-foreign-toplevel
+/// - **KDE Plasma/KWin** - plasma-window-management
+///
+/// **Note:** GNOME/Mutter does not expose any window management protocol and is not supported.
+pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>> {
+    // Connect to Wayland display
+    let conn = Connection::connect_to_env()
+        .context("Failed to connect to Wayland display. Is a Wayland compositor running?")?;
 
-    // Check for Sway
-    if env::var("SWAYSOCK").is_ok() {
-        let compositor = SwayCompositor::new()?;
-        return Ok(AnyCompositor::Sway(compositor));
-    }
+    info!("Connected to Wayland display");
 
-    // No supported compositor found
-    Err(anyhow::anyhow!(
-        "No supported compositor detected.\n\
-         Set NIRI_SOCKET (Niri) or SWAYSOCK (Sway) environment variable.\n\
-         Supported compositors: Niri, Sway"
-    ))
-    .context("Compositor detection failed")
+    // Create channel for sending events from Wayland thread to tokio runtime
+    let (tx, rx) = mpsc::unbounded_channel();
+
+    // Try to detect which protocol is available
+    // We do this by attempting to bind to each protocol in order of preference
+    
+    // Clone connection for protocol detection
+    let conn_clone = conn.clone();
+
+    // Spawn dedicated thread for Wayland event loop
+    std::thread::spawn(move || {
+        // Try wlr-foreign-toplevel first (most widely supported)
+        match wlr_toplevel::run_event_loop(conn_clone.clone(), tx.clone()) {
+            Ok(()) => {
+                info!("wlr-foreign-toplevel event loop ended normally");
+            }
+            Err(e) => {
+                // If wlr-foreign-toplevel isn't available, try plasma
+                if let Some(msg) = e.downcast_ref::<String>() {
+                    if msg.contains("not available") || msg.contains("protocol not available") {
+                        info!("wlr-foreign-toplevel not available, trying plasma protocol...");
+                        
+                        match plasma::run_event_loop(conn_clone, tx) {
+                            Ok(()) => {
+                                info!("Plasma window management event loop ended normally");
+                            }
+                            Err(plasma_err) => {
+                                error!(
+                                    "No supported window management protocol found.\n\
+                                     Tried:\n\
+                                     - zwlr_foreign_toplevel_manager_v1: {}\n\
+                                     - org_kde_plasma_window_management: {}\n\n\
+                                     Supported compositors:\n\
+                                     - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (wlr-foreign-toplevel)\n\
+                                     - KDE Plasma/KWin (plasma-window-management)\n\n\
+                                     GNOME/Mutter is not supported (no window management protocol exposed).",
+                                    e, plasma_err
+                                );
+                            }
+                        }
+                        return;
+                    }
+                }
+                
+                // Some other error occurred
+                error!("Wayland event loop error: {:#}", e);
+            }
+        }
+    });
+
+    Ok(rx)
 }
