@@ -3,7 +3,7 @@
 //! Runs the main event loop, listening to compositor window events,
 //! IPC requests, and switching audio sinks based on configured rules.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::time::Instant;
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -17,8 +17,44 @@ use crate::pipewire::PipeWire;
 use crate::state::State;
 
 /// Run the daemon with the given configuration
-pub async fn run(config: Config) -> Result<()> {
-    // Initialize logging with config log_level
+pub async fn run(config: Config, foreground: bool) -> Result<()> {
+    // Check if a daemon is already running BEFORE any initialization
+    if ipc::is_daemon_running().await {
+        let socket_path = ipc::get_socket_path()?;
+        anyhow::bail!(
+            "Another PWSW daemon is already running.\n\
+             Socket: {:?}\n\n\
+             To stop the existing daemon, run:\n  \
+             pwsw shutdown",
+            socket_path
+        );
+    }
+
+    // Background mode: spawn detached process and exit
+    if !foreground {
+        use std::process::Command;
+
+        // Get current executable path
+        let exe = std::env::current_exe()?;
+
+        // Spawn detached daemon process with --foreground flag
+        let child = Command::new(&exe)
+            .arg("daemon")
+            .arg("--foreground")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| "Failed to spawn background daemon")?;
+
+        println!("Daemon started in background (PID: {})", child.id());
+        println!("Use 'pwsw status' to check daemon status");
+        println!("Use 'pwsw shutdown' to stop the daemon");
+
+        return Ok(());
+    }
+
+    // Initialize logging with config log_level (foreground mode only)
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {

@@ -85,21 +85,42 @@ pub fn get_socket_path() -> Result<PathBuf> {
     }
 }
 
+/// Check if a daemon is currently running
+/// Returns true if a daemon is active (socket exists and accepts connections)
+pub async fn is_daemon_running() -> bool {
+    let socket_path = match get_socket_path() {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+
+    if !socket_path.exists() {
+        return false;
+    }
+
+    // Try to connect - if it succeeds, daemon is running
+    let connect_result = tokio::time::timeout(
+        Duration::from_millis(100),
+        tokio::net::UnixStream::connect(&socket_path)
+    ).await;
+
+    matches!(connect_result, Ok(Ok(_)))
+}
+
 /// Clean up stale socket file
 /// Checks if socket exists and if daemon is actually running
 pub async fn cleanup_stale_socket() -> Result<()> {
     let socket_path = get_socket_path()?;
-    
+
     if !socket_path.exists() {
         return Ok(());
     }
-    
+
     // Try to connect - if it fails, the socket is stale
     let connect_result = tokio::time::timeout(
         Duration::from_millis(100),
         tokio::net::UnixStream::connect(&socket_path)
     ).await;
-    
+
     let is_stale = match connect_result {
         Ok(Ok(_stream)) => {
             // Successfully connected - socket is alive
@@ -114,13 +135,13 @@ pub async fn cleanup_stale_socket() -> Result<()> {
             true
         }
     };
-    
+
     if is_stale {
         debug!("Removing stale socket: {:?}", socket_path);
         std::fs::remove_file(&socket_path)
             .with_context(|| format!("Failed to remove stale socket: {:?}", socket_path))?;
     }
-    
+
     Ok(())
 }
 
