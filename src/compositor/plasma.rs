@@ -1,7 +1,12 @@
 //! KDE Plasma window-management protocol implementation
 //!
 //! This protocol is supported by KWin (KDE Plasma's window manager).
-//! Currently a stub implementation - can be expanded if needed.
+//!
+//! ## Testing Note
+//!
+//! The Plasma protocol implementation uses `proxy.id().protocol_id()` to track windows,
+//! which may not always match the window IDs from the manager's `Window` event.
+//! This implementation needs testing on actual KDE Plasma to verify correctness.
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
@@ -9,7 +14,7 @@ use tracing::{debug, trace, warn};
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_registry, wl_output, wl_surface},
+    protocol::{wl_registry, wl_output},
 };
 use wayland_protocols_plasma::plasma_window_management::client::{
     org_kde_plasma_window_management, org_kde_plasma_window,
@@ -67,17 +72,14 @@ impl Dispatch<org_kde_plasma_window_management::OrgKdePlasmaWindowManagement, ()
     ) {
         use org_kde_plasma_window_management::Event;
 
-        match event {
-            Event::Window { id: window_id } => {
-                // New window announced - window_id is a u32 directly
-                debug!("New plasma window: {}", window_id);
-                
-                state.windows.insert(window_id, PlasmaWindow {
-                    id: window_id as u64,
-                    ..Default::default()
-                });
-            }
-            _ => {}
+        if let Event::Window { id: window_id } = event {
+            // New window announced - window_id is a u32 directly
+            trace!("New plasma window: {}", window_id);
+            
+            state.windows.insert(window_id, PlasmaWindow {
+                id: window_id as u64,
+                ..Default::default()
+            });
         }
     }
 }
@@ -102,12 +104,15 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.title = title;
                     if window.ready {
-                        let event = WindowEvent::Changed {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        };
-                        state.send_event(event);
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Changed {
+                            id,
+                            app_id,
+                            title,
+                        });
                     }
                 }
             }
@@ -116,12 +121,15 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.app_id = app_id;
                     if window.ready {
-                        let event = WindowEvent::Changed {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        };
-                        state.send_event(event);
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Changed {
+                            id,
+                            app_id,
+                            title,
+                        });
                     }
                 }
             }
@@ -129,18 +137,26 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                 // All initial properties sent
                 if let Some(window) = state.windows.get_mut(&handle_id) {
                     window.ready = true;
-                    let event = WindowEvent::Opened {
-                        id: window.id,
-                        app_id: window.app_id.clone(),
-                        title: window.title.clone(),
-                    };
-                    state.send_event(event);
+                    let id = window.id;
+                    let app_id = window.app_id.clone();
+                    let title = window.title.clone();
+                    debug!("Window opened: id={}, app_id='{}', title='{}'", id, app_id, title);
+                    state.send_event(WindowEvent::Opened {
+                        id,
+                        app_id,
+                        title,
+                    });
                 }
             }
             Event::Unmapped => {
-                debug!("Plasma window {} unmapped (closed)", handle_id);
                 if let Some(window) = state.windows.remove(&handle_id) {
-                    state.send_event(WindowEvent::Closed { id: window.id });
+                    // Only send Closed if we previously sent Opened
+                    if window.ready {
+                        debug!("Window closed: id={}", window.id);
+                        state.send_event(WindowEvent::Closed { id: window.id });
+                    } else {
+                        debug!("Window {} closed before initial state event, not emitting Closed", handle_id);
+                    }
                 }
             }
             _ => {}
@@ -167,19 +183,6 @@ impl Dispatch<wl_output::WlOutput, ()> for PlasmaState {
         _state: &mut Self,
         _proxy: &wl_output::WlOutput,
         _event: wl_output::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-        // No-op
-    }
-}
-
-impl Dispatch<wl_surface::WlSurface, ()> for PlasmaState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wl_surface::WlSurface,
-        _event: wl_surface::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
