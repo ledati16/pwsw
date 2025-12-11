@@ -216,7 +216,13 @@ pub fn run_event_loop(
     // This will return an error if the compositor disconnects or the connection breaks
     loop {
         match event_queue.blocking_dispatch(&mut state) {
-            Ok(_) => continue,
+            Ok(_) => {
+                // Check if receiver dropped (daemon shutting down)
+                if state.tx.is_closed() {
+                    debug!("Event receiver dropped, shutting down Wayland thread");
+                    return Ok(());
+                }
+            }
             Err(e) => {
                 // Connection closed or compositor shut down
                 debug!("Wayland event dispatch ended: {}", e);
