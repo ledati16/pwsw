@@ -27,12 +27,16 @@ Project Overview
   - _pw-metadata_ to set the default sink,
   - _pw-cli_ to switch device profiles.
 - Maintains a tracked set of "active" windows that matched rules; when those windows close or stop matching, PWSW returns to the next appropriate sink (most recently opened matching window has priority; fallback is configured default).
-- One-shot CLI operations:
-  - _--check-config_: Validate configuration and show summary
-  - _--list-sinks_: Discover available audio outputs (including those that require profile switching)
-  - _--set-sink_: Change the default sink - smart toggle (back-and-forth) supported
-  - _--next-sink_ / _--prev-sink_: Cycle configured sinks
-  - _--get-sink_: Show current configured sink (JSON option for status bars)
+- Daemon mode runs in the background and monitors window events continuously.
+- CLI commands communicate with the daemon via IPC (Unix socket):
+  - _pwsw status_: Query daemon status and current state
+  - _pwsw reload_: Tell daemon to reload configuration
+  - _pwsw shutdown_: Gracefully stop the daemon
+  - _pwsw list-windows_: Show windows currently tracked by the daemon
+  - _pwsw test-rule PATTERN_: Test a regex pattern against tracked windows
+- Local commands (no daemon needed):
+  - _pwsw list-sinks_: Discover available audio outputs (including those that require profile switching)
+  - _pwsw validate_: Validate configuration and show summary
 - JSON output options for integration with status bars (includes icons).
 - Configuration via a TOML file (default created under XDG config dir: pwsw/config.toml). Settings support toggles for notifications, smart toggle behavior, reset on startup, and log level.
 - Connects to Wayland compositors via standard window management protocols (see below).
@@ -86,8 +90,8 @@ reset_on_startup = true    # Reset to default sink on daemon start
 smart_toggle = true        # --set-sink toggles back to default if already active
 notify_daemon = true       # Notifications for daemon start/stop
 notify_switch = true       # Notifications for rule-triggered switches (per-rule notify must also be true)
-notify_set = true          # Notifications for --set-sink, --next-sink, and --prev-sink commands
-status_bar_icons = false   # If true, custom icons only apply to --get-sink --json
+notify_set = false         # Reserved for future manual sink switching features
+status_bar_icons = false   # If true, custom icons only apply to JSON status output
 log_level = "info"         # error, warn, info, debug, trace
 
 # Audio sinks
@@ -154,20 +158,48 @@ Typical build steps:
 
 Running
 -------
-- One-shot commands (no daemon):
-  - List sinks: ```pwsw --list-sinks```
-  - Check config: ```pwsw --check-config```
-  - Set sink: ```pwsw --set-sink "Headphones"```
-  - Get current: ```pwsw --get-sink```
-  - Cycle sinks: ```pwsw --next-sink``` / ```pwsw --prev-sink```
 
-- Daemon mode (monitors window events and switches audio automatically):
-  - Simply run: ```./target/release/pwsw```
-  - The daemon will automatically connect to your Wayland compositor
-  - Requires a compositor that supports wlr-foreign-toplevel or plasma-window-management protocol
+### Daemon Mode
+Start the daemon to monitor window events and automatically switch audio:
+```bash
+pwsw daemon              # Run in background (default if no command given)
+pwsw daemon --foreground # Run in foreground with logs to stderr
+pwsw                     # Also starts daemon (backward compatible)
+```
+
+The daemon will:
+- Automatically connect to your Wayland compositor
+- Monitor window events and apply configured rules
+- Listen for IPC commands on `$XDG_RUNTIME_DIR/pwsw.sock` (or `/tmp/pwsw.sock`)
+- Requires a compositor that supports wlr-foreign-toplevel or plasma-window-management protocol
+
+### Daemon Management Commands
+Communicate with a running daemon via IPC:
+```bash
+pwsw status              # Show daemon status (uptime, current sink, active window)
+pwsw status --json       # JSON output for scripting
+pwsw reload              # Tell daemon to reload configuration
+pwsw shutdown            # Gracefully stop the daemon
+pwsw list-windows        # Show windows currently tracked by daemon
+pwsw test-rule "^mpv$"   # Test a regex pattern against tracked windows
+```
+
+### Local Commands (no daemon needed)
+These commands run locally without requiring the daemon:
+```bash
+pwsw list-sinks          # Discover available audio outputs
+pwsw list-sinks --json   # JSON output with detailed sink info
+pwsw validate            # Validate and display configuration
+```
+
+### IPC Socket Location
+The daemon listens on a Unix socket for IPC commands:
+- Primary: `$XDG_RUNTIME_DIR/pwsw.sock` (usually `/run/user/1000/pwsw.sock`)
+- Fallback: `/tmp/pwsw.sock`
 
 Notes
 -----
 - If no config exists, the program will generate the default config at $XDG_CONFIG_HOME/pwsw/config.toml.
-- Use ```pwsw --list-sinks``` to discover active sinks and profile-switch-only sinks before editing your config.
+- Use `pwsw list-sinks` to discover active sinks and profile-switch-only sinks before editing your config.
+- The daemon automatically creates and manages the IPC socket. If the socket exists but the daemon isn't running (stale socket), it will be cleaned up on next daemon start.
 - Because this repository is LLM-generated and not peer-reviewed, test carefully and prefer non-critical environments until validated.
