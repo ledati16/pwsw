@@ -20,9 +20,9 @@ BEHAVIOR:
   - Supports profile switching for analog/digital outputs on the same card
 
 DAEMON MANAGEMENT:
-  pwsw daemon              Run the daemon (default if no subcommand given)
+  pwsw daemon              Run the daemon in background (detached)
   pwsw daemon --foreground Run in foreground with logs to stderr
-  pwsw status              Query daemon status
+  pwsw status              Query daemon status (or just: pwsw)
   pwsw reload              Tell daemon to reload config
   pwsw shutdown            Gracefully stop the daemon
 

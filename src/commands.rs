@@ -129,8 +129,24 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
 
 /// Query daemon status
 pub async fn status(json_output: bool) -> Result<()> {
+    // Check if daemon is running first
+    if !ipc::is_daemon_running().await {
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "running": false,
+                "error": "Daemon is not running"
+            }))?);
+        } else {
+            eprintln!("Daemon is not running.\n");
+            eprintln!("To start the daemon:");
+            eprintln!("  pwsw daemon              (run in background)");
+            eprintln!("  pwsw daemon --foreground (run in foreground with logs)");
+        }
+        anyhow::bail!("Daemon is not running");
+    }
+
     let response = ipc::send_request(Request::Status).await?;
-    
+
     match response {
         Response::Status {
             version,

@@ -12,10 +12,15 @@ async fn main() -> Result<()> {
 
     // Handle subcommands
     match args.command {
+        // No subcommand - show status or helpful message
+        None => {
+            commands::status(false).await
+        }
+
         // Daemon mode
-        None | Some(Command::Daemon { .. }) => {
+        Some(Command::Daemon { foreground }) => {
             let config = Config::load()?;
-            daemon::run(config).await
+            daemon::run(config, foreground).await
         }
         
         // IPC-based commands (require daemon)
