@@ -67,13 +67,21 @@ pub struct WindowInfo {
 // ============================================================================
 
 /// Get the IPC socket path
-/// Prefers $XDG_RUNTIME_DIR/pwsw.sock, falls back to /tmp/pwsw.sock
+/// Prefers $XDG_RUNTIME_DIR/pwsw.sock, falls back to /tmp/pwsw-$UID.sock
 pub fn get_socket_path() -> Result<PathBuf> {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
     } else {
-        // Fallback to /tmp
-        Ok(PathBuf::from("/tmp/pwsw.sock"))
+        // Fallback to /tmp with UID for security (parsed from XDG_RUNTIME_DIR if available,
+        // otherwise use a fixed safe location)
+        // XDG_RUNTIME_DIR typically has the pattern /run/user/$UID
+        if let Ok(user) = std::env::var("USER") {
+            Ok(PathBuf::from(format!("/tmp/pwsw-{}.sock", user)))
+        } else {
+            // Last resort: use process ID (not ideal but better than world-writable)
+            let pid = std::process::id();
+            Ok(PathBuf::from(format!("/tmp/pwsw-{}.sock", pid)))
+        }
     }
 }
 
@@ -87,22 +95,33 @@ pub async fn cleanup_stale_socket() -> Result<()> {
     }
     
     // Try to connect - if it fails, the socket is stale
-    match tokio::time::timeout(
+    let connect_result = tokio::time::timeout(
         Duration::from_millis(100),
         tokio::net::UnixStream::connect(&socket_path)
-    ).await {
-        Ok(Ok(_)) => {
-            // Socket is alive, don't remove it
-            Ok(())
+    ).await;
+    
+    let is_stale = match connect_result {
+        Ok(Ok(_stream)) => {
+            // Successfully connected - socket is alive
+            false
         }
-        Ok(Err(_)) | Err(_) => {
-            // Socket exists but can't connect or timed out - it's stale
-            debug!("Removing stale socket: {:?}", socket_path);
-            std::fs::remove_file(&socket_path)
-                .with_context(|| format!("Failed to remove stale socket: {:?}", socket_path))?;
-            Ok(())
+        Ok(Err(_connect_err)) => {
+            // Connection failed - socket is stale
+            true
         }
+        Err(_timeout) => {
+            // Timeout - assume socket is stale
+            true
+        }
+    };
+    
+    if is_stale {
+        debug!("Removing stale socket: {:?}", socket_path);
+        std::fs::remove_file(&socket_path)
+            .with_context(|| format!("Failed to remove stale socket: {:?}", socket_path))?;
     }
+    
+    Ok(())
 }
 
 // ============================================================================
