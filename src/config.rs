@@ -338,6 +338,17 @@ notify = true
 "#;
         fs::write(path, default_config)
             .with_context(|| format!("Failed to write config: {:?}", path))?;
+
+        // Inform user that we created the config
+        eprintln!("Created default config at: {:?}", path);
+        eprintln!();
+        eprintln!("Next steps:");
+        eprintln!("  1. Run 'pwsw list-sinks' to see available audio outputs");
+        eprintln!("  2. Edit the config file to customize sinks and rules");
+        eprintln!("  3. Run 'pwsw validate' to check your config");
+        eprintln!("  4. Run 'pwsw daemon' to start");
+        eprintln!();
+
         Ok(())
     }
 

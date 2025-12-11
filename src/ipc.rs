@@ -21,8 +21,6 @@ use tracing::{debug, error, warn};
 pub enum Request {
     /// Query daemon status
     Status,
-    /// Tell daemon to reload config
-    Reload,
     /// Get list of currently tracked windows
     ListWindows,
     /// Test a rule pattern against current windows
@@ -60,6 +58,19 @@ pub enum Response {
 pub struct WindowInfo {
     pub app_id: String,
     pub title: String,
+    /// For test-rule: which fields matched ("app_id", "title", or "both")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_on: Option<String>,
+    /// For list-windows: tracking status and sink info
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracked: Option<TrackedInfo>,
+}
+
+/// Information about a tracked window (matched a rule)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrackedInfo {
+    pub sink_name: String,
+    pub sink_desc: String,
 }
 
 // ============================================================================

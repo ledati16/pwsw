@@ -27,11 +27,7 @@ async fn main() -> Result<()> {
         Some(Command::Status { json }) => {
             commands::status(json).await
         }
-        
-        Some(Command::Reload) => {
-            commands::reload().await
-        }
-        
+
         Some(Command::Shutdown) => {
             commands::shutdown().await
         }
@@ -66,7 +62,7 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
                 )
                 .init();
-            
+
             let config = Config::load()?;
             config.print_summary();
             Ok(())

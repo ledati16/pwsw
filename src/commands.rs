@@ -184,24 +184,6 @@ pub async fn status(json_output: bool) -> Result<()> {
     }
 }
 
-/// Tell daemon to reload config
-pub async fn reload() -> Result<()> {
-    let response = ipc::send_request(Request::Reload).await?;
-    
-    match response {
-        Response::Ok { message } => {
-            println!("{}", message);
-            Ok(())
-        }
-        Response::Error { message } => {
-            anyhow::bail!("Reload failed: {}", message);
-        }
-        _ => {
-            anyhow::bail!("Unexpected response from daemon");
-        }
-    }
-}
-
 /// Gracefully shutdown the daemon
 pub async fn shutdown() -> Result<()> {
     let response = ipc::send_request(Request::Shutdown).await?;
@@ -223,20 +205,37 @@ pub async fn shutdown() -> Result<()> {
 /// Get list of windows currently tracked by daemon
 pub async fn list_windows(json_output: bool) -> Result<()> {
     let response = ipc::send_request(Request::ListWindows).await?;
-    
+
     match response {
         Response::Windows { windows } => {
             if json_output {
                 println!("{}", serde_json::to_string_pretty(&windows)?);
             } else {
                 if windows.is_empty() {
-                    println!("No windows currently tracked by daemon.");
+                    println!("No windows currently open.");
                 } else {
-                    println!("Tracked Windows:");
-                    println!("================");
-                    for (i, window) in windows.iter().enumerate() {
-                        println!("{}. app_id: {}", i + 1, window.app_id);
-                        println!("   title: {}", window.title);
+                    let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
+                    let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
+
+                    println!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
+                    println!("{}", "=".repeat(40));
+
+                    if !tracked.is_empty() {
+                        println!("\nTracked ({}):", tracked.len());
+                        for window in &tracked {
+                            if let Some(ref track_info) = window.tracked {
+                                println!("  • {} → {}", window.app_id, track_info.sink_desc);
+                                println!("    {}", window.title);
+                            }
+                        }
+                    }
+
+                    if !untracked.is_empty() {
+                        println!("\nUntracked ({}):", untracked.len());
+                        for window in &untracked {
+                            println!("  • {}", window.app_id);
+                            println!("    {}", window.title);
+                        }
                     }
                 }
             }
@@ -257,7 +256,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
         pattern: pattern.to_string(),
     })
     .await?;
-    
+
     match response {
         Response::RuleMatches { pattern, matches } => {
             if json_output {
@@ -273,8 +272,11 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                 } else {
                     println!("Matches ({}):", matches.len());
                     for (i, window) in matches.iter().enumerate() {
-                        println!("{}. app_id: {}", i + 1, window.app_id);
-                        println!("   title: {}", window.title);
+                        let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
+                        println!("{}. app_id: {}{}", i + 1, window.app_id,
+                            if matched_on == "app_id" || matched_on == "both" { " ✓" } else { "" });
+                        println!("   title: {}{}", window.title,
+                            if matched_on == "title" || matched_on == "both" { " ✓" } else { "" });
                     }
                 }
             }

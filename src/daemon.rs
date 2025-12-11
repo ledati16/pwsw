@@ -123,11 +123,12 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 let version = env!("CARGO_PKG_VERSION").to_string();
                 let current_sink_name = state.current_sink_name.clone();
                 let config = state.config.clone();
-                let tracked_windows = state.get_tracked_windows();
+                let tracked_with_sinks = state.get_tracked_windows_with_sinks();
+                let all_windows = state.get_all_windows();
                 let most_recent_window = state.get_most_recent_window()
                     .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name));
                 let shutdown_signal = shutdown_tx.clone();
-                
+
                 tokio::spawn(async move {
                     if let Err(e) = handle_ipc_request(
                         &mut stream,
@@ -135,7 +136,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         uptime_secs,
                         current_sink_name,
                         most_recent_window,
-                        tracked_windows,
+                        tracked_with_sinks,
+                        all_windows,
                         config,
                         shutdown_signal,
                     ).await {
@@ -172,7 +174,8 @@ async fn handle_ipc_request(
     uptime_secs: u64,
     current_sink_name: String,
     active_window: Option<String>,
-    tracked_windows: Vec<(String, String)>,
+    tracked_with_sinks: Vec<(String, String, String, String)>,
+    all_windows: Vec<(String, String)>,
     config: Config,
     shutdown_tx: broadcast::Sender<()>,
 ) -> Result<()> {
@@ -193,50 +196,69 @@ async fn handle_ipc_request(
                 active_window,
             }
         }
-        
-        Request::Reload => {
-            match Config::load() {
-                Ok(_new_config) => {
-                    info!("Config validated successfully");
-                    // Note: Full reload would require restarting the daemon or implementing
-                    // a more complex state update mechanism via channels to the main loop.
-                    Response::Ok {
-                        message: "Config validated successfully. Full reload requires daemon restart.".to_string(),
-                    }
-                }
-                Err(e) => {
-                    warn!("Config reload failed: {}", e);
-                    Response::Error {
-                        message: format!("Config validation failed: {}", e),
-                    }
-                }
-            }
-        }
-        
+
         Request::ListWindows => {
-            let windows = tracked_windows
+            use std::collections::HashMap;
+
+            // Build a map of tracked windows for quick lookup
+            let tracked_map: HashMap<(&str, &str), (&str, &str)> = tracked_with_sinks
                 .iter()
-                .map(|(app_id, title)| WindowInfo {
-                    app_id: app_id.clone(),
-                    title: title.clone(),
+                .map(|(app_id, title, sink_name, sink_desc)| {
+                    ((app_id.as_str(), title.as_str()), (sink_name.as_str(), sink_desc.as_str()))
                 })
                 .collect();
-            
+
+            // Build WindowInfo for all windows with tracking status
+            let windows = all_windows
+                .iter()
+                .map(|(app_id, title)| {
+                    let tracked = tracked_map.get(&(app_id.as_str(), title.as_str()))
+                        .map(|(sink_name, sink_desc)| ipc::TrackedInfo {
+                            sink_name: sink_name.to_string(),
+                            sink_desc: sink_desc.to_string(),
+                        });
+
+                    WindowInfo {
+                        app_id: app_id.clone(),
+                        title: title.clone(),
+                        matched_on: None,
+                        tracked,
+                    }
+                })
+                .collect();
+
             Response::Windows { windows }
         }
         
         Request::TestRule { pattern } => {
             match regex::Regex::new(&pattern) {
                 Ok(regex) => {
-                    let matches = tracked_windows
+                    let matches = all_windows
                         .iter()
-                        .filter(|(app_id, _)| regex.is_match(app_id))
-                        .map(|(app_id, title)| WindowInfo {
-                            app_id: app_id.clone(),
-                            title: title.clone(),
+                        .filter_map(|(app_id, title)| {
+                            let app_id_match = regex.is_match(app_id);
+                            let title_match = regex.is_match(title);
+
+                            if app_id_match || title_match {
+                                let matched_on = match (app_id_match, title_match) {
+                                    (true, true) => "both",
+                                    (true, false) => "app_id",
+                                    (false, true) => "title",
+                                    _ => unreachable!(),
+                                };
+
+                                Some(WindowInfo {
+                                    app_id: app_id.clone(),
+                                    title: title.clone(),
+                                    matched_on: Some(matched_on.to_string()),
+                                    tracked: None,
+                                })
+                            } else {
+                                None
+                            }
                         })
                         .collect();
-                    
+
                     Response::RuleMatches { pattern, matches }
                 }
                 Err(e) => {
