@@ -3,10 +3,10 @@ name = "nasw"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.70"
-description = "Niri Audio Switcher - Automatically switch audio based on active windows"
+description = "Wayland Audio Switcher - Automatically switch audio based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/nasw"
-keywords = ["niri", "pipewire", "audio", "wayland"]
+keywords = ["wayland", "pipewire", "audio", "sway", "niri"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
@@ -14,7 +14,12 @@ categories = ["multimedia::audio", "command-line-utilities"]
 clap = { version = "4", features = ["derive"] }
 
 # Async runtime - minimal features for Unix socket + signals
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync"] }
+
+# Wayland protocol support
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }      # wlr-foreign-toplevel-management
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }   # KDE plasma-window-management
 
 # Configuration and serialization
 toml = "0.8"
