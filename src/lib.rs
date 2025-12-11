@@ -22,6 +22,7 @@ pub mod state;
 pub mod commands;
 pub mod daemon;
 pub mod compositor;
+pub mod ipc;
 
 // Re-export commonly used types for convenience
 pub use cli::Args;
