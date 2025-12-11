@@ -1,4 +1,4 @@
-//! NASW - Niri Audio Switcher
+//! PWSW - PipeWire Switcher
 //!
 //! Automatically switches audio sinks based on active windows in Wayland compositors.
 //! Uses PipeWire native tools (pw-dump, pw-metadata, pw-cli) for audio control.
@@ -8,7 +8,11 @@
 //! - Profile switching for analog/digital outputs on the same card
 //! - Status bar integration with JSON output
 //! - Smart toggle between configured sinks
-//! - Multi-compositor support (Niri, with Sway/Hyprland planned)
+//! - Multi-compositor support via Wayland protocols (wlr-foreign-toplevel, plasma-window-management)
+//!
+//! # Supported Compositors
+//! - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (via wlr-foreign-toplevel)
+//! - KDE Plasma/KWin (via plasma-window-management)
 
 pub mod cli;
 pub mod config;

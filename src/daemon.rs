@@ -16,17 +16,17 @@ use crate::state::State;
 /// Run the daemon with the given configuration
 pub async fn run(config: Config) -> Result<()> {
     // Initialize logging with config log_level
-    // Filter format: "nasw=LEVEL" ensures only our crate logs at the configured level
+    // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(format!("nasw={}", config.settings.log_level))
+            tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
         });
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .init();
 
-    info!("Starting NASW daemon");
+    info!("Starting PWSW daemon");
     info!("Loaded {} sinks, {} rules", config.sinks.len(), config.rules.len());
 
     let mut state = State::new(config)?;
@@ -46,7 +46,7 @@ pub async fn run(config: Config) -> Result<()> {
     info!("Compositor event thread started");
 
     if state.config.settings.notify_daemon {
-        if let Err(e) = send_notification("NASW Started", "Audio switcher running", None) {
+        if let Err(e) = send_notification("PWSW Started", "Audio switcher running", None) {
             warn!("Could not send startup notification: {}", e);
         }
     }
@@ -72,7 +72,7 @@ pub async fn run(config: Config) -> Result<()> {
             _ = signal::ctrl_c() => {
                 info!("Shutting down");
                 if state.config.settings.notify_daemon {
-                    let _ = send_notification("NASW Stopped", "Audio switcher stopped", None);
+                    let _ = send_notification("PWSW Stopped", "Audio switcher stopped", None);
                 }
                 break;
             }

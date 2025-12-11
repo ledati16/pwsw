@@ -1,12 +1,12 @@
 [package]
-name = "nasw"
-version = "0.2.0"
+name = "pwsw"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.70"
-description = "Wayland Audio Switcher - Automatically switch audio based on active windows"
+description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
-repository = "https://github.com/ledati16/nasw"
-keywords = ["wayland", "pipewire", "audio", "sway", "niri"]
+repository = "https://github.com/ledati16/pwsw"
+keywords = ["wayland", "pipewire", "audio", "sway", "hyprland", "niri", "plasma"]
 categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]

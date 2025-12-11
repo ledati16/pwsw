@@ -16,7 +16,7 @@ pub fn send_notification(summary: &str, body: &str, icon: Option<&str>) -> Resul
     Notification::new()
         .summary(summary)
         .body(body)
-        .appname("NASW")
+        .appname("PWSW")
         .icon(icon)
         .timeout(3000)
         .show()

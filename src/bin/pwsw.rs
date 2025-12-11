@@ -1,10 +1,10 @@
-//! NASW binary entry point
+//! PWSW binary entry point
 //!
 //! Dispatches to daemon mode or one-shot commands based on CLI arguments.
 
 use anyhow::Result;
 use clap::Parser;
-use nasw::{cli::Args, commands, config::Config, daemon};
+use pwsw::{cli::Args, commands, config::Config, daemon};
 
 #[tokio::main]
 async fn main() -> Result<()> {
