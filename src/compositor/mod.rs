@@ -10,7 +10,7 @@ mod plasma;
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info};
-use wayland_client::Connection;
+use wayland_client::{Connection, protocol::wl_registry};
 
 /// Window event from a compositor
 #[derive(Debug, Clone)]
@@ -49,6 +49,16 @@ pub enum WindowEvent {
 /// - No Wayland display connection can be established
 /// - No supported window management protocol is available
 ///
+/// # Channel Behavior
+///
+/// The returned receiver will yield `None` (channel closed) when:
+/// - The compositor disconnects
+/// - The Wayland thread encounters a fatal error
+/// - The compositor shuts down
+///
+/// Callers should handle channel closure gracefully by breaking out of
+/// their event loop and performing cleanup.
+///
 /// # Protocol Detection
 ///
 /// The function tries protocols in this order:
@@ -75,57 +85,108 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
 
     info!("Connected to Wayland display");
 
+    // Pre-detect available protocols by checking the registry
+    let protocol = detect_available_protocol(&conn)?;
+
     // Create channel for sending events from Wayland thread to tokio runtime
     let (tx, rx) = mpsc::unbounded_channel();
 
-    // Try to detect which protocol is available
-    // We do this by attempting to bind to each protocol in order of preference
-    
-    // Clone connection for protocol detection
-    let conn_clone = conn.clone();
-
     // Spawn dedicated thread for Wayland event loop
     std::thread::spawn(move || {
-        // Try wlr-foreign-toplevel first (most widely supported)
-        match wlr_toplevel::run_event_loop(conn_clone.clone(), tx.clone()) {
-            Ok(()) => {
-                info!("wlr-foreign-toplevel event loop ended normally");
+        let result = match protocol {
+            Protocol::WlrForeignToplevel => {
+                info!("Using wlr-foreign-toplevel-management protocol");
+                wlr_toplevel::run_event_loop(conn, tx)
             }
-            Err(e) => {
-                // Check if this is a "protocol not available" error
-                let error_msg = format!("{:#}", e);
-                let is_protocol_unavailable = error_msg.contains("not available") 
-                    || error_msg.contains("protocol not available")
-                    || error_msg.contains("not advertised");
-                
-                if is_protocol_unavailable {
-                    info!("wlr-foreign-toplevel not available, trying plasma protocol...");
-                    
-                    match plasma::run_event_loop(conn_clone, tx) {
-                        Ok(()) => {
-                            info!("Plasma window management event loop ended normally");
-                        }
-                        Err(plasma_err) => {
-                            error!(
-                                "No supported window management protocol found.\n\
-                                 Tried:\n\
-                                 - zwlr_foreign_toplevel_manager_v1: {}\n\
-                                 - org_kde_plasma_window_management: {}\n\n\
-                                 Supported compositors:\n\
-                                 - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (wlr-foreign-toplevel)\n\
-                                 - KDE Plasma/KWin (plasma-window-management)\n\n\
-                                 GNOME/Mutter is not supported (no window management protocol exposed).",
-                                e, plasma_err
-                            );
-                        }
-                    }
-                } else {
-                    // Some other error occurred (connection issue, etc.)
-                    error!("Wayland event loop error: {:#}", e);
-                }
+            Protocol::PlasmaWindowManagement => {
+                info!("Using plasma-window-management protocol");
+                plasma::run_event_loop(conn, tx)
             }
+        };
+        
+        if let Err(e) = result {
+            error!("Wayland event loop error: {:#}", e);
         }
     });
 
     Ok(rx)
+}
+
+/// Protocol variants that can be used for window management
+#[derive(Debug, Clone, Copy)]
+enum Protocol {
+    WlrForeignToplevel,
+    PlasmaWindowManagement,
+}
+
+/// Detect which window management protocol is available on this compositor
+///
+/// This function queries the Wayland registry to check which protocols are advertised
+/// by the compositor. Priority is given to wlr-foreign-toplevel-management as it's more
+/// widely supported.
+fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
+    use wayland_client::globals::{registry_queue_init, GlobalListContents};
+    
+    // Temporary state for registry detection
+    #[derive(Default)]
+    struct RegistryState {
+        has_wlr_foreign_toplevel: bool,
+        has_plasma_window_management: bool,
+    }
+    
+    // Implement Dispatch for registry to detect available protocols
+    impl wayland_client::Dispatch<wl_registry::WlRegistry, GlobalListContents> for RegistryState {
+        fn event(
+            state: &mut Self,
+            _proxy: &wl_registry::WlRegistry,
+            event: wl_registry::Event,
+            _data: &GlobalListContents,
+            _conn: &Connection,
+            _qh: &wayland_client::QueueHandle<Self>,
+        ) {
+            use wl_registry::Event;
+            
+            if let Event::Global { name: _, interface, version: _ } = event {
+                match interface.as_str() {
+                    "zwlr_foreign_toplevel_manager_v1" => {
+                        state.has_wlr_foreign_toplevel = true;
+                    }
+                    "org_kde_plasma_window_management" => {
+                        state.has_plasma_window_management = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    // Initialize registry to enumerate available globals
+    let (_, mut event_queue) = registry_queue_init::<RegistryState>(conn)
+        .context("Failed to initialize Wayland registry")?;
+    
+    let mut state = RegistryState::default();
+    
+    // Do a roundtrip to get all globals
+    event_queue.roundtrip(&mut state)
+        .context("Failed to roundtrip registry")?;
+    
+    // Check for protocols in order of preference
+    if state.has_wlr_foreign_toplevel {
+        return Ok(Protocol::WlrForeignToplevel);
+    }
+    
+    if state.has_plasma_window_management {
+        return Ok(Protocol::PlasmaWindowManagement);
+    }
+    
+    // No supported protocol found
+    anyhow::bail!(
+        "No supported window management protocol found.\n\
+         \n\
+         Supported protocols:\n\
+         - zwlr_foreign_toplevel_manager_v1 (Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari)\n\
+         - org_kde_plasma_window_management (KDE Plasma/KWin)\n\
+         \n\
+         GNOME/Mutter is not supported (no window management protocol exposed)."
+    )
 }

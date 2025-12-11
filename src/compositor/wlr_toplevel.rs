@@ -71,7 +71,7 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
             Event::Toplevel { toplevel } => {
                 // New window handle received
                 let id = toplevel.id().protocol_id();
-                debug!("New toplevel handle: {}", id);
+                trace!("New toplevel handle: {}", id);
 
                 // Register this handle with the event queue
                 state.toplevels.insert(id, ToplevelWindow {
@@ -117,29 +117,41 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
             Event::Done => {
                 // All properties have been sent, emit event
                 if let Some(window) = state.toplevels.get_mut(&handle_id) {
-                    let event = if window.done_received {
+                    if window.done_received {
                         // Subsequent done events = window changed
-                        WindowEvent::Changed {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        }
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Changed {
+                            id,
+                            app_id,
+                            title,
+                        });
                     } else {
                         // First done event = window opened
                         window.done_received = true;
-                        WindowEvent::Opened {
-                            id: window.id,
-                            app_id: window.app_id.clone(),
-                            title: window.title.clone(),
-                        }
-                    };
-                    state.send_event(event);
+                        let id = window.id;
+                        let app_id = window.app_id.clone();
+                        let title = window.title.clone();
+                        debug!("Window opened: id={}, app_id='{}', title='{}'", id, app_id, title);
+                        state.send_event(WindowEvent::Opened {
+                            id,
+                            app_id,
+                            title,
+                        });
+                    }
                 }
             }
             Event::Closed => {
-                debug!("Toplevel {} closed", handle_id);
                 if let Some(window) = state.toplevels.remove(&handle_id) {
-                    state.send_event(WindowEvent::Closed { id: window.id });
+                    // Only send Closed if we previously sent Opened
+                    if window.done_received {
+                        debug!("Window closed: id={}", window.id);
+                        state.send_event(WindowEvent::Closed { id: window.id });
+                    } else {
+                        debug!("Window {} closed before initial done event, not emitting Closed", handle_id);
+                    }
                 }
             }
             Event::State { state: _ } => {

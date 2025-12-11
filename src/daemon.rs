@@ -56,9 +56,17 @@ pub async fn run(config: Config) -> Result<()> {
     // Main event loop
     loop {
         tokio::select! {
-            Some(event) = window_events.recv() => {
-                if let Err(e) = state.process_event(event) {
-                    error!("Event processing error: {:#}", e);
+            result = window_events.recv() => {
+                match result {
+                    Some(event) => {
+                        if let Err(e) = state.process_event(event) {
+                            error!("Event processing error: {:#}", e);
+                        }
+                    }
+                    None => {
+                        error!("Compositor connection lost (event channel closed)");
+                        break;
+                    }
                 }
             }
             _ = signal::ctrl_c() => {
