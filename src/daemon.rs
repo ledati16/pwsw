@@ -141,7 +141,15 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         config,
                         shutdown_signal,
                     ).await {
-                        error!("IPC request handling error: {:#}", e);
+                        // "early eof" when reading message length is benign - it happens when
+                        // clients connect just to check if daemon is running (is_daemon_running())
+                        // or when they disconnect before sending data. Log at debug level.
+                        let err_msg = format!("{:#}", e);
+                        if err_msg.contains("early eof") && err_msg.contains("message length") {
+                            tracing::debug!("Client disconnected without sending data (likely health check)");
+                        } else {
+                            error!("IPC request handling error: {}", err_msg);
+                        }
                     }
                 });
             }
@@ -188,12 +196,13 @@ async fn handle_ipc_request(
                 .find(|s| s.name == current_sink_name)
                 .map(|s| s.desc.clone())
                 .unwrap_or_else(|| current_sink_name.clone());
-            
+
             Response::Status {
                 version,
                 uptime_secs,
                 current_sink,
                 active_window,
+                tracked_windows: tracked_with_sinks.len(),
             }
         }
 
