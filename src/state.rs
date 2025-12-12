@@ -19,6 +19,8 @@ pub struct State {
     pub current_sink_name: String,
     /// Tracks windows that matched rules. Entries are removed on window close.
     active_windows: HashMap<u64, ActiveWindow>,
+    /// Tracks ALL currently open windows (removed on close). Used for test-rule command.
+    all_windows: HashMap<u64, (String, String)>, // (app_id, title)
 }
 
 /// Tracked window that matched a rule
@@ -28,6 +30,8 @@ pub struct ActiveWindow {
     /// Description of what triggered this (e.g., "Steam Big Picture")
     pub trigger_desc: String,
     pub opened_at: Instant,
+    pub app_id: String,
+    pub title: String,
 }
 
 impl State {
@@ -44,6 +48,7 @@ impl State {
             config,
             current_sink_name,
             active_windows: HashMap::new(),
+            all_windows: HashMap::new(),
         })
     }
 
@@ -82,11 +87,13 @@ impl State {
     }
 
     /// Track a new window
-    pub fn track_window(&mut self, id: u64, sink_name: String, trigger_desc: String) {
+    pub fn track_window(&mut self, id: u64, sink_name: String, trigger_desc: String, app_id: String, title: String) {
         self.active_windows.insert(id, ActiveWindow {
             sink_name,
             trigger_desc,
             opened_at: Instant::now(),
+            app_id,
+            title,
         });
     }
 
@@ -112,6 +119,9 @@ impl State {
     fn handle_window_open_or_change(&mut self, id: u64, app_id: &str, title: &str) -> Result<()> {
         debug!("Window: id={}, app_id='{}', title='{}'", id, app_id, title);
 
+        // Track all windows for test-rule command
+        self.all_windows.insert(id, (app_id.to_string(), title.to_string()));
+
         // Extract rule data before mutating state (borrow checker)
         let matched = self.find_matching_rule(app_id, title).map(|rule| {
             let sink = self.config.resolve_sink(&rule.sink_ref).expect("Validated at load");
@@ -132,7 +142,7 @@ impl State {
 
             // Only update opened_at for new windows, preserve original time for existing
             if !was_tracked {
-                self.track_window(id, sink_name.clone(), trigger_desc.clone());
+                self.track_window(id, sink_name.clone(), trigger_desc.clone(), app_id.to_string(), title.to_string());
 
                 if self.should_switch_sink(&sink_name) {
                     let notify = self.config.should_notify_switch(rule_notify);
@@ -168,6 +178,9 @@ impl State {
     }
 
     fn handle_window_close(&mut self, id: u64) -> Result<()> {
+        // Remove from all_windows tracking
+        self.all_windows.remove(&id);
+
         if let Some(closed_window) = self.untrack_window(id) {
             debug!("Tracked window closed: {} (was: {})", id, closed_window.trigger_desc);
 
@@ -188,6 +201,40 @@ impl State {
         }
 
         Ok(())
+    }
+    
+    /// Get the most recent active window (for status reporting)
+    pub fn get_most_recent_window(&self) -> Option<&ActiveWindow> {
+        self.active_windows.values()
+            .max_by_key(|w| w.opened_at)
+    }
+    
+    /// Get a list of tracked windows (app_id, title pairs)
+    pub fn get_tracked_windows(&self) -> Vec<(String, String)> {
+        self.active_windows.values()
+            .map(|w| (w.app_id.clone(), w.title.clone()))
+            .collect()
+    }
+
+    /// Get a list of ALL currently open windows (for test-rule command)
+    pub fn get_all_windows(&self) -> Vec<(String, String)> {
+        self.all_windows.values()
+            .map(|(app_id, title)| (app_id.clone(), title.clone()))
+            .collect()
+    }
+
+    /// Get tracked windows with sink information (for list-windows command)
+    pub fn get_tracked_windows_with_sinks(&self) -> Vec<(String, String, String, String)> {
+        // Returns: (app_id, title, sink_name, sink_desc)
+        self.active_windows.values()
+            .map(|w| {
+                let sink_desc = self.config.sinks.iter()
+                    .find(|s| s.name == w.sink_name)
+                    .map(|s| s.desc.clone())
+                    .unwrap_or_else(|| w.sink_name.clone());
+                (w.app_id.clone(), w.title.clone(), w.sink_name.clone(), sink_desc)
+            })
+            .collect()
     }
 }
 

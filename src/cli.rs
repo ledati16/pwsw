@@ -2,7 +2,7 @@
 //!
 //! Uses clap for argument parsing with derive macros.
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// PWSW - PipeWire Switcher
 ///
@@ -12,56 +12,107 @@ use clap::Parser;
 #[command(version)]
 #[command(about = "PipeWire Switcher - Automatically switch audio sinks based on active windows")]
 #[command(after_help = "\
-BEHAVIOR:
-  - On startup, queries the current system default sink
-  - When a matching window opens, switches to that rule's sink
-  - When multiple windows match rules, the most recently opened takes priority
-  - When all matching windows close, returns to the default sink
-  - Supports profile switching for analog/digital outputs on the same card
+GETTING STARTED:
+  1. pwsw validate         Check config file syntax
+  2. pwsw list-sinks       See available audio outputs
+  3. pwsw daemon           Start the daemon
+  4. pwsw                  Check status
 
-ONE-SHOT COMMANDS:
-  --check-config     Validate configuration and view settings
-  --set-sink SINK    Switch audio output (toggles back to default if already active)
-  --next-sink        Cycle to next configured sink
-  --prev-sink        Cycle to previous configured sink
-  --get-sink         Display current output (add --json for icon)
-  --list-sinks       Discover available audio outputs including inactive profiles
+DAEMON CONTROL:
+  daemon               Start daemon in background
+  daemon --foreground  Start with logs visible (for debugging)
+  shutdown             Stop the daemon
 
-SINK REFERENCES:
-  Sinks can be referenced by description, node name, or position (1, 2, 3...).
+QUERYING (requires running daemon):
+  [no subcommand]     Show status, uptime, and current audio output
+  status              Same as above (supports --json)
+  list-windows        Show all open windows (tracked vs untracked)
+  test-rule PATTERN   Test regex against windows (checks app_id & title)
 
-PIPEWIRE INTEGRATION:
-  Uses pw-dump for JSON queries, pw-metadata for setting defaults.
-  Supports profile switching via pw-cli for analog/digital outputs.
-  Node names are stable across reboots (unlike numeric IDs).
+QUERYING (no daemon needed):
+  list-sinks          List available PipeWire audio outputs
+  validate            Check config file syntax
 
-  Sinks marked with ~ require profile switching to activate.")]
+MANUAL SINK CONTROL (no daemon needed):
+  set-sink SINK       Switch to specific sink (by desc, name, or position 1/2/3)
+  next-sink           Cycle to next configured sink (wraps around)
+  prev-sink           Cycle to previous configured sink (wraps around)
+
+HOW IT WORKS:
+  The daemon monitors Wayland windows and switches audio outputs based on
+  rules in your config file. Most recently opened matching window wins.
+  When all matching windows close, returns to default output.
+
+CONFIG & IPC:
+  Config: ~/.config/pwsw/config.toml
+  Socket: $XDG_RUNTIME_DIR/pwsw.sock
+
+  After editing config, restart the daemon:
+    pwsw shutdown && pwsw daemon")]
 pub struct Args {
-    /// Validate configuration file and exit
-    #[arg(long, group = "command")]
-    pub check_config: bool,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
 
-    /// List available audio sinks (including those requiring profile switch)
-    #[arg(long, group = "command")]
-    pub list_sinks: bool,
+/// Available subcommands
+#[derive(Subcommand)]
+pub enum Command {
+    /// Start the daemon (background by default)
+    Daemon {
+        /// Run in foreground with logs visible
+        #[arg(short, long)]
+        foreground: bool,
+    },
 
-    /// Set the default sink (by desc, node name, or position)
-    #[arg(long, value_name = "SINK", group = "command")]
-    pub set_sink: Option<String>,
+    /// Show daemon status, uptime, and current audio output
+    Status {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 
-    /// Get current default sink (plain text, or JSON with --json for icon)
-    #[arg(long, group = "command")]
-    pub get_sink: bool,
+    /// Stop the daemon gracefully
+    Shutdown,
 
-    /// Switch to next configured sink (wraps around)
-    #[arg(long, group = "command")]
-    pub next_sink: bool,
+    /// List available PipeWire audio outputs
+    ListSinks {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 
-    /// Switch to previous configured sink (wraps around)
-    #[arg(long, group = "command")]
-    pub prev_sink: bool,
+    /// Show all open windows (tracked vs untracked)
+    ListWindows {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
 
-    /// Output in JSON format (for --get-sink and --list-sinks)
-    #[arg(long)]
-    pub json: bool,
+    /// Check config file syntax (no daemon needed)
+    Validate,
+
+    /// Test regex pattern against all windows (app_id & title)
+    TestRule {
+        /// Regex pattern to test
+        pattern: String,
+
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Set audio output (by desc, node name, or position like "1", "2")
+    SetSink {
+        /// Sink reference (description, node name, or position)
+        sink: String,
+    },
+
+    /// Cycle to next configured sink
+    NextSink,
+
+    /// Cycle to previous configured sink
+    PrevSink,
+
+    /// Terminal UI (not yet implemented)
+    Tui,
 }

@@ -85,6 +85,10 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
             _ => {}
         }
     }
+
+    wayland_client::event_created_child!(WlrToplevelState, zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, [
+        zwlr_foreign_toplevel_manager_v1::EVT_TOPLEVEL_OPCODE => (zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ())
+    ]);
 }
 
 // Implement Dispatch for individual toplevel handles
