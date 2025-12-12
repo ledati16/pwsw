@@ -31,8 +31,8 @@ pub struct Settings {
     pub notify_daemon: bool,
     pub notify_switch: bool,
     pub notify_set: bool,
-    /// If true, custom sink icons only apply to --get-sink --json.
-    /// Notifications will use auto-detected FreeDesktop icons for compatibility.
+    /// If true, custom sink icons only apply to `--get-sink --json`.
+    /// Notifications will use auto-detected `FreeDesktop` icons for compatibility.
     pub status_bar_icons: bool,
     pub log_level: String,
 }
@@ -40,7 +40,7 @@ pub struct Settings {
 /// Audio sink configuration
 #[derive(Debug, Clone)]
 pub struct SinkConfig {
-    /// PipeWire node name (e.g., "alsa_output.pci-0000_0c_00.4.iec958-stereo")
+    /// `PipeWire` node name (e.g., `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`)
     pub name: String,
     /// Human-readable description
     pub desc: String,

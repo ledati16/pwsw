@@ -204,9 +204,9 @@ impl Dispatch<wl_output::WlOutput, ()> for WlrToplevelState {
     }
 }
 
-/// Run the Wayland event loop for wlr-foreign-toplevel-management
+/// Run the `Wayland` event loop for `wlr-foreign-toplevel-management`
 ///
-/// This function runs in a dedicated thread and dispatches Wayland events.
+/// This function runs in a dedicated thread and dispatches `Wayland` events.
 pub fn run_event_loop(
     conn: Connection,
     tx: mpsc::UnboundedSender<WindowEvent>,

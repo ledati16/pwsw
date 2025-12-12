@@ -1,11 +1,11 @@
-//! PipeWire integration
+//! `PipeWire` integration
 //!
-//! Provides audio sink discovery and control via PipeWire native tools:
+//! Provides audio sink discovery and control via `PipeWire` native tools:
 //! - `pw-dump`: JSON queries for objects (sinks, devices, metadata)
 //! - `pw-metadata`: Setting the default audio sink
 //! - `pw-cli`: Profile switching for analog/digital outputs
 //!
-//! All required tools must be present in PATH for PWSW to function.
+//! All required tools must be present in `PATH` for `PWSW` to function.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -28,7 +28,7 @@ const PROFILE_SWITCH_MAX_RETRIES: u32 = 5;
 // PipeWire JSON Structures (from pw-dump)
 // ============================================================================
 
-/// Top-level PipeWire object from pw-dump output
+/// Top-level `PipeWire` object from `pw-dump` output
 #[derive(Debug, Deserialize)]
 pub struct PwObject {
     pub id: u32,
@@ -61,7 +61,7 @@ pub struct PwInfo {
     pub params: Option<PwParams>,
 }
 
-/// PipeWire object properties - uses permissive deserialization
+/// `PipeWire` object properties - uses permissive deserialization
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct PwProps {
@@ -122,7 +122,7 @@ impl PwMetadataEntry {
 // Sink Discovery Types
 // ============================================================================
 
-/// A sink currently available in PipeWire
+/// A sink currently available in `PipeWire`
 #[derive(Debug, Clone)]
 pub struct ActiveSink {
     pub name: String,
@@ -199,13 +199,13 @@ pub struct SinkInfoJson {
 // PipeWire Interface
 // ============================================================================
 
-/// PipeWire interface for audio control
+/// `PipeWire` interface for audio control
 pub struct PipeWire;
 
 impl PipeWire {
-    /// Validate that all required PipeWire tools are available in PATH
+    /// Validate that all required `PipeWire` tools are available in `PATH`
     ///
-    /// Checks for: pw-dump, pw-metadata, pw-cli
+    /// Checks for: `pw-dump`, `pw-metadata`, `pw-cli`
     /// Returns an error with installation instructions if any are missing.
     pub fn validate_tools() -> Result<()> {
         let required_tools = ["pw-dump", "pw-metadata", "pw-cli"];
