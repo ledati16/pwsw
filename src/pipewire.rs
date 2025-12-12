@@ -439,7 +439,8 @@ impl PipeWire {
     /// # Errors
     /// Returns an error if `pw-cli` command fails or the profile cannot be set.
     pub fn set_device_profile(device_id: u32, profile_index: u32) -> Result<()> {
-        let profile_json = format!("{{ index: {profile_index} }}");
+        // Use proper JSON serialization to avoid any potential issues
+        let profile_json = serde_json::json!({"index": profile_index}).to_string();
 
         let output = Command::new("pw-cli")
             .args(["s", &device_id.to_string(), "Profile", &profile_json])
@@ -468,6 +469,10 @@ impl PipeWire {
     /// # Errors
     /// Returns an error if the sink is not found, profile switching fails, or the sink
     /// node does not appear after profile switch.
+    ///
+    /// # Concurrency
+    /// This function is not thread-safe for concurrent profile switches on the same device.
+    /// Callers should ensure only one profile switch occurs at a time per device.
     pub fn activate_sink(sink_name: &str) -> Result<()> {
         let objects = Self::dump()?;
 

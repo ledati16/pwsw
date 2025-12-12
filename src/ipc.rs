@@ -293,7 +293,15 @@ impl IpcServer {
         // Bind the listener
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("Failed to bind IPC socket: {}", socket_path.display()))?;
-        
+
+        // Set socket permissions to user-only (0o600) for security
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set socket permissions: {}", socket_path.display()))?;
+        }
+
         debug!("IPC server listening on {:?}", socket_path);
         
         Ok(Self {
