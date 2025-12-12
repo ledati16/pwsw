@@ -1,12 +1,18 @@
 //! KDE Plasma window-management protocol implementation
 //!
-//! This protocol is supported by KWin (KDE Plasma's window manager).
+//! **⚠️ EXPERIMENTAL**: This protocol support is experimental and untested on real KDE Plasma systems.
 //!
-//! ## Testing Note
+//! This protocol is supported by KWin (KDE Plasma's window manager), but has known issues:
 //!
-//! The Plasma protocol implementation uses `proxy.id().protocol_id()` to track windows,
-//! which may not always match the window IDs from the manager's `Window` event.
-//! This implementation needs testing on actual KDE Plasma to verify correctness.
+//! ## Known Issues
+//!
+//! 1. **Window ID mismatch**: The implementation uses `proxy.id().protocol_id()` to track windows,
+//!    which may not match the window IDs from the manager's `Window` event, potentially causing
+//!    window tracking to fail.
+//! 2. **Untested**: This code has not been verified on actual KDE Plasma/KWin systems.
+//!
+//! **Users on KDE Plasma should expect potential issues.** Contributions to fix and test this
+//! implementation are welcome.
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;

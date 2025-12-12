@@ -363,7 +363,10 @@ impl PipeWire {
 
     /// Set the default audio sink via pw-metadata
     pub fn set_default_sink(node_name: &str) -> Result<()> {
-        let value = format!(r#"{{ "name": "{}" }}"#, node_name);
+        // Use proper JSON serialization to avoid injection risks
+        let value_obj = serde_json::json!({"name": node_name});
+        let value = serde_json::to_string(&value_obj)
+            .context("Failed to serialize sink name to JSON")?;
 
         let output = Command::new("pw-metadata")
             .args(["0", "default.audio.sink", &value, "Spa:String:JSON"])
