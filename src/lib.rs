@@ -1,7 +1,7 @@
-//! PWSW - PipeWire Switcher
+//! `PWSW` - `PipeWire` Switcher
 //!
 //! Automatically switches audio sinks based on active windows in Wayland compositors.
-//! Uses PipeWire native tools (pw-dump, pw-metadata, pw-cli) for audio control.
+//! Uses `PipeWire` native tools (`pw-dump`, `pw-metadata`, `pw-cli`) for audio control.
 //!
 //! # Features
 //! - Automatic sink switching based on window rules

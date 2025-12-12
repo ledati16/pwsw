@@ -57,7 +57,7 @@ impl State {
         })
     }
 
-    /// Find a rule that matches the given app_id and title
+    /// Find a rule that matches the given `app_id` and title
     #[must_use]
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<&Rule> {
         self.config.rules.iter().find(|rule| {
@@ -165,7 +165,7 @@ impl State {
 
                 if self.should_switch_sink(&sink_name) {
                     let notify = self.config.should_notify_switch(rule_notify);
-                    // Use app_id as icon (e.g., "steam" shows Steam icon)
+                    // Use `app_id` as icon (e.g., "steam" shows Steam icon)
                     let app_icon = get_app_icon(app_id);
                     switch_audio(&sink_name, &sink_desc, Some(&trigger_desc), Some(&app_icon), notify)?;
                     self.update_sink(sink_name);
@@ -212,7 +212,7 @@ impl State {
             .max_by_key(|w| w.opened_at)
     }
     
-    /// Get a list of tracked windows (app_id, title pairs)
+    /// Get a list of tracked windows (`app_id`, title pairs)
     #[must_use]
     pub fn get_tracked_windows(&self) -> Vec<(String, String)> {
         self.active_windows.values()
@@ -228,10 +228,10 @@ impl State {
             .collect()
     }
 
-    /// Get tracked windows with sink information (for list-windows command)
+    /// Get tracked windows with sink information (for `list-windows` command)
     #[must_use]
     pub fn get_tracked_windows_with_sinks(&self) -> Vec<(String, String, String, String)> {
-        // Returns: (app_id, title, sink_name, sink_desc)
+        // Returns: (`app_id`, title, `sink_name`, `sink_desc`)
         self.active_windows.values()
             .map(|w| {
                 let sink_desc = self.config.sinks.iter()

@@ -85,8 +85,8 @@ pub struct TrackedInfo {
 // Socket Path Management
 // ============================================================================
 
-/// Get the IPC socket path
-/// Prefers $XDG_RUNTIME_DIR/pwsw.sock, falls back to /tmp/pwsw-$USER.sock
+/// Get the `IPC` socket path
+/// Prefers `$XDG_RUNTIME_DIR/pwsw.sock`, falls back to `/tmp/pwsw-$USER.sock`
 pub fn get_socket_path() -> Result<PathBuf> {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
@@ -96,10 +96,10 @@ pub fn get_socket_path() -> Result<PathBuf> {
     } else {
         // Cannot determine a consistent socket path
         anyhow::bail!(
-            "Cannot determine IPC socket path: Both XDG_RUNTIME_DIR and USER environment variables are unset.\n\
+            "Cannot determine IPC socket path: Both `XDG_RUNTIME_DIR` and `USER` environment variables are unset.\n\
              \n\
              This is unusual - please ensure your environment is set up correctly.\n\
-             You can manually set XDG_RUNTIME_DIR to a user-specific directory like /run/user/$UID"
+             You can manually set `XDG_RUNTIME_DIR` to a user-specific directory like `/run/user/$UID`"
         )
     }
 }

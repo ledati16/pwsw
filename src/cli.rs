@@ -4,7 +4,7 @@
 
 use clap::{Parser, Subcommand};
 
-/// PWSW - PipeWire Switcher
+/// `PWSW` - `PipeWire` Switcher
 ///
 /// Automatically switch audio sinks based on active windows.
 #[derive(Parser)]
@@ -74,7 +74,7 @@ pub enum Command {
     /// Stop the daemon gracefully
     Shutdown,
 
-    /// List available PipeWire audio outputs
+    /// List available `PipeWire` audio outputs
     ListSinks {
         /// Output in JSON format
         #[arg(long)]
@@ -91,7 +91,7 @@ pub enum Command {
     /// Check config file syntax (no daemon needed)
     Validate,
 
-    /// Test regex pattern against all windows (app_id & title)
+    /// Test regex pattern against all windows (`app_id` & title)
     TestRule {
         /// Regex pattern to test
         pattern: String,
