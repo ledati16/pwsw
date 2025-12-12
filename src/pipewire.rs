@@ -4,6 +4,8 @@
 //! - `pw-dump`: JSON queries for objects (sinks, devices, metadata)
 //! - `pw-metadata`: Setting the default audio sink
 //! - `pw-cli`: Profile switching for analog/digital outputs
+//!
+//! All required tools must be present in PATH for PWSW to function.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -200,6 +202,41 @@ pub struct SinkInfoJson {
 pub struct PipeWire;
 
 impl PipeWire {
+    /// Validate that all required PipeWire tools are available in PATH
+    ///
+    /// Checks for: pw-dump, pw-metadata, pw-cli
+    /// Returns an error with installation instructions if any are missing.
+    pub fn validate_tools() -> Result<()> {
+        let required_tools = ["pw-dump", "pw-metadata", "pw-cli"];
+        let mut missing = Vec::new();
+
+        for tool in &required_tools {
+            // Try to run the tool with --version or --help to check if it exists
+            let result = Command::new(tool)
+                .arg("--version")
+                .output();
+
+            if result.is_err() {
+                missing.push(*tool);
+            }
+        }
+
+        if !missing.is_empty() {
+            anyhow::bail!(
+                "Missing required PipeWire tools: {}\n\
+                 \n\
+                 Please install the PipeWire utilities package for your distribution:\n\
+                 - Arch/Manjaro: pacman -S pipewire-tools\n\
+                 - Fedora: dnf install pipewire-utils\n\
+                 - Debian/Ubuntu: apt install pipewire-bin\n\
+                 - openSUSE: zypper install pipewire-tools",
+                missing.join(", ")
+            );
+        }
+
+        Ok(())
+    }
+
     /// Get all PipeWire objects via pw-dump
     pub fn dump() -> Result<Vec<PwObject>> {
         let output = Command::new("pw-dump")
