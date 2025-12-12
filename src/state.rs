@@ -42,6 +42,9 @@ impl State {
     ///
     /// # Errors
     /// Returns an error if `PipeWire` query fails (non-fatal, uses configured default).
+    ///
+    /// # Panics
+    /// Panics if no default sink is configured (should be prevented by config validation).
     pub fn new(config: Config) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!("Could not query default sink: {}. Using configured default.", e);
@@ -83,6 +86,9 @@ impl State {
     }
 
     /// Determine target sink based on active windows (most recent takes priority)
+    ///
+    /// # Panics
+    /// Panics if no default sink is configured (should be prevented by config validation).
     #[must_use]
     pub fn determine_target_sink(&self) -> String {
         self.active_windows.iter()
