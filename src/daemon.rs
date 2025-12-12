@@ -174,16 +174,13 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     loop {
         tokio::select! {
             result = window_events.recv() => {
-                match result {
-                    Some(event) => {
-                        if let Err(e) = state.process_event(event) {
-                            error!("Event processing error: {:#}", e);
-                        }
+                if let Some(event) = result {
+                    if let Err(e) = state.process_event(event) {
+                        error!("Event processing error: {:#}", e);
                     }
-                    None => {
-                        error!("Compositor connection lost (event channel closed)");
-                        break;
-                    }
+                } else {
+                    error!("Compositor connection lost (event channel closed)");
+                    break;
                 }
             }
             
