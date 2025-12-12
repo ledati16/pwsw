@@ -20,7 +20,11 @@ use crate::pipewire::{
 // ============================================================================
 
 /// Helper to determine a sink's status (active, requires profile switch, or not found)
-fn get_sink_status(sink_name: &str, active: &[ActiveSink], profile: &[ProfileSink]) -> &'static str {
+fn get_sink_status(
+    sink_name: &str,
+    active: &[ActiveSink],
+    profile: &[ProfileSink],
+) -> &'static str {
     if active.iter().any(|a| a.name == sink_name) {
         "active"
     } else if profile.iter().any(|p| p.predicted_name == sink_name) {
@@ -39,9 +43,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     let active = PipeWire::get_active_sinks(&objects);
     let profile = PipeWire::get_profile_sinks(&objects, &active);
 
-    let current_default = active.iter()
-        .find(|s| s.is_default)
-        .map(|s| s.name.clone());
+    let current_default = active.iter().find(|s| s.is_default).map(|s| s.name.clone());
 
     if json_output {
         let configured_names: HashSet<&str> = config
@@ -49,32 +51,44 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             .unwrap_or_default();
 
         let output = ListSinksJson {
-            active_sinks: active.iter().map(|s| ActiveSinkJson {
-                name: s.name.clone(),
-                description: s.description.clone(),
-                is_default: s.is_default,
-                configured: configured_names.contains(s.name.as_str()),
-            }).collect(),
-            profile_sinks: profile.iter().map(|s| ProfileSinkJson {
-                predicted_name: s.predicted_name.clone(),
-                description: s.description.clone(),
-                device_name: s.device_name.clone(),
-                profile_name: s.profile_name.clone(),
-                profile_index: s.profile_index,
-            }).collect(),
-            configured_sinks: config.map(|c| {
-                c.sinks.iter().enumerate().map(|(i, s)| {
-                    let status = get_sink_status(&s.name, &active, &profile);
-                    ConfiguredSinkJson {
-                        index: i + 1,
-                        name: s.name.clone(),
-                        desc: s.desc.clone(),
-                        icon: s.icon.clone(),
-                        is_default_config: s.default,
-                        status: status.to_string(),
-                    }
-                }).collect()
-            }).unwrap_or_default(),
+            active_sinks: active
+                .iter()
+                .map(|s| ActiveSinkJson {
+                    name: s.name.clone(),
+                    description: s.description.clone(),
+                    is_default: s.is_default,
+                    configured: configured_names.contains(s.name.as_str()),
+                })
+                .collect(),
+            profile_sinks: profile
+                .iter()
+                .map(|s| ProfileSinkJson {
+                    predicted_name: s.predicted_name.clone(),
+                    description: s.description.clone(),
+                    device_name: s.device_name.clone(),
+                    profile_name: s.profile_name.clone(),
+                    profile_index: s.profile_index,
+                })
+                .collect(),
+            configured_sinks: config
+                .map(|c| {
+                    c.sinks
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            let status = get_sink_status(&s.name, &active, &profile);
+                            ConfiguredSinkJson {
+                                index: i + 1,
+                                name: s.name.clone(),
+                                desc: s.desc.clone(),
+                                icon: s.icon.clone(),
+                                is_default_config: s.default,
+                                status: status.to_string(),
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             current_default,
         };
 
@@ -124,7 +138,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                     "requires_profile_switch" => "profile switch",
                     _ => "not found",
                 };
-                println!("  {}. \"{}\"{} - {}", i + 1, sink.desc, default_marker, status);
+                println!(
+                    "  {}. \"{}\"{} - {}",
+                    i + 1,
+                    sink.desc,
+                    default_marker,
+                    status
+                );
                 println!("     {}", sink.name);
             }
         }
@@ -150,15 +170,22 @@ pub enum Direction {
 /// Returns an error if the sink reference is invalid or sink activation fails.
 pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     let target = config.resolve_sink(sink_ref).ok_or_else(|| {
-        let available: Vec<_> = config.sinks.iter()
+        let available: Vec<_> = config
+            .sinks
+            .iter()
             .enumerate()
             .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
             .collect();
-        anyhow::anyhow!("Unknown sink '{}'. Available: {}", sink_ref, available.join(", "))
+        anyhow::anyhow!(
+            "Unknown sink '{}'. Available: {}",
+            sink_ref,
+            available.join(", ")
+        )
     })?;
 
     let current = PipeWire::get_default_sink_name()?;
-    let default = config.get_default_sink()
+    let default = config
+        .get_default_sink()
         .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
 
     if config.settings.set_smart_toggle && current == target.name {
@@ -206,13 +233,13 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     let current = PipeWire::get_default_sink_name()?;
 
     // Find current sink's index in config, or start from default
-    let current_index = config.sinks.iter()
+    let current_index = config
+        .sinks
+        .iter()
         .position(|s| s.name == current)
         .unwrap_or_else(|| {
             // Current sink not in config, find default's index
-            config.sinks.iter()
-                .position(|s| s.default)
-                .unwrap_or(0)
+            config.sinks.iter().position(|s| s.default).unwrap_or(0)
         });
 
     // Calculate next index with wrapping
@@ -296,7 +323,13 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
                 current_sink,
                 active_window,
                 tracked_windows,
-            }) => Some((version, uptime_secs, current_sink, active_window, tracked_windows)),
+            }) => Some((
+                version,
+                uptime_secs,
+                current_sink,
+                active_window,
+                tracked_windows,
+            )),
             _ => None,
         }
     } else {
@@ -305,21 +338,24 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
 
     // Output
     if json_output {
-        let daemon_json = if let Some((version, uptime_secs, daemon_sink, active_window, tracked_windows)) = daemon_info {
-            serde_json::json!({
-                "running": true,
-                "version": version,
-                "uptime_secs": uptime_secs,
-                "uptime_human": format_uptime(uptime_secs),
-                "daemon_sink": daemon_sink,
-                "active_window": active_window,
-                "tracked_windows": tracked_windows,
-            })
-        } else {
-            serde_json::json!({
-                "running": false,
-            })
-        };
+        let daemon_json =
+            if let Some((version, uptime_secs, daemon_sink, active_window, tracked_windows)) =
+                daemon_info
+            {
+                serde_json::json!({
+                    "running": true,
+                    "version": version,
+                    "uptime_secs": uptime_secs,
+                    "uptime_human": format_uptime(uptime_secs),
+                    "daemon_sink": daemon_sink,
+                    "active_window": active_window,
+                    "tracked_windows": tracked_windows,
+                })
+            } else {
+                serde_json::json!({
+                    "running": false,
+                })
+            };
 
         println!(
             "{}",
@@ -342,7 +378,9 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
         println!("{header}");
         println!("{}", "-".repeat(header.len()));
 
-        if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) = daemon_info {
+        if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) =
+            daemon_info
+        {
             println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
             println!("Version: {version}");
             if let Some(rule) = active_window {
@@ -404,7 +442,11 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                 let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
                 let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
 
-                let header = format!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
+                let header = format!(
+                    "All Windows ({} open, {} tracked):",
+                    windows.len(),
+                    tracked.len()
+                );
                 println!("{header}");
                 println!("{}", "-".repeat(header.len()));
 
@@ -454,10 +496,13 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
     match response {
         Response::RuleMatches { pattern, matches } => {
             if json_output {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "pattern": pattern,
-                    "matches": matches,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "pattern": pattern,
+                        "matches": matches,
+                    }))?
+                );
             } else {
                 println!("Testing pattern: {pattern}");
                 println!("================");
@@ -467,10 +512,25 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                     println!("Matches ({}):", matches.len());
                     for (i, window) in matches.iter().enumerate() {
                         let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
-                        println!("{}. app_id: {}{}", i + 1, window.app_id,
-                            if matched_on == "app_id" || matched_on == "both" { " ✓" } else { "" });
-                        println!("   title: {}{}", window.title,
-                            if matched_on == "title" || matched_on == "both" { " ✓" } else { "" });
+                        println!(
+                            "{}. app_id: {}{}",
+                            i + 1,
+                            window.app_id,
+                            if matched_on == "app_id" || matched_on == "both" {
+                                " ✓"
+                            } else {
+                                ""
+                            }
+                        );
+                        println!(
+                            "   title: {}{}",
+                            window.title,
+                            if matched_on == "title" || matched_on == "both" {
+                                " ✓"
+                            } else {
+                                ""
+                            }
+                        );
                     }
                 }
             }

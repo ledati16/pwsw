@@ -45,11 +45,17 @@ pub fn get_sink_icon_auto(sink: &SinkConfig) -> String {
     let desc_lower = sink.desc.to_lowercase();
     let name_lower = sink.name.to_lowercase();
 
-    if desc_lower.contains("hdmi") || desc_lower.contains("tv") || desc_lower.contains("display")
-        || name_lower.contains("hdmi") {
+    if desc_lower.contains("hdmi")
+        || desc_lower.contains("tv")
+        || desc_lower.contains("display")
+        || name_lower.contains("hdmi")
+    {
         "video-display".to_string()
-    } else if desc_lower.contains("headphone") || desc_lower.contains("headset")
-        || desc_lower.contains("bluetooth") || name_lower.contains("bluez") {
+    } else if desc_lower.contains("headphone")
+        || desc_lower.contains("headset")
+        || desc_lower.contains("bluetooth")
+        || name_lower.contains("bluez")
+    {
         "audio-headphones".to_string()
     } else {
         // Default for speakers, optical, digital, etc.

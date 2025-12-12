@@ -111,7 +111,9 @@ pub fn get_socket_path() -> Result<PathBuf> {
 /// Check if a daemon is currently running
 /// Returns true if a daemon is active (socket exists and accepts connections)
 pub async fn is_daemon_running() -> bool {
-    let Ok(socket_path) = get_socket_path() else { return false };
+    let Ok(socket_path) = get_socket_path() else {
+        return false;
+    };
 
     if !socket_path.exists() {
         return false;
@@ -120,8 +122,9 @@ pub async fn is_daemon_running() -> bool {
     // Try to connect - if it succeeds, daemon is running
     let connect_result = tokio::time::timeout(
         Duration::from_millis(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
-        tokio::net::UnixStream::connect(&socket_path)
-    ).await;
+        tokio::net::UnixStream::connect(&socket_path),
+    )
+    .await;
 
     matches!(connect_result, Ok(Ok(_)))
 }
@@ -141,8 +144,9 @@ pub async fn cleanup_stale_socket() -> Result<()> {
     // Try to connect - if it fails, the socket is stale
     let connect_result = tokio::time::timeout(
         Duration::from_millis(100),
-        tokio::net::UnixStream::connect(&socket_path)
-    ).await;
+        tokio::net::UnixStream::connect(&socket_path),
+    )
+    .await;
 
     let is_stale = match connect_result {
         Ok(Ok(_stream)) => {
@@ -176,61 +180,61 @@ const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB max message size
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Read a length-prefixed JSON message from a stream
-async fn read_message<T: for<'de> Deserialize<'de>>(
-    stream: &mut UnixStream,
-) -> Result<T> {
+async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T> {
     // Read 4-byte big-endian length prefix
     let mut len_buf = [0u8; 4];
     tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut len_buf))
         .await
         .context("Timeout reading message length")?
         .context("Failed to read message length")?;
-    
+
     let msg_len = u32::from_be_bytes(len_buf) as usize;
-    
+
     if msg_len > MAX_MESSAGE_SIZE {
         anyhow::bail!("Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})");
     }
-    
+
     // Read the JSON payload
     let mut msg_buf = vec![0u8; msg_len];
     tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut msg_buf))
         .await
         .context("Timeout reading message payload")?
         .context("Failed to read message payload")?;
-    
+
     // Deserialize JSON
-    serde_json::from_slice(&msg_buf)
-        .context("Failed to deserialize message")
+    serde_json::from_slice(&msg_buf).context("Failed to deserialize message")
 }
 
 /// Write a length-prefixed JSON message to a stream
-async fn write_message<T: Serialize>(
-    stream: &mut UnixStream,
-    message: &T,
-) -> Result<()> {
+async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Result<()> {
     // Serialize to JSON
-    let json = serde_json::to_vec(message)
-        .context("Failed to serialize message")?;
-    
+    let json = serde_json::to_vec(message).context("Failed to serialize message")?;
+
     if json.len() > MAX_MESSAGE_SIZE {
-        anyhow::bail!("Message too large: {} bytes (max: {})", json.len(), MAX_MESSAGE_SIZE);
+        anyhow::bail!(
+            "Message too large: {} bytes (max: {})",
+            json.len(),
+            MAX_MESSAGE_SIZE
+        );
     }
 
     // Write length prefix (4 bytes big-endian)
     // Safe cast: MAX_MESSAGE_SIZE is 1MB, well within u32 range
     #[allow(clippy::cast_possible_truncation)]
     let len = (json.len() as u32).to_be_bytes();
-    stream.write_all(&len).await
+    stream
+        .write_all(&len)
+        .await
         .context("Failed to write message length")?;
-    
+
     // Write JSON payload
-    stream.write_all(&json).await
+    stream
+        .write_all(&json)
+        .await
         .context("Failed to write message payload")?;
-    
-    stream.flush().await
-        .context("Failed to flush stream")?;
-    
+
+    stream.flush().await.context("Failed to flush stream")?;
+
     Ok(())
 }
 
@@ -244,29 +248,27 @@ async fn write_message<T: Serialize>(
 /// Returns an error if socket path cannot be determined, connection fails, or IPC communication fails.
 pub async fn send_request(request: Request) -> Result<Response> {
     let socket_path = get_socket_path()?;
-    
+
     // Connect to daemon
-    let mut stream = tokio::time::timeout(
-        Duration::from_secs(5),
-        UnixStream::connect(&socket_path),
-    )
-    .await
-    .context("Timeout connecting to daemon")?
-    .with_context(|| {
-        format!(
-            "Failed to connect to daemon. Is the daemon running?\nSocket: {}",
-            socket_path.display()
-        )
-    })?;
-    
+    let mut stream =
+        tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(&socket_path))
+            .await
+            .context("Timeout connecting to daemon")?
+            .with_context(|| {
+                format!(
+                    "Failed to connect to daemon. Is the daemon running?\nSocket: {}",
+                    socket_path.display()
+                )
+            })?;
+
     debug!("Connected to daemon at {:?}", socket_path);
-    
+
     // Send request
     write_message(&mut stream, &request).await?;
-    
+
     // Read response
     let response: Response = read_message(&mut stream).await?;
-    
+
     Ok(response)
 }
 
@@ -287,10 +289,10 @@ impl IpcServer {
     /// Returns an error if socket path cannot be determined or socket binding fails.
     pub async fn bind() -> Result<Self> {
         let socket_path = get_socket_path()?;
-        
+
         // Clean up any stale socket
         cleanup_stale_socket().await?;
-        
+
         // Bind the listener
         let listener = UnixListener::bind(&socket_path)
             .with_context(|| format!("Failed to bind IPC socket: {}", socket_path.display()))?;
@@ -300,17 +302,22 @@ impl IpcServer {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("Failed to set socket permissions: {}", socket_path.display()))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to set socket permissions: {}",
+                        socket_path.display()
+                    )
+                })?;
         }
 
         debug!("IPC server listening on {:?}", socket_path);
-        
+
         Ok(Self {
             listener,
             socket_path,
         })
     }
-    
+
     /// Accept the next incoming connection
     /// Returns None if accept fails (non-fatal)
     pub async fn accept(&self) -> Option<UnixStream> {
@@ -322,7 +329,7 @@ impl IpcServer {
             }
         }
     }
-    
+
     /// Get the socket path
     pub fn socket_path(&self) -> &Path {
         &self.socket_path

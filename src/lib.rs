@@ -15,14 +15,14 @@
 //! - KDE Plasma/KWin (via plasma-window-management)
 
 pub mod cli;
-pub mod config;
-pub mod pipewire;
-pub mod notification;
-pub mod state;
 pub mod commands;
-pub mod daemon;
 pub mod compositor;
+pub mod config;
+pub mod daemon;
 pub mod ipc;
+pub mod notification;
+pub mod pipewire;
+pub mod state;
 
 // Re-export commonly used types for convenience
 pub use cli::Args;

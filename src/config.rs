@@ -193,14 +193,18 @@ impl Config {
 
         let mut rules = Vec::with_capacity(config_file.rules.len());
         for (i, rule_config) in config_file.rules.iter().enumerate() {
-            let app_id_regex = Regex::new(&rule_config.app_id)
-                .with_context(|| format!("Invalid regex in rule {} app_id: '{}'", i + 1, rule_config.app_id))?;
+            let app_id_regex = Regex::new(&rule_config.app_id).with_context(|| {
+                format!(
+                    "Invalid regex in rule {} app_id: '{}'",
+                    i + 1,
+                    rule_config.app_id
+                )
+            })?;
 
             let title_regex = match &rule_config.title {
-                Some(pattern) => Some(
-                    Regex::new(pattern)
-                        .with_context(|| format!("Invalid regex in rule {} title: '{}'", i + 1, pattern))?,
-                ),
+                Some(pattern) => Some(Regex::new(pattern).with_context(|| {
+                    format!("Invalid regex in rule {} title: '{}'", i + 1, pattern)
+                })?),
                 None => None,
             };
 
@@ -215,7 +219,11 @@ impl Config {
             });
         }
 
-        let config = Config { settings, sinks, rules };
+        let config = Config {
+            settings,
+            sinks,
+            rules,
+        };
         config.validate()?;
         Ok(config)
     }
@@ -256,13 +264,17 @@ impl Config {
         // All rule sinks must exist
         for (i, rule) in self.rules.iter().enumerate() {
             if self.resolve_sink(&rule.sink_ref).is_none() {
-                let available: Vec<_> = self.sinks.iter()
+                let available: Vec<_> = self
+                    .sinks
+                    .iter()
                     .enumerate()
                     .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
                     .collect();
                 anyhow::bail!(
                     "Rule {} references unknown sink '{}'. Available: [{}]",
-                    i + 1, rule.sink_ref, available.join(", ")
+                    i + 1,
+                    rule.sink_ref,
+                    available.join(", ")
                 );
             }
         }
@@ -410,7 +422,9 @@ notify = true
             };
         }
         // Then try desc or name
-        self.sinks.iter().find(|s| s.desc == sink_ref || s.name == sink_ref)
+        self.sinks
+            .iter()
+            .find(|s| s.desc == sink_ref || s.name == sink_ref)
     }
 
     /// Get the configured default sink

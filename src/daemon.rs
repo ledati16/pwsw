@@ -125,32 +125,34 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     }
 
     // Validate required PipeWire tools are available
-    PipeWire::validate_tools()
-        .context("PipeWire tools validation failed")?;
+    PipeWire::validate_tools().context("PipeWire tools validation failed")?;
 
     // Initialize logging with config log_level (foreground mode only)
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| {
-            tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
-        });
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
+    });
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 
     info!("Starting PWSW daemon");
-    info!("Loaded {} sinks, {} rules", config.sinks.len(), config.rules.len());
+    info!(
+        "Loaded {} sinks, {} rules",
+        config.sinks.len(),
+        config.rules.len()
+    );
 
     let start_time = Instant::now();
     let mut state = State::new(config)?;
-    
+
     // Create shutdown channel
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
     // Reset to default on startup if configured
     if state.config.settings.reset_on_startup {
-        let default = state.config.get_default_sink()
+        let default = state
+            .config
+            .get_default_sink()
             .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
         if state.current_sink_name != default.name {
             info!("Resetting to default: {}", default.desc);
@@ -162,13 +164,15 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Spawn compositor event thread
     let mut window_events = compositor::spawn_compositor_thread()?;
     info!("Compositor event thread started");
-    
+
     // Start IPC server
     let ipc_server = IpcServer::bind().await?;
     info!("IPC server listening on {:?}", ipc_server.socket_path());
 
     if state.config.settings.notify_daemon {
-        if let Err(e) = send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None) {
+        if let Err(e) =
+            send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None)
+        {
             warn!("Could not send startup notification: {}", e);
         }
     }
@@ -188,7 +192,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                     break;
                 }
             }
-            
+
             Some(mut stream) = ipc_server.accept() => {
                 // Handle IPC request - clone what we need for the task
                 let ctx = IpcContext {
@@ -220,7 +224,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                     }
                 });
             }
-            
+
             _ = signal::ctrl_c() => {
                 info!("Shutting down (Ctrl-C)");
                 if state.config.settings.notify_daemon {
@@ -228,7 +232,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 }
                 break;
             }
-            
+
             _ = shutdown_rx.recv() => {
                 info!("Shutting down (IPC request)");
                 if state.config.settings.notify_daemon {
@@ -243,16 +247,16 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 }
 
 /// Handle a single IPC request from a client
-async fn handle_ipc_request(
-    stream: &mut tokio::net::UnixStream,
-    ctx: IpcContext,
-) -> Result<()> {
+async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext) -> Result<()> {
     let request = ipc::read_request(stream).await?;
 
     let response = match request {
         Request::Status => {
             // Get current sink description
-            let current_sink = ctx.config.sinks.iter()
+            let current_sink = ctx
+                .config
+                .sinks
+                .iter()
                 .find(|s| s.name == ctx.current_sink_name)
                 .map_or_else(|| ctx.current_sink_name.clone(), |s| s.desc.clone());
 
@@ -269,22 +273,28 @@ async fn handle_ipc_request(
             use std::collections::HashMap;
 
             // Build a map of tracked windows for quick lookup
-            let tracked_map: HashMap<(&str, &str), (&str, &str)> = ctx.tracked_with_sinks
+            let tracked_map: HashMap<(&str, &str), (&str, &str)> = ctx
+                .tracked_with_sinks
                 .iter()
                 .map(|(app_id, title, sink_name, sink_desc)| {
-                    ((app_id.as_str(), title.as_str()), (sink_name.as_str(), sink_desc.as_str()))
+                    (
+                        (app_id.as_str(), title.as_str()),
+                        (sink_name.as_str(), sink_desc.as_str()),
+                    )
                 })
                 .collect();
 
             // Build WindowInfo for all windows with tracking status
-            let windows = ctx.all_windows
+            let windows = ctx
+                .all_windows
                 .iter()
                 .map(|(app_id, title)| {
-                    let tracked = tracked_map.get(&(app_id.as_str(), title.as_str()))
-                        .map(|(sink_name, sink_desc)| ipc::TrackedInfo {
+                    let tracked = tracked_map.get(&(app_id.as_str(), title.as_str())).map(
+                        |(sink_name, sink_desc)| ipc::TrackedInfo {
                             sink_name: (*sink_name).to_string(),
                             sink_desc: (*sink_desc).to_string(),
-                        });
+                        },
+                    );
 
                     WindowInfo {
                         app_id: app_id.clone(),
@@ -298,51 +308,52 @@ async fn handle_ipc_request(
             Response::Windows { windows }
         }
 
-        Request::TestRule { pattern } => {
-            match regex::Regex::new(&pattern) {
-                Ok(regex) => {
-                    let matches = ctx.all_windows
-                        .iter()
-                        .filter_map(|(app_id, title)| {
-                            let app_id_match = regex.is_match(app_id);
-                            let title_match = regex.is_match(title);
+        Request::TestRule { pattern } => match regex::Regex::new(&pattern) {
+            Ok(regex) => {
+                let matches = ctx
+                    .all_windows
+                    .iter()
+                    .filter_map(|(app_id, title)| {
+                        let app_id_match = regex.is_match(app_id);
+                        let title_match = regex.is_match(title);
 
-                            if app_id_match || title_match {
-                                let matched_on = match (app_id_match, title_match) {
-                                    (true, true) => "both",
-                                    (true, false) => "app_id",
-                                    (false, true) => "title",
-                                    _ => unreachable!(),
-                                };
+                        if app_id_match || title_match {
+                            let matched_on = match (app_id_match, title_match) {
+                                (true, true) => "both",
+                                (true, false) => "app_id",
+                                (false, true) => "title",
+                                _ => unreachable!(),
+                            };
 
-                                Some(WindowInfo {
-                                    app_id: app_id.clone(),
-                                    title: title.clone(),
-                                    matched_on: Some(matched_on.to_string()),
-                                    tracked: None,
-                                })
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
+                            Some(WindowInfo {
+                                app_id: app_id.clone(),
+                                title: title.clone(),
+                                matched_on: Some(matched_on.to_string()),
+                                tracked: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
 
-                    Response::RuleMatches { pattern, matches }
-                }
-                Err(e) => {
-                    Response::Error {
-                        message: format!("Invalid regex pattern: {e}"),
-                    }
-                }
+                Response::RuleMatches { pattern, matches }
             }
-        }
-        
+            Err(e) => Response::Error {
+                message: format!("Invalid regex pattern: {e}"),
+            },
+        },
+
         Request::Shutdown => {
             info!("Shutdown requested via IPC");
             // Send response before shutting down
-            ipc::write_response(stream, &Response::Ok {
-                message: "Daemon shutting down...".to_string(),
-            }).await?;
+            ipc::write_response(
+                stream,
+                &Response::Ok {
+                    message: "Daemon shutting down...".to_string(),
+                },
+            )
+            .await?;
 
             // Signal shutdown to main loop
             let _ = ctx.shutdown_tx.send(());
@@ -351,7 +362,7 @@ async fn handle_ipc_request(
             return Ok(());
         }
     };
-    
+
     ipc::write_response(stream, &response).await?;
     Ok(())
 }

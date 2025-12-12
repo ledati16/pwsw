@@ -18,12 +18,12 @@ use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_registry, wl_output},
+    protocol::{wl_output, wl_registry},
+    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols_plasma::plasma_window_management::client::{
-    org_kde_plasma_window_management, org_kde_plasma_window,
+    org_kde_plasma_window, org_kde_plasma_window_management,
 };
 
 use super::WindowEvent;
@@ -81,11 +81,14 @@ impl Dispatch<org_kde_plasma_window_management::OrgKdePlasmaWindowManagement, ()
         if let Event::Window { id: window_id } = event {
             // New window announced - window_id is a u32 directly
             trace!("New plasma window: {}", window_id);
-            
-            state.windows.insert(window_id, PlasmaWindow {
-                id: u64::from(window_id),
-                ..Default::default()
-            });
+
+            state.windows.insert(
+                window_id,
+                PlasmaWindow {
+                    id: u64::from(window_id),
+                    ..Default::default()
+                },
+            );
         }
     }
 }
@@ -113,12 +116,13 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                         let id = window.id;
                         let app_id = window.app_id.clone();
                         let title = window.title.clone();
-                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
-                        state.send_event(WindowEvent::Changed {
+                        trace!(
+                            "Window changed: id={}, app_id='{}', title='{}'",
                             id,
                             app_id,
-                            title,
-                        });
+                            title
+                        );
+                        state.send_event(WindowEvent::Changed { id, app_id, title });
                     }
                 }
             }
@@ -130,12 +134,13 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                         let id = window.id;
                         let app_id = window.app_id.clone();
                         let title = window.title.clone();
-                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
-                        state.send_event(WindowEvent::Changed {
+                        trace!(
+                            "Window changed: id={}, app_id='{}', title='{}'",
                             id,
                             app_id,
-                            title,
-                        });
+                            title
+                        );
+                        state.send_event(WindowEvent::Changed { id, app_id, title });
                     }
                 }
             }
@@ -146,12 +151,11 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                     let id = window.id;
                     let app_id = window.app_id.clone();
                     let title = window.title.clone();
-                    debug!("Window opened: id={}, app_id='{}', title='{}'", id, app_id, title);
-                    state.send_event(WindowEvent::Opened {
-                        id,
-                        app_id,
-                        title,
-                    });
+                    debug!(
+                        "Window opened: id={}, app_id='{}', title='{}'",
+                        id, app_id, title
+                    );
+                    state.send_event(WindowEvent::Opened { id, app_id, title });
                 }
             }
             Event::Unmapped => {
@@ -161,7 +165,10 @@ impl Dispatch<org_kde_plasma_window::OrgKdePlasmaWindow, ()> for PlasmaState {
                         debug!("Window closed: id={}", window.id);
                         state.send_event(WindowEvent::Closed { id: window.id });
                     } else {
-                        debug!("Window {} closed before initial state event, not emitting Closed", handle_id);
+                        debug!(
+                            "Window {} closed before initial state event, not emitting Closed",
+                            handle_id
+                        );
                     }
                 }
             }
@@ -202,13 +209,10 @@ impl Dispatch<wl_output::WlOutput, ()> for PlasmaState {
 /// Run the `Wayland` event loop for `KDE Plasma` window management
 ///
 /// This function runs in a dedicated thread and dispatches `Wayland` events.
-pub fn run_event_loop(
-    conn: Connection,
-    tx: mpsc::UnboundedSender<WindowEvent>,
-) -> Result<()> {
+pub fn run_event_loop(conn: Connection, tx: mpsc::UnboundedSender<WindowEvent>) -> Result<()> {
     let (globals, mut event_queue) = registry_queue_init::<PlasmaState>(&conn)
         .context("Failed to initialize Wayland registry")?;
-    
+
     let qh = event_queue.handle();
 
     // Bind to the plasma window management protocol
