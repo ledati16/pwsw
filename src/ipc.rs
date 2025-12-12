@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -297,7 +297,7 @@ impl IpcServer {
     }
     
     /// Get the socket path
-    pub fn socket_path(&self) -> &PathBuf {
+    pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
 }

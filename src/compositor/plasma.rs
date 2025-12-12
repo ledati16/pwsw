@@ -184,6 +184,8 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for PlasmaState {
     }
 }
 
+// Required by wayland-client for protocol compatibility
+// wl_output events are broadcast during registry binding but we don't need them
 impl Dispatch<wl_output::WlOutput, ()> for PlasmaState {
     fn event(
         _state: &mut Self,
@@ -193,7 +195,7 @@ impl Dispatch<wl_output::WlOutput, ()> for PlasmaState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        // No-op
+        // No-op: output information not needed for window tracking
     }
 }
 

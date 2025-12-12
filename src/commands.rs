@@ -126,7 +126,9 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             }
         }
 
-        println!("\nConfig: {:?}", Config::get_config_path()?);
+        if let Ok(path) = Config::get_config_path() {
+            println!("\nConfig: {}", path.display());
+        }
     }
 
     Ok(())
