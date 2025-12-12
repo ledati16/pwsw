@@ -380,33 +380,31 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
         Response::Windows { windows } => {
             if json_output {
                 println!("{}", serde_json::to_string_pretty(&windows)?);
+            } else if windows.is_empty() {
+                println!("No windows currently open.");
             } else {
-                if windows.is_empty() {
-                    println!("No windows currently open.");
-                } else {
-                    let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
-                    let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
+                let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
+                let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
 
-                    let header = format!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
-                    println!("{}", header);
-                    println!("{}", "-".repeat(header.len()));
+                let header = format!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
+                println!("{}", header);
+                println!("{}", "-".repeat(header.len()));
 
-                    if !tracked.is_empty() {
-                        println!("\nTracked ({}):", tracked.len());
-                        for window in &tracked {
-                            if let Some(ref track_info) = window.tracked {
-                                println!("  • {} → {}", window.app_id, track_info.sink_desc);
-                                println!("    {}", window.title);
-                            }
-                        }
-                    }
-
-                    if !untracked.is_empty() {
-                        println!("\nUntracked ({}):", untracked.len());
-                        for window in &untracked {
-                            println!("  • {}", window.app_id);
+                if !tracked.is_empty() {
+                    println!("\nTracked ({}):", tracked.len());
+                    for window in &tracked {
+                        if let Some(ref track_info) = window.tracked {
+                            println!("  • {} → {}", window.app_id, track_info.sink_desc);
                             println!("    {}", window.title);
                         }
+                    }
+                }
+
+                if !untracked.is_empty() {
+                    println!("\nUntracked ({}):", untracked.len());
+                    for window in &untracked {
+                        println!("  • {}", window.app_id);
+                        println!("    {}", window.title);
                     }
                 }
             }
