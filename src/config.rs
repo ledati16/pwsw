@@ -154,10 +154,10 @@ impl Config {
         }
 
         let contents = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config: {config_path:?}"))?;
+            .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
 
         let config_file: ConfigFile = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config: {config_path:?}"))?;
+            .with_context(|| format!("Failed to parse config: {}", config_path.display()))?;
 
         Self::from_config_file(config_file)
     }
@@ -273,7 +273,7 @@ impl Config {
             .context("Could not determine config directory")?
             .join("pwsw");
         fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config dir: {config_dir:?}"))?;
+            .with_context(|| format!("Failed to create config dir: {}", config_dir.display()))?;
         Ok(config_dir.join("config.toml"))
     }
 
@@ -336,10 +336,10 @@ notify = true
 # notify = true
 "#;
         fs::write(path, default_config)
-            .with_context(|| format!("Failed to write config: {path:?}"))?;
+            .with_context(|| format!("Failed to write config: {}", path.display()))?;
 
         // Inform user that we created the config
-        eprintln!("Created default config at: {path:?}");
+        eprintln!("Created default config at: {}", path.display());
         eprintln!();
         eprintln!("Next steps:");
         eprintln!("  1. Run 'pwsw list-sinks' to see available audio outputs");
@@ -388,7 +388,7 @@ notify = true
         }
 
         if let Ok(path) = Self::get_config_path() {
-            println!("\nConfig: {path:?}");
+            println!("\nConfig: {}", path.display());
         }
     }
 

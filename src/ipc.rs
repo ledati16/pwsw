@@ -66,7 +66,7 @@ pub enum Response {
 pub struct WindowInfo {
     pub app_id: String,
     pub title: String,
-    /// For test-rule: which fields matched ("app_id", "title", or "both")
+    /// For test-rule: which fields matched ("`app_id`", "title", or "both")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_on: Option<String>,
     /// For list-windows: tracking status and sink info
@@ -107,10 +107,7 @@ pub fn get_socket_path() -> Result<PathBuf> {
 /// Check if a daemon is currently running
 /// Returns true if a daemon is active (socket exists and accepts connections)
 pub async fn is_daemon_running() -> bool {
-    let socket_path = match get_socket_path() {
-        Ok(path) => path,
-        Err(_) => return false,
-    };
+    let Ok(socket_path) = get_socket_path() else { return false };
 
     if !socket_path.exists() {
         return false;
@@ -158,7 +155,7 @@ pub async fn cleanup_stale_socket() -> Result<()> {
     if is_stale {
         debug!("Removing stale socket: {:?}", socket_path);
         std::fs::remove_file(&socket_path)
-            .with_context(|| format!("Failed to remove stale socket: {socket_path:?}"))?;
+            .with_context(|| format!("Failed to remove stale socket: {}", socket_path.display()))?;
     }
 
     Ok(())

@@ -238,7 +238,7 @@ impl PipeWire {
         Ok(())
     }
 
-    /// Get all PipeWire objects via pw-dump
+    /// Get all `PipeWire` objects via `pw-dump`
     pub fn dump() -> Result<Vec<PwObject>> {
         let output = Command::new("pw-dump")
             .output()
@@ -256,7 +256,7 @@ impl PipeWire {
         Ok(objects)
     }
 
-    /// Get currently active audio sinks from PipeWire objects
+    /// Get currently active audio sinks from `PipeWire` objects
     #[must_use]
     pub fn get_active_sinks(objects: &[PwObject]) -> Vec<ActiveSink> {
         let default_name = Self::get_default_sink_name_from_objects(objects);

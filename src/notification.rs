@@ -1,7 +1,7 @@
 //! Desktop notifications
 //!
 //! Handles sending notifications via notify-rust and icon detection
-//! using FreeDesktop standard icon names.
+//! using `FreeDesktop` standard icon names.
 
 use anyhow::{Context, Result};
 use notify_rust::Notification;

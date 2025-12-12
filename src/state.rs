@@ -38,7 +38,7 @@ pub struct ActiveWindow {
 }
 
 impl State {
-    /// Create new state, querying current default sink from PipeWire
+    /// Create new state, querying current default sink from `PipeWire`
     pub fn new(config: Config) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!("Could not query default sink: {}. Using configured default.", e);
@@ -63,8 +63,7 @@ impl State {
         self.config.rules.iter().find(|rule| {
             rule.app_id_regex.is_match(app_id)
                 && rule.title_regex.as_ref()
-                    .map(|r| r.is_match(title))
-                    .unwrap_or(true)
+                    .map_or(true, |r| r.is_match(title))
         })
     }
 
@@ -85,12 +84,11 @@ impl State {
     pub fn determine_target_sink(&self) -> String {
         self.active_windows.iter()
             .max_by_key(|(_, w)| w.opened_at)
-            .map(|(_, w)| w.sink_name.clone())
-            .unwrap_or_else(|| {
+            .map_or_else(|| {
                 self.config.get_default_sink()
                     .expect(BUG_NO_DEFAULT_SINK)
                     .name.clone()
-            })
+            }, |(_, w)| w.sink_name.clone())
     }
 
     /// Check if a window is currently tracked
@@ -236,8 +234,7 @@ impl State {
             .map(|w| {
                 let sink_desc = self.config.sinks.iter()
                     .find(|s| s.name == w.sink_name)
-                    .map(|s| s.desc.clone())
-                    .unwrap_or_else(|| w.sink_name.clone());
+                    .map_or_else(|| w.sink_name.clone(), |s| s.desc.clone());
                 (w.app_id.clone(), w.title.clone(), w.sink_name.clone(), sink_desc)
             })
             .collect()
@@ -246,7 +243,7 @@ impl State {
     /// Helper to switch to target sink with notification logic for window state changes
     fn switch_to_target(&mut self, target: String, context: &str) -> Result<()> {
         let target_sink = self.config.sinks.iter().find(|s| s.name == target);
-        let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
+        let desc = target_sink.map_or(target.as_str(), |s| s.desc.as_str());
         let status_bar_icons = self.config.settings.status_bar_icons;
         let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
         let default_sink = self.config.get_default_sink()
