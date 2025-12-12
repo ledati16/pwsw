@@ -1,15 +1,15 @@
 //! Compositor abstraction layer
 //!
 //! Provides window event streams from Wayland compositors using standard protocols:
-//! - wlr-foreign-toplevel-management (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire)
-//! - plasma-window-management (KDE Plasma/KWin)
+//! - wlr-foreign-toplevel-management (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire) ✓ Tested
+//! - plasma-window-management (KDE Plasma/KWin) ⚠️  Experimental/Untested
 
 mod wlr_toplevel;
 mod plasma;
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use wayland_client::{Connection, protocol::wl_registry};
 
 /// Window event from a compositor
@@ -182,6 +182,8 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     }
 
     if has_plasma_window_management {
+        warn!("⚠️  Detected KDE Plasma - support is EXPERIMENTAL and may not work correctly");
+        warn!("   If you experience issues, please report at https://github.com/ledati16/pwsw/issues");
         return Ok(Protocol::PlasmaWindowManagement);
     }
 
