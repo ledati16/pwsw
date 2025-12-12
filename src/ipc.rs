@@ -16,7 +16,8 @@ use tracing::{debug, error, warn};
 // ============================================================================
 
 /// Timeout for checking if daemon is running (health check connection)
-const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
+/// Set to 500ms to accommodate slow systems and high load scenarios
+const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
 
 // ============================================================================
 // Message Types
