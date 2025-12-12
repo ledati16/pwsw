@@ -39,6 +39,9 @@ pub struct ActiveWindow {
 
 impl State {
     /// Create new state, querying current default sink from `PipeWire`
+    ///
+    /// # Errors
+    /// Returns an error if `PipeWire` query fails (non-fatal, uses configured default).
     pub fn new(config: Config) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!("Could not query default sink: {}. Using configured default.", e);
@@ -114,6 +117,9 @@ impl State {
     }
 
     /// Process a window event from the compositor
+    ///
+    /// # Errors
+    /// Returns an error if sink activation fails or rule processing encounters issues.
     pub fn process_event(&mut self, event: WindowEvent) -> Result<()> {
         match event {
             WindowEvent::Opened { id, app_id, title } |
@@ -258,6 +264,9 @@ impl State {
 }
 
 /// Switch audio output and optionally notify
+///
+/// # Errors
+/// Returns an error if `PipeWire` sink activation fails.
 pub fn switch_audio(
     name: &str,
     desc: &str,

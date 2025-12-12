@@ -31,6 +31,9 @@ fn get_sink_status(sink_name: &str, active: &[ActiveSink], profile: &[ProfileSin
 }
 
 /// List all available sinks (active and profile-switch)
+///
+/// # Errors
+/// Returns an error if `PipeWire` query fails or JSON serialization fails.
 pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     let objects = PipeWire::dump()?;
     let active = PipeWire::get_active_sinks(&objects);
@@ -142,6 +145,9 @@ pub enum Direction {
 }
 
 /// Set sink with smart toggle support
+///
+/// # Errors
+/// Returns an error if the sink reference is invalid or sink activation fails.
 pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     let target = config.resolve_sink(sink_ref).ok_or_else(|| {
         let available: Vec<_> = config.sinks.iter()
@@ -187,6 +193,9 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
 }
 
 /// Cycle through configured sinks
+///
+/// # Errors
+/// Returns an error if sink query or activation fails.
 pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     // Need at least 2 sinks to cycle
     if config.sinks.len() < 2 {
@@ -265,6 +274,9 @@ fn format_uptime(secs: u64) -> String {
 // ============================================================================
 
 /// Query system and daemon status (hybrid local+IPC command)
+///
+/// # Errors
+/// Returns an error if `PipeWire` query fails or IPC communication fails.
 pub async fn status(config: &Config, json_output: bool) -> Result<()> {
     // Always query PipeWire for current sink (works with or without daemon)
     let current_sink_name = PipeWire::get_default_sink_name()?;
@@ -347,6 +359,9 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
 }
 
 /// Gracefully shutdown the daemon
+///
+/// # Errors
+/// Returns an error if no daemon is running or IPC communication fails.
 pub async fn shutdown() -> Result<()> {
     if !ipc::is_daemon_running().await {
         anyhow::bail!("Daemon is not running");
@@ -369,6 +384,9 @@ pub async fn shutdown() -> Result<()> {
 }
 
 /// Get list of windows currently tracked by daemon
+///
+/// # Errors
+/// Returns an error if no daemon is running or IPC communication fails.
 pub async fn list_windows(json_output: bool) -> Result<()> {
     if !ipc::is_daemon_running().await {
         anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
@@ -420,6 +438,9 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
 }
 
 /// Test a regex pattern against current windows
+///
+/// # Errors
+/// Returns an error if the regex is invalid, no daemon is running, or IPC fails.
 pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
     if !ipc::is_daemon_running().await {
         anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");

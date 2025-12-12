@@ -206,7 +206,9 @@ impl PipeWire {
     /// Validate that all required `PipeWire` tools are available in `PATH`
     ///
     /// Checks for: `pw-dump`, `pw-metadata`, `pw-cli`
-    /// Returns an error with installation instructions if any are missing.
+    ///
+    /// # Errors
+    /// Returns an error with installation instructions if any tools are missing.
     pub fn validate_tools() -> Result<()> {
         let required_tools = ["pw-dump", "pw-metadata", "pw-cli"];
         let mut missing = Vec::new();
@@ -239,6 +241,9 @@ impl PipeWire {
     }
 
     /// Get all `PipeWire` objects via `pw-dump`
+    ///
+    /// # Errors
+    /// Returns an error if `pw-dump` fails to execute or returns invalid JSON.
     pub fn dump() -> Result<Vec<PwObject>> {
         let output = Command::new("pw-dump")
             .output()
@@ -396,13 +401,19 @@ impl PipeWire {
     }
 
     /// Get current default sink name (fresh query)
+    ///
+    /// # Errors
+    /// Returns an error if `pw-dump` fails or no default sink is configured in metadata.
     pub fn get_default_sink_name() -> Result<String> {
         let objects = Self::dump()?;
         Self::get_default_sink_name_from_objects(&objects)
             .ok_or_else(|| anyhow::anyhow!("No default sink found in PipeWire metadata"))
     }
 
-    /// Set the default audio sink via pw-metadata
+    /// Set the default audio sink via `pw-metadata`
+    ///
+    /// # Errors
+    /// Returns an error if `pw-metadata` command fails or the sink cannot be set.
     pub fn set_default_sink(node_name: &str) -> Result<()> {
         // Use proper JSON serialization to avoid injection risks
         let value_obj = serde_json::json!({"name": node_name});
@@ -423,7 +434,10 @@ impl PipeWire {
         Ok(())
     }
 
-    /// Switch device profile via pw-cli
+    /// Switch device profile via `pw-cli`
+    ///
+    /// # Errors
+    /// Returns an error if `pw-cli` command fails or the profile cannot be set.
     pub fn set_device_profile(device_id: u32, profile_index: u32) -> Result<()> {
         let profile_json = format!("{{ index: {profile_index} }}");
 
@@ -450,6 +464,10 @@ impl PipeWire {
     }
 
     /// Activate a sink, switching profiles if necessary
+    ///
+    /// # Errors
+    /// Returns an error if the sink is not found, profile switching fails, or the sink
+    /// node does not appear after profile switch.
     pub fn activate_sink(sink_name: &str) -> Result<()> {
         let objects = Self::dump()?;
 
