@@ -19,6 +19,12 @@ use tracing::{debug, error, warn};
 /// Set to 500ms to accommodate slow systems and high load scenarios
 const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
 
+/// Timeout for stale socket cleanup check (quick check, daemon not expected to respond)
+const STALE_SOCKET_CHECK_TIMEOUT_MS: u64 = 100;
+
+/// Timeout for client connections (longer to allow daemon to process request)
+const CLIENT_CONNECT_TIMEOUT_SECS: u64 = 5;
+
 // ============================================================================
 // Message Types
 // ============================================================================
@@ -142,8 +148,9 @@ pub async fn cleanup_stale_socket() -> Result<()> {
     }
 
     // Try to connect - if it fails, the socket is stale
+    // Use short timeout since we're just checking if socket is responsive
     let connect_result = tokio::time::timeout(
-        Duration::from_millis(100),
+        Duration::from_millis(STALE_SOCKET_CHECK_TIMEOUT_MS),
         tokio::net::UnixStream::connect(&socket_path),
     )
     .await;
@@ -249,17 +256,19 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
 pub async fn send_request(request: Request) -> Result<Response> {
     let socket_path = get_socket_path()?;
 
-    // Connect to daemon
-    let mut stream =
-        tokio::time::timeout(Duration::from_secs(5), UnixStream::connect(&socket_path))
-            .await
-            .context("Timeout connecting to daemon")?
-            .with_context(|| {
-                format!(
-                    "Failed to connect to daemon. Is the daemon running?\nSocket: {}",
-                    socket_path.display()
-                )
-            })?;
+    // Connect to daemon (longer timeout for actual client requests)
+    let mut stream = tokio::time::timeout(
+        Duration::from_secs(CLIENT_CONNECT_TIMEOUT_SECS),
+        UnixStream::connect(&socket_path),
+    )
+    .await
+    .context("Timeout connecting to daemon")?
+    .with_context(|| {
+        format!(
+            "Failed to connect to daemon. Is the daemon running?\nSocket: {}",
+            socket_path.display()
+        )
+    })?;
 
     debug!("Connected to daemon at {:?}", socket_path);
 

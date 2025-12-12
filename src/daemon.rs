@@ -72,7 +72,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         let exe = std::env::current_exe()?;
 
         // Spawn detached daemon process with --foreground flag
-        let child = Command::new(&exe)
+        let mut child = Command::new(&exe)
             .arg("daemon")
             .arg("--foreground")
             .stdin(std::process::Stdio::null())
@@ -99,20 +99,19 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 return Ok(());
             }
 
-            // Check if child process is still alive
+            // Check if child process is still alive (every 500ms)
             if attempt % 5 == 0 {
-                // Every 500ms, check if process is still running
-                match std::process::Command::new("kill")
-                    .args(["-0", &pid.to_string()])
-                    .output()
-                {
-                    Ok(output) if !output.status.success() => {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
                         anyhow::bail!(
-                            "Daemon process (PID: {pid}) exited during startup.\n\
+                            "Daemon process (PID: {pid}) exited during startup with status: {status}\n\
                              Check logs with: journalctl --user -xe | grep pwsw"
                         );
                     }
-                    _ => {}
+                    Ok(None) => {} // Still running
+                    Err(e) => {
+                        warn!("Could not check daemon process status: {}", e);
+                    }
                 }
             }
         }
