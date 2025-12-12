@@ -1,22 +1,22 @@
-//! One-shot CLI commands
+//! CLI commands
 //!
-//! Implements: --list-sinks, --get-sink, --set-sink, --next-sink, --prev-sink
+//! Implements both local commands (list-sinks, validate) and IPC-based commands
+//! that communicate with the daemon (status, reload, list-windows, test-rule).
 
 use anyhow::Result;
 use std::collections::HashSet;
 use tracing::{info, warn};
 
 use crate::config::Config;
-use crate::notification::{get_notification_sink_icon, get_sink_icon, send_notification};
+use crate::ipc::{self, Request, Response};
+use crate::notification::{get_notification_sink_icon, send_notification};
 use crate::pipewire::{
-    ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSinkJson, SinkInfoJson,
+    ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSinkJson,
 };
 
-/// Direction for sink cycling
-pub enum Direction {
-    Next,
-    Prev,
-}
+// ============================================================================
+// Local Commands (no daemon needed)
+// ============================================================================
 
 /// List all available sinks (active and profile-switch)
 pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
@@ -125,27 +125,10 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     Ok(())
 }
 
-/// Get the current default sink
-pub fn get_current_sink(config: &Config, json_output: bool) -> Result<()> {
-    let current = PipeWire::get_default_sink_name()?;
-
-    let sink = config.sinks.iter()
-        .find(|s| s.name == current)
-        .ok_or_else(|| anyhow::anyhow!(
-            "Current sink '{}' not in config. Run 'nasw --list-sinks' to see available sinks.",
-            current
-        ))?;
-
-    if json_output {
-        println!("{}", serde_json::to_string(&SinkInfoJson {
-            text: Some(sink.desc.clone()),
-            icon: get_sink_icon(sink),
-        })?);
-    } else {
-        println!("{}", sink.desc);
-    }
-
-    Ok(())
+/// Direction for sink cycling
+pub enum Direction {
+    Next,
+    Prev,
 }
 
 /// Set sink with smart toggle support
@@ -161,7 +144,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     let current = PipeWire::get_default_sink_name()?;
     let default = config.get_default_sink();
 
-    if config.settings.smart_toggle && current == target.name {
+    if config.settings.set_smart_toggle && current == target.name {
         if target.name == default.name {
             println!("Already on: {}", default.desc);
             return Ok(());
@@ -244,4 +227,213 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Format uptime in human-readable form
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{}s", secs);
+    }
+    if secs < 3600 {
+        return format!("{}m", secs / 60);
+    }
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if mins > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}h", hours)
+    }
+}
+
+// ============================================================================
+// IPC-based Commands (require daemon)
+// ============================================================================
+
+/// Query system and daemon status (hybrid local+IPC command)
+pub async fn status(config: &Config, json_output: bool) -> Result<()> {
+    // Always query PipeWire for current sink (works with or without daemon)
+    let current_sink_name = PipeWire::get_default_sink_name()?;
+    let current_sink_desc = config
+        .sinks
+        .iter()
+        .find(|s| s.name == current_sink_name)
+        .map(|s| s.desc.as_str())
+        .unwrap_or(&current_sink_name);
+
+    // Try to query daemon status (non-fatal if fails)
+    let daemon_running = ipc::is_daemon_running().await;
+    let daemon_info = if daemon_running {
+        match ipc::send_request(Request::Status).await {
+            Ok(Response::Status {
+                version,
+                uptime_secs,
+                current_sink,
+                active_window,
+                tracked_windows,
+            }) => Some((version, uptime_secs, current_sink, active_window, tracked_windows)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Output
+    if json_output {
+        let daemon_json = if let Some((version, uptime_secs, daemon_sink, active_window, tracked_windows)) = daemon_info {
+            serde_json::json!({
+                "running": true,
+                "version": version,
+                "uptime_secs": uptime_secs,
+                "uptime_human": format_uptime(uptime_secs),
+                "daemon_sink": daemon_sink,
+                "active_window": active_window,
+                "tracked_windows": tracked_windows,
+            })
+        } else {
+            serde_json::json!({
+                "running": false,
+            })
+        };
+
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "current_sink": {
+                    "name": current_sink_name,
+                    "description": current_sink_desc,
+                },
+                "daemon": daemon_json,
+            }))?
+        );
+    } else {
+        // Human-readable output
+        println!("Audio Output");
+        println!("{}", "=".repeat(12));
+        println!("Current: {}", current_sink_desc);
+        println!();
+        println!("Daemon");
+        println!("{}", "=".repeat(6));
+
+        if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) = daemon_info {
+            println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
+            println!("Version: {}", version);
+            if let Some(rule) = active_window {
+                println!("Active Rule: {}", rule);
+            }
+            println!("Tracked Windows: {}", tracked_windows);
+        } else {
+            println!("Status: Not running");
+            println!("  Start with: pwsw daemon");
+        }
+    }
+
+    Ok(())
+}
+
+/// Gracefully shutdown the daemon
+pub async fn shutdown() -> Result<()> {
+    let response = ipc::send_request(Request::Shutdown).await?;
+    
+    match response {
+        Response::Ok { message } => {
+            println!("{}", message);
+            Ok(())
+        }
+        Response::Error { message } => {
+            anyhow::bail!("Shutdown failed: {}", message);
+        }
+        _ => {
+            anyhow::bail!("Unexpected response from daemon");
+        }
+    }
+}
+
+/// Get list of windows currently tracked by daemon
+pub async fn list_windows(json_output: bool) -> Result<()> {
+    let response = ipc::send_request(Request::ListWindows).await?;
+
+    match response {
+        Response::Windows { windows } => {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&windows)?);
+            } else {
+                if windows.is_empty() {
+                    println!("No windows currently open.");
+                } else {
+                    let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
+                    let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
+
+                    println!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
+                    println!("{}", "=".repeat(40));
+
+                    if !tracked.is_empty() {
+                        println!("\nTracked ({}):", tracked.len());
+                        for window in &tracked {
+                            if let Some(ref track_info) = window.tracked {
+                                println!("  • {} → {}", window.app_id, track_info.sink_desc);
+                                println!("    {}", window.title);
+                            }
+                        }
+                    }
+
+                    if !untracked.is_empty() {
+                        println!("\nUntracked ({}):", untracked.len());
+                        for window in &untracked {
+                            println!("  • {}", window.app_id);
+                            println!("    {}", window.title);
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Response::Error { message } => {
+            anyhow::bail!("Daemon error: {}", message);
+        }
+        _ => {
+            anyhow::bail!("Unexpected response from daemon");
+        }
+    }
+}
+
+/// Test a regex pattern against current windows
+pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
+    let response = ipc::send_request(Request::TestRule {
+        pattern: pattern.to_string(),
+    })
+    .await?;
+
+    match response {
+        Response::RuleMatches { pattern, matches } => {
+            if json_output {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                    "pattern": pattern,
+                    "matches": matches,
+                }))?);
+            } else {
+                println!("Testing pattern: {}", pattern);
+                println!("================");
+                if matches.is_empty() {
+                    println!("No matches found.");
+                } else {
+                    println!("Matches ({}):", matches.len());
+                    for (i, window) in matches.iter().enumerate() {
+                        let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
+                        println!("{}. app_id: {}{}", i + 1, window.app_id,
+                            if matched_on == "app_id" || matched_on == "both" { " ✓" } else { "" });
+                        println!("   title: {}{}", window.title,
+                            if matched_on == "title" || matched_on == "both" { " ✓" } else { "" });
+                    }
+                }
+            }
+            Ok(())
+        }
+        Response::Error { message } => {
+            anyhow::bail!("Error: {}", message);
+        }
+        _ => {
+            anyhow::bail!("Unexpected response from daemon");
+        }
+    }
 }

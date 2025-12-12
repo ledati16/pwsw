@@ -27,7 +27,7 @@ pub struct Config {
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub reset_on_startup: bool,
-    pub smart_toggle: bool,
+    pub set_smart_toggle: bool,
     pub notify_daemon: bool,
     pub notify_switch: bool,
     pub notify_set: bool,
@@ -82,7 +82,7 @@ struct SettingsFile {
     #[serde(default = "default_true")]
     reset_on_startup: bool,
     #[serde(default = "default_true")]
-    smart_toggle: bool,
+    set_smart_toggle: bool,
     #[serde(default = "default_true")]
     notify_daemon: bool,
     #[serde(default = "default_true")]
@@ -129,7 +129,7 @@ impl Default for SettingsFile {
     fn default() -> Self {
         Self {
             reset_on_startup: true,
-            smart_toggle: true,
+            set_smart_toggle: true,
             notify_daemon: true,
             notify_switch: true,
             notify_set: true,
@@ -169,7 +169,7 @@ impl Config {
 
         let settings = Settings {
             reset_on_startup: config_file.settings.reset_on_startup,
-            smart_toggle: config_file.settings.smart_toggle,
+            set_smart_toggle: config_file.settings.set_smart_toggle,
             notify_daemon: config_file.settings.notify_daemon,
             notify_switch: config_file.settings.notify_switch,
             notify_set: config_file.settings.notify_set,
@@ -287,10 +287,10 @@ impl Config {
 
 [settings]
 reset_on_startup = true    # Reset to default sink on daemon start
-smart_toggle = true        # --set-sink toggles back to default if already active
+set_smart_toggle = true    # set-sink toggles back to default if already active
 notify_daemon = true       # Notifications for daemon start/stop
 notify_switch = true       # Notifications for rule-triggered switches (per-rule notify must also be true)
-notify_set = true          # Notifications for --set-sink, --next-sink, and --prev-sink commands
+notify_set = true          # Notifications for set-sink, next-sink, and prev-sink commands
 status_bar_icons = false   # If true, custom icons only apply to --get-sink --json
 log_level = "info"         # error, warn, info, debug, trace
 
@@ -338,6 +338,17 @@ notify = true
 "#;
         fs::write(path, default_config)
             .with_context(|| format!("Failed to write config: {:?}", path))?;
+
+        // Inform user that we created the config
+        eprintln!("Created default config at: {:?}", path);
+        eprintln!();
+        eprintln!("Next steps:");
+        eprintln!("  1. Run 'pwsw list-sinks' to see available audio outputs");
+        eprintln!("  2. Edit the config file to customize sinks and rules");
+        eprintln!("  3. Run 'pwsw validate' to check your config");
+        eprintln!("  4. Run 'pwsw daemon' to start");
+        eprintln!();
+
         Ok(())
     }
 
@@ -347,7 +358,7 @@ notify = true
 
         println!("Settings:");
         println!("  reset_on_startup: {}", self.settings.reset_on_startup);
-        println!("  smart_toggle: {}", self.settings.smart_toggle);
+        println!("  set_smart_toggle: {}", self.settings.set_smart_toggle);
         println!("  notify_daemon: {}", self.settings.notify_daemon);
         println!("  notify_switch: {}", self.settings.notify_switch);
         println!("  notify_set: {}", self.settings.notify_set);
