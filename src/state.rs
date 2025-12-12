@@ -13,6 +13,9 @@ use crate::notification::{get_app_icon, get_notification_sink_icon, send_notific
 use crate::pipewire::PipeWire;
 use crate::compositor::WindowEvent;
 
+/// Error message for missing default sink (should be caught by config validation)
+const BUG_NO_DEFAULT_SINK: &str = "BUG: No default sink found (config validation should prevent this)";
+
 /// Main application state for daemon mode
 pub struct State {
     pub config: Config,
@@ -40,7 +43,7 @@ impl State {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!("Could not query default sink: {}. Using configured default.", e);
             config.get_default_sink()
-                .expect("BUG: No default sink found (config validation should prevent this)")
+                .expect(BUG_NO_DEFAULT_SINK)
                 .name.clone()
         });
 
@@ -82,7 +85,7 @@ impl State {
             .map(|(_, w)| w.sink_name.clone())
             .unwrap_or_else(|| {
                 self.config.get_default_sink()
-                    .expect("BUG: No default sink found (config validation should prevent this)")
+                    .expect(BUG_NO_DEFAULT_SINK)
                     .name.clone()
             })
     }
@@ -239,7 +242,7 @@ impl State {
         let status_bar_icons = self.config.settings.status_bar_icons;
         let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
         let default_sink = self.config.get_default_sink()
-            .expect("BUG: No default sink found (config validation should prevent this)");
+            .expect(BUG_NO_DEFAULT_SINK);
         let is_default = default_sink.name == target;
         let notify = self.config.settings.notify_switch && is_default;
 

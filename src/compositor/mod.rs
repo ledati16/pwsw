@@ -150,7 +150,7 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     let (globals, mut event_queue) = registry_queue_init::<RegistryState>(conn)
         .context("Failed to initialize Wayland registry")?;
 
-    let mut state = RegistryState::default();
+    let mut state = RegistryState;
 
     // Do a roundtrip to get all globals
     event_queue.roundtrip(&mut state)
