@@ -394,6 +394,7 @@ notify = true
     }
 
     /// Resolve a sink reference (by position, desc, or name)
+    #[must_use]
     pub fn resolve_sink(&self, sink_ref: &str) -> Option<&SinkConfig> {
         // Try position first (1-indexed)
         if let Ok(pos) = sink_ref.parse::<usize>() {
@@ -417,6 +418,7 @@ notify = true
     }
 
     /// Check if notifications should be sent for a rule-triggered switch
+    #[must_use]
     pub fn should_notify_switch(&self, rule_notify: bool) -> bool {
         self.settings.notify_switch && rule_notify
     }
