@@ -54,6 +54,10 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         return Ok(());
     }
 
+    // Validate required PipeWire tools are available
+    PipeWire::validate_tools()
+        .context("PipeWire tools validation failed")?;
+
     // Initialize logging with config log_level (foreground mode only)
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
@@ -76,7 +80,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
     // Reset to default on startup if configured
     if state.config.settings.reset_on_startup {
-        let default = state.config.get_default_sink();
+        let default = state.config.get_default_sink()
+            .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
         if state.current_sink_name != default.name {
             info!("Resetting to default: {}", default.desc);
             PipeWire::activate_sink(&default.name)?;

@@ -142,7 +142,8 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     })?;
 
     let current = PipeWire::get_default_sink_name()?;
-    let default = config.get_default_sink();
+    let default = config.get_default_sink()
+        .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
 
     if config.settings.set_smart_toggle && current == target.name {
         if target.name == default.name {
@@ -333,8 +334,12 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
 
 /// Gracefully shutdown the daemon
 pub async fn shutdown() -> Result<()> {
+    if !ipc::is_daemon_running().await {
+        anyhow::bail!("Daemon is not running");
+    }
+
     let response = ipc::send_request(Request::Shutdown).await?;
-    
+
     match response {
         Response::Ok { message } => {
             println!("{}", message);
@@ -351,6 +356,10 @@ pub async fn shutdown() -> Result<()> {
 
 /// Get list of windows currently tracked by daemon
 pub async fn list_windows(json_output: bool) -> Result<()> {
+    if !ipc::is_daemon_running().await {
+        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
+    }
+
     let response = ipc::send_request(Request::ListWindows).await?;
 
     match response {
@@ -399,6 +408,10 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
 
 /// Test a regex pattern against current windows
 pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
+    if !ipc::is_daemon_running().await {
+        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
+    }
+
     let response = ipc::send_request(Request::TestRule {
         pattern: pattern.to_string(),
     })

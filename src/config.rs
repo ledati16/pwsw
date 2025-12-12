@@ -408,10 +408,12 @@ notify = true
     }
 
     /// Get the configured default sink
-    pub fn get_default_sink(&self) -> &SinkConfig {
-        self.sinks.iter()
-            .find(|s| s.default)
-            .expect("Default sink validated at load")
+    ///
+    /// Returns None if no default sink is configured (which should never happen after
+    /// successful config validation, but defensive programming is good practice).
+    #[must_use]
+    pub fn get_default_sink(&self) -> Option<&SinkConfig> {
+        self.sinks.iter().find(|s| s.default)
     }
 
     /// Check if notifications should be sent for a rule-triggered switch

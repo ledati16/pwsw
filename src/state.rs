@@ -39,7 +39,9 @@ impl State {
     pub fn new(config: Config) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!("Could not query default sink: {}. Using configured default.", e);
-            config.get_default_sink().name.clone()
+            config.get_default_sink()
+                .expect("BUG: No default sink found (config validation should prevent this)")
+                .name.clone()
         });
 
         info!("Current default sink: {}", current_sink_name);
@@ -78,7 +80,11 @@ impl State {
         self.active_windows.iter()
             .max_by_key(|(_, w)| w.opened_at)
             .map(|(_, w)| w.sink_name.clone())
-            .unwrap_or_else(|| self.config.get_default_sink().name.clone())
+            .unwrap_or_else(|| {
+                self.config.get_default_sink()
+                    .expect("BUG: No default sink found (config validation should prevent this)")
+                    .name.clone()
+            })
     }
 
     /// Check if a window is currently tracked
@@ -123,17 +129,23 @@ impl State {
         self.all_windows.insert(id, (app_id.to_string(), title.to_string()));
 
         // Extract rule data before mutating state (borrow checker)
-        let matched = self.find_matching_rule(app_id, title).map(|rule| {
-            let sink = self.config.resolve_sink(&rule.sink_ref).expect("Validated at load");
+        let matched = if let Some(rule) = self.find_matching_rule(app_id, title) {
+            let sink = self.config.resolve_sink(&rule.sink_ref)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "BUG: Rule references non-existent sink '{}' (should have been caught in config validation)",
+                    rule.sink_ref
+                ))?;
             // Use rule desc if set, otherwise use window title
             let trigger = rule.desc.clone().unwrap_or_else(|| title.to_string());
-            (
+            Some((
                 sink.name.clone(),
                 sink.desc.clone(),
                 trigger,
                 rule.notify,
-            )
-        });
+            ))
+        } else {
+            None
+        };
 
         let was_tracked = self.is_window_tracked(id);
 
@@ -164,7 +176,9 @@ impl State {
                     let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
                     let status_bar_icons = self.config.settings.status_bar_icons;
                     let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
-                    let is_default = self.config.get_default_sink().name == target;
+                    let default_sink = self.config.get_default_sink()
+                        .expect("BUG: No default sink found (config validation should prevent this)");
+                    let is_default = default_sink.name == target;
                     let notify = self.config.settings.notify_switch && is_default;
 
                     let return_context = format!("{} ended", old_window.trigger_desc);
@@ -190,7 +204,9 @@ impl State {
                 let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
                 let status_bar_icons = self.config.settings.status_bar_icons;
                 let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
-                let is_default = self.config.get_default_sink().name == target;
+                let default_sink = self.config.get_default_sink()
+                    .expect("BUG: No default sink found (config validation should prevent this)");
+                let is_default = default_sink.name == target;
                 let notify = self.config.settings.notify_switch && is_default;
 
                 // Show what we're returning from in the notification
