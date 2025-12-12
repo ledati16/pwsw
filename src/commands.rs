@@ -79,7 +79,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     } else {
         // Human-readable output
         let header = "ACTIVE SINKS:";
-        println!("{}", header);
+        println!("{header}");
         println!("{}", "-".repeat(header.len()));
         if active.is_empty() {
             println!("  (none)");
@@ -98,7 +98,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
 
         if !profile.is_empty() {
             let header = "AVAILABLE VIA PROFILE SWITCH:";
-            println!("\n{}", header);
+            println!("\n{header}");
             println!("{}", "-".repeat(header.len()));
             for sink in &profile {
                 let configured = config
@@ -112,7 +112,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
 
         if let Some(cfg) = config {
             let header = "CONFIGURED SINKS:";
-            println!("\n{}", header);
+            println!("\n{header}");
             println!("{}", "-".repeat(header.len()));
             for (i, sink) in cfg.sinks.iter().enumerate() {
                 let default_marker = if sink.default { " [DEFAULT]" } else { "" };
@@ -245,7 +245,7 @@ fn format_uptime(secs: u64) -> String {
     const SECS_PER_HOUR: u64 = 3600;
 
     if secs < SECS_PER_MINUTE {
-        return format!("{}s", secs);
+        return format!("{secs}s");
     }
     if secs < SECS_PER_HOUR {
         return format!("{}m", secs / SECS_PER_MINUTE);
@@ -253,9 +253,9 @@ fn format_uptime(secs: u64) -> String {
     let hours = secs / SECS_PER_HOUR;
     let mins = (secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
     if mins > 0 {
-        format!("{}h {}m", hours, mins)
+        format!("{hours}h {mins}m")
     } else {
-        format!("{}h", hours)
+        format!("{hours}h")
     }
 }
 
@@ -322,21 +322,21 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
     } else {
         // Human-readable output
         let header = "Audio Output";
-        println!("{}", header);
+        println!("{header}");
         println!("{}", "-".repeat(header.len()));
-        println!("Current: {}", current_sink_desc);
+        println!("Current: {current_sink_desc}");
         println!();
         let header = "Daemon";
-        println!("{}", header);
+        println!("{header}");
         println!("{}", "-".repeat(header.len()));
 
         if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) = daemon_info {
             println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
-            println!("Version: {}", version);
+            println!("Version: {version}");
             if let Some(rule) = active_window {
-                println!("Active Rule: {}", rule);
+                println!("Active Rule: {rule}");
             }
-            println!("Tracked Windows: {}", tracked_windows);
+            println!("Tracked Windows: {tracked_windows}");
         } else {
             println!("Status: Not running");
             println!("  Start with: pwsw daemon");
@@ -356,11 +356,11 @@ pub async fn shutdown() -> Result<()> {
 
     match response {
         Response::Ok { message } => {
-            println!("{}", message);
+            println!("{message}");
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {}", message);
+            anyhow::bail!("Error: {message}");
         }
         _ => {
             anyhow::bail!("Unexpected response from daemon");
@@ -387,7 +387,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                 let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
 
                 let header = format!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
-                println!("{}", header);
+                println!("{header}");
                 println!("{}", "-".repeat(header.len()));
 
                 if !tracked.is_empty() {
@@ -411,7 +411,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {}", message);
+            anyhow::bail!("Error: {message}");
         }
         _ => {
             anyhow::bail!("Unexpected response from daemon");
@@ -438,7 +438,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                     "matches": matches,
                 }))?);
             } else {
-                println!("Testing pattern: {}", pattern);
+                println!("Testing pattern: {pattern}");
                 println!("================");
                 if matches.is_empty() {
                     println!("No matches found.");
@@ -456,7 +456,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {}", message);
+            anyhow::bail!("Error: {message}");
         }
         _ => {
             anyhow::bail!("Unexpected response from daemon");

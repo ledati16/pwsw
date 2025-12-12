@@ -75,7 +75,7 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
 
                 // Register this handle with the event queue
                 state.toplevels.insert(id, ToplevelWindow {
-                    id: id as u64,
+                    id: u64::from(id),
                     ..Default::default()
                 });
             }

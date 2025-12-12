@@ -44,6 +44,7 @@ pub struct PwObject {
 
 impl PwObject {
     /// Get props from either info.props or top-level props (metadata objects use top-level)
+    #[must_use]
     pub fn get_props(&self) -> Option<&PwProps> {
         self.info
             .as_ref()
@@ -256,6 +257,7 @@ impl PipeWire {
     }
 
     /// Get currently active audio sinks from PipeWire objects
+    #[must_use]
     pub fn get_active_sinks(objects: &[PwObject]) -> Vec<ActiveSink> {
         let default_name = Self::get_default_sink_name_from_objects(objects);
 
@@ -284,6 +286,7 @@ impl PipeWire {
     }
 
     /// Get sinks available through profile switching
+    #[must_use]
     pub fn get_profile_sinks(objects: &[PwObject], active_sinks: &[ActiveSink]) -> Vec<ProfileSink> {
         let active_names: HashSet<&str> = active_sinks.iter()
             .map(|s| s.name.as_str())
@@ -344,7 +347,7 @@ impl PipeWire {
                     .unwrap_or(profile_name)
                     .replace("+input:", "-");
 
-                let predicted_name = format!("alsa_output.{}.{}", device_suffix, profile_suffix);
+                let predicted_name = format!("alsa_output.{device_suffix}.{profile_suffix}");
 
                 // Skip if already active
                 if active_names.contains(predicted_name.as_str()) {
@@ -369,6 +372,7 @@ impl PipeWire {
     }
 
     /// Extract default sink name from metadata objects
+    #[must_use]
     pub fn get_default_sink_name_from_objects(objects: &[PwObject]) -> Option<String> {
         for obj in objects {
             if obj.obj_type != "PipeWire:Interface:Metadata" {
@@ -408,7 +412,7 @@ impl PipeWire {
         let output = Command::new("pw-metadata")
             .args(["0", "default.audio.sink", &value, "Spa:String:JSON"])
             .output()
-            .with_context(|| format!("Failed to run pw-metadata to set default sink to '{}'", node_name))?;
+            .with_context(|| format!("Failed to run pw-metadata to set default sink to '{node_name}'"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -421,12 +425,12 @@ impl PipeWire {
 
     /// Switch device profile via pw-cli
     pub fn set_device_profile(device_id: u32, profile_index: u32) -> Result<()> {
-        let profile_json = format!("{{ index: {} }}", profile_index);
+        let profile_json = format!("{{ index: {profile_index} }}");
 
         let output = Command::new("pw-cli")
             .args(["s", &device_id.to_string(), "Profile", &profile_json])
             .output()
-            .with_context(|| format!("Failed to run pw-cli to set device {} profile {}", device_id, profile_index))?;
+            .with_context(|| format!("Failed to run pw-cli to set device {device_id} profile {profile_index}"))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -438,6 +442,7 @@ impl PipeWire {
     }
 
     /// Find profile sink info if sink requires profile switching
+    #[must_use]
     pub fn find_profile_sink(objects: &[PwObject], sink_name: &str) -> Option<ProfileSink> {
         let active = Self::get_active_sinks(objects);
         let profile_sinks = Self::get_profile_sinks(objects, &active);
@@ -457,8 +462,7 @@ impl PipeWire {
         // Need profile switching?
         let profile_sink = Self::find_profile_sink(&objects, sink_name)
             .ok_or_else(|| anyhow::anyhow!(
-                "Sink '{}' not found (not active and no profile switch available)",
-                sink_name
+                "Sink '{sink_name}' not found (not active and no profile switch available)"
             ))?;
 
         info!(
@@ -485,17 +489,14 @@ impl PipeWire {
 
         // Profile switch succeeded but sink node didn't appear - this is an error
         anyhow::bail!(
-            "Profile switched successfully but sink '{}' did not appear after {} attempts.\n\
+            "Profile switched successfully but sink '{sink_name}' did not appear after {PROFILE_SWITCH_MAX_RETRIES} attempts.\n\
              \n\
              This may indicate:\n\
              - The device needs more time to initialize (increase PROFILE_SWITCH_DELAY_MS)\n\
-             - The predicted node name '{}' is incorrect\n\
+             - The predicted node name '{sink_name}' is incorrect\n\
              - The audio device has a hardware issue\n\
              \n\
-             You can check available sinks with: pwsw list-sinks",
-            sink_name,
-            PROFILE_SWITCH_MAX_RETRIES,
-            sink_name
+             You can check available sinks with: pwsw list-sinks"
         )
     }
 }

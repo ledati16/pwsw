@@ -58,6 +58,7 @@ impl State {
     }
 
     /// Find a rule that matches the given app_id and title
+    #[must_use]
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<&Rule> {
         self.config.rules.iter().find(|rule| {
             rule.app_id_regex.is_match(app_id)
@@ -68,6 +69,7 @@ impl State {
     }
 
     /// Check if switching to a new sink is needed
+    #[must_use]
     pub fn should_switch_sink(&self, new_sink_name: &str) -> bool {
         self.current_sink_name != new_sink_name
     }
@@ -79,6 +81,7 @@ impl State {
     }
 
     /// Determine target sink based on active windows (most recent takes priority)
+    #[must_use]
     pub fn determine_target_sink(&self) -> String {
         self.active_windows.iter()
             .max_by_key(|(_, w)| w.opened_at)
@@ -91,6 +94,7 @@ impl State {
     }
 
     /// Check if a window is currently tracked
+    #[must_use]
     pub fn is_window_tracked(&self, id: u64) -> bool {
         self.active_windows.contains_key(&id)
     }
@@ -202,12 +206,14 @@ impl State {
     }
     
     /// Get the most recent active window (for status reporting)
+    #[must_use]
     pub fn get_most_recent_window(&self) -> Option<&ActiveWindow> {
         self.active_windows.values()
             .max_by_key(|w| w.opened_at)
     }
     
     /// Get a list of tracked windows (app_id, title pairs)
+    #[must_use]
     pub fn get_tracked_windows(&self) -> Vec<(String, String)> {
         self.active_windows.values()
             .map(|w| (w.app_id.clone(), w.title.clone()))
@@ -215,6 +221,7 @@ impl State {
     }
 
     /// Get a list of ALL currently open windows (for test-rule command)
+    #[must_use]
     pub fn get_all_windows(&self) -> Vec<(String, String)> {
         self.all_windows.values()
             .map(|(app_id, title)| (app_id.clone(), title.clone()))
@@ -222,6 +229,7 @@ impl State {
     }
 
     /// Get tracked windows with sink information (for list-windows command)
+    #[must_use]
     pub fn get_tracked_windows_with_sinks(&self) -> Vec<(String, String, String, String)> {
         // Returns: (app_id, title, sink_name, sink_desc)
         self.active_windows.values()
@@ -265,7 +273,7 @@ pub fn switch_audio(
 
     if notify {
         let message = match custom_desc {
-            Some(d) => format!("{} → {}", desc, d),
+            Some(d) => format!("{desc} → {d}"),
             None => desc.to_string(),
         };
         if let Err(e) = send_notification("Audio Output", &message, icon) {
