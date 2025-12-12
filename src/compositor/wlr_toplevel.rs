@@ -22,7 +22,7 @@ use super::WindowEvent;
 pub struct WlrToplevelState {
     /// Channel to send window events back to tokio runtime
     tx: mpsc::UnboundedSender<WindowEvent>,
-    /// Toplevels being tracked (handle object_id -> window state)
+    /// Toplevels being tracked (handle `object_id` -> window state)
     toplevels: HashMap<u32, ToplevelWindow>,
 }
 

@@ -2,7 +2,7 @@
 //!
 //! **⚠️ EXPERIMENTAL**: This protocol support is experimental and untested on real KDE Plasma systems.
 //!
-//! This protocol is supported by KWin (KDE Plasma's window manager), but has known issues:
+//! This protocol is supported by `KWin` (KDE Plasma's window manager), but has known issues:
 //!
 //! ## Known Issues
 //!

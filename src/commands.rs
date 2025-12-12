@@ -135,6 +135,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
 }
 
 /// Direction for sink cycling
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Next,
     Prev,
@@ -271,8 +272,7 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
         .sinks
         .iter()
         .find(|s| s.name == current_sink_name)
-        .map(|s| s.desc.as_str())
-        .unwrap_or(&current_sink_name);
+        .map_or(current_sink_name.as_str(), |s| s.desc.as_str());
 
     // Try to query daemon status (non-fatal if fails)
     let daemon_running = ipc::is_daemon_running().await;

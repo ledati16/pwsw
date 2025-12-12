@@ -52,9 +52,10 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         let socket_path = ipc::get_socket_path()?;
         anyhow::bail!(
             "Another PWSW daemon is already running.\n\
-             Socket: {socket_path:?}\n\n\
+             Socket: {}\n\n\
              To stop the existing daemon, run:\n  \
-             pwsw shutdown"
+             pwsw shutdown",
+            socket_path.display()
         );
     }
 
@@ -150,7 +151,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         if state.current_sink_name != default.name {
             info!("Resetting to default: {}", default.desc);
             PipeWire::activate_sink(&default.name)?;
-            state.current_sink_name = default.name.clone();
+            state.current_sink_name.clone_from(&default.name);
         }
     }
 
@@ -204,8 +205,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         let is_health_check = e.chain()
                             .any(|cause| {
                                 cause.downcast_ref::<std::io::Error>()
-                                    .map(|io_err| io_err.kind() == std::io::ErrorKind::UnexpectedEof)
-                                    .unwrap_or(false)
+                                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::UnexpectedEof)
                             });
 
                         if is_health_check {
@@ -250,8 +250,7 @@ async fn handle_ipc_request(
             // Get current sink description
             let current_sink = ctx.config.sinks.iter()
                 .find(|s| s.name == ctx.current_sink_name)
-                .map(|s| s.desc.clone())
-                .unwrap_or_else(|| ctx.current_sink_name.clone());
+                .map_or_else(|| ctx.current_sink_name.clone(), |s| s.desc.clone());
 
             Response::Status {
                 version: ctx.version,
@@ -279,8 +278,8 @@ async fn handle_ipc_request(
                 .map(|(app_id, title)| {
                     let tracked = tracked_map.get(&(app_id.as_str(), title.as_str()))
                         .map(|(sink_name, sink_desc)| ipc::TrackedInfo {
-                            sink_name: sink_name.to_string(),
-                            sink_desc: sink_desc.to_string(),
+                            sink_name: (*sink_name).to_string(),
+                            sink_desc: (*sink_desc).to_string(),
                         });
 
                     WindowInfo {
