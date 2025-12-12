@@ -92,7 +92,7 @@ pub fn get_socket_path() -> Result<PathBuf> {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
     } else if let Ok(user) = std::env::var("USER") {
         // Fallback to /tmp with username for consistent location
-        Ok(PathBuf::from(format!("/tmp/pwsw-{}.sock", user)))
+        Ok(PathBuf::from(format!("/tmp/pwsw-{user}.sock")))
     } else {
         // Cannot determine a consistent socket path
         anyhow::bail!(
@@ -158,7 +158,7 @@ pub async fn cleanup_stale_socket() -> Result<()> {
     if is_stale {
         debug!("Removing stale socket: {:?}", socket_path);
         std::fs::remove_file(&socket_path)
-            .with_context(|| format!("Failed to remove stale socket: {:?}", socket_path))?;
+            .with_context(|| format!("Failed to remove stale socket: {socket_path:?}"))?;
     }
 
     Ok(())
@@ -185,7 +185,7 @@ async fn read_message<T: for<'de> Deserialize<'de>>(
     let msg_len = u32::from_be_bytes(len_buf) as usize;
     
     if msg_len > MAX_MESSAGE_SIZE {
-        anyhow::bail!("Message too large: {} bytes (max: {})", msg_len, MAX_MESSAGE_SIZE);
+        anyhow::bail!("Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})");
     }
     
     // Read the JSON payload
@@ -245,8 +245,7 @@ pub async fn send_request(request: Request) -> Result<Response> {
     .context("Timeout connecting to daemon")?
     .with_context(|| {
         format!(
-            "Failed to connect to daemon. Is the daemon running?\nSocket: {:?}",
-            socket_path
+            "Failed to connect to daemon. Is the daemon running?\nSocket: {socket_path:?}"
         )
     })?;
     
@@ -281,7 +280,7 @@ impl IpcServer {
         
         // Bind the listener
         let listener = UnixListener::bind(&socket_path)
-            .with_context(|| format!("Failed to bind IPC socket: {:?}", socket_path))?;
+            .with_context(|| format!("Failed to bind IPC socket: {socket_path:?}"))?;
         
         debug!("IPC server listening on {:?}", socket_path);
         

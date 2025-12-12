@@ -154,10 +154,10 @@ impl Config {
         }
 
         let contents = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config: {:?}", config_path))?;
+            .with_context(|| format!("Failed to read config: {config_path:?}"))?;
 
         let config_file: ConfigFile = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config: {:?}", config_path))?;
+            .with_context(|| format!("Failed to parse config: {config_path:?}"))?;
 
         Self::from_config_file(config_file)
     }
@@ -222,8 +222,7 @@ impl Config {
         match self.settings.log_level.as_str() {
             "error" | "warn" | "info" | "debug" | "trace" => {}
             level => anyhow::bail!(
-                "Invalid log_level '{}'. Must be: error, warn, info, debug, or trace",
-                level
+                "Invalid log_level '{level}'. Must be: error, warn, info, debug, or trace"
             ),
         }
 
@@ -232,7 +231,7 @@ impl Config {
         match default_count {
             0 => anyhow::bail!("No default sink. Mark one sink with 'default = true'"),
             1 => {}
-            n => anyhow::bail!("{} default sinks found. Only one allowed.", n),
+            n => anyhow::bail!("{n} default sinks found. Only one allowed."),
         }
 
         // No duplicate descriptions or names
@@ -274,7 +273,7 @@ impl Config {
             .context("Could not determine config directory")?
             .join("pwsw");
         fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config dir: {:?}", config_dir))?;
+            .with_context(|| format!("Failed to create config dir: {config_dir:?}"))?;
         Ok(config_dir.join("config.toml"))
     }
 
@@ -337,10 +336,10 @@ notify = true
 # notify = true
 "#;
         fs::write(path, default_config)
-            .with_context(|| format!("Failed to write config: {:?}", path))?;
+            .with_context(|| format!("Failed to write config: {path:?}"))?;
 
         // Inform user that we created the config
-        eprintln!("Created default config at: {:?}", path);
+        eprintln!("Created default config at: {path:?}");
         eprintln!();
         eprintln!("Next steps:");
         eprintln!("  1. Run 'pwsw list-sinks' to see available audio outputs");
@@ -371,7 +370,7 @@ notify = true
             println!("  {}. {}{}", i + 1, sink.desc, marker);
             println!("     name: {}", sink.name);
             if let Some(ref icon) = sink.icon {
-                println!("     icon: {}", icon);
+                println!("     icon: {icon}");
             }
         }
 
@@ -382,14 +381,14 @@ notify = true
             for (i, rule) in self.rules.iter().enumerate() {
                 println!("  {}. app_id: {}", i + 1, rule.app_id_pattern);
                 if let Some(ref title) = rule.title_pattern {
-                    println!("     title: {}", title);
+                    println!("     title: {title}");
                 }
                 println!("     sink: {} (notify: {})", rule.sink_ref, rule.notify);
             }
         }
 
         if let Ok(path) = Self::get_config_path() {
-            println!("\nConfig: {:?}", path);
+            println!("\nConfig: {path:?}");
         }
     }
 

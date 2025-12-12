@@ -83,7 +83,7 @@ impl Dispatch<org_kde_plasma_window_management::OrgKdePlasmaWindowManagement, ()
             trace!("New plasma window: {}", window_id);
             
             state.windows.insert(window_id, PlasmaWindow {
-                id: window_id as u64,
+                id: u64::from(window_id),
                 ..Default::default()
             });
         }

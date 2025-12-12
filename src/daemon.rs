@@ -52,10 +52,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         let socket_path = ipc::get_socket_path()?;
         anyhow::bail!(
             "Another PWSW daemon is already running.\n\
-             Socket: {:?}\n\n\
+             Socket: {socket_path:?}\n\n\
              To stop the existing daemon, run:\n  \
-             pwsw shutdown",
-            socket_path
+             pwsw shutdown"
         );
     }
 
@@ -78,7 +77,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .with_context(|| "Failed to spawn background daemon")?;
 
         let pid = child.id();
-        println!("Starting daemon (PID: {})...", pid);
+        println!("Starting daemon (PID: {pid})...");
 
         // Wait for daemon to initialize by checking if it's responding to IPC
         // Try for up to 2 seconds (20 attempts * 100ms)
@@ -104,9 +103,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 {
                     Ok(output) if !output.status.success() => {
                         anyhow::bail!(
-                            "Daemon process (PID: {}) exited during startup.\n\
-                             Check logs with: journalctl --user -xe | grep pwsw",
-                            pid
+                            "Daemon process (PID: {pid}) exited during startup.\n\
+                             Check logs with: journalctl --user -xe | grep pwsw"
                         );
                     }
                     _ => {}
@@ -117,7 +115,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         anyhow::bail!(
             "Daemon failed to start within {} seconds.\n\
              Process may still be initializing. Check with: pwsw status",
-            (MAX_ATTEMPTS as u64 * RETRY_DELAY_MS) / 1000
+            (u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS) / 1000
         );
     }
 
@@ -333,7 +331,7 @@ async fn handle_ipc_request(
                 }
                 Err(e) => {
                     Response::Error {
-                        message: format!("Invalid regex pattern: {}", e),
+                        message: format!("Invalid regex pattern: {e}"),
                     }
                 }
             }
