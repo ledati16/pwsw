@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::process::Command;
 use std::time::Duration;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, trace};
 
 // ============================================================================
 // Constants
@@ -483,8 +483,19 @@ impl PipeWire {
             debug!("Waiting for sink '{}' (attempt {}/{})", sink_name, attempt, PROFILE_SWITCH_MAX_RETRIES);
         }
 
-        // Try setting anyway - PipeWire might accept it
-        warn!("Sink '{}' not visible after profile switch, attempting to set anyway", sink_name);
-        Self::set_default_sink(sink_name)
+        // Profile switch succeeded but sink node didn't appear - this is an error
+        anyhow::bail!(
+            "Profile switched successfully but sink '{}' did not appear after {} attempts.\n\
+             \n\
+             This may indicate:\n\
+             - The device needs more time to initialize (increase PROFILE_SWITCH_DELAY_MS)\n\
+             - The predicted node name '{}' is incorrect\n\
+             - The audio device has a hardware issue\n\
+             \n\
+             You can check available sinks with: pwsw list-sinks",
+            sink_name,
+            PROFILE_SWITCH_MAX_RETRIES,
+            sink_name
+        )
     }
 }

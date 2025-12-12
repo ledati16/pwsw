@@ -16,6 +16,18 @@ use crate::notification::send_notification;
 use crate::pipewire::PipeWire;
 use crate::state::State;
 
+/// Context data passed to IPC request handlers
+struct IpcContext {
+    version: String,
+    uptime_secs: u64,
+    current_sink_name: String,
+    active_window: Option<String>,
+    tracked_with_sinks: Vec<(String, String, String, String)>,
+    all_windows: Vec<(String, String)>,
+    config: Config,
+    shutdown_tx: broadcast::Sender<()>,
+}
+
 /// Run the daemon with the given configuration
 pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Check if a daemon is already running BEFORE any initialization
@@ -30,9 +42,10 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         );
     }
 
-    // Background mode: spawn detached process and exit
+    // Background mode: spawn detached process and wait for successful startup
     if !foreground {
         use std::process::Command;
+        use std::time::Duration;
 
         // Get current executable path
         let exe = std::env::current_exe()?;
@@ -47,11 +60,48 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .spawn()
             .with_context(|| "Failed to spawn background daemon")?;
 
-        println!("Daemon started in background (PID: {})", child.id());
-        println!("Use 'pwsw status' to check daemon status");
-        println!("Use 'pwsw shutdown' to stop the daemon");
+        let pid = child.id();
+        println!("Starting daemon (PID: {})...", pid);
 
-        return Ok(());
+        // Wait for daemon to initialize by checking if it's responding to IPC
+        // Try for up to 2 seconds (20 attempts * 100ms)
+        const MAX_ATTEMPTS: u32 = 20;
+        const RETRY_DELAY_MS: u64 = 100;
+
+        for attempt in 1..=MAX_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+
+            if ipc::is_daemon_running().await {
+                println!("✓ Daemon started successfully");
+                println!("Use 'pwsw status' to check daemon status");
+                println!("Use 'pwsw shutdown' to stop the daemon");
+                return Ok(());
+            }
+
+            // Check if child process is still alive
+            if attempt % 5 == 0 {
+                // Every 500ms, check if process is still running
+                match std::process::Command::new("kill")
+                    .args(["-0", &pid.to_string()])
+                    .output()
+                {
+                    Ok(output) if !output.status.success() => {
+                        anyhow::bail!(
+                            "Daemon process (PID: {}) exited during startup.\n\
+                             Check logs with: journalctl --user -xe | grep pwsw",
+                            pid
+                        );
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        anyhow::bail!(
+            "Daemon failed to start within {} seconds.\n\
+             Process may still be initializing. Check with: pwsw status",
+            (MAX_ATTEMPTS as u64 * RETRY_DELAY_MS) / 1000
+        );
     }
 
     // Validate required PipeWire tools are available
@@ -124,28 +174,20 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             
             Some(mut stream) = ipc_server.accept() => {
                 // Handle IPC request - clone what we need for the task
-                let uptime_secs = start_time.elapsed().as_secs();
-                let version = env!("CARGO_PKG_VERSION").to_string();
-                let current_sink_name = state.current_sink_name.clone();
-                let config = state.config.clone();
-                let tracked_with_sinks = state.get_tracked_windows_with_sinks();
-                let all_windows = state.get_all_windows();
-                let most_recent_window = state.get_most_recent_window()
-                    .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name));
-                let shutdown_signal = shutdown_tx.clone();
+                let ctx = IpcContext {
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    uptime_secs: start_time.elapsed().as_secs(),
+                    current_sink_name: state.current_sink_name.clone(),
+                    active_window: state.get_most_recent_window()
+                        .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name)),
+                    tracked_with_sinks: state.get_tracked_windows_with_sinks(),
+                    all_windows: state.get_all_windows(),
+                    config: state.config.clone(),
+                    shutdown_tx: shutdown_tx.clone(),
+                };
 
                 tokio::spawn(async move {
-                    if let Err(e) = handle_ipc_request(
-                        &mut stream,
-                        version,
-                        uptime_secs,
-                        current_sink_name,
-                        most_recent_window,
-                        tracked_with_sinks,
-                        all_windows,
-                        config,
-                        shutdown_signal,
-                    ).await {
+                    if let Err(e) = handle_ipc_request(&mut stream, ctx).await {
                         // "early eof" when reading message length is benign - it happens when
                         // clients connect just to check if daemon is running (is_daemon_running())
                         // or when they disconnect before sending data. Log at debug level.
@@ -183,31 +225,24 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 /// Handle a single IPC request from a client
 async fn handle_ipc_request(
     stream: &mut tokio::net::UnixStream,
-    version: String,
-    uptime_secs: u64,
-    current_sink_name: String,
-    active_window: Option<String>,
-    tracked_with_sinks: Vec<(String, String, String, String)>,
-    all_windows: Vec<(String, String)>,
-    config: Config,
-    shutdown_tx: broadcast::Sender<()>,
+    ctx: IpcContext,
 ) -> Result<()> {
     let request = ipc::read_request(stream).await?;
-    
+
     let response = match request {
         Request::Status => {
             // Get current sink description
-            let current_sink = config.sinks.iter()
-                .find(|s| s.name == current_sink_name)
+            let current_sink = ctx.config.sinks.iter()
+                .find(|s| s.name == ctx.current_sink_name)
                 .map(|s| s.desc.clone())
-                .unwrap_or_else(|| current_sink_name.clone());
+                .unwrap_or_else(|| ctx.current_sink_name.clone());
 
             Response::Status {
-                version,
-                uptime_secs,
+                version: ctx.version,
+                uptime_secs: ctx.uptime_secs,
                 current_sink,
-                active_window,
-                tracked_windows: tracked_with_sinks.len(),
+                active_window: ctx.active_window,
+                tracked_windows: ctx.tracked_with_sinks.len(),
             }
         }
 
@@ -215,7 +250,7 @@ async fn handle_ipc_request(
             use std::collections::HashMap;
 
             // Build a map of tracked windows for quick lookup
-            let tracked_map: HashMap<(&str, &str), (&str, &str)> = tracked_with_sinks
+            let tracked_map: HashMap<(&str, &str), (&str, &str)> = ctx.tracked_with_sinks
                 .iter()
                 .map(|(app_id, title, sink_name, sink_desc)| {
                     ((app_id.as_str(), title.as_str()), (sink_name.as_str(), sink_desc.as_str()))
@@ -223,7 +258,7 @@ async fn handle_ipc_request(
                 .collect();
 
             // Build WindowInfo for all windows with tracking status
-            let windows = all_windows
+            let windows = ctx.all_windows
                 .iter()
                 .map(|(app_id, title)| {
                     let tracked = tracked_map.get(&(app_id.as_str(), title.as_str()))
@@ -243,11 +278,11 @@ async fn handle_ipc_request(
 
             Response::Windows { windows }
         }
-        
+
         Request::TestRule { pattern } => {
             match regex::Regex::new(&pattern) {
                 Ok(regex) => {
-                    let matches = all_windows
+                    let matches = ctx.all_windows
                         .iter()
                         .filter_map(|(app_id, title)| {
                             let app_id_match = regex.is_match(app_id);
@@ -289,10 +324,10 @@ async fn handle_ipc_request(
             ipc::write_response(stream, &Response::Ok {
                 message: "Daemon shutting down...".to_string(),
             }).await?;
-            
+
             // Signal shutdown to main loop
-            let _ = shutdown_tx.send(());
-            
+            let _ = ctx.shutdown_tx.send(());
+
             // Return without sending another response
             return Ok(());
         }
