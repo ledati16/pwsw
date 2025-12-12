@@ -11,12 +11,24 @@ use crate::config::Config;
 use crate::ipc::{self, Request, Response};
 use crate::notification::{get_notification_sink_icon, send_notification};
 use crate::pipewire::{
-    ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSinkJson,
+    ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSink,
+    ProfileSinkJson,
 };
 
 // ============================================================================
 // Local Commands (no daemon needed)
 // ============================================================================
+
+/// Helper to determine a sink's status (active, requires profile switch, or not found)
+fn get_sink_status(sink_name: &str, active: &[ActiveSink], profile: &[ProfileSink]) -> &'static str {
+    if active.iter().any(|a| a.name == sink_name) {
+        "active"
+    } else if profile.iter().any(|p| p.predicted_name == sink_name) {
+        "requires_profile_switch"
+    } else {
+        "not_found"
+    }
+}
 
 /// List all available sinks (active and profile-switch)
 pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
@@ -49,13 +61,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             }).collect(),
             configured_sinks: config.map(|c| {
                 c.sinks.iter().enumerate().map(|(i, s)| {
-                    let status = if active.iter().any(|a| a.name == s.name) {
-                        "active"
-                    } else if profile.iter().any(|p| p.predicted_name == s.name) {
-                        "requires_profile_switch"
-                    } else {
-                        "not_found"
-                    };
+                    let status = get_sink_status(&s.name, &active, &profile);
                     ConfiguredSinkJson {
                         index: i + 1,
                         name: s.name.clone(),
@@ -72,8 +78,9 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Human-readable output
-        println!("ACTIVE SINKS:");
-        println!("{}", "-".repeat(13));
+        let header = "ACTIVE SINKS:";
+        println!("{}", header);
+        println!("{}", "-".repeat(header.len()));
         if active.is_empty() {
             println!("  (none)");
         } else {
@@ -90,8 +97,9 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         }
 
         if !profile.is_empty() {
-            println!("\nAVAILABLE VIA PROFILE SWITCH:");
-            println!("{}", "-".repeat(30));
+            let header = "AVAILABLE VIA PROFILE SWITCH:";
+            println!("\n{}", header);
+            println!("{}", "-".repeat(header.len()));
             for sink in &profile {
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
@@ -103,16 +111,15 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         }
 
         if let Some(cfg) = config {
-            println!("\nCONFIGURED SINKS:");
-            println!("{}", "-".repeat(17));
+            let header = "CONFIGURED SINKS:";
+            println!("\n{}", header);
+            println!("{}", "-".repeat(header.len()));
             for (i, sink) in cfg.sinks.iter().enumerate() {
                 let default_marker = if sink.default { " [DEFAULT]" } else { "" };
-                let status = if active.iter().any(|a| a.name == sink.name) {
-                    "active"
-                } else if profile.iter().any(|p| p.predicted_name == sink.name) {
-                    "profile switch"
-                } else {
-                    "not found"
+                let status = match get_sink_status(&sink.name, &active, &profile) {
+                    "active" => "active",
+                    "requires_profile_switch" => "profile switch",
+                    _ => "not found",
                 };
                 println!("  {}. \"{}\"{} - {}", i + 1, sink.desc, default_marker, status);
                 println!("     {}", sink.name);
@@ -309,12 +316,14 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
         );
     } else {
         // Human-readable output
-        println!("Audio Output");
-        println!("{}", "=".repeat(12));
+        let header = "Audio Output";
+        println!("{}", header);
+        println!("{}", "-".repeat(header.len()));
         println!("Current: {}", current_sink_desc);
         println!();
-        println!("Daemon");
-        println!("{}", "=".repeat(6));
+        let header = "Daemon";
+        println!("{}", header);
+        println!("{}", "-".repeat(header.len()));
 
         if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) = daemon_info {
             println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
@@ -346,7 +355,7 @@ pub async fn shutdown() -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Shutdown failed: {}", message);
+            anyhow::bail!("Error: {}", message);
         }
         _ => {
             anyhow::bail!("Unexpected response from daemon");
@@ -373,8 +382,9 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                     let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
                     let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
 
-                    println!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
-                    println!("{}", "=".repeat(40));
+                    let header = format!("All Windows ({} open, {} tracked):", windows.len(), tracked.len());
+                    println!("{}", header);
+                    println!("{}", "-".repeat(header.len()));
 
                     if !tracked.is_empty() {
                         println!("\nTracked ({}):", tracked.len());
@@ -398,7 +408,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Daemon error: {}", message);
+            anyhow::bail!("Error: {}", message);
         }
         _ => {
             anyhow::bail!("Unexpected response from daemon");
