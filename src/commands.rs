@@ -241,14 +241,17 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
 
 /// Format uptime in human-readable form
 fn format_uptime(secs: u64) -> String {
-    if secs < 60 {
+    const SECS_PER_MINUTE: u64 = 60;
+    const SECS_PER_HOUR: u64 = 3600;
+
+    if secs < SECS_PER_MINUTE {
         return format!("{}s", secs);
     }
-    if secs < 3600 {
-        return format!("{}m", secs / 60);
+    if secs < SECS_PER_HOUR {
+        return format!("{}m", secs / SECS_PER_MINUTE);
     }
-    let hours = secs / 3600;
-    let mins = (secs % 3600) / 60;
+    let hours = secs / SECS_PER_HOUR;
+    let mins = (secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
     if mins > 0 {
         format!("{}h {}m", hours, mins)
     } else {
