@@ -33,6 +33,11 @@ QUERYING (no daemon needed):
   list-sinks          List available PipeWire audio outputs
   validate            Check config file syntax
 
+MANUAL SINK CONTROL (no daemon needed):
+  set-sink SINK       Switch to specific sink (by desc, name, or position 1/2/3)
+  next-sink           Cycle to next configured sink (wraps around)
+  prev-sink           Cycle to previous configured sink (wraps around)
+
 HOW IT WORKS:
   The daemon monitors Wayland windows and switches audio outputs based on
   rules in your config file. Most recently opened matching window wins.
@@ -95,6 +100,18 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+
+    /// Set audio output (by desc, node name, or position like "1", "2")
+    SetSink {
+        /// Sink reference (description, node name, or position)
+        sink: String,
+    },
+
+    /// Cycle to next configured sink
+    NextSink,
+
+    /// Cycle to previous configured sink
+    PrevSink,
 
     /// Terminal UI (not yet implemented)
     Tui,

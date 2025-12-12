@@ -14,7 +14,16 @@ async fn main() -> Result<()> {
     match args.command {
         // No subcommand - show status or helpful message
         None => {
-            commands::status(false).await
+            // Initialize minimal logging
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::load()?;
+            commands::status(&config, false).await
         }
 
         // Daemon mode
@@ -22,20 +31,30 @@ async fn main() -> Result<()> {
             let config = Config::load()?;
             daemon::run(config, foreground).await
         }
-        
-        // IPC-based commands (require daemon)
+
+        // Hybrid commands (work with or without daemon)
         Some(Command::Status { json }) => {
-            commands::status(json).await
+            // Initialize minimal logging
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::load()?;
+            commands::status(&config, json).await
         }
 
+        // IPC-based commands (require daemon)
         Some(Command::Shutdown) => {
             commands::shutdown().await
         }
-        
+
         Some(Command::ListWindows { json }) => {
             commands::list_windows(json).await
         }
-        
+
         Some(Command::TestRule { pattern, json }) => {
             commands::test_rule(&pattern, json).await
         }
@@ -67,7 +86,46 @@ async fn main() -> Result<()> {
             config.print_summary();
             Ok(())
         }
-        
+
+        Some(Command::SetSink { sink }) => {
+            // Initialize minimal logging
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::load()?;
+            commands::set_sink_smart(&config, &sink)
+        }
+
+        Some(Command::NextSink) => {
+            // Initialize minimal logging
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::load()?;
+            commands::cycle_sink(&config, commands::Direction::Next)
+        }
+
+        Some(Command::PrevSink) => {
+            // Initialize minimal logging
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+                )
+                .init();
+
+            let config = Config::load()?;
+            commands::cycle_sink(&config, commands::Direction::Prev)
+        }
+
         // Future feature
         Some(Command::Tui) => {
             println!("TUI not yet implemented");

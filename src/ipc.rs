@@ -39,6 +39,7 @@ pub enum Response {
         uptime_secs: u64,
         current_sink: String,
         active_window: Option<String>,
+        tracked_windows: usize,
     },
     /// Generic success response
     Ok { message: String },

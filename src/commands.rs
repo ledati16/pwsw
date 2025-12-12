@@ -5,9 +5,11 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
+use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::ipc::{self, Request, Response};
+use crate::notification::{get_notification_sink_icon, send_notification};
 use crate::pipewire::{
     ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSinkJson,
 };
@@ -123,65 +125,210 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     Ok(())
 }
 
+/// Direction for sink cycling
+pub enum Direction {
+    Next,
+    Prev,
+}
+
+/// Set sink with smart toggle support
+pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
+    let target = config.resolve_sink(sink_ref).ok_or_else(|| {
+        let available: Vec<_> = config.sinks.iter()
+            .enumerate()
+            .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
+            .collect();
+        anyhow::anyhow!("Unknown sink '{}'. Available: {}", sink_ref, available.join(", "))
+    })?;
+
+    let current = PipeWire::get_default_sink_name()?;
+    let default = config.get_default_sink();
+
+    if config.settings.set_smart_toggle && current == target.name {
+        if target.name == default.name {
+            println!("Already on: {}", default.desc);
+            return Ok(());
+        }
+        info!("Toggle → default: {}", default.desc);
+        PipeWire::activate_sink(&default.name)?;
+        println!("Switched to: {}", default.desc);
+
+        if config.settings.notify_set {
+            let icon = get_notification_sink_icon(default, config.settings.status_bar_icons);
+            if let Err(e) = send_notification("Audio Output", &default.desc, Some(&icon)) {
+                warn!("Notification failed: {}", e);
+            }
+        }
+    } else {
+        info!("Switching to: {}", target.desc);
+        PipeWire::activate_sink(&target.name)?;
+        println!("Switched to: {}", target.desc);
+
+        if config.settings.notify_set {
+            let icon = get_notification_sink_icon(target, config.settings.status_bar_icons);
+            if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
+                warn!("Notification failed: {}", e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Cycle through configured sinks
+pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
+    // Need at least 2 sinks to cycle
+    if config.sinks.len() < 2 {
+        println!("Only one sink configured, nothing to cycle");
+        return Ok(());
+    }
+
+    let current = PipeWire::get_default_sink_name()?;
+
+    // Find current sink's index in config, or start from default
+    let current_index = config.sinks.iter()
+        .position(|s| s.name == current)
+        .unwrap_or_else(|| {
+            // Current sink not in config, find default's index
+            config.sinks.iter()
+                .position(|s| s.default)
+                .unwrap_or(0)
+        });
+
+    // Calculate next index with wrapping
+    let next_index = match direction {
+        Direction::Next => (current_index + 1) % config.sinks.len(),
+        Direction::Prev => {
+            if current_index == 0 {
+                config.sinks.len() - 1
+            } else {
+                current_index - 1
+            }
+        }
+    };
+
+    let target = &config.sinks[next_index];
+
+    // Already on target (shouldn't happen with >= 2 sinks, but be safe)
+    if target.name == current {
+        println!("Already on: {}", target.desc);
+        return Ok(());
+    }
+
+    info!("Cycling to: {}", target.desc);
+    PipeWire::activate_sink(&target.name)?;
+    println!("Switched to: {}", target.desc);
+
+    if config.settings.notify_set {
+        let icon = get_notification_sink_icon(target, config.settings.status_bar_icons);
+        if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
+            warn!("Notification failed: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Format uptime in human-readable form
+fn format_uptime(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{}s", secs);
+    }
+    if secs < 3600 {
+        return format!("{}m", secs / 60);
+    }
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    if mins > 0 {
+        format!("{}h {}m", hours, mins)
+    } else {
+        format!("{}h", hours)
+    }
+}
+
 // ============================================================================
 // IPC-based Commands (require daemon)
 // ============================================================================
 
-/// Query daemon status
-pub async fn status(json_output: bool) -> Result<()> {
-    // Check if daemon is running first
-    if !ipc::is_daemon_running().await {
-        if json_output {
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "running": false,
-                "error": "Daemon is not running"
-            }))?);
+/// Query system and daemon status (hybrid local+IPC command)
+pub async fn status(config: &Config, json_output: bool) -> Result<()> {
+    // Always query PipeWire for current sink (works with or without daemon)
+    let current_sink_name = PipeWire::get_default_sink_name()?;
+    let current_sink_desc = config
+        .sinks
+        .iter()
+        .find(|s| s.name == current_sink_name)
+        .map(|s| s.desc.as_str())
+        .unwrap_or(&current_sink_name);
+
+    // Try to query daemon status (non-fatal if fails)
+    let daemon_running = ipc::is_daemon_running().await;
+    let daemon_info = if daemon_running {
+        match ipc::send_request(Request::Status).await {
+            Ok(Response::Status {
+                version,
+                uptime_secs,
+                current_sink,
+                active_window,
+                tracked_windows,
+            }) => Some((version, uptime_secs, current_sink, active_window, tracked_windows)),
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    // Output
+    if json_output {
+        let daemon_json = if let Some((version, uptime_secs, daemon_sink, active_window, tracked_windows)) = daemon_info {
+            serde_json::json!({
+                "running": true,
+                "version": version,
+                "uptime_secs": uptime_secs,
+                "uptime_human": format_uptime(uptime_secs),
+                "daemon_sink": daemon_sink,
+                "active_window": active_window,
+                "tracked_windows": tracked_windows,
+            })
         } else {
-            eprintln!("Daemon is not running.\n");
-            eprintln!("To start the daemon:");
-            eprintln!("  pwsw daemon              (run in background)");
-            eprintln!("  pwsw daemon --foreground (run in foreground with logs)");
-        }
-        anyhow::bail!("Daemon is not running");
-    }
+            serde_json::json!({
+                "running": false,
+            })
+        };
 
-    let response = ipc::send_request(Request::Status).await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "current_sink": {
+                    "name": current_sink_name,
+                    "description": current_sink_desc,
+                },
+                "daemon": daemon_json,
+            }))?
+        );
+    } else {
+        // Human-readable output
+        println!("Audio Output");
+        println!("{}", "=".repeat(12));
+        println!("Current: {}", current_sink_desc);
+        println!();
+        println!("Daemon");
+        println!("{}", "=".repeat(6));
 
-    match response {
-        Response::Status {
-            version,
-            uptime_secs,
-            current_sink,
-            active_window,
-        } => {
-            if json_output {
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "version": version,
-                    "uptime_secs": uptime_secs,
-                    "current_sink": current_sink,
-                    "active_window": active_window,
-                }))?);
-            } else {
-                println!("PWSW Daemon Status");
-                println!("==================");
-                println!("Version: {}", version);
-                println!("Uptime: {} seconds", uptime_secs);
-                println!("Current Sink: {}", current_sink);
-                if let Some(window) = active_window {
-                    println!("Active Window: {}", window);
-                } else {
-                    println!("Active Window: (none)");
-                }
+        if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) = daemon_info {
+            println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
+            println!("Version: {}", version);
+            if let Some(rule) = active_window {
+                println!("Active Rule: {}", rule);
             }
-            Ok(())
-        }
-        Response::Error { message } => {
-            anyhow::bail!("Daemon error: {}", message);
-        }
-        _ => {
-            anyhow::bail!("Unexpected response from daemon");
+            println!("Tracked Windows: {}", tracked_windows);
+        } else {
+            println!("Status: Not running");
+            println!("  Start with: pwsw daemon");
         }
     }
+
+    Ok(())
 }
 
 /// Gracefully shutdown the daemon
