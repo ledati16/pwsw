@@ -215,9 +215,7 @@ impl PipeWire {
 
         for tool in &required_tools {
             // Try to run the tool with --version or --help to check if it exists
-            let result = Command::new(tool)
-                .arg("--version")
-                .output();
+            let result = Command::new(tool).arg("--version").output();
 
             if result.is_err() {
                 missing.push(*tool);
@@ -254,8 +252,8 @@ impl PipeWire {
             anyhow::bail!("pw-dump failed: {}", stderr.trim());
         }
 
-        let objects: Vec<PwObject> = serde_json::from_slice(&output.stdout)
-            .context("Failed to parse pw-dump JSON")?;
+        let objects: Vec<PwObject> =
+            serde_json::from_slice(&output.stdout).context("Failed to parse pw-dump JSON")?;
 
         trace!("pw-dump returned {} objects", objects.len());
         Ok(objects)
@@ -266,7 +264,8 @@ impl PipeWire {
     pub fn get_active_sinks(objects: &[PwObject]) -> Vec<ActiveSink> {
         let default_name = Self::get_default_sink_name_from_objects(objects);
 
-        objects.iter()
+        objects
+            .iter()
             .filter(|obj| obj.obj_type == "PipeWire:Interface:Node")
             .filter_map(|obj| {
                 let props = obj.get_props()?;
@@ -277,7 +276,9 @@ impl PipeWire {
                 }
 
                 let name = props.node_name.clone()?;
-                let description = props.node_description.clone()
+                let description = props
+                    .node_description
+                    .clone()
                     .or_else(|| props.node_nick.clone())
                     .unwrap_or_else(|| name.clone());
 
@@ -292,10 +293,11 @@ impl PipeWire {
 
     /// Get sinks available through profile switching
     #[must_use]
-    pub fn get_profile_sinks(objects: &[PwObject], active_sinks: &[ActiveSink]) -> Vec<ProfileSink> {
-        let active_names: HashSet<&str> = active_sinks.iter()
-            .map(|s| s.name.as_str())
-            .collect();
+    pub fn get_profile_sinks(
+        objects: &[PwObject],
+        active_sinks: &[ActiveSink],
+    ) -> Vec<ProfileSink> {
+        let active_names: HashSet<&str> = active_sinks.iter().map(|s| s.name.as_str()).collect();
 
         let mut profile_sinks = Vec::new();
 
@@ -304,10 +306,14 @@ impl PipeWire {
                 continue;
             }
 
-            let Some(props) = obj.get_props() else { continue };
+            let Some(props) = obj.get_props() else {
+                continue;
+            };
             let Some(info) = &obj.info else { continue };
             let Some(params) = &info.params else { continue };
-            let Some(enum_profiles) = &params.enum_profile else { continue };
+            let Some(enum_profiles) = &params.enum_profile else {
+                continue;
+            };
 
             // Only ALSA audio devices
             let device_name = match &props.device_name {
@@ -316,13 +322,17 @@ impl PipeWire {
             };
 
             // Get current profile to skip it
-            let current_profile_index = params.profile.as_ref()
+            let current_profile_index = params
+                .profile
+                .as_ref()
                 .and_then(|p| p.first())
                 .and_then(|p| p.index);
 
             for profile in enum_profiles {
                 let Some(index) = profile.index else { continue };
-                let Some(ref profile_name) = profile.name else { continue };
+                let Some(ref profile_name) = profile.name else {
+                    continue;
+                };
 
                 // Skip "off" profile and currently active profile
                 if profile_name == "off" || Some(index) == current_profile_index {
@@ -346,7 +356,9 @@ impl PipeWire {
                 }
 
                 // Predict node name: alsa_output.{device_suffix}.{profile_suffix}
-                let device_suffix = device_name.strip_prefix("alsa_card.").unwrap_or(device_name);
+                let device_suffix = device_name
+                    .strip_prefix("alsa_card.")
+                    .unwrap_or(device_name);
                 let profile_suffix = profile_name
                     .strip_prefix("output:")
                     .unwrap_or(profile_name)
@@ -359,7 +371,9 @@ impl PipeWire {
                     continue;
                 }
 
-                let description = profile.description.clone()
+                let description = profile
+                    .description
+                    .clone()
                     .unwrap_or_else(|| profile_name.clone());
 
                 profile_sinks.push(ProfileSink {
@@ -384,7 +398,9 @@ impl PipeWire {
                 continue;
             }
 
-            let Some(props) = obj.get_props() else { continue };
+            let Some(props) = obj.get_props() else {
+                continue;
+            };
             if props.metadata_name.as_deref() != Some("default") {
                 continue;
             }
@@ -417,17 +433,23 @@ impl PipeWire {
     pub fn set_default_sink(node_name: &str) -> Result<()> {
         // Use proper JSON serialization to avoid injection risks
         let value_obj = serde_json::json!({"name": node_name});
-        let value = serde_json::to_string(&value_obj)
-            .context("Failed to serialize sink name to JSON")?;
+        let value =
+            serde_json::to_string(&value_obj).context("Failed to serialize sink name to JSON")?;
 
         let output = Command::new("pw-metadata")
             .args(["0", "default.audio.sink", &value, "Spa:String:JSON"])
             .output()
-            .with_context(|| format!("Failed to run pw-metadata to set default sink to '{node_name}'"))?;
+            .with_context(|| {
+                format!("Failed to run pw-metadata to set default sink to '{node_name}'")
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to set default sink to '{}': {}", node_name, stderr.trim());
+            anyhow::bail!(
+                "Failed to set default sink to '{}': {}",
+                node_name,
+                stderr.trim()
+            );
         }
 
         debug!("Set default sink: {}", node_name);
@@ -445,11 +467,18 @@ impl PipeWire {
         let output = Command::new("pw-cli")
             .args(["s", &device_id.to_string(), "Profile", &profile_json])
             .output()
-            .with_context(|| format!("Failed to run pw-cli to set device {device_id} profile {profile_index}"))?;
+            .with_context(|| {
+                format!("Failed to run pw-cli to set device {device_id} profile {profile_index}")
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to set device {} to profile {}: {}", device_id, profile_index, stderr.trim());
+            anyhow::bail!(
+                "Failed to set device {} to profile {}: {}",
+                device_id,
+                profile_index,
+                stderr.trim()
+            );
         }
 
         debug!("Set device {} to profile {}", device_id, profile_index);
@@ -461,7 +490,9 @@ impl PipeWire {
     pub fn find_profile_sink(objects: &[PwObject], sink_name: &str) -> Option<ProfileSink> {
         let active = Self::get_active_sinks(objects);
         let profile_sinks = Self::get_profile_sinks(objects, &active);
-        profile_sinks.into_iter().find(|s| s.predicted_name == sink_name)
+        profile_sinks
+            .into_iter()
+            .find(|s| s.predicted_name == sink_name)
     }
 
     /// Activate a sink, switching profiles if necessary
@@ -483,10 +514,11 @@ impl PipeWire {
         }
 
         // Need profile switching?
-        let profile_sink = Self::find_profile_sink(&objects, sink_name)
-            .ok_or_else(|| anyhow::anyhow!(
+        let profile_sink = Self::find_profile_sink(&objects, sink_name).ok_or_else(|| {
+            anyhow::anyhow!(
                 "Sink '{sink_name}' not found (not active and no profile switch available)"
-            ))?;
+            )
+        })?;
 
         info!(
             "Switching profile: {} → {} (device: {})",
@@ -507,7 +539,10 @@ impl PipeWire {
                 return Ok(());
             }
 
-            debug!("Waiting for sink '{}' (attempt {}/{})", sink_name, attempt, PROFILE_SWITCH_MAX_RETRIES);
+            debug!(
+                "Waiting for sink '{}' (attempt {}/{})",
+                sink_name, attempt, PROFILE_SWITCH_MAX_RETRIES
+            );
         }
 
         // Profile switch succeeded but sink node didn't appear - this is an error

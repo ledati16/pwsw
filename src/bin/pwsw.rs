@@ -43,18 +43,12 @@ async fn main() -> Result<()> {
         }
 
         // IPC-based commands (require daemon)
-        Some(Command::Shutdown) => {
-            commands::shutdown().await
-        }
+        Some(Command::Shutdown) => commands::shutdown().await,
 
-        Some(Command::ListWindows { json }) => {
-            commands::list_windows(json).await
-        }
+        Some(Command::ListWindows { json }) => commands::list_windows(json).await,
 
-        Some(Command::TestRule { pattern, json }) => {
-            commands::test_rule(&pattern, json).await
-        }
-        
+        Some(Command::TestRule { pattern, json }) => commands::test_rule(&pattern, json).await,
+
         // Local commands (no daemon needed)
         Some(Command::ListSinks { json }) => {
             init_cli_logging();
@@ -62,7 +56,7 @@ async fn main() -> Result<()> {
             let config = Config::load().ok();
             commands::list_sinks(config.as_ref(), json)
         }
-        
+
         Some(Command::Validate) => {
             init_cli_logging();
             let config = Config::load()?;

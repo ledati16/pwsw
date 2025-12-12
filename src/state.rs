@@ -8,13 +8,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
+use crate::compositor::WindowEvent;
 use crate::config::{Config, Rule};
 use crate::notification::{get_app_icon, get_notification_sink_icon, send_notification};
 use crate::pipewire::PipeWire;
-use crate::compositor::WindowEvent;
 
 /// Error message for missing default sink (should be caught by config validation)
-const BUG_NO_DEFAULT_SINK: &str = "BUG: No default sink found (config validation should prevent this)";
+const BUG_NO_DEFAULT_SINK: &str =
+    "BUG: No default sink found (config validation should prevent this)";
 
 /// Main application state for daemon mode
 pub struct State {
@@ -47,10 +48,15 @@ impl State {
     /// Panics if no default sink is configured (should be prevented by config validation).
     pub fn new(config: Config) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
-            warn!("Could not query default sink: {}. Using configured default.", e);
-            config.get_default_sink()
+            warn!(
+                "Could not query default sink: {}. Using configured default.",
+                e
+            );
+            config
+                .get_default_sink()
                 .expect(BUG_NO_DEFAULT_SINK)
-                .name.clone()
+                .name
+                .clone()
         });
 
         info!("Current default sink: {}", current_sink_name);
@@ -68,7 +74,9 @@ impl State {
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<&Rule> {
         self.config.rules.iter().find(|rule| {
             rule.app_id_regex.is_match(app_id)
-                && rule.title_regex.as_ref()
+                && rule
+                    .title_regex
+                    .as_ref()
                     .map_or(true, |r| r.is_match(title))
         })
     }
@@ -91,13 +99,19 @@ impl State {
     /// Panics if no default sink is configured (should be prevented by config validation).
     #[must_use]
     pub fn determine_target_sink(&self) -> String {
-        self.active_windows.iter()
+        self.active_windows
+            .iter()
             .max_by_key(|(_, w)| w.opened_at)
-            .map_or_else(|| {
-                self.config.get_default_sink()
-                    .expect(BUG_NO_DEFAULT_SINK)
-                    .name.clone()
-            }, |(_, w)| w.sink_name.clone())
+            .map_or_else(
+                || {
+                    self.config
+                        .get_default_sink()
+                        .expect(BUG_NO_DEFAULT_SINK)
+                        .name
+                        .clone()
+                },
+                |(_, w)| w.sink_name.clone(),
+            )
     }
 
     /// Check if a window is currently tracked
@@ -107,14 +121,24 @@ impl State {
     }
 
     /// Track a new window
-    pub fn track_window(&mut self, id: u64, sink_name: String, trigger_desc: String, app_id: String, title: String) {
-        self.active_windows.insert(id, ActiveWindow {
-            sink_name,
-            trigger_desc,
-            opened_at: Instant::now(),
-            app_id,
-            title,
-        });
+    pub fn track_window(
+        &mut self,
+        id: u64,
+        sink_name: String,
+        trigger_desc: String,
+        app_id: String,
+        title: String,
+    ) {
+        self.active_windows.insert(
+            id,
+            ActiveWindow {
+                sink_name,
+                trigger_desc,
+                opened_at: Instant::now(),
+                app_id,
+                title,
+            },
+        );
     }
 
     /// Remove a tracked window, returning its info if it existed
@@ -128,8 +152,8 @@ impl State {
     /// Returns an error if sink activation fails or rule processing encounters issues.
     pub fn process_event(&mut self, event: WindowEvent) -> Result<()> {
         match event {
-            WindowEvent::Opened { id, app_id, title } |
-            WindowEvent::Changed { id, app_id, title } => {
+            WindowEvent::Opened { id, app_id, title }
+            | WindowEvent::Changed { id, app_id, title } => {
                 self.handle_window_open_or_change(id, &app_id, &title)?;
             }
             WindowEvent::Closed { id } => {
@@ -143,7 +167,8 @@ impl State {
         debug!("Window: id={}, app_id='{}', title='{}'", id, app_id, title);
 
         // Track all windows for test-rule command
-        self.all_windows.insert(id, (app_id.to_string(), title.to_string()));
+        self.all_windows
+            .insert(id, (app_id.to_string(), title.to_string()));
 
         // Extract rule data before mutating state (borrow checker)
         let matched = if let Some(rule) = self.find_matching_rule(app_id, title) {
@@ -154,12 +179,7 @@ impl State {
                 ))?;
             // Use rule desc if set, otherwise use window title
             let trigger = rule.desc.clone().unwrap_or_else(|| title.to_string());
-            Some((
-                sink.name.clone(),
-                sink.desc.clone(),
-                trigger,
-                rule.notify,
-            ))
+            Some((sink.name.clone(), sink.desc.clone(), trigger, rule.notify))
         } else {
             None
         };
@@ -171,13 +191,25 @@ impl State {
 
             // Only update opened_at for new windows, preserve original time for existing
             if !was_tracked {
-                self.track_window(id, sink_name.clone(), trigger_desc.clone(), app_id.to_string(), title.to_string());
+                self.track_window(
+                    id,
+                    sink_name.clone(),
+                    trigger_desc.clone(),
+                    app_id.to_string(),
+                    title.to_string(),
+                );
 
                 if self.should_switch_sink(&sink_name) {
                     let notify = self.config.should_notify_switch(rule_notify);
                     // Use `app_id` as icon (e.g., "steam" shows Steam icon)
                     let app_icon = get_app_icon(app_id);
-                    switch_audio(&sink_name, &sink_desc, Some(&trigger_desc), Some(&app_icon), notify)?;
+                    switch_audio(
+                        &sink_name,
+                        &sink_desc,
+                        Some(&trigger_desc),
+                        Some(&app_icon),
+                        notify,
+                    )?;
                     self.update_sink(sink_name);
                 }
             }
@@ -185,7 +217,10 @@ impl State {
         } else if was_tracked {
             // Window was tracked but no longer matches (e.g., title changed)
             if let Some(old_window) = self.untrack_window(id) {
-                debug!("Window no longer matches rule: {} (was: {})", id, old_window.trigger_desc);
+                debug!(
+                    "Window no longer matches rule: {} (was: {})",
+                    id, old_window.trigger_desc
+                );
 
                 let target = self.determine_target_sink();
                 if self.should_switch_sink(&target) {
@@ -203,7 +238,10 @@ impl State {
         self.all_windows.remove(&id);
 
         if let Some(closed_window) = self.untrack_window(id) {
-            debug!("Tracked window closed: {} (was: {})", id, closed_window.trigger_desc);
+            debug!(
+                "Tracked window closed: {} (was: {})",
+                id, closed_window.trigger_desc
+            );
 
             let target = self.determine_target_sink();
             if self.should_switch_sink(&target) {
@@ -214,18 +252,18 @@ impl State {
 
         Ok(())
     }
-    
+
     /// Get the most recent active window (for status reporting)
     #[must_use]
     pub fn get_most_recent_window(&self) -> Option<&ActiveWindow> {
-        self.active_windows.values()
-            .max_by_key(|w| w.opened_at)
+        self.active_windows.values().max_by_key(|w| w.opened_at)
     }
-    
+
     /// Get a list of tracked windows (`app_id`, title pairs)
     #[must_use]
     pub fn get_tracked_windows(&self) -> Vec<(String, String)> {
-        self.active_windows.values()
+        self.active_windows
+            .values()
             .map(|w| (w.app_id.clone(), w.title.clone()))
             .collect()
     }
@@ -233,7 +271,8 @@ impl State {
     /// Get a list of ALL currently open windows (for test-rule command)
     #[must_use]
     pub fn get_all_windows(&self) -> Vec<(String, String)> {
-        self.all_windows.values()
+        self.all_windows
+            .values()
             .map(|(app_id, title)| (app_id.clone(), title.clone()))
             .collect()
     }
@@ -242,12 +281,21 @@ impl State {
     #[must_use]
     pub fn get_tracked_windows_with_sinks(&self) -> Vec<(String, String, String, String)> {
         // Returns: (`app_id`, title, `sink_name`, `sink_desc`)
-        self.active_windows.values()
+        self.active_windows
+            .values()
             .map(|w| {
-                let sink_desc = self.config.sinks.iter()
+                let sink_desc = self
+                    .config
+                    .sinks
+                    .iter()
                     .find(|s| s.name == w.sink_name)
                     .map_or_else(|| w.sink_name.clone(), |s| s.desc.clone());
-                (w.app_id.clone(), w.title.clone(), w.sink_name.clone(), sink_desc)
+                (
+                    w.app_id.clone(),
+                    w.title.clone(),
+                    w.sink_name.clone(),
+                    sink_desc,
+                )
             })
             .collect()
     }
@@ -258,8 +306,7 @@ impl State {
         let desc = target_sink.map_or(target.as_str(), |s| s.desc.as_str());
         let status_bar_icons = self.config.settings.status_bar_icons;
         let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
-        let default_sink = self.config.get_default_sink()
-            .expect(BUG_NO_DEFAULT_SINK);
+        let default_sink = self.config.get_default_sink().expect(BUG_NO_DEFAULT_SINK);
         let is_default = default_sink.name == target;
         let notify = self.config.settings.notify_switch && is_default;
 

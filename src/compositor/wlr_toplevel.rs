@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
     globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_registry, wl_output},
+    protocol::{wl_output, wl_registry},
+    Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
@@ -56,7 +56,9 @@ impl WlrToplevelState {
 }
 
 // Implement Dispatch for the foreign toplevel manager
-impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()> for WlrToplevelState {
+impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()>
+    for WlrToplevelState
+{
     fn event(
         state: &mut Self,
         _proxy: &zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1,
@@ -74,10 +76,13 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
                 trace!("New toplevel handle: {}", id);
 
                 // Register this handle with the event queue
-                state.toplevels.insert(id, ToplevelWindow {
-                    id: u64::from(id),
-                    ..Default::default()
-                });
+                state.toplevels.insert(
+                    id,
+                    ToplevelWindow {
+                        id: u64::from(id),
+                        ..Default::default()
+                    },
+                );
             }
             Event::Finished => {
                 debug!("Toplevel manager finished");
@@ -92,7 +97,9 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
 }
 
 // Implement Dispatch for individual toplevel handles
-impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> for WlrToplevelState {
+impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()>
+    for WlrToplevelState
+{
     fn event(
         state: &mut Self,
         proxy: &zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
@@ -126,24 +133,24 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
                         let id = window.id;
                         let app_id = window.app_id.clone();
                         let title = window.title.clone();
-                        trace!("Window changed: id={}, app_id='{}', title='{}'", id, app_id, title);
-                        state.send_event(WindowEvent::Changed {
+                        trace!(
+                            "Window changed: id={}, app_id='{}', title='{}'",
                             id,
                             app_id,
-                            title,
-                        });
+                            title
+                        );
+                        state.send_event(WindowEvent::Changed { id, app_id, title });
                     } else {
                         // First done event = window opened
                         window.done_received = true;
                         let id = window.id;
                         let app_id = window.app_id.clone();
                         let title = window.title.clone();
-                        debug!("Window opened: id={}, app_id='{}', title='{}'", id, app_id, title);
-                        state.send_event(WindowEvent::Opened {
-                            id,
-                            app_id,
-                            title,
-                        });
+                        debug!(
+                            "Window opened: id={}, app_id='{}', title='{}'",
+                            id, app_id, title
+                        );
+                        state.send_event(WindowEvent::Opened { id, app_id, title });
                     }
                 }
             }
@@ -154,7 +161,10 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
                         debug!("Window closed: id={}", window.id);
                         state.send_event(WindowEvent::Closed { id: window.id });
                     } else {
-                        debug!("Window {} closed before initial done event, not emitting Closed", handle_id);
+                        debug!(
+                            "Window {} closed before initial done event, not emitting Closed",
+                            handle_id
+                        );
                     }
                 }
             }
@@ -207,13 +217,10 @@ impl Dispatch<wl_output::WlOutput, ()> for WlrToplevelState {
 /// Run the `Wayland` event loop for `wlr-foreign-toplevel-management`
 ///
 /// This function runs in a dedicated thread and dispatches `Wayland` events.
-pub fn run_event_loop(
-    conn: Connection,
-    tx: mpsc::UnboundedSender<WindowEvent>,
-) -> Result<()> {
+pub fn run_event_loop(conn: Connection, tx: mpsc::UnboundedSender<WindowEvent>) -> Result<()> {
     let (globals, mut event_queue) = registry_queue_init::<WlrToplevelState>(&conn)
         .context("Failed to initialize Wayland registry")?;
-    
+
     let qh = event_queue.handle();
 
     // Bind to the foreign toplevel manager protocol

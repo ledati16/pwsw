@@ -4,13 +4,13 @@
 //! - wlr-foreign-toplevel-management (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire) ✓ Tested
 //! - plasma-window-management (KDE Plasma/KWin) ⚠️  Experimental/Untested
 
-mod wlr_toplevel;
 mod plasma;
+mod wlr_toplevel;
 
 use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
-use wayland_client::{Connection, protocol::wl_registry};
+use wayland_client::{protocol::wl_registry, Connection};
 
 /// Window event from a compositor
 #[derive(Debug, Clone)]
@@ -28,9 +28,7 @@ pub enum WindowEvent {
         title: String,
     },
     /// A window was closed
-    Closed {
-        id: u64,
-    },
+    Closed { id: u64 },
 }
 
 /// Spawn a dedicated thread for Wayland event processing
@@ -103,7 +101,7 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
                 plasma::run_event_loop(conn, tx)
             }
         };
-        
+
         if let Err(e) = result {
             error!("Wayland event loop error: {:#}", e);
         }
@@ -125,8 +123,8 @@ enum Protocol {
 /// by the compositor. Priority is given to wlr-foreign-toplevel-management as it's more
 /// widely supported.
 fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
-    use wayland_client::globals::{registry_queue_init, GlobalListContents};
     use tracing::debug;
+    use wayland_client::globals::{registry_queue_init, GlobalListContents};
 
     // Temporary state for registry detection
     #[derive(Default)]
@@ -153,7 +151,8 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     let mut state = RegistryState;
 
     // Do a roundtrip to get all globals
-    event_queue.roundtrip(&mut state)
+    event_queue
+        .roundtrip(&mut state)
         .context("Failed to roundtrip registry")?;
 
     // Check the GlobalList for available protocols
@@ -163,7 +162,10 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
 
     contents.with_list(|list| {
         for global in list {
-            debug!("Found global: {} (version {})", global.interface, global.version);
+            debug!(
+                "Found global: {} (version {})",
+                global.interface, global.version
+            );
             match global.interface.as_str() {
                 "zwlr_foreign_toplevel_manager_v1" => {
                     has_wlr_foreign_toplevel = true;
@@ -183,7 +185,9 @@ fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
 
     if has_plasma_window_management {
         warn!("⚠️  Detected KDE Plasma - support is EXPERIMENTAL and may not work correctly");
-        warn!("   If you experience issues, please report at https://github.com/ledati16/pwsw/issues");
+        warn!(
+            "   If you experience issues, please report at https://github.com/ledati16/pwsw/issues"
+        );
         return Ok(Protocol::PlasmaWindowManagement);
     }
 
