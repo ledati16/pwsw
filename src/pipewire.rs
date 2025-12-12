@@ -408,11 +408,11 @@ impl PipeWire {
         let output = Command::new("pw-metadata")
             .args(["0", "default.audio.sink", &value, "Spa:String:JSON"])
             .output()
-            .context("Failed to run pw-metadata")?;
+            .with_context(|| format!("Failed to run pw-metadata to set default sink to '{}'", node_name))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("pw-metadata failed: {}", stderr.trim());
+            anyhow::bail!("Failed to set default sink to '{}': {}", node_name, stderr.trim());
         }
 
         debug!("Set default sink: {}", node_name);
@@ -426,11 +426,11 @@ impl PipeWire {
         let output = Command::new("pw-cli")
             .args(["s", &device_id.to_string(), "Profile", &profile_json])
             .output()
-            .context("Failed to run pw-cli")?;
+            .with_context(|| format!("Failed to run pw-cli to set device {} profile {}", device_id, profile_index))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("pw-cli failed: {}", stderr.trim());
+            anyhow::bail!("Failed to set device {} to profile {}: {}", device_id, profile_index, stderr.trim());
         }
 
         debug!("Set device {} to profile {}", device_id, profile_index);

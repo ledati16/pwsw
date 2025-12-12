@@ -12,6 +12,13 @@ use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, warn};
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// Timeout for checking if daemon is running (health check connection)
+const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 100;
+
+// ============================================================================
 // Message Types
 // ============================================================================
 
@@ -111,7 +118,7 @@ pub async fn is_daemon_running() -> bool {
 
     // Try to connect - if it succeeds, daemon is running
     let connect_result = tokio::time::timeout(
-        Duration::from_millis(100),
+        Duration::from_millis(DAEMON_HEALTH_CHECK_TIMEOUT_MS),
         tokio::net::UnixStream::connect(&socket_path)
     ).await;
 

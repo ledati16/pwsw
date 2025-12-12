@@ -16,6 +16,23 @@ use crate::notification::send_notification;
 use crate::pipewire::PipeWire;
 use crate::state::State;
 
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// Notification title when daemon starts
+const NOTIFICATION_STARTED_TITLE: &str = "PWSW Started";
+/// Notification message when daemon starts
+const NOTIFICATION_STARTED_MSG: &str = "Audio switcher running";
+/// Notification title when daemon stops
+const NOTIFICATION_STOPPED_TITLE: &str = "PWSW Stopped";
+/// Notification message when daemon stops
+const NOTIFICATION_STOPPED_MSG: &str = "Audio switcher stopped";
+
+// ============================================================================
+// Data Structures
+// ============================================================================
+
 /// Context data passed to IPC request handlers
 struct IpcContext {
     version: String,
@@ -148,7 +165,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     info!("IPC server listening on {:?}", ipc_server.socket_path());
 
     if state.config.settings.notify_daemon {
-        if let Err(e) = send_notification("PWSW Started", "Audio switcher running", None) {
+        if let Err(e) = send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None) {
             warn!("Could not send startup notification: {}", e);
         }
     }
@@ -208,7 +225,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             _ = signal::ctrl_c() => {
                 info!("Shutting down (Ctrl-C)");
                 if state.config.settings.notify_daemon {
-                    let _ = send_notification("PWSW Stopped", "Audio switcher stopped", None);
+                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
                 break;
             }
@@ -216,7 +233,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             _ = shutdown_rx.recv() => {
                 info!("Shutting down (IPC request)");
                 if state.config.settings.notify_daemon {
-                    let _ = send_notification("PWSW Stopped", "Audio switcher stopped", None);
+                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
                 break;
             }
