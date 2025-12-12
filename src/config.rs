@@ -145,6 +145,9 @@ impl Default for SettingsFile {
 
 impl Config {
     /// Load configuration from the default XDG config path
+    ///
+    /// # Errors
+    /// Returns an error if the config file cannot be read, parsed, or is invalid.
     pub fn load() -> Result<Self> {
         let config_path = Self::get_config_path()?;
 
@@ -268,6 +271,9 @@ impl Config {
     }
 
     /// Get the XDG config path for PWSW
+    ///
+    /// # Errors
+    /// Returns an error if the config directory cannot be determined or created.
     pub fn get_config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not determine config directory")?

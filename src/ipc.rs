@@ -87,6 +87,9 @@ pub struct TrackedInfo {
 
 /// Get the `IPC` socket path
 /// Prefers `$XDG_RUNTIME_DIR/pwsw.sock`, falls back to `/tmp/pwsw-$USER.sock`
+///
+/// # Errors
+/// Returns an error if both `XDG_RUNTIME_DIR` and `USER` environment variables are unset.
 pub fn get_socket_path() -> Result<PathBuf> {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
@@ -124,6 +127,9 @@ pub async fn is_daemon_running() -> bool {
 
 /// Clean up stale socket file
 /// Checks if socket exists and if daemon is actually running
+///
+/// # Errors
+/// Returns an error if the socket path cannot be determined or removal fails.
 pub async fn cleanup_stale_socket() -> Result<()> {
     let socket_path = get_socket_path()?;
 
@@ -209,8 +215,10 @@ async fn write_message<T: Serialize>(
     if json.len() > MAX_MESSAGE_SIZE {
         anyhow::bail!("Message too large: {} bytes (max: {})", json.len(), MAX_MESSAGE_SIZE);
     }
-    
+
     // Write length prefix (4 bytes big-endian)
+    // Safe cast: MAX_MESSAGE_SIZE is 1MB, well within u32 range
+    #[allow(clippy::cast_possible_truncation)]
     let len = (json.len() as u32).to_be_bytes();
     stream.write_all(&len).await
         .context("Failed to write message length")?;
@@ -230,6 +238,9 @@ async fn write_message<T: Serialize>(
 // ============================================================================
 
 /// Send a request to the daemon and wait for response
+///
+/// # Errors
+/// Returns an error if socket path cannot be determined, connection fails, or IPC communication fails.
 pub async fn send_request(request: Request) -> Result<Response> {
     let socket_path = get_socket_path()?;
     
@@ -242,7 +253,8 @@ pub async fn send_request(request: Request) -> Result<Response> {
     .context("Timeout connecting to daemon")?
     .with_context(|| {
         format!(
-            "Failed to connect to daemon. Is the daemon running?\nSocket: {socket_path:?}"
+            "Failed to connect to daemon. Is the daemon running?\nSocket: {}",
+            socket_path.display()
         )
     })?;
     
@@ -269,6 +281,9 @@ pub struct IpcServer {
 
 impl IpcServer {
     /// Create and bind a new IPC server
+    ///
+    /// # Errors
+    /// Returns an error if socket path cannot be determined or socket binding fails.
     pub async fn bind() -> Result<Self> {
         let socket_path = get_socket_path()?;
         
@@ -277,7 +292,7 @@ impl IpcServer {
         
         // Bind the listener
         let listener = UnixListener::bind(&socket_path)
-            .with_context(|| format!("Failed to bind IPC socket: {socket_path:?}"))?;
+            .with_context(|| format!("Failed to bind IPC socket: {}", socket_path.display()))?;
         
         debug!("IPC server listening on {:?}", socket_path);
         
@@ -317,11 +332,17 @@ impl Drop for IpcServer {
 }
 
 /// Read a request from a client connection
+///
+/// # Errors
+/// Returns an error if reading fails or the message cannot be deserialized.
 pub async fn read_request(stream: &mut UnixStream) -> Result<Request> {
     read_message(stream).await
 }
 
 /// Write a response to a client connection
+///
+/// # Errors
+/// Returns an error if serialization or writing fails.
 pub async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
     write_message(stream, response).await
 }

@@ -9,6 +9,9 @@ use notify_rust::Notification;
 use crate::config::SinkConfig;
 
 /// Send a desktop notification
+///
+/// # Errors
+/// Returns an error if the notification cannot be sent (e.g., no notification daemon running).
 pub fn send_notification(summary: &str, body: &str, icon: Option<&str>) -> Result<()> {
     // Use provided icon, or fall back to generic audio icon
     let icon = icon.unwrap_or("audio-card");

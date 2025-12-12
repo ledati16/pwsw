@@ -46,6 +46,10 @@ struct IpcContext {
 }
 
 /// Run the daemon with the given configuration
+///
+/// # Errors
+/// Returns an error if another daemon is running, initialization fails, compositor
+/// connection fails, or any critical component encounters an error.
 pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Check if a daemon is already running BEFORE any initialization
     if ipc::is_daemon_running().await {
