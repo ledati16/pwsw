@@ -172,18 +172,8 @@ impl State {
 
                 let target = self.determine_target_sink();
                 if self.should_switch_sink(&target) {
-                    let target_sink = self.config.sinks.iter().find(|s| s.name == target);
-                    let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
-                    let status_bar_icons = self.config.settings.status_bar_icons;
-                    let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
-                    let default_sink = self.config.get_default_sink()
-                        .expect("BUG: No default sink found (config validation should prevent this)");
-                    let is_default = default_sink.name == target;
-                    let notify = self.config.settings.notify_switch && is_default;
-
-                    let return_context = format!("{} ended", old_window.trigger_desc);
-                    switch_audio(&target, desc, Some(&return_context), icon.as_deref(), notify)?;
-                    self.update_sink(target);
+                    let context = format!("{} ended", old_window.trigger_desc);
+                    self.switch_to_target(target, &context)?;
                 }
             }
         }
@@ -200,19 +190,8 @@ impl State {
 
             let target = self.determine_target_sink();
             if self.should_switch_sink(&target) {
-                let target_sink = self.config.sinks.iter().find(|s| s.name == target);
-                let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
-                let status_bar_icons = self.config.settings.status_bar_icons;
-                let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
-                let default_sink = self.config.get_default_sink()
-                    .expect("BUG: No default sink found (config validation should prevent this)");
-                let is_default = default_sink.name == target;
-                let notify = self.config.settings.notify_switch && is_default;
-
-                // Show what we're returning from in the notification
-                let return_context = format!("{} closed", closed_window.trigger_desc);
-                switch_audio(&target, desc, Some(&return_context), icon.as_deref(), notify)?;
-                self.update_sink(target);
+                let context = format!("{} closed", closed_window.trigger_desc);
+                self.switch_to_target(target, &context)?;
             }
         }
 
@@ -251,6 +230,22 @@ impl State {
                 (w.app_id.clone(), w.title.clone(), w.sink_name.clone(), sink_desc)
             })
             .collect()
+    }
+
+    /// Helper to switch to target sink with notification logic for window state changes
+    fn switch_to_target(&mut self, target: String, context: &str) -> Result<()> {
+        let target_sink = self.config.sinks.iter().find(|s| s.name == target);
+        let desc = target_sink.map(|s| s.desc.as_str()).unwrap_or(&target);
+        let status_bar_icons = self.config.settings.status_bar_icons;
+        let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
+        let default_sink = self.config.get_default_sink()
+            .expect("BUG: No default sink found (config validation should prevent this)");
+        let is_default = default_sink.name == target;
+        let notify = self.config.settings.notify_switch && is_default;
+
+        switch_audio(&target, desc, Some(context), icon.as_deref(), notify)?;
+        self.update_sink(target);
+        Ok(())
     }
 }
 

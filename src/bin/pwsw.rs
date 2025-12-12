@@ -6,6 +6,16 @@ use anyhow::Result;
 use clap::Parser;
 use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 
+/// Initialize minimal logging for CLI commands (warn level by default)
+fn init_cli_logging() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .init();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -14,14 +24,7 @@ async fn main() -> Result<()> {
     match args.command {
         // No subcommand - show status or helpful message
         None => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             commands::status(&config, false).await
         }
@@ -34,14 +37,7 @@ async fn main() -> Result<()> {
 
         // Hybrid commands (work with or without daemon)
         Some(Command::Status { json }) => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             commands::status(&config, json).await
         }
@@ -61,67 +57,33 @@ async fn main() -> Result<()> {
         
         // Local commands (no daemon needed)
         Some(Command::ListSinks { json }) => {
-            // Initialize minimal logging for one-shot commands
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-            
+            init_cli_logging();
+
             let config = Config::load().ok();
             commands::list_sinks(config.as_ref(), json)
         }
         
         Some(Command::Validate) => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             config.print_summary();
             Ok(())
         }
 
         Some(Command::SetSink { sink }) => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             commands::set_sink_smart(&config, &sink)
         }
 
         Some(Command::NextSink) => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             commands::cycle_sink(&config, commands::Direction::Next)
         }
 
         Some(Command::PrevSink) => {
-            // Initialize minimal logging
-            tracing_subscriber::fmt()
-                .with_env_filter(
-                    tracing_subscriber::EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-                )
-                .init();
-
+            init_cli_logging();
             let config = Config::load()?;
             commands::cycle_sink(&config, commands::Direction::Prev)
         }

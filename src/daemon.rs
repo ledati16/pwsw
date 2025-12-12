@@ -188,14 +188,18 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
                 tokio::spawn(async move {
                     if let Err(e) = handle_ipc_request(&mut stream, ctx).await {
-                        // "early eof" when reading message length is benign - it happens when
-                        // clients connect just to check if daemon is running (is_daemon_running())
-                        // or when they disconnect before sending data. Log at debug level.
-                        let err_msg = format!("{:#}", e);
-                        if err_msg.contains("early eof") && err_msg.contains("message length") {
+                        // Check if this is a benign health check connection (client disconnects before sending data)
+                        let is_health_check = e.chain()
+                            .any(|cause| {
+                                cause.downcast_ref::<std::io::Error>()
+                                    .map(|io_err| io_err.kind() == std::io::ErrorKind::UnexpectedEof)
+                                    .unwrap_or(false)
+                            });
+
+                        if is_health_check {
                             tracing::debug!("Client disconnected without sending data (likely health check)");
                         } else {
-                            error!("IPC request handling error: {}", err_msg);
+                            error!("IPC request handling error: {:#}", e);
                         }
                     }
                 });
