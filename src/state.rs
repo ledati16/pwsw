@@ -70,6 +70,17 @@ impl State {
         })
     }
 
+    /// Create a State for testing without `PipeWire` dependency
+    #[cfg(test)]
+    pub(crate) fn new_for_testing(config: Config, current_sink_name: String) -> Self {
+        Self {
+            config,
+            current_sink_name,
+            active_windows: HashMap::new(),
+            all_windows: HashMap::new(),
+        }
+    }
+
     /// Find a rule that matches the given `app_id` and title, returning the rule and its index
     #[must_use]
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
@@ -366,4 +377,242 @@ pub fn switch_audio(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Settings, SinkConfig};
+    use regex::Regex;
+
+    // Test helper functions
+    fn make_config(sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Config {
+        Config {
+            settings: Settings {
+                default_on_startup: true,
+                set_smart_toggle: true,
+                notify_manual: true,
+                notify_rules: true,
+                match_by_index: false,
+                log_level: "info".to_string(),
+            },
+            sinks,
+            rules,
+        }
+    }
+
+    fn make_sink(name: &str, desc: &str, default: bool) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            desc: desc.to_string(),
+            icon: None,
+            default,
+        }
+    }
+
+    fn make_rule(app_id: &str, title: Option<&str>, sink_ref: &str) -> Rule {
+        Rule {
+            app_id_regex: Regex::new(app_id).unwrap(),
+            title_regex: title.map(|t| Regex::new(t).unwrap()),
+            sink_ref: sink_ref.to_string(),
+            desc: None,
+            notify: None,
+            app_id_pattern: app_id.to_string(),
+            title_pattern: title.map(String::from),
+        }
+    }
+
+    // find_matching_rule() tests
+    #[test]
+    fn test_find_matching_rule_matches_app_id_only() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("firefox", None, "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("firefox", "Any Title");
+        assert!(result.is_some());
+        let (idx, _) = result.unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_find_matching_rule_matches_app_id_and_title() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("steam", Some("Big Picture"), "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("steam", "Steam Big Picture Mode");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_matching_rule_no_match_wrong_app_id() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("firefox", None, "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("chrome", "Any Title");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_matching_rule_no_match_wrong_title() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("steam", Some("Big Picture"), "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("steam", "Steam Library");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_find_matching_rule_returns_first_match() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![
+                make_rule("firefox", None, "sink1"),
+                make_rule("fire.*", None, "sink1"),
+            ],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("firefox", "Title");
+        assert!(result.is_some());
+        let (idx, _) = result.unwrap();
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_find_matching_rule_regex_partial_match() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("firefox", None, "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("org.mozilla.firefox", "Title");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_find_matching_rule_regex_anchored() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("^steam$", None, "sink1")],
+        );
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        let result = state.find_matching_rule("steamapp", "Title");
+        assert!(result.is_none());
+
+        let result2 = state.find_matching_rule("steam", "Title");
+        assert!(result2.is_some());
+    }
+
+    // should_switch_sink() tests
+    #[test]
+    fn test_should_switch_sink_different_returns_true() {
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        assert!(state.should_switch_sink("sink2"));
+    }
+
+    #[test]
+    fn test_should_switch_sink_same_returns_false() {
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        let state = State::new_for_testing(config, "sink1".to_string());
+
+        assert!(!state.should_switch_sink("sink1"));
+    }
+
+    // determine_target_sink() tests
+    #[test]
+    fn test_determine_target_sink_empty_returns_default() {
+        let config = make_config(
+            vec![
+                make_sink("default_sink", "Default", true),
+                make_sink("other_sink", "Other", false),
+            ],
+            vec![],
+        );
+        let state = State::new_for_testing(config, "default_sink".to_string());
+
+        assert_eq!(state.determine_target_sink(), "default_sink");
+    }
+
+    #[test]
+    fn test_determine_target_sink_single_window() {
+        let config = make_config(
+            vec![
+                make_sink("default_sink", "Default", true),
+                make_sink("firefox_sink", "Firefox", false),
+            ],
+            vec![make_rule("firefox", None, "firefox_sink")],
+        );
+        let mut state = State::new_for_testing(config, "default_sink".to_string());
+
+        // Track a window
+        state.track_window(
+            1,
+            "firefox_sink".to_string(),
+            "Firefox".to_string(),
+            0,
+            "firefox".to_string(),
+            "Browser".to_string(),
+        );
+
+        assert_eq!(state.determine_target_sink(), "firefox_sink");
+    }
+
+    #[test]
+    fn test_determine_target_sink_most_recent_wins() {
+        let config = make_config(
+            vec![
+                make_sink("default_sink", "Default", true),
+                make_sink("firefox_sink", "Firefox", false),
+                make_sink("mpv_sink", "MPV", false),
+            ],
+            vec![
+                make_rule("firefox", None, "firefox_sink"),
+                make_rule("mpv", None, "mpv_sink"),
+            ],
+        );
+        let mut state = State::new_for_testing(config, "default_sink".to_string());
+        state.config.settings.match_by_index = false;
+
+        // Track firefox first
+        state.track_window(
+            1,
+            "firefox_sink".to_string(),
+            "Firefox".to_string(),
+            0,
+            "firefox".to_string(),
+            "Browser".to_string(),
+        );
+
+        // Sleep briefly to ensure different timestamps
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Track mpv second (more recent)
+        state.track_window(
+            2,
+            "mpv_sink".to_string(),
+            "MPV".to_string(),
+            1,
+            "mpv".to_string(),
+            "Video".to_string(),
+        );
+
+        // Most recent (mpv) should win
+        assert_eq!(state.determine_target_sink(), "mpv_sink");
+    }
 }

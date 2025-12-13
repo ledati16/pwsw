@@ -371,3 +371,131 @@ pub async fn read_request(stream: &mut UnixStream) -> Result<Request> {
 pub async fn write_response(stream: &mut UnixStream, response: &Response) -> Result<()> {
     write_message(stream, response).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Request serialization roundtrip tests
+    #[test]
+    fn test_request_status_roundtrip() {
+        let request = Request::Status;
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, Request::Status));
+    }
+
+    #[test]
+    fn test_request_list_windows_roundtrip() {
+        let request = Request::ListWindows;
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, Request::ListWindows));
+    }
+
+    #[test]
+    fn test_request_test_rule_roundtrip() {
+        let request = Request::TestRule {
+            pattern: "firefox".to_string(),
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        if let Request::TestRule { pattern } = deserialized {
+            assert_eq!(pattern, "firefox");
+        } else {
+            panic!("Expected TestRule variant");
+        }
+    }
+
+    #[test]
+    fn test_request_shutdown_roundtrip() {
+        let request = Request::Shutdown;
+        let json = serde_json::to_string(&request).unwrap();
+        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(deserialized, Request::Shutdown));
+    }
+
+    // Response serialization roundtrip tests
+    #[test]
+    fn test_response_status_roundtrip() {
+        let response = Response::Status {
+            version: "0.3.1".to_string(),
+            uptime_secs: 3600,
+            current_sink: "test_sink".to_string(),
+            active_window: Some("firefox".to_string()),
+            tracked_windows: 2,
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        if let Response::Status {
+            version,
+            uptime_secs,
+            current_sink,
+            active_window,
+            tracked_windows,
+        } = deserialized
+        {
+            assert_eq!(version, "0.3.1");
+            assert_eq!(uptime_secs, 3600);
+            assert_eq!(current_sink, "test_sink");
+            assert_eq!(active_window, Some("firefox".to_string()));
+            assert_eq!(tracked_windows, 2);
+        } else {
+            panic!("Expected Status variant");
+        }
+    }
+
+    #[test]
+    fn test_response_ok_roundtrip() {
+        let response = Response::Ok {
+            message: "Success".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        if let Response::Ok { message } = deserialized {
+            assert_eq!(message, "Success");
+        } else {
+            panic!("Expected Ok variant");
+        }
+    }
+
+    #[test]
+    fn test_response_error_roundtrip() {
+        let response = Response::Error {
+            message: "An error occurred".to_string(),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        if let Response::Error { message } = deserialized {
+            assert_eq!(message, "An error occurred");
+        } else {
+            panic!("Expected Error variant");
+        }
+    }
+
+    #[test]
+    fn test_response_windows_roundtrip() {
+        let window_info = WindowInfo {
+            app_id: "firefox".to_string(),
+            title: "Mozilla Firefox".to_string(),
+            matched_on: Some("firefox pattern".to_string()),
+            tracked: Some(TrackedInfo {
+                sink_name: "hdmi_sink".to_string(),
+                sink_desc: "HDMI Output".to_string(),
+            }),
+        };
+        let response = Response::Windows {
+            windows: vec![window_info],
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        if let Response::Windows { windows } = deserialized {
+            assert_eq!(windows.len(), 1);
+            assert_eq!(windows[0].app_id, "firefox");
+            assert_eq!(windows[0].title, "Mozilla Firefox");
+            assert!(windows[0].tracked.is_some());
+        } else {
+            panic!("Expected Windows variant");
+        }
+    }
+}

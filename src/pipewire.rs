@@ -550,3 +550,265 @@ impl PipeWire {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // JSON fixtures for testing
+    const MINIMAL_SINK_JSON: &str = r#"[
+        {
+            "id": 42,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "node.name": "alsa_output.test.stereo",
+                    "node.description": "Test Speakers",
+                    "media.class": "Audio/Sink"
+                }
+            }
+        }
+    ]"#;
+
+    const METADATA_OBJECT_FORMAT_JSON: &str = r#"[
+        {
+            "id": 0,
+            "type": "PipeWire:Interface:Metadata",
+            "props": {
+                "metadata.name": "default"
+            },
+            "metadata": [
+                {
+                    "key": "default.audio.sink",
+                    "value": {"name": "alsa_output.test.stereo"}
+                }
+            ]
+        }
+    ]"#;
+
+    const METADATA_STRING_FORMAT_JSON: &str = r#"[
+        {
+            "id": 0,
+            "type": "PipeWire:Interface:Metadata",
+            "props": {
+                "metadata.name": "default"
+            },
+            "metadata": [
+                {
+                    "key": "default.audio.sink",
+                    "value": "alsa_output.test.stereo"
+                }
+            ]
+        }
+    ]"#;
+
+    const MULTIPLE_SINKS_JSON: &str = r#"[
+        {
+            "id": 1,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "node.name": "alsa_output.hdmi",
+                    "node.description": "HDMI Output",
+                    "media.class": "Audio/Sink"
+                }
+            }
+        },
+        {
+            "id": 2,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "node.name": "alsa_output.speakers",
+                    "node.description": "Speakers",
+                    "media.class": "Audio/Sink"
+                }
+            }
+        },
+        {
+            "id": 3,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "node.name": "alsa_input.mic",
+                    "node.description": "Microphone",
+                    "media.class": "Audio/Source"
+                }
+            }
+        }
+    ]"#;
+
+    // PwMetadataEntry::get_name() tests
+    #[test]
+    fn test_metadata_get_name_object_format() {
+        let objects: Vec<PwObject> = serde_json::from_str(METADATA_OBJECT_FORMAT_JSON).unwrap();
+        let metadata = &objects[0].metadata.as_ref().unwrap()[0];
+        assert_eq!(metadata.get_name(), Some("alsa_output.test.stereo".to_string()));
+    }
+
+    #[test]
+    fn test_metadata_get_name_string_format() {
+        let objects: Vec<PwObject> = serde_json::from_str(METADATA_STRING_FORMAT_JSON).unwrap();
+        let metadata = &objects[0].metadata.as_ref().unwrap()[0];
+        assert_eq!(metadata.get_name(), Some("alsa_output.test.stereo".to_string()));
+    }
+
+    #[test]
+    fn test_metadata_get_name_null_returns_none() {
+        let entry = PwMetadataEntry {
+            key: "test".to_string(),
+            value: None,
+        };
+        assert_eq!(entry.get_name(), None);
+    }
+
+    // PwObject::get_props() tests
+    #[test]
+    fn test_get_props_from_info() {
+        let objects: Vec<PwObject> = serde_json::from_str(MINIMAL_SINK_JSON).unwrap();
+        let props = objects[0].get_props();
+        assert!(props.is_some());
+        assert_eq!(props.unwrap().node_name.as_deref(), Some("alsa_output.test.stereo"));
+    }
+
+    #[test]
+    fn test_get_props_from_toplevel() {
+        let json = r#"[{
+            "id": 0,
+            "type": "PipeWire:Interface:Metadata",
+            "props": {
+                "metadata.name": "default"
+            }
+        }]"#;
+        let objects: Vec<PwObject> = serde_json::from_str(json).unwrap();
+        let props = objects[0].get_props();
+        assert!(props.is_some());
+        assert_eq!(props.unwrap().metadata_name.as_deref(), Some("default"));
+    }
+
+    // get_active_sinks() tests
+    #[test]
+    fn test_get_active_sinks_filters_audio_sink() {
+        let objects: Vec<PwObject> = serde_json::from_str(MINIMAL_SINK_JSON).unwrap();
+        let sinks = PipeWire::get_active_sinks(&objects);
+        assert_eq!(sinks.len(), 1);
+        assert_eq!(sinks[0].name, "alsa_output.test.stereo");
+        assert_eq!(sinks[0].description, "Test Speakers");
+    }
+
+    #[test]
+    fn test_get_active_sinks_ignores_sources() {
+        let objects: Vec<PwObject> = serde_json::from_str(MULTIPLE_SINKS_JSON).unwrap();
+        let sinks = PipeWire::get_active_sinks(&objects);
+        assert_eq!(sinks.len(), 2);
+        assert!(sinks.iter().all(|s| !s.name.contains("mic")));
+    }
+
+    #[test]
+    fn test_get_active_sinks_uses_description_fallback() {
+        let json = r#"[{
+            "id": 1,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "node.name": "test_sink",
+                    "node.nick": "Test Nick",
+                    "media.class": "Audio/Sink"
+                }
+            }
+        }]"#;
+        let objects: Vec<PwObject> = serde_json::from_str(json).unwrap();
+        let sinks = PipeWire::get_active_sinks(&objects);
+        assert_eq!(sinks.len(), 1);
+        assert_eq!(sinks[0].description, "Test Nick");
+    }
+
+    // get_default_sink_name_from_objects() tests
+    #[test]
+    fn test_get_default_sink_found() {
+        let objects: Vec<PwObject> = serde_json::from_str(METADATA_OBJECT_FORMAT_JSON).unwrap();
+        let default_sink = PipeWire::get_default_sink_name_from_objects(&objects);
+        assert_eq!(default_sink, Some("alsa_output.test.stereo".to_string()));
+    }
+
+    #[test]
+    fn test_get_default_sink_missing() {
+        let json = r#"[{
+            "id": 0,
+            "type": "PipeWire:Interface:Metadata",
+            "props": {
+                "metadata.name": "default"
+            },
+            "metadata": []
+        }]"#;
+        let objects: Vec<PwObject> = serde_json::from_str(json).unwrap();
+        let default_sink = PipeWire::get_default_sink_name_from_objects(&objects);
+        assert_eq!(default_sink, None);
+    }
+
+    // get_profile_sinks() tests
+    #[test]
+    fn test_get_profile_sinks_excludes_active() {
+        let device_json = r#"[
+            {
+                "id": 100,
+                "type": "PipeWire:Interface:Device",
+                "info": {
+                    "props": {
+                        "device.name": "alsa_card.test"
+                    },
+                    "params": {
+                        "Profile": [{"index": 1, "name": "analog-stereo"}],
+                        "EnumProfile": [
+                            {"index": 0, "name": "off", "description": "Off"},
+                            {"index": 1, "name": "analog-stereo", "description": "Analog Stereo", "available": "yes"},
+                            {"index": 2, "name": "iec958-stereo", "description": "Digital Stereo", "available": "yes"}
+                        ]
+                    }
+                }
+            }
+        ]"#;
+        let objects: Vec<PwObject> = serde_json::from_str(device_json).unwrap();
+        let active_sinks = vec![ActiveSink {
+            name: "alsa_output.test.analog-stereo".to_string(),
+            description: "Active Sink".to_string(),
+            is_default: false,
+        }];
+
+        let profile_sinks = PipeWire::get_profile_sinks(&objects, &active_sinks);
+
+        // Should exclude current profile (analog-stereo) and off profile
+        assert_eq!(profile_sinks.len(), 1);
+        assert!(profile_sinks[0].predicted_name.contains("iec958-stereo"));
+    }
+
+    #[test]
+    fn test_get_profile_sinks_predicts_node_name() {
+        let device_json = r#"[
+            {
+                "id": 100,
+                "type": "PipeWire:Interface:Device",
+                "info": {
+                    "props": {
+                        "device.name": "alsa_card.pci-0000_00_1f.3"
+                    },
+                    "params": {
+                        "Profile": [{"index": 0, "name": "off"}],
+                        "EnumProfile": [
+                            {"index": 0, "name": "off", "description": "Off"},
+                            {"index": 1, "name": "output:analog-stereo", "description": "Analog Stereo", "available": "yes"}
+                        ]
+                    }
+                }
+            }
+        ]"#;
+        let objects: Vec<PwObject> = serde_json::from_str(device_json).unwrap();
+        let active_sinks = vec![];
+
+        let profile_sinks = PipeWire::get_profile_sinks(&objects, &active_sinks);
+
+        assert_eq!(profile_sinks.len(), 1);
+        // Should predict: alsa_output.pci-0000_00_1f.3.analog-stereo
+        assert_eq!(profile_sinks[0].predicted_name, "alsa_output.pci-0000_00_1f.3.analog-stereo");
+    }
+}

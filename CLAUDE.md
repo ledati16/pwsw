@@ -447,11 +447,28 @@ When creating commits:
 4. If approved, push with: `git push` (or `git push -u origin <branch>` for new branches)
 
 ### Testing Approach
-While there are no automated tests yet, manual testing should cover:
+
+**Automated Tests (54 total):**
+Run the test suite with:
+```bash
+cargo test           # Run all tests
+cargo test --lib     # Run unit tests only
+```
+
+Test coverage by module:
+- `config.rs`: 15 tests - Config validation, sink resolution, default sink handling
+- `state.rs`: 12 tests - Rule matching, priority logic, window tracking
+- `pipewire.rs`: 12 tests - JSON parsing from `pw-dump` output (no external dependencies)
+- `ipc.rs`: 8 tests - Request/Response serialization roundtrips
+- `notification.rs`: 6 tests - Icon auto-detection for sinks and apps
+- `style.rs`: 1 doctest - Styling trait usage example
+
+All tests are inline `#[cfg(test)]` modules that test pure functions without external dependencies (no PipeWire/Wayland calls).
+
+**Manual Testing:**
+For features not covered by unit tests, manual testing should cover:
 1. **Window matching**: Test regex patterns with `pwsw test-rule`
 2. **Sink switching**: Verify correct sink activation with `pwsw status`
 3. **IPC protocol**: Test all CLI commands while daemon is running
 4. **Error conditions**: Test with missing tools, invalid config, etc.
 5. **Resource cleanup**: Verify socket cleanup on daemon shutdown
-
-Future priority: Add unit tests for core logic (state management, rule matching, config validation).

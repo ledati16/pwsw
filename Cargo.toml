@@ -53,3 +53,6 @@ panic = "abort"
 [profile.dev]
 opt-level = 0
 debug = true
+
+[dev-dependencies]
+tempfile = "3"
