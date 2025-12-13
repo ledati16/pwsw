@@ -65,20 +65,29 @@ pwsw daemon --foreground  # Start with logs to stderr
 
 ### Commands
 
+**Status and monitoring:**
 ```bash
-# Status and monitoring
-pwsw                    # Show current status (default command)
-pwsw status             # Same as above (supports --json)
-pwsw list-windows       # Show tracked windows (requires daemon, supports --json)
-
-# Daemon control
-pwsw shutdown           # Stop daemon gracefully
-
-# Testing and validation
-pwsw test-rule "^mpv$"  # Test regex against tracked windows (requires daemon)
-pwsw validate           # Check config syntax (local, no daemon needed)
-pwsw list-sinks         # List audio outputs (local, supports --json)
+pwsw
+pwsw status
+pwsw list-windows
 ```
+Show current status (default command), supports `--json` output. `list-windows` requires daemon.
+
+**Daemon control:**
+```bash
+pwsw shutdown
+```
+Stop daemon gracefully.
+
+**Testing and validation:**
+```bash
+pwsw test-rule "^mpv$"
+pwsw validate
+pwsw list-sinks
+```
+- `test-rule`: Test regex against tracked windows (requires daemon)
+- `validate`: Check config syntax (no daemon needed)
+- `list-sinks`: List audio outputs (no daemon needed, supports `--json`)
 
 ## Configuration
 
@@ -88,46 +97,69 @@ pwsw list-sinks         # List audio outputs (local, supports --json)
 
 ```toml
 [settings]
-default_on_startup = true   # Switch to default sink on daemon start
-set_smart_toggle = true     # set-sink toggles back to default if already active
-notify_manual = true        # Notifications for manual switches
-notify_rules = true         # Notifications for rule-triggered switches
-match_by_index = false      # false: recent window wins | true: first rule wins
-log_level = "info"          # error, warn, info, debug, trace
+default_on_startup = true
+set_smart_toggle = true
+notify_manual = true
+notify_rules = true
+match_by_index = false
+log_level = "info"
 ```
+
+**Options:**
+- `default_on_startup`: Switch to default sink on daemon start
+- `set_smart_toggle`: set-sink toggles back to default if already active
+- `notify_manual`: Desktop notifications for manual switches
+- `notify_rules`: Desktop notifications for rule-triggered switches
+- `match_by_index`: false = recent window wins, true = first rule wins
+- `log_level`: error, warn, info, debug, trace
 
 ### Sinks
 
 ```toml
 [[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"  # PipeWire node name
-desc = "Optical Out"                                  # Human-readable label
-default = true                                        # Fallback sink
-# icon = "audio-card"                                 # Optional icon override
+name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"
+desc = "Optical Out"
+default = true
+icon = "audio-card"
 
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 desc = "Headphones"
-# Auto-detected icons: HDMI→video-display, headphone→audio-headphones,
-#                      speaker→audio-speakers, analog→audio-card
 ```
 
-**Find sink names:** `pwsw list-sinks`
+**Fields:**
+- `name`: PipeWire node name (find with `pwsw list-sinks`)
+- `desc`: Human-readable label
+- `default`: Fallback sink (exactly one required)
+- `icon`: Optional notification icon override
+
+**Auto-detected icons:**
+- HDMI: video-display
+- headphone: audio-headphones
+- speaker: audio-speakers
+- analog: audio-card
 
 ### Rules
 
 ```toml
 [[rules]]
-app_id = "^steam$"                      # Regex for window app_id
-title = "^Steam Big Picture Mode$"     # Optional: regex for window title
-sink = "Optical Out"                    # Reference by desc, name, or position (1, 2, ...)
-desc = "Steam Big Picture"              # Optional: custom notification label
-# notify = false                        # Optional: override notify_rules
+app_id = "^steam$"
+title = "^Steam Big Picture Mode$"
+sink = "Optical Out"
+desc = "Steam Big Picture"
+notify = false
 
 [[rules]]
 app_id = "^mpv$"
-sink = 2  # Position reference
+sink = 2
 ```
+
+**Fields:**
+- `app_id`: Regex pattern for window app_id (required)
+- `title`: Regex pattern for window title (optional)
+- `sink`: Reference by desc, name, or 1-indexed position
+- `desc`: Custom notification label (optional)
+- `notify`: Override global notify_rules setting (optional)
 
 **Find app_id/title:**
 ```bash
@@ -223,37 +255,42 @@ Opening Firefox then MPV → Headphones (MPV always wins regardless of order)
 
 ### Logging
 
-```bash
-# Set in config
-log_level = "debug"  # error < warn < info < debug < trace
+Set in config: `log_level = "debug"`
 
-# View logs
-pwsw daemon --foreground
-```
+Levels: error < warn < info < debug < trace
+
+View logs: `pwsw daemon --foreground`
 
 ## Building
 
 ### Prerequisites
+
+**Rust toolchain:**
 ```bash
-# Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# PipeWire (Arch example)
-sudo pacman -S pipewire pipewire-pulse
-
-# Required: pw-dump, pw-metadata, pw-cli (usually bundled with PipeWire)
 ```
+
+**PipeWire tools** (Arch example):
+```bash
+sudo pacman -S pipewire pipewire-pulse
+```
+
+Requires: `pw-dump`, `pw-metadata`, `pw-cli` (usually bundled with PipeWire)
 
 ### Build Commands
 ```bash
-cargo build --release   # Optimized build
-cargo install --path .  # Install to ~/.cargo/bin/
-cargo check             # Fast syntax check
-cargo test              # Run tests
-cargo clippy            # Lint
+cargo build --release
+cargo install --path .
+cargo check
+cargo test
+cargo clippy
 ```
 
-**Binary location:** `target/release/pwsw`
+- `build --release`: Optimized build at `target/release/pwsw`
+- `install --path .`: Install to `~/.cargo/bin/`
+- `check`: Fast syntax validation
+- `test`: Run test suite
+- `clippy`: Lint code
 
 ## Appendix: LLM-Generated Code
 
