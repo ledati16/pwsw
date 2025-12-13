@@ -25,6 +25,8 @@ pub struct State {
     active_windows: HashMap<u64, ActiveWindow>,
     /// Tracks ALL currently open windows (removed on close). Used for test-rule command.
     all_windows: HashMap<u64, (String, String)>, // (app_id, title)
+    /// Lookup table for fast sink description retrieval (sink name -> description)
+    sink_lookup: HashMap<String, String>,
 }
 
 /// Tracked window that matched a rule
@@ -62,22 +64,38 @@ impl State {
 
         info!("Current default sink: {}", current_sink_name);
 
+        // Build sink lookup table for O(1) description retrieval
+        let sink_lookup = config
+            .sinks
+            .iter()
+            .map(|s| (s.name.clone(), s.desc.clone()))
+            .collect();
+
         Ok(Self {
             config,
             current_sink_name,
             active_windows: HashMap::new(),
             all_windows: HashMap::new(),
+            sink_lookup,
         })
     }
 
     /// Create a State for testing without `PipeWire` dependency
     #[cfg(test)]
     pub(crate) fn new_for_testing(config: Config, current_sink_name: String) -> Self {
+        // Build sink lookup table for O(1) description retrieval
+        let sink_lookup = config
+            .sinks
+            .iter()
+            .map(|s| (s.name.clone(), s.desc.clone()))
+            .collect();
+
         Self {
             config,
             current_sink_name,
             active_windows: HashMap::new(),
             all_windows: HashMap::new(),
+            sink_lookup,
         }
     }
 
@@ -109,7 +127,7 @@ impl State {
     ///
     /// Priority depends on `match_by_index` setting:
     /// - `false` (default): Most recently opened window wins
-    /// - `true`: Lowest rule index (highest priority) wins
+    /// - `true`: Lowest rule index (highest priority) wins, with most recent as tiebreaker
     ///
     /// # Panics
     /// Panics if no default sink is configured (should be prevented by config validation).
@@ -117,7 +135,12 @@ impl State {
     pub fn determine_target_sink(&self) -> String {
         let winner = if self.config.settings.match_by_index {
             // Index-based priority: lower index = higher priority
-            self.active_windows.iter().min_by_key(|(_, w)| w.rule_index)
+            // Tiebreaker: most recent window wins when rule indices are equal
+            self.active_windows.iter().min_by(|(_, a), (_, b)| {
+                a.rule_index
+                    .cmp(&b.rule_index)
+                    .then_with(|| b.opened_at.cmp(&a.opened_at))
+            })
         } else {
             // Time-based priority: most recent window wins
             self.active_windows.iter().max_by_key(|(_, w)| w.opened_at)
@@ -322,11 +345,9 @@ impl State {
             .values()
             .map(|w| {
                 let sink_desc = self
-                    .config
-                    .sinks
-                    .iter()
-                    .find(|s| s.name == w.sink_name)
-                    .map_or_else(|| w.sink_name.clone(), |s| s.desc.clone());
+                    .sink_lookup
+                    .get(&w.sink_name)
+                    .map_or_else(|| w.sink_name.clone(), Clone::clone);
                 (
                     w.app_id.clone(),
                     w.title.clone(),

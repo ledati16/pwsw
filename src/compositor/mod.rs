@@ -83,10 +83,29 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
     // Spawn dedicated thread for Wayland event loop
     std::thread::spawn(move || {
         info!("Using wlr-foreign-toplevel-management protocol");
-        let result = wlr_toplevel::run_event_loop(conn, tx);
 
-        if let Err(e) = result {
-            error!("Wayland event loop error: {:#}", e);
+        // Catch panics to avoid silent thread death
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            wlr_toplevel::run_event_loop(conn, tx)
+        }));
+
+        match panic_result {
+            Ok(Ok(())) => {
+                info!("Wayland event loop exited normally");
+            }
+            Ok(Err(e)) => {
+                error!("Wayland event loop error: {:#}", e);
+            }
+            Err(panic_info) => {
+                let panic_msg = if let Some(&s) = panic_info.downcast_ref::<&str>() {
+                    s
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.as_str()
+                } else {
+                    "Unknown panic"
+                };
+                error!("Wayland event loop panicked: {panic_msg}");
+            }
         }
     });
 

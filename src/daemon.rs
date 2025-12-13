@@ -149,8 +149,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let start_time = Instant::now();
     let mut state = State::new(config)?;
 
-    // Create shutdown channel
-    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
+    // Create shutdown channel with larger buffer to handle concurrent subscribers
+    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
 
     // Switch to default on startup if configured
     if state.config.settings.default_on_startup {
@@ -329,7 +329,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                                 (true, true) => "both",
                                 (true, false) => "app_id",
                                 (false, true) => "title",
-                                _ => unreachable!(),
+                                (false, false) => unreachable!("Already filtered by outer if"),
                             };
 
                             Some(WindowInfo {
