@@ -504,3 +504,230 @@ desc = "Steam Big Picture" # Custom name for notifications
         self.sinks.iter().find(|s| s.default)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Test helper functions
+    fn make_config(sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Config {
+        Config {
+            settings: Settings {
+                default_on_startup: true,
+                set_smart_toggle: true,
+                notify_manual: true,
+                notify_rules: true,
+                match_by_index: false,
+                log_level: "info".to_string(),
+            },
+            sinks,
+            rules,
+        }
+    }
+
+    fn make_sink(name: &str, desc: &str, default: bool) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            desc: desc.to_string(),
+            icon: None,
+            default,
+        }
+    }
+
+    fn make_rule(app_id: &str, title: Option<&str>, sink_ref: &str) -> Rule {
+        Rule {
+            app_id_regex: Regex::new(app_id).unwrap(),
+            title_regex: title.map(|t| Regex::new(t).unwrap()),
+            sink_ref: sink_ref.to_string(),
+            desc: None,
+            notify: None,
+            app_id_pattern: app_id.to_string(),
+            title_pattern: title.map(String::from),
+        }
+    }
+
+    // validate() tests
+    #[test]
+    fn test_validate_accepts_single_default_sink() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "Sink 1", true),
+                make_sink("sink2", "Sink 2", false),
+            ],
+            vec![],
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_rejects_no_default_sink() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "Sink 1", false),
+                make_sink("sink2", "Sink 2", false),
+            ],
+            vec![],
+        );
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("default sink"));
+    }
+
+    #[test]
+    fn test_validate_rejects_multiple_default_sinks() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "Sink 1", true),
+                make_sink("sink2", "Sink 2", true),
+            ],
+            vec![],
+        );
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("default sinks found"));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_sink_names() {
+        let config = make_config(
+            vec![
+                make_sink("duplicate", "Sink 1", true),
+                make_sink("duplicate", "Sink 2", false),
+            ],
+            vec![],
+        );
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate"));
+    }
+
+    #[test]
+    fn test_validate_rejects_duplicate_sink_descs() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "Duplicate Desc", true),
+                make_sink("sink2", "Duplicate Desc", false),
+            ],
+            vec![],
+        );
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Duplicate"));
+    }
+
+    #[test]
+    fn test_validate_rejects_unknown_rule_sink_ref() {
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("firefox", None, "nonexistent")],
+        );
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unknown sink"));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_log_level() {
+        let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        config.settings.log_level = "invalid".to_string();
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("log_level"));
+    }
+
+    #[test]
+    fn test_validate_accepts_all_valid_log_levels() {
+        for level in &["error", "warn", "info", "debug", "trace"] {
+            let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+            config.settings.log_level = (*level).to_string();
+            assert!(
+                config.validate().is_ok(),
+                "Log level '{level}' should be valid"
+            );
+        }
+    }
+
+    // resolve_sink() tests
+    #[test]
+    fn test_resolve_sink_by_position_one_indexed() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "First Sink", true),
+                make_sink("sink2", "Second Sink", false),
+            ],
+            vec![],
+        );
+        let result = config.resolve_sink("1");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "sink1");
+
+        let result2 = config.resolve_sink("2");
+        assert!(result2.is_some());
+        assert_eq!(result2.unwrap().name, "sink2");
+    }
+
+    #[test]
+    fn test_resolve_sink_by_position_zero_returns_none() {
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        assert!(config.resolve_sink("0").is_none());
+    }
+
+    #[test]
+    fn test_resolve_sink_by_position_out_of_bounds() {
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        assert!(config.resolve_sink("99").is_none());
+    }
+
+    #[test]
+    fn test_resolve_sink_by_description() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "HDMI Output", true),
+                make_sink("sink2", "Speakers", false),
+            ],
+            vec![],
+        );
+        let result = config.resolve_sink("HDMI Output");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().name, "sink1");
+    }
+
+    #[test]
+    fn test_resolve_sink_by_name() {
+        let config = make_config(
+            vec![
+                make_sink("alsa_output.test.stereo", "Test", true),
+                make_sink("sink2", "Sink 2", false),
+            ],
+            vec![],
+        );
+        let result = config.resolve_sink("alsa_output.test.stereo");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().desc, "Test");
+    }
+
+    #[test]
+    fn test_resolve_sink_not_found() {
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        assert!(config.resolve_sink("nonexistent").is_none());
+    }
+
+    // get_default_sink() tests
+    #[test]
+    fn test_get_default_sink_returns_correct_sink() {
+        let config = make_config(
+            vec![
+                make_sink("sink1", "Sink 1", false),
+                make_sink("sink2", "Default Sink", true),
+                make_sink("sink3", "Sink 3", false),
+            ],
+            vec![],
+        );
+        let result = config.get_default_sink();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().desc, "Default Sink");
+    }
+}

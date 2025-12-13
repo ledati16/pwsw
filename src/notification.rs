@@ -71,3 +71,71 @@ pub fn get_app_icon(app_id: &str) -> String {
         _ => app_id.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper to create test sink
+    fn make_test_sink(desc: &str, name: &str, icon: Option<String>) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            desc: desc.to_string(),
+            icon,
+            default: false,
+        }
+    }
+
+    #[test]
+    fn test_get_sink_icon_custom_override() {
+        let sink = make_test_sink("Test Speakers", "test.sink", Some("custom-icon".to_string()));
+        assert_eq!(get_sink_icon(&sink), "custom-icon");
+    }
+
+    #[test]
+    fn test_get_sink_icon_hdmi_detection() {
+        let sink = make_test_sink("HDMI Output", "test.hdmi", None);
+        assert_eq!(get_sink_icon(&sink), "video-display");
+
+        let sink2 = make_test_sink("Test TV", "test.sink", None);
+        assert_eq!(get_sink_icon(&sink2), "video-display");
+
+        let sink3 = make_test_sink("Test", "alsa.hdmi.stereo", None);
+        assert_eq!(get_sink_icon(&sink3), "video-display");
+    }
+
+    #[test]
+    fn test_get_sink_icon_headphone_detection() {
+        let sink = make_test_sink("Headphones", "test.headphones", None);
+        assert_eq!(get_sink_icon(&sink), "audio-headphones");
+
+        let sink2 = make_test_sink("Bluetooth Headset", "test.bt", None);
+        assert_eq!(get_sink_icon(&sink2), "audio-headphones");
+
+        let sink3 = make_test_sink("Test", "bluez.sink", None);
+        assert_eq!(get_sink_icon(&sink3), "audio-headphones");
+    }
+
+    #[test]
+    fn test_get_sink_icon_default_speakers() {
+        let sink = make_test_sink("Analog Stereo", "test.analog", None);
+        assert_eq!(get_sink_icon(&sink), "audio-speakers");
+
+        let sink2 = make_test_sink("Digital Output", "test.digital", None);
+        assert_eq!(get_sink_icon(&sink2), "audio-speakers");
+    }
+
+    #[test]
+    fn test_get_app_icon_known_mapping() {
+        assert_eq!(get_app_icon("org.mozilla.firefox"), "firefox");
+        assert_eq!(get_app_icon("org.telegram.desktop"), "telegram");
+        assert_eq!(get_app_icon("org.gnome.Nautilus"), "nautilus");
+    }
+
+    #[test]
+    fn test_get_app_icon_passthrough() {
+        assert_eq!(get_app_icon("mpv"), "mpv");
+        assert_eq!(get_app_icon("steam"), "steam");
+        assert_eq!(get_app_icon("unknown.app"), "unknown.app");
+    }
+}

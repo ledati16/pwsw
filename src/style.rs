@@ -17,7 +17,8 @@ use crossterm::style::Stylize;
 /// # Examples
 ///
 /// ```
-/// use crate::style::PwswStyle;
+/// use crossterm::style::Stylize;
+/// use pwsw::style::PwswStyle;
 ///
 /// println!("{}", "Section Header".header());
 /// println!("{}", "Success message".success());
