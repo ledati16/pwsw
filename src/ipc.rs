@@ -19,8 +19,9 @@ use tracing::{debug, error, warn};
 /// Set to 500ms to accommodate slow systems and high load scenarios
 const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
 
-/// Timeout for stale socket cleanup check (quick check, daemon not expected to respond)
-const STALE_SOCKET_CHECK_TIMEOUT_MS: u64 = 100;
+/// Timeout for stale socket cleanup check (same as health check for consistency)
+/// If daemon responds within health check timeout, socket is not stale
+const STALE_SOCKET_CHECK_TIMEOUT_MS: u64 = 500;
 
 /// Timeout for client connections (longer to allow daemon to process request)
 const CLIENT_CONNECT_TIMEOUT_SECS: u64 = 5;
