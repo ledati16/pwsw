@@ -6,225 +6,155 @@ https://github.com/user-attachments/assets/1c8d7018-de76-43f5-b8bb-7fcaccb38de6
 
 ## What is PWSW?
 
-PWSW is a daemon that automatically switches your PipeWire audio output based on which window is focused. Launch a game? Audio goes to your speakers. Open Discord? Audio switches to your headset. Close the window? It switches back automatically.
+PWSW automatically switches your PipeWire audio output based on active windows. Launch a game? Audio goes to speakers. Open Discord? Switches to headset. Close the window? Switches back.
 
-It uses standard Wayland protocols to monitor windows and PipeWire native tools (`pw-dump`, `pw-metadata`, `pw-cli`) for audio control—no compositor-specific hacks required.
+Uses standard Wayland protocols for window monitoring and PipeWire native tools for audio control.
 
 ## Features
 
-- **Automatic sink switching** - Configure rules to switch audio based on window app_id/title (regex supported)
-- **Priority modes** - Choose temporal (most recent window) or index-based (explicit rule ordering) priority
-- **Profile switching support** - Automatically switch device profiles when needed (e.g., analog ↔ digital)
-- **Desktop notifications** - Optional notifications for manual and rule-triggered switches
-- **IPC daemon** - Background daemon with Unix socket for CLI control
-- **Zero compositor-specific code** - Uses standard Wayland protocols (works with Sway, Hyprland, Niri, River, KDE Plasma, and more)
-- **JSON output** - All commands support `--json` for scripting/status bars
+- **Automatic sink switching** based on window app_id/title patterns (regex)
+- **Priority modes** - temporal (recent window) or index-based (rule order)
+- **Profile switching** - handles analog/digital device profile changes
+- **Desktop notifications** - optional alerts for manual and automatic switches
+- **IPC daemon** - background service with Unix socket control
+- **JSON output** - for scripting and status bar integration
+- **Compositor agnostic** - uses standard Wayland protocols
 
 ## Supported Compositors
 
-### ✅ Fully Supported (via wlr-foreign-toplevel-management)
-Sway • Hyprland • Niri • River • Wayfire • labwc • dwl • hikari
+### ✅ Fully Supported
+**wlr-foreign-toplevel-management:** Sway • Hyprland • Niri • River • Wayfire • labwc • dwl • hikari
 
-### ✅ Experimental (via plasma-window-management)  
-KDE Plasma/KWin
+### ✅ Experimental
+**plasma-window-management:** KDE Plasma/KWin
 
 ### ❌ Not Supported
-GNOME/Mutter (protocol not exposed)
-
-**Why these?** PWSW uses standard Wayland protocols instead of compositor-specific IPC, providing broad compatibility with less code.
+**GNOME/Mutter** (protocol not exposed)
 
 ## Quick Start
 
-### 1. Install Dependencies
 ```bash
-# Arch Linux
-sudo pacman -S pipewire pipewire-pulse
+# 1. Install dependencies (Arch example)
+sudo pacman -S pipewire pipewire-pulse rust cargo
 
-# Fedora
-sudo dnf install pipewire pipewire-utils
-
-# Ubuntu/Debian
-sudo apt install pipewire pipewire-bin
-```
-
-### 2. Build and Install
-```bash
-# Clone repository
-git clone https://github.com/ledati16/pwsw.git
-cd pwsw
-
-# Build release binary
-cargo build --release
-
-# Install to ~/.cargo/bin (ensure it's in your PATH)
+# 2. Build and install
 cargo install --path .
-```
 
-### 3. Configure and Run
-```bash
-# Discover your audio outputs
+# 3. Discover audio outputs
 pwsw list-sinks
 
-# Edit the generated config
-pwsw validate  # Creates default config at ~/.config/pwsw/config.toml
+# 4. Edit config (auto-created on first run)
+pwsw validate
 $EDITOR ~/.config/pwsw/config.toml
 
-# Start the daemon
+# 5. Start daemon
 pwsw daemon
 ```
 
-That's it! Your audio will now switch automatically based on active windows.
-
 ## Usage
 
-### Daemon Commands
-
-Start the daemon to enable automatic audio switching:
+### Daemon
 
 ```bash
-pwsw daemon              # Run in background (detached)
-pwsw daemon --foreground # Run in foreground with logs
-pwsw                     # Alias for 'pwsw daemon'
+pwsw daemon                  # Start in background
+pwsw daemon --foreground     # Start with logs to stderr
 ```
 
-### IPC Commands (require running daemon)
-
-Communicate with the daemon via Unix socket:
+### Commands
 
 ```bash
-pwsw status              # Show daemon status, current sink, active windows
-pwsw status --json       # JSON output for scripting
+# Status and monitoring
+pwsw                         # Show current status (default command)
+pwsw status                  # Same as above (supports --json)
+pwsw list-windows            # Show tracked windows (requires daemon, supports --json)
 
-pwsw reload              # Reload configuration (requires daemon restart for changes)
-pwsw shutdown            # Gracefully stop the daemon
+# Daemon control
+pwsw shutdown                # Stop daemon gracefully
 
-pwsw list-windows        # Show all windows tracked by daemon
-pwsw list-windows --json # JSON output
-
-pwsw test-rule "^mpv$"   # Test regex pattern against tracked windows
-```
-
-### Local Commands (no daemon needed)
-
-These work without a running daemon:
-
-```bash
-pwsw list-sinks          # Discover available audio outputs
-pwsw list-sinks --json   # JSON output with icons (for status bars)
-
-pwsw validate            # Validate config and show parsed settings
+# Testing and validation
+pwsw test-rule "^mpv$"       # Test regex against tracked windows (requires daemon)
+pwsw validate                # Check config syntax (local, no daemon needed)
+pwsw list-sinks              # List audio outputs (local, supports --json)
 ```
 
 ## Configuration
 
-Config location: `~/.config/pwsw/config.toml`
+**Location:** `~/.config/pwsw/config.toml`
 
-### Settings Section
+### Settings
 
 ```toml
 [settings]
-default_on_startup = true  # Switch to default sink when daemon starts
-set_smart_toggle = true    # set-sink toggles back to default if already active
-notify_manual = true       # Show notifications for manual sink changes
-notify_rules = true        # Show notifications for rule-triggered switches
-match_by_index = false     # Priority mode (see below)
-log_level = "info"         # error, warn, info, debug, trace
+default_on_startup = true    # Switch to default sink on daemon start
+set_smart_toggle = true      # set-sink toggles back to default if already active
+notify_manual = true         # Notifications for manual switches
+notify_rules = true          # Notifications for rule-triggered switches
+match_by_index = false       # false: recent window wins | true: first rule wins
+log_level = "info"           # error, warn, info, debug, trace
 ```
 
-#### Priority Modes: `match_by_index`
-
-Controls how PWSW prioritizes multiple matching windows:
-
-- **`false` (default)** - Temporal priority: most recently opened window wins
-- **`true`** - Index priority: lower rule index (first in config) wins
-
-**Example:**
-```toml
-match_by_index = true
-
-[[rules]]  # Priority 1 (highest)
-app_id = "^mpv$"
-sink = "Headphones"
-
-[[rules]]  # Priority 2
-app_id = "^firefox$"
-sink = "Speakers"
-```
-
-With `match_by_index = true`:
-- Open Firefox → Speakers
-- Open MPV → Headphones (MPV rule wins due to lower index)
-- Close MPV → back to Speakers
-
-With `match_by_index = false` (default):
-- Open Firefox → Speakers
-- Open MPV → Headphones (most recent window wins)
-- Close MPV → back to Speakers
-
-### Sinks Section
-
-Define your audio outputs:
+### Sinks
 
 ```toml
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"  # PipeWire node name
-desc = "Optical Out"                                  # Human-readable name
+desc = "Optical Out"                                  # Human-readable label
 default = true                                        # Fallback sink
-# icon = "audio-card"  # Optional: override auto-detected icon
+# icon = "audio-card"                                 # Optional icon override
 
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 desc = "Headphones"
-# Icons auto-detected from description keywords:
-# "HDMI" → video-display, "headphone" → audio-headphones,
-# "speaker" → audio-speakers, "analog" → audio-card
+# Auto-detected icons: HDMI→video-display, headphone→audio-headphones,
+#                      speaker→audio-speakers, analog→audio-card
 ```
 
-**Finding sink names:** Run `pwsw list-sinks` to see all available outputs.
+**Find sink names:** `pwsw list-sinks`
 
-### Rules Section
-
-Define window matching rules:
+### Rules
 
 ```toml
 [[rules]]
-app_id = "^steam$"                       # Regex pattern for window app_id
-title = "^Steam Big Picture Mode$"      # Optional: regex for window title
-sink = "Optical Out"                     # Reference by: desc, name, or position (1, 2, ...)
-desc = "Steam Big Picture"               # Optional: custom name for notifications
-# notify = false                         # Optional: override notify_rules for this rule
+app_id = "^steam$"                   # Regex for window app_id
+title = "^Steam Big Picture Mode$"  # Optional: regex for window title
+sink = "Optical Out"                 # Reference by desc, name, or position (1, 2, ...)
+desc = "Steam Big Picture"           # Optional: custom notification label
+# notify = false                     # Optional: override notify_rules
+
+[[rules]]
+app_id = "^mpv$"
+sink = 2                             # Position reference
 ```
 
-**Finding app_id/title:**
+**Find app_id/title:**
 ```bash
-pwsw list-windows           # While daemon is running
-pwsw test-rule ".*"         # Test patterns (shows all windows)
+pwsw list-windows            # Requires daemon running
+pwsw test-rule ".*"          # Show all windows with pattern matching
 
-# Compositor-specific tools:
-swaymsg -t get_tree         # Sway/River/wlroots compositors
-hyprctl clients             # Hyprland
-niri msg windows            # Niri
-# KDE Plasma: use KDE window inspector
+# Compositor tools:
+swaymsg -t get_tree          # Sway/River/wlroots
+hyprctl clients              # Hyprland
+niri msg windows             # Niri
 ```
 
-**Regex pattern examples:**
+**Regex examples:**
 ```toml
-app_id = "firefox"          # Matches anywhere in app_id
-app_id = "^firefox$"        # Exact match only
-app_id = "^(mpv|vlc)$"      # Matches mpv OR vlc
-app_id = "(?i)discord"      # Case insensitive
-app_id = ".*"               # Matches any window (useful with title-only matching)
+app_id = "firefox"           # Substring match
+app_id = "^firefox$"         # Exact match
+app_id = "^(mpv|vlc)$"       # Multiple options
+app_id = "(?i)discord"       # Case insensitive
+app_id = ".*"                # Any (useful with title-only matching)
 ```
 
 **Title-only matching:**
 ```toml
 [[rules]]
-app_id = ".*"               # Match any app_id
-title = "YouTube"           # Only match windows with "YouTube" in title
+app_id = ".*"                # Match any app
+title = "YouTube"            # Filter by title
 sink = "Speakers"
 ```
 
-### Full Example Config
+### Complete Example
 
 ```toml
 [settings]
@@ -255,119 +185,96 @@ app_id = "^mpv$"
 sink = "Headphones"
 ```
 
-## Advanced Topics
+## Advanced
 
 ### Profile Switching
 
-Some audio devices require switching profiles to access different outputs (e.g., analog vs digital on the same card). PWSW handles this automatically.
+PWSW automatically switches device profiles when needed (e.g., analog ↔ digital on same card):
+1. Detects if sink requires profile switch
+2. Uses `pw-cli` to switch profile
+3. Waits for new sink node (with retries)
+4. Sets as default with `pw-metadata`
 
-**How it works:**
-1. If a sink isn't currently active, PWSW checks if it requires a profile switch
-2. Uses `pw-cli` to switch the device profile
-3. Waits for the new sink node to appear (with retries)
-4. Sets it as default with `pw-metadata`
+### Priority Modes
 
-**Example:**
+**`match_by_index = false`** (default): Most recent window wins
+**`match_by_index = true`**: First matching rule wins
+
+Example scenario with `match_by_index = true`:
 ```toml
-[[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
-desc = "Headphones"  # Requires switching to analog profile
+[[rules]]  # Index 0 - highest priority
+app_id = "^mpv$"
+sink = "Headphones"
 
-[[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"
-desc = "Optical Out"  # Requires switching to digital profile
+[[rules]]  # Index 1 - lower priority
+app_id = "^firefox$"
+sink = "Speakers"
 ```
+Opening Firefox then MPV → Headphones (MPV always wins regardless of order)
 
-PWSW automatically detects these and switches profiles as needed.
+### IPC Socket
 
-### IPC Socket Location
-
-The daemon listens on a Unix socket (permissions: `0o600`):
-- **Primary:** `$XDG_RUNTIME_DIR/pwsw.sock` (usually `/run/user/1000/pwsw.sock`)
-- **Fallback:** `/tmp/pwsw-$USER.sock`
-
-Stale sockets are automatically cleaned up on daemon start (500ms health check timeout).
+- **Location:** `$XDG_RUNTIME_DIR/pwsw.sock` or `/tmp/pwsw-$USER.sock`
+- **Permissions:** `0o600` (user-only)
+- Stale sockets auto-cleaned on daemon start
 
 ### Logging
 
-Control log verbosity with the `log_level` setting:
-```toml
-log_level = "debug"  # error < warn < info < debug < trace
-```
-
-Run daemon in foreground to see logs:
 ```bash
+# Set in config
+log_level = "debug"  # error < warn < info < debug < trace
+
+# View logs
 pwsw daemon --foreground
 ```
 
-## Building from Source
+## Building
 
 ### Prerequisites
-
-- **Rust toolchain** (stable, 1.70+)
-  ```bash
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-  rustup default stable
-  ```
-
-- **PipeWire and tools** (`pw-dump`, `pw-metadata`, `pw-cli`)
-- **Supported Wayland compositor** (see above)
-- **Notification daemon** (optional, for desktop notifications)
-
-### Build Commands
-
 ```bash
-# Debug build (with debug symbols)
-cargo build
+# Rust toolchain
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Release build (optimized)
-cargo build --release
+# PipeWire (Arch example)
+sudo pacman -S pipewire pipewire-pulse
 
-# Check without building
-cargo check
-
-# Run tests
-cargo test
-
-# Install to ~/.cargo/bin/
-cargo install --path .
-
-# Format code
-cargo fmt
-
-# Lint with clippy
-cargo clippy --all-targets
+# Required: pw-dump, pw-metadata, pw-cli (usually bundled with PipeWire)
 ```
 
-Binary location:
-- Debug: `target/debug/pwsw`
-- Release: `target/release/pwsw`
+### Build Commands
+```bash
+cargo build --release        # Optimized build
+cargo install --path .       # Install to ~/.cargo/bin/
+cargo check                  # Fast syntax check
+cargo test                   # Run tests
+cargo clippy                 # Lint
+```
 
-## Appendix: LLM-Generated Code Notice
+**Binary location:** `target/release/pwsw`
+
+## Appendix: LLM-Generated Code
 
 > ⚠️ **Important Disclosure**
 
-This project was **entirely generated by large language models** (Claude Sonnet/Opus 4.5) and "vibe coded" by someone without Rust experience.
+This project was **entirely generated by LLMs** (Claude Sonnet/Opus 4.5) by someone without Rust experience.
 
-**Key points:**
-- Code is **100% LLM-generated**, not written by an experienced developer
-- **No peer review** by anyone with Rust experience
-- While there's no malicious code (and it works as intended), use with caution
-- [Discussions](https://github.com/ledati16/pwsw/discussions) are open for community review and feedback
-- **Do not package for Linux distributions** without peer review by a Rust developer
-- This is a personal tool that works for the author, not a production-grade project
+**Key facts:**
+- **100% LLM-generated**, no peer review by Rust developers
+- Works as intended with no malicious code, but use with caution
+- Personal tool, not production-grade software
+- **Do not package for distributions** without peer review
 
-**However:** The code has undergone comprehensive cleanup:
-- 154 clippy warnings → 8 acceptable pedantic warnings
+**Code quality:**
+- Comprehensive cleanup: 154 clippy warnings → 8 acceptable
 - Security review and fixes applied
-- Proper error handling and documentation added
-- See [CLAUDE.md](CLAUDE.md) for code quality standards
+- See [CLAUDE.md](CLAUDE.md) for standards
 
-**If you want to maintain/improve this project**, please fork and rename it (and link back here).
+[Discussions](https://github.com/ledati16/pwsw/discussions) open for community review.
 
-This is similar in spirit to [Belphemur/SoundSwitch](https://github.com/Belphemur/SoundSwitch) but for Wayland + PipeWire.
+**Fork and rename** if you want to maintain/improve this project (link back appreciated).
+
+Similar to [Belphemur/SoundSwitch](https://github.com/Belphemur/SoundSwitch) but for Wayland + PipeWire.
 
 ---
 
-**License:** See [LICENSE](LICENSE)  
-**Discussions:** https://github.com/ledati16/pwsw/discussions
+**License:** [LICENSE](LICENSE) • **Discussions:** [GitHub](https://github.com/ledati16/pwsw/discussions)
