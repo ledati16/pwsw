@@ -23,6 +23,7 @@ pub mod ipc;
 pub mod notification;
 pub mod pipewire;
 pub mod state;
+pub mod style;
 
 // Re-export commonly used types for convenience
 pub use cli::Args;

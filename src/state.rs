@@ -10,7 +10,7 @@ use tracing::{debug, info, warn};
 
 use crate::compositor::WindowEvent;
 use crate::config::{Config, Rule};
-use crate::notification::{get_app_icon, get_notification_sink_icon, send_notification};
+use crate::notification::{get_app_icon, get_sink_icon, send_notification};
 use crate::pipewire::PipeWire;
 
 /// Error message for missing default sink (should be caught by config validation)
@@ -34,6 +34,7 @@ pub struct ActiveWindow {
     /// Description of what triggered this (e.g., "Steam Big Picture")
     pub trigger_desc: String,
     pub opened_at: Instant,
+    pub rule_index: usize,
     pub app_id: String,
     pub title: String,
 }
@@ -69,10 +70,10 @@ impl State {
         })
     }
 
-    /// Find a rule that matches the given `app_id` and title
+    /// Find a rule that matches the given `app_id` and title, returning the rule and its index
     #[must_use]
-    pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<&Rule> {
-        self.config.rules.iter().find(|rule| {
+    pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
+        self.config.rules.iter().enumerate().find(|(_, rule)| {
             rule.app_id_regex.is_match(app_id)
                 && rule
                     .title_regex
@@ -93,25 +94,34 @@ impl State {
         self.current_sink_name = new_sink_name;
     }
 
-    /// Determine target sink based on active windows (most recent takes priority)
+    /// Determine target sink based on active windows
+    ///
+    /// Priority depends on `match_by_index` setting:
+    /// - `false` (default): Most recently opened window wins
+    /// - `true`: Lowest rule index (highest priority) wins
     ///
     /// # Panics
     /// Panics if no default sink is configured (should be prevented by config validation).
     #[must_use]
     pub fn determine_target_sink(&self) -> String {
-        self.active_windows
-            .iter()
-            .max_by_key(|(_, w)| w.opened_at)
-            .map_or_else(
-                || {
-                    self.config
-                        .get_default_sink()
-                        .expect(BUG_NO_DEFAULT_SINK)
-                        .name
-                        .clone()
-                },
-                |(_, w)| w.sink_name.clone(),
-            )
+        let winner = if self.config.settings.match_by_index {
+            // Index-based priority: lower index = higher priority
+            self.active_windows.iter().min_by_key(|(_, w)| w.rule_index)
+        } else {
+            // Time-based priority: most recent window wins
+            self.active_windows.iter().max_by_key(|(_, w)| w.opened_at)
+        };
+
+        winner.map_or_else(
+            || {
+                self.config
+                    .get_default_sink()
+                    .expect(BUG_NO_DEFAULT_SINK)
+                    .name
+                    .clone()
+            },
+            |(_, w)| w.sink_name.clone(),
+        )
     }
 
     /// Check if a window is currently tracked
@@ -126,6 +136,7 @@ impl State {
         id: u64,
         sink_name: String,
         trigger_desc: String,
+        rule_index: usize,
         app_id: String,
         title: String,
     ) {
@@ -135,6 +146,7 @@ impl State {
                 sink_name,
                 trigger_desc,
                 opened_at: Instant::now(),
+                rule_index,
                 app_id,
                 title,
             },
@@ -171,7 +183,7 @@ impl State {
             .insert(id, (app_id.to_string(), title.to_string()));
 
         // Extract rule data before mutating state (borrow checker)
-        let matched = if let Some(rule) = self.find_matching_rule(app_id, title) {
+        let matched = if let Some((rule_index, rule)) = self.find_matching_rule(app_id, title) {
             let sink = self.config.resolve_sink(&rule.sink_ref)
                 .ok_or_else(|| anyhow::anyhow!(
                     "BUG: Rule references non-existent sink '{}' (should have been caught in config validation)",
@@ -179,14 +191,20 @@ impl State {
                 ))?;
             // Use rule desc if set, otherwise use window title
             let trigger = rule.desc.clone().unwrap_or_else(|| title.to_string());
-            Some((sink.name.clone(), sink.desc.clone(), trigger, rule.notify))
+            Some((
+                sink.name.clone(),
+                sink.desc.clone(),
+                trigger,
+                rule.notify,
+                rule_index,
+            ))
         } else {
             None
         };
 
         let was_tracked = self.is_window_tracked(id);
 
-        if let Some((sink_name, sink_desc, trigger_desc, rule_notify)) = matched {
+        if let Some((sink_name, sink_desc, trigger_desc, rule_notify, rule_index)) = matched {
             info!("Rule matched: '{}' → {}", app_id, sink_desc);
 
             // Only update opened_at for new windows, preserve original time for existing
@@ -195,12 +213,13 @@ impl State {
                     id,
                     sink_name.clone(),
                     trigger_desc.clone(),
+                    rule_index,
                     app_id.to_string(),
                     title.to_string(),
                 );
 
                 if self.should_switch_sink(&sink_name) {
-                    let notify = self.config.should_notify_switch(rule_notify);
+                    let notify = rule_notify.unwrap_or(self.config.settings.notify_rules);
                     // Use `app_id` as icon (e.g., "steam" shows Steam icon)
                     let app_icon = get_app_icon(app_id);
                     switch_audio(
@@ -304,11 +323,10 @@ impl State {
     fn switch_to_target(&mut self, target: String, context: &str) -> Result<()> {
         let target_sink = self.config.sinks.iter().find(|s| s.name == target);
         let desc = target_sink.map_or(target.as_str(), |s| s.desc.as_str());
-        let status_bar_icons = self.config.settings.status_bar_icons;
-        let icon = target_sink.map(|s| get_notification_sink_icon(s, status_bar_icons));
+        let icon = target_sink.map(get_sink_icon);
         let default_sink = self.config.get_default_sink().expect(BUG_NO_DEFAULT_SINK);
         let is_default = default_sink.name == target;
-        let notify = self.config.settings.notify_switch && is_default;
+        let notify = self.config.settings.notify_rules && is_default;
 
         switch_audio(&target, desc, Some(context), icon.as_deref(), notify)?;
         self.update_sink(target);
