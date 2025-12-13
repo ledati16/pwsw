@@ -23,13 +23,16 @@ Uses standard Wayland protocols for window monitoring and PipeWire native tools 
 ## Supported Compositors
 
 ### ✅ Fully Supported
-**wlr-foreign-toplevel-management:** Sway • Hyprland • Niri • River • Wayfire • labwc • dwl • hikari
+**wlr-foreign-toplevel-management** (via [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) or [Smithay](https://github.com/Smithay/smithay)):  
+Sway • Hyprland • Niri • River • Wayfire • labwc • dwl • hikari • Cosmic
 
 ### ✅ Experimental
 **plasma-window-management:** KDE Plasma/KWin
 
 ### ❌ Not Supported
 **GNOME/Mutter** (protocol not exposed)
+
+> **Note:** wlr-foreign-toplevel-management is a standard protocol implemented by compositors built on **wlroots** (C library: Sway, Hyprland, River, etc.) or **Smithay** (Rust library: Niri, Cosmic). PWSW works with any compositor that implements the protocol.
 
 ## Quick Start
 
@@ -56,25 +59,25 @@ pwsw daemon
 ### Daemon
 
 ```bash
-pwsw daemon                  # Start in background
-pwsw daemon --foreground     # Start with logs to stderr
+pwsw daemon                       # Start in background
+pwsw daemon --foreground          # Start with logs to stderr
 ```
 
 ### Commands
 
 ```bash
 # Status and monitoring
-pwsw                         # Show current status (default command)
-pwsw status                  # Same as above (supports --json)
-pwsw list-windows            # Show tracked windows (requires daemon, supports --json)
+pwsw                              # Show current status (default command)
+pwsw status                       # Same as above (supports --json)
+pwsw list-windows                 # Show tracked windows (requires daemon, supports --json)
 
 # Daemon control
-pwsw shutdown                # Stop daemon gracefully
+pwsw shutdown                     # Stop daemon gracefully
 
 # Testing and validation
-pwsw test-rule "^mpv$"       # Test regex against tracked windows (requires daemon)
-pwsw validate                # Check config syntax (local, no daemon needed)
-pwsw list-sinks              # List audio outputs (local, supports --json)
+pwsw test-rule "^mpv$"            # Test regex against tracked windows (requires daemon)
+pwsw validate                     # Check config syntax (local, no daemon needed)
+pwsw list-sinks                   # List audio outputs (local, supports --json)
 ```
 
 ## Configuration
@@ -85,12 +88,12 @@ pwsw list-sinks              # List audio outputs (local, supports --json)
 
 ```toml
 [settings]
-default_on_startup = true    # Switch to default sink on daemon start
-set_smart_toggle = true      # set-sink toggles back to default if already active
-notify_manual = true         # Notifications for manual switches
-notify_rules = true          # Notifications for rule-triggered switches
-match_by_index = false       # false: recent window wins | true: first rule wins
-log_level = "info"           # error, warn, info, debug, trace
+default_on_startup = true         # Switch to default sink on daemon start
+set_smart_toggle = true           # set-sink toggles back to default if already active
+notify_manual = true              # Notifications for manual switches
+notify_rules = true               # Notifications for rule-triggered switches
+match_by_index = false            # false: recent window wins | true: first rule wins
+log_level = "info"                # error, warn, info, debug, trace
 ```
 
 ### Sinks
@@ -115,42 +118,42 @@ desc = "Headphones"
 
 ```toml
 [[rules]]
-app_id = "^steam$"                   # Regex for window app_id
-title = "^Steam Big Picture Mode$"  # Optional: regex for window title
-sink = "Optical Out"                 # Reference by desc, name, or position (1, 2, ...)
-desc = "Steam Big Picture"           # Optional: custom notification label
-# notify = false                     # Optional: override notify_rules
+app_id = "^steam$"                                    # Regex for window app_id
+title = "^Steam Big Picture Mode$"                   # Optional: regex for window title
+sink = "Optical Out"                                  # Reference by desc, name, or position (1, 2, ...)
+desc = "Steam Big Picture"                            # Optional: custom notification label
+# notify = false                                      # Optional: override notify_rules
 
 [[rules]]
 app_id = "^mpv$"
-sink = 2                             # Position reference
+sink = 2                                              # Position reference
 ```
 
 **Find app_id/title:**
 ```bash
-pwsw list-windows            # Requires daemon running
-pwsw test-rule ".*"          # Show all windows with pattern matching
+pwsw list-windows                                     # Requires daemon running
+pwsw test-rule ".*"                                   # Show all windows with pattern matching
 
 # Compositor tools:
-swaymsg -t get_tree          # Sway/River/wlroots
-hyprctl clients              # Hyprland
-niri msg windows             # Niri
+swaymsg -t get_tree                                   # Sway/River/wlroots
+hyprctl clients                                       # Hyprland
+niri msg windows                                      # Niri
 ```
 
 **Regex examples:**
 ```toml
-app_id = "firefox"           # Substring match
-app_id = "^firefox$"         # Exact match
-app_id = "^(mpv|vlc)$"       # Multiple options
-app_id = "(?i)discord"       # Case insensitive
-app_id = ".*"                # Any (useful with title-only matching)
+app_id = "firefox"                                    # Substring match
+app_id = "^firefox$"                                  # Exact match
+app_id = "^(mpv|vlc)$"                                # Multiple options
+app_id = "(?i)discord"                                # Case insensitive
+app_id = ".*"                                         # Any (useful with title-only matching)
 ```
 
 **Title-only matching:**
 ```toml
 [[rules]]
-app_id = ".*"                # Match any app
-title = "YouTube"            # Filter by title
+app_id = ".*"                                         # Match any app
+title = "YouTube"                                     # Filter by title
 sink = "Speakers"
 ```
 
@@ -197,16 +200,16 @@ PWSW automatically switches device profiles when needed (e.g., analog ↔ digita
 
 ### Priority Modes
 
-**`match_by_index = false`** (default): Most recent window wins
+**`match_by_index = false`** (default): Most recent window wins  
 **`match_by_index = true`**: First matching rule wins
 
-Example scenario with `match_by_index = true`:
+Example with `match_by_index = true`:
 ```toml
-[[rules]]  # Index 0 - highest priority
+[[rules]]                                             # Index 0 - highest priority
 app_id = "^mpv$"
 sink = "Headphones"
 
-[[rules]]  # Index 1 - lower priority
+[[rules]]                                             # Index 1 - lower priority
 app_id = "^firefox$"
 sink = "Speakers"
 ```
@@ -222,7 +225,7 @@ Opening Firefox then MPV → Headphones (MPV always wins regardless of order)
 
 ```bash
 # Set in config
-log_level = "debug"  # error < warn < info < debug < trace
+log_level = "debug"                                   # error < warn < info < debug < trace
 
 # View logs
 pwsw daemon --foreground
@@ -243,11 +246,11 @@ sudo pacman -S pipewire pipewire-pulse
 
 ### Build Commands
 ```bash
-cargo build --release        # Optimized build
-cargo install --path .       # Install to ~/.cargo/bin/
-cargo check                  # Fast syntax check
-cargo test                   # Run tests
-cargo clippy                 # Lint
+cargo build --release                                 # Optimized build
+cargo install --path .                                # Install to ~/.cargo/bin/
+cargo check                                           # Fast syntax check
+cargo test                                            # Run tests
+cargo clippy                                          # Lint
 ```
 
 **Binary location:** `target/release/pwsw`
