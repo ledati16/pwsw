@@ -26,11 +26,9 @@ Uses standard Wayland protocols for window monitoring and PipeWire native tools 
 **wlr-foreign-toplevel-management** (via [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) or [Smithay](https://github.com/Smithay/smithay)):  
 Sway • Hyprland • Niri • River • Wayfire • labwc • dwl • hikari • Cosmic
 
-### ✅ Experimental
-**plasma-window-management:** KDE Plasma/KWin
-
 ### ❌ Not Supported
-**GNOME/Mutter** (protocol not exposed)
+- **GNOME/Mutter** - Does not expose window management protocols
+- **KDE Plasma 6** - Removed protocol support (legacy Plasma 5 had it)
 
 > **Note:** wlr-foreign-toplevel-management is a standard protocol implemented by compositors built on **wlroots** (C library: Sway, Hyprland, River, etc.) or **Smithay** (Rust library: Niri, Cosmic). PWSW works with any compositor that implements the protocol.
 
