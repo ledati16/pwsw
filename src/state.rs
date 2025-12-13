@@ -208,6 +208,7 @@ impl State {
             info!("Rule matched: '{}' → {}", app_id, sink_desc);
 
             // Only update opened_at for new windows, preserve original time for existing
+            #[allow(clippy::if_not_else)] // More readable: new window (track) is main path, update is edge case
             if !was_tracked {
                 self.track_window(
                     id,
@@ -231,14 +232,20 @@ impl State {
                     )?;
                     self.update_sink(sink_name);
                 }
+            } else {
+                // Window is already tracked and still matches - update app_id and title in case they changed
+                // but preserve opened_at to maintain priority ordering
+                if let Some(window) = self.active_windows.get_mut(&id) {
+                    window.app_id.clone_from(&app_id.to_string());
+                    window.title.clone_from(&title.to_string());
+                }
             }
-            // If already tracked and still matches, do nothing (keep original opened_at)
         } else if was_tracked {
             // Window was tracked but no longer matches (e.g., title changed)
             if let Some(old_window) = self.untrack_window(id) {
-                debug!(
-                    "Window no longer matches rule: {} (was: {})",
-                    id, old_window.trigger_desc
+                info!(
+                    "⚠️  UNTRACKED: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
+                    id, old_window.trigger_desc, app_id, title
                 );
 
                 let target = self.determine_target_sink();
