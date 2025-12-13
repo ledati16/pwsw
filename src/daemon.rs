@@ -199,14 +199,17 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             Some(mut stream) = ipc_server.accept() => {
                 // Handle IPC request - clone what we need for the task
+                let tracked_with_sinks = state.get_tracked_windows_with_sinks();
+                let all_windows = state.get_all_windows();
+                
                 let ctx = IpcContext {
                     version: env!("CARGO_PKG_VERSION").to_string(),
                     uptime_secs: start_time.elapsed().as_secs(),
                     current_sink_name: state.current_sink_name.clone(),
                     active_window: state.get_most_recent_window()
                         .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name)),
-                    tracked_with_sinks: state.get_tracked_windows_with_sinks(),
-                    all_windows: state.get_all_windows(),
+                    tracked_with_sinks,
+                    all_windows,
                     config: state.config.clone(),
                     shutdown_tx: shutdown_tx.clone(),
                 };
