@@ -1,6 +1,6 @@
 [package]
 name = "pwsw"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.70"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
@@ -19,7 +19,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 # Wayland protocol support
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }      # wlr-foreign-toplevel-management
-wayland-protocols-plasma = { version = "0.3", features = ["client"] }   # KDE plasma-window-management
 
 # Configuration and serialization
 toml = "0.8"
