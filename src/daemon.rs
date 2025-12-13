@@ -15,6 +15,7 @@ use crate::ipc::{self, IpcServer, Request, Response, WindowInfo};
 use crate::notification::send_notification;
 use crate::pipewire::PipeWire;
 use crate::state::State;
+use crate::style::PwswStyle;
 
 // ============================================================================
 // Constants
@@ -82,7 +83,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .with_context(|| "Failed to spawn background daemon")?;
 
         let pid = child.id();
-        println!("Starting daemon (PID: {pid})...");
+        println!("Starting daemon (PID: {})...", pid.to_string().technical());
 
         // Wait for daemon to initialize by checking if it's responding to IPC
         // Try for up to 2 seconds (20 attempts * 100ms)
@@ -93,9 +94,13 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
 
             if ipc::is_daemon_running().await {
-                println!("✓ Daemon started successfully");
-                println!("Use 'pwsw status' to check daemon status");
-                println!("Use 'pwsw shutdown' to stop the daemon");
+                println!(
+                    "{} {}",
+                    "✓".success(),
+                    "Daemon started successfully".success()
+                );
+                println!("Use {} to check daemon status", "pwsw status".technical());
+                println!("Use {} to stop the daemon", "pwsw shutdown".technical());
                 return Ok(());
             }
 
@@ -147,14 +152,14 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Create shutdown channel
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(1);
 
-    // Reset to default on startup if configured
-    if state.config.settings.reset_on_startup {
+    // Switch to default on startup if configured
+    if state.config.settings.default_on_startup {
         let default = state
             .config
             .get_default_sink()
             .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
         if state.current_sink_name != default.name {
-            info!("Resetting to default: {}", default.desc);
+            info!("Switching to default sink: {}", default.desc);
             PipeWire::activate_sink(&default.name)?;
             state.current_sink_name.clone_from(&default.name);
         }
@@ -168,7 +173,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let ipc_server = IpcServer::bind().await?;
     info!("IPC server listening on {:?}", ipc_server.socket_path());
 
-    if state.config.settings.notify_daemon {
+    if state.config.settings.notify_manual {
         if let Err(e) =
             send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None)
         {
@@ -226,7 +231,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             _ = signal::ctrl_c() => {
                 info!("Shutting down (Ctrl-C)");
-                if state.config.settings.notify_daemon {
+                if state.config.settings.notify_manual {
                     let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
                 break;
@@ -234,7 +239,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             _ = shutdown_rx.recv() => {
                 info!("Shutting down (IPC request)");
-                if state.config.settings.notify_daemon {
+                if state.config.settings.notify_manual {
                     let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
                 break;

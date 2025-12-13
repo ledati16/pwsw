@@ -86,16 +86,14 @@ Found at _$XDG_CONFIG_HOME/pwsw/config.toml_ (usually ~/.config/pwsw/config.toml
 # Supports profile switching for analog/digital outputs.
 
 [settings]
-reset_on_startup = true    # Reset to default sink on daemon start
-smart_toggle = true        # --set-sink toggles back to default if already active
-notify_daemon = true       # Notifications for daemon start/stop
-notify_switch = true       # Notifications for rule-triggered switches (per-rule notify must also be true)
-notify_set = false         # Reserved for future manual sink switching features
-status_bar_icons = false   # If true, custom icons only apply to JSON status output
+default_on_startup = true  # Switch to default sink on daemon start
+set_smart_toggle = true    # set-sink toggles back to default if already active
+notify_manual = true       # Desktop notifications: Daemon start/stop + manual set-sink/next-sink/prev-sink
+notify_rules = true        # Desktop notifications: Rule-triggered switches (default, override per-rule)
 log_level = "info"         # error, warn, info, debug, trace
 
 # Audio sinks
-# Find available sinks with: pwsw --list-sinks
+# Find available sinks with: pwsw list-sinks
 #
 # Icons are auto-detected from sink description (e.g., "HDMI" → video-display).
 # Set 'icon' to override with any icon name your system supports.
@@ -103,38 +101,47 @@ log_level = "info"         # error, warn, info, debug, trace
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"
 desc = "Optical Out"
-icon = "audio-speakers"
 default = true
 
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 desc = "Headphones"
-icon = "audio-headphones"
+# icon = "audio-headphones"  # Optional: override auto-detected icon
 
 # Window rules
-# Find app_id and title with compositor-specific tools:
-#   Sway/River/etc: swaymsg -t get_tree
+# Find app_id and title:
+#   pwsw list-windows    # Show all open windows (requires daemon running)
+#   pwsw test-rule ".*"  # Test pattern matching - .* shows all windows (requires daemon running)
+#
+# Compositor-specific alternatives:
+#   Sway/River: swaymsg -t get_tree
 #   Hyprland: hyprctl clients
 #   Niri: niri msg windows
-#   KDE Plasma: Use KDE's window inspector
+#   KDE Plasma: KDE window inspector
 #
 # Regex patterns (for app_id and title fields):
+#   ".*"          - matches any window (useful for testing)
 #   "firefox"     - matches anywhere in string
 #   "^steam$"     - exact match only
 #   "^(mpv|vlc)$" - matches mpv OR vlc
 #   "(?i)discord" - case insensitive
+#
+# Title-only matching:
+#   To match only by title (ignoring app_id), use app_id = ".*"
+#   Example: Match any window with "YouTube" in title
+#     app_id = ".*"
+#     title = "YouTube"
 
 [[rules]]
 app_id = "^steam$"
 title = "^Steam Big Picture Mode$"
 sink = "Optical Out"       # Reference by: desc, name, or position (1, 2)
 desc = "Steam Big Picture" # Custom name for notifications
-notify = true
+# notify = false           # Optional: override notify_rules for this specific rule
 
 # [[rules]]
 # app_id = "^mpv$"
 # sink = 2
-# notify = true
 ```
 
 Building the program

@@ -35,13 +35,8 @@ pub fn get_sink_icon(sink: &SinkConfig) -> String {
     if let Some(ref icon) = sink.icon {
         return icon.clone();
     }
-    get_sink_icon_auto(sink)
-}
 
-/// Get auto-detected sink icon using `FreeDesktop` standard names
-/// Used for notifications when `status_bar_icons` is enabled
-#[must_use]
-pub fn get_sink_icon_auto(sink: &SinkConfig) -> String {
+    // Auto-detect from sink description and name
     let desc_lower = sink.desc.to_lowercase();
     let name_lower = sink.name.to_lowercase();
 
@@ -60,18 +55,6 @@ pub fn get_sink_icon_auto(sink: &SinkConfig) -> String {
     } else {
         // Default for speakers, optical, digital, etc.
         "audio-speakers".to_string()
-    }
-}
-
-/// Get sink icon for notifications (respects `status_bar_icons` setting)
-#[must_use]
-pub fn get_notification_sink_icon(sink: &SinkConfig, status_bar_icons: bool) -> String {
-    if status_bar_icons {
-        // Custom icons only for status bar; use auto-detected for notifications
-        get_sink_icon_auto(sink)
-    } else {
-        // Use custom icon everywhere
-        get_sink_icon(sink)
     }
 }
 

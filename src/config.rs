@@ -4,12 +4,15 @@
 //! Supports settings, sink definitions, and window matching rules.
 
 use anyhow::{Context, Result};
+use crossterm::style::Stylize;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{info, warn};
+
+use crate::style::PwswStyle;
 
 // ============================================================================
 // Public Configuration Types
@@ -26,14 +29,11 @@ pub struct Config {
 /// Global settings
 #[derive(Debug, Clone)]
 pub struct Settings {
-    pub reset_on_startup: bool,
+    pub default_on_startup: bool,
     pub set_smart_toggle: bool,
-    pub notify_daemon: bool,
-    pub notify_switch: bool,
-    pub notify_set: bool,
-    /// If true, custom sink icons only apply to `--get-sink --json`.
-    /// Notifications will use auto-detected `FreeDesktop` icons for compatibility.
-    pub status_bar_icons: bool,
+    pub notify_manual: bool,
+    pub notify_rules: bool,
+    pub match_by_index: bool,
     pub log_level: String,
 }
 
@@ -57,7 +57,7 @@ pub struct Rule {
     pub title_regex: Option<Regex>,
     pub sink_ref: String,
     pub desc: Option<String>,
-    pub notify: bool,
+    pub notify: Option<bool>,
     // Original patterns for display
     pub app_id_pattern: String,
     pub title_pattern: Option<String>,
@@ -80,17 +80,15 @@ struct ConfigFile {
 #[derive(Debug, Deserialize)]
 struct SettingsFile {
     #[serde(default = "default_true")]
-    reset_on_startup: bool,
+    default_on_startup: bool,
     #[serde(default = "default_true")]
     set_smart_toggle: bool,
     #[serde(default = "default_true")]
-    notify_daemon: bool,
+    notify_manual: bool,
     #[serde(default = "default_true")]
-    notify_switch: bool,
-    #[serde(default = "default_true")]
-    notify_set: bool,
+    notify_rules: bool,
     #[serde(default)]
-    status_bar_icons: bool,
+    match_by_index: bool,
     #[serde(default = "default_log_level")]
     log_level: String,
 }
@@ -114,7 +112,7 @@ struct RuleConfigFile {
     #[serde(default)]
     desc: Option<String>,
     #[serde(default)]
-    notify: bool,
+    notify: Option<bool>,
 }
 
 fn default_true() -> bool {
@@ -128,12 +126,11 @@ fn default_log_level() -> String {
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
-            reset_on_startup: true,
+            default_on_startup: true,
             set_smart_toggle: true,
-            notify_daemon: true,
-            notify_switch: true,
-            notify_set: true,
-            status_bar_icons: false,
+            notify_manual: true,
+            notify_rules: true,
+            match_by_index: false,
             log_level: "info".to_string(),
         }
     }
@@ -171,12 +168,11 @@ impl Config {
         }
 
         let settings = Settings {
-            reset_on_startup: config_file.settings.reset_on_startup,
+            default_on_startup: config_file.settings.default_on_startup,
             set_smart_toggle: config_file.settings.set_smart_toggle,
-            notify_daemon: config_file.settings.notify_daemon,
-            notify_switch: config_file.settings.notify_switch,
-            notify_set: config_file.settings.notify_set,
-            status_bar_icons: config_file.settings.status_bar_icons,
+            notify_manual: config_file.settings.notify_manual,
+            notify_rules: config_file.settings.notify_rules,
+            match_by_index: config_file.settings.match_by_index,
             log_level: config_file.settings.log_level,
         };
 
@@ -303,16 +299,15 @@ impl Config {
 # Supports profile switching for analog/digital outputs.
 
 [settings]
-reset_on_startup = true    # Reset to default sink on daemon start
+default_on_startup = true  # Switch to default sink on daemon start
 set_smart_toggle = true    # set-sink toggles back to default if already active
-notify_daemon = true       # Notifications for daemon start/stop
-notify_switch = true       # Notifications for rule-triggered switches (per-rule notify must also be true)
-notify_set = true          # Notifications for set-sink, next-sink, and prev-sink commands
-status_bar_icons = false   # If true, custom icons only apply to --get-sink --json
+notify_manual = true       # Desktop notifications: Daemon start/stop + manual set-sink/next-sink/prev-sink
+notify_rules = true        # Desktop notifications: Rule-triggered switches (default, override per-rule)
+match_by_index = false     # Prioritize matches by [[rule]] position (true) or most recent window (false)
 log_level = "info"         # error, warn, info, debug, trace
 
 # Audio sinks
-# Find available sinks with: pwsw --list-sinks
+# Find available sinks with: pwsw list-sinks
 #
 # Icons are auto-detected from sink description (e.g., "HDMI" → video-display).
 # Set 'icon' to override with any icon name your system supports.
@@ -320,50 +315,69 @@ log_level = "info"         # error, warn, info, debug, trace
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"
 desc = "Optical Out"
-icon = "audio-speakers"
 default = true
 
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 desc = "Headphones"
-icon = "audio-headphones"
+# icon = "audio-headphones"  # Optional: override auto-detected icon
 
 # Window rules
-# Find app_id and title with compositor-specific tools:
-#   Sway/River/etc: swaymsg -t get_tree
+# Find app_id and title:
+#   pwsw list-windows    # Show all open windows (requires daemon running)
+#   pwsw test-rule ".*"  # Test pattern matching - .* shows all windows (requires daemon running)
+#
+# Compositor-specific alternatives:
+#   Sway/River: swaymsg -t get_tree
 #   Hyprland: hyprctl clients
 #   Niri: niri msg windows
-#   KDE Plasma: Use KDE's window inspector
+#   KDE Plasma: KDE window inspector
 #
 # Regex patterns (for app_id and title fields):
+#   ".*"          - matches any window (useful for testing)
 #   "firefox"     - matches anywhere in string
 #   "^steam$"     - exact match only
 #   "^(mpv|vlc)$" - matches mpv OR vlc
 #   "(?i)discord" - case insensitive
+#
+# Title-only matching:
+#   To match only by title (ignoring app_id), use app_id = ".*"
+#   Example: Match any window with "YouTube" in title
+#     app_id = ".*"
+#     title = "YouTube"
 
 [[rules]]
 app_id = "^steam$"
 title = "^Steam Big Picture Mode$"
 sink = "Optical Out"       # Reference by: desc, name, or position (1, 2)
 desc = "Steam Big Picture" # Custom name for notifications
-notify = true
+# notify = false           # Optional: override notify_rules for this specific rule
 
 # [[rules]]
 # app_id = "^mpv$"
 # sink = 2
-# notify = true
 "#;
         fs::write(path, default_config)
             .with_context(|| format!("Failed to write config: {}", path.display()))?;
 
         // Inform user that we created the config
-        eprintln!("Created default config at: {}", path.display());
+        eprintln!(
+            "{} {}",
+            "✓".success(),
+            format!("Created default config at: {}", path.display()).success()
+        );
         eprintln!();
-        eprintln!("Next steps:");
-        eprintln!("  1. Run 'pwsw list-sinks' to see available audio outputs");
+        eprintln!("{}", "Next steps:".header());
+        eprintln!(
+            "  1. Run {} to see available audio outputs",
+            "pwsw list-sinks".technical()
+        );
         eprintln!("  2. Edit the config file to customize sinks and rules");
-        eprintln!("  3. Run 'pwsw validate' to check your config");
-        eprintln!("  4. Run 'pwsw daemon' to start");
+        eprintln!(
+            "  3. Run {} to check your config",
+            "pwsw validate".technical()
+        );
+        eprintln!("  4. Run {} to start", "pwsw daemon".technical());
         eprintln!();
 
         Ok(())
@@ -371,42 +385,96 @@ notify = true
 
     /// Print a human-readable summary of the configuration
     pub fn print_summary(&self) {
-        println!("✓ Configuration valid\n");
+        println!("{} {}\n", "✓".success(), "Configuration valid".success());
 
-        println!("Settings:");
-        println!("  reset_on_startup: {}", self.settings.reset_on_startup);
-        println!("  set_smart_toggle: {}", self.settings.set_smart_toggle);
-        println!("  notify_daemon: {}", self.settings.notify_daemon);
-        println!("  notify_switch: {}", self.settings.notify_switch);
-        println!("  notify_set: {}", self.settings.notify_set);
-        println!("  status_bar_icons: {}", self.settings.status_bar_icons);
-        println!("  log_level: {}", self.settings.log_level);
+        println!("{}", "Settings:".header());
+        println!(
+            "  {}: {}",
+            "default_on_startup".dim(),
+            self.settings.default_on_startup
+        );
+        println!(
+            "  {}: {}",
+            "set_smart_toggle".dim(),
+            self.settings.set_smart_toggle
+        );
+        println!(
+            "  {}: {}",
+            "notify_manual".dim(),
+            self.settings.notify_manual
+        );
+        println!("  {}: {}", "notify_rules".dim(), self.settings.notify_rules);
+        println!(
+            "  {}: {}",
+            "match_by_index".dim(),
+            self.settings.match_by_index
+        );
+        println!(
+            "  {}: {}",
+            "log_level".dim(),
+            self.settings.log_level.as_str().technical()
+        );
 
-        println!("\nSinks ({}):", self.sinks.len());
+        println!(
+            "\n{} ({}):",
+            "Sinks".header(),
+            self.sinks.len().to_string().technical()
+        );
         for (i, sink) in self.sinks.iter().enumerate() {
-            let marker = if sink.default { " [DEFAULT]" } else { "" };
-            println!("  {}. {}{}", i + 1, sink.desc, marker);
-            println!("     name: {}", sink.name);
+            let marker = if sink.default {
+                format!(" [{}]", "DEFAULT".dim())
+            } else {
+                String::new()
+            };
+            println!(
+                "  {}. {}{}",
+                (i + 1).to_string().dim(),
+                sink.desc.as_str().bold(),
+                marker
+            );
+            println!("     {}: {}", "name".dim(), sink.name);
             if let Some(ref icon) = sink.icon {
-                println!("     icon: {icon}");
+                println!("     {}: {}", "icon".dim(), icon.as_str().technical());
             }
         }
 
         if self.rules.is_empty() {
-            println!("\nNo rules configured.");
+            println!("\n{}", "No rules configured.".dim());
         } else {
-            println!("\nRules ({}):", self.rules.len());
+            println!(
+                "\n{} ({}):",
+                "Rules".header(),
+                self.rules.len().to_string().technical()
+            );
             for (i, rule) in self.rules.iter().enumerate() {
-                println!("  {}. app_id: {}", i + 1, rule.app_id_pattern);
+                println!(
+                    "  {}. {}: {}",
+                    (i + 1).to_string().dim(),
+                    "app_id".dim(),
+                    rule.app_id_pattern.as_str().technical()
+                );
                 if let Some(ref title) = rule.title_pattern {
-                    println!("     title: {title}");
+                    println!("     {}: {}", "title".dim(), title.as_str().technical());
                 }
-                println!("     sink: {} (notify: {})", rule.sink_ref, rule.notify);
+                let effective_notify = rule.notify.unwrap_or(self.settings.notify_rules);
+                let source = if rule.notify.is_some() {
+                    "override"
+                } else {
+                    "default"
+                };
+                println!(
+                    "     {}: {} ({}: {} - {})",
+                    "sink".dim(),
+                    rule.sink_ref.as_str().bold(),
+                    "notify".dim(),
+                    effective_notify,
+                    source.dim()
+                );
             }
         }
 
         if let Ok(path) = Self::get_config_path() {
-            println!("\nConfig: {}", path.display());
+            println!("\n{} {}", "Config:".dim(), path.display());
         }
     }
 
@@ -434,11 +502,5 @@ notify = true
     #[must_use]
     pub fn get_default_sink(&self) -> Option<&SinkConfig> {
         self.sinks.iter().find(|s| s.default)
-    }
-
-    /// Check if notifications should be sent for a rule-triggered switch
-    #[must_use]
-    pub fn should_notify_switch(&self, rule_notify: bool) -> bool {
-        self.settings.notify_switch && rule_notify
     }
 }

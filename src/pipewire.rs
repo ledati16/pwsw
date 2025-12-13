@@ -187,14 +187,6 @@ pub struct ConfiguredSinkJson {
     pub status: String,
 }
 
-/// JSON output for --get-sink --json
-#[derive(Debug, Serialize)]
-pub struct SinkInfoJson {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    pub icon: String,
-}
-
 // ============================================================================
 // PipeWire Interface
 // ============================================================================

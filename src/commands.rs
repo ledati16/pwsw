@@ -4,16 +4,18 @@
 //! that communicate with the daemon (status, reload, list-windows, test-rule).
 
 use anyhow::Result;
+use crossterm::style::Stylize;
 use std::collections::HashSet;
 use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::ipc::{self, Request, Response};
-use crate::notification::{get_notification_sink_icon, send_notification};
+use crate::notification::{get_sink_icon, send_notification};
 use crate::pipewire::{
     ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSink,
     ProfileSinkJson,
 };
+use crate::style::PwswStyle;
 
 // ============================================================================
 // Local Commands (no daemon needed)
@@ -95,11 +97,10 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Human-readable output
-        let header = "ACTIVE SINKS:";
-        println!("{header}");
-        println!("{}", "-".repeat(header.len()));
+        println!("{}", "ACTIVE SINKS:".header());
+        println!("{}", "-".repeat(13));
         if active.is_empty() {
-            println!("  (none)");
+            println!("  {}", "(none)".dim());
         } else {
             for sink in &active {
                 let marker = if sink.is_default { "* " } else { "  " };
@@ -107,50 +108,61 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.name))
                     .map(|s| format!(" [{}]", s.desc))
                     .unwrap_or_default();
-                println!("{}{}{}", marker, sink.name, configured);
-                println!("    {}", sink.description);
+                println!("{}{}{}", marker, sink.name.as_str().bold(), configured);
+                println!("    {}", sink.description.as_str().dim());
             }
-            println!("\n  * = current default");
+            println!("\n  {} = current default", "*".dim());
         }
 
         if !profile.is_empty() {
-            let header = "AVAILABLE VIA PROFILE SWITCH:";
-            println!("\n{header}");
-            println!("{}", "-".repeat(header.len()));
+            println!("\n{}", "AVAILABLE VIA PROFILE SWITCH:".header());
+            println!("{}", "-".repeat(30));
             for sink in &profile {
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
                     .map(|s| format!(" [{}]", s.desc))
                     .unwrap_or_default();
-                println!("  ~ {}{}", sink.predicted_name, configured);
-                println!("    {} (profile: {})", sink.description, sink.profile_name);
+                println!(
+                    "  {} {}{}",
+                    "~".dim(),
+                    sink.predicted_name.as_str().bold(),
+                    configured
+                );
+                println!(
+                    "    {} (profile: {})",
+                    sink.description.as_str().dim(),
+                    sink.profile_name.as_str().technical()
+                );
             }
         }
 
         if let Some(cfg) = config {
-            let header = "CONFIGURED SINKS:";
-            println!("\n{header}");
-            println!("{}", "-".repeat(header.len()));
+            println!("\n{}", "CONFIGURED SINKS:".header());
+            println!("{}", "-".repeat(17));
             for (i, sink) in cfg.sinks.iter().enumerate() {
-                let default_marker = if sink.default { " [DEFAULT]" } else { "" };
+                let default_marker = if sink.default {
+                    format!(" [{}]", "DEFAULT".dim())
+                } else {
+                    String::new()
+                };
                 let status = match get_sink_status(&sink.name, &active, &profile) {
-                    "active" => "active",
-                    "requires_profile_switch" => "profile switch",
-                    _ => "not found",
+                    "active" => "active".success().to_string(),
+                    "requires_profile_switch" => "profile switch".warning().to_string(),
+                    _ => "not found".error().to_string(),
                 };
                 println!(
                     "  {}. \"{}\"{} - {}",
-                    i + 1,
+                    (i + 1).to_string().dim(),
                     sink.desc,
                     default_marker,
                     status
                 );
-                println!("     {}", sink.name);
+                println!("     {}", sink.name.as_str().bold());
             }
         }
 
         if let Ok(path) = Config::get_config_path() {
-            println!("\nConfig: {}", path.display());
+            println!("\n{} {}", "Config:".dim(), path.display());
         }
     }
 
@@ -190,15 +202,19 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
 
     if config.settings.set_smart_toggle && current == target.name {
         if target.name == default.name {
-            println!("Already on: {}", default.desc);
+            println!("Already on: {}", default.desc.as_str().bold());
             return Ok(());
         }
         info!("Toggle → default: {}", default.desc);
         PipeWire::activate_sink(&default.name)?;
-        println!("Switched to: {}", default.desc);
+        println!(
+            "{} {}",
+            "Switched to:".success(),
+            default.desc.as_str().bold()
+        );
 
-        if config.settings.notify_set {
-            let icon = get_notification_sink_icon(default, config.settings.status_bar_icons);
+        if config.settings.notify_manual {
+            let icon = get_sink_icon(default);
             if let Err(e) = send_notification("Audio Output", &default.desc, Some(&icon)) {
                 warn!("Notification failed: {}", e);
             }
@@ -206,10 +222,14 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     } else {
         info!("Switching to: {}", target.desc);
         PipeWire::activate_sink(&target.name)?;
-        println!("Switched to: {}", target.desc);
+        println!(
+            "{} {}",
+            "Switched to:".success(),
+            target.desc.as_str().bold()
+        );
 
-        if config.settings.notify_set {
-            let icon = get_notification_sink_icon(target, config.settings.status_bar_icons);
+        if config.settings.notify_manual {
+            let icon = get_sink_icon(target);
             if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
                 warn!("Notification failed: {}", e);
             }
@@ -226,7 +246,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
 pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     // Need at least 2 sinks to cycle
     if config.sinks.len() < 2 {
-        println!("Only one sink configured, nothing to cycle");
+        println!("{}", "Only one sink configured, nothing to cycle".warning());
         return Ok(());
     }
 
@@ -258,16 +278,20 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
 
     // Already on target (shouldn't happen with >= 2 sinks, but be safe)
     if target.name == current {
-        println!("Already on: {}", target.desc);
+        println!("Already on: {}", target.desc.as_str().bold());
         return Ok(());
     }
 
     info!("Cycling to: {}", target.desc);
     PipeWire::activate_sink(&target.name)?;
-    println!("Switched to: {}", target.desc);
+    println!(
+        "{} {}",
+        "Switched to:".success(),
+        target.desc.as_str().bold()
+    );
 
-    if config.settings.notify_set {
-        let icon = get_notification_sink_icon(target, config.settings.status_bar_icons);
+    if config.settings.notify_manual {
+        let icon = get_sink_icon(target);
         if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
             warn!("Notification failed: {}", e);
         }
@@ -369,27 +393,33 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
         );
     } else {
         // Human-readable output
-        let header = "Audio Output";
-        println!("{header}");
-        println!("{}", "-".repeat(header.len()));
-        println!("Current: {current_sink_desc}");
+        println!("{}", "Audio Output".header());
+        println!("{}", "-".repeat(12));
+        println!("{} {}", "Current:".dim(), current_sink_desc.bold());
         println!();
-        let header = "Daemon";
-        println!("{header}");
-        println!("{}", "-".repeat(header.len()));
+        println!("{}", "Daemon".header());
+        println!("{}", "-".repeat(6));
 
         if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) =
             daemon_info
         {
-            println!("Status: Running (uptime: {})", format_uptime(uptime_secs));
-            println!("Version: {version}");
+            println!(
+                "{} {}",
+                "Status:".dim(),
+                format!("Running (uptime: {})", format_uptime(uptime_secs)).success()
+            );
+            println!("{} {}", "Version:".dim(), version);
             if let Some(rule) = active_window {
-                println!("Active Rule: {rule}");
+                println!("{} {}", "Active Rule:".dim(), rule.technical());
             }
-            println!("Tracked Windows: {tracked_windows}");
+            println!(
+                "{} {}",
+                "Tracked Windows:".dim(),
+                tracked_windows.to_string().technical()
+            );
         } else {
-            println!("Status: Not running");
-            println!("  Start with: pwsw daemon");
+            println!("{} {}", "Status:".dim(), "Not running".error());
+            println!("  Start with: {}", "pwsw daemon".technical());
         }
     }
 
@@ -409,7 +439,7 @@ pub async fn shutdown() -> Result<()> {
 
     match response {
         Response::Ok { message } => {
-            println!("{message}");
+            println!("{}", message.success());
             Ok(())
         }
         Response::Error { message } => {
@@ -437,7 +467,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             if json_output {
                 println!("{}", serde_json::to_string_pretty(&windows)?);
             } else if windows.is_empty() {
-                println!("No windows currently open.");
+                println!("{}", "No windows currently open.".dim());
             } else {
                 let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
                 let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
@@ -447,24 +477,39 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                     windows.len(),
                     tracked.len()
                 );
-                println!("{header}");
-                println!("{}", "-".repeat(header.len()));
+                let header_len = header.len();
+                println!("{}", header.header());
+                println!("{}", "-".repeat(header_len));
 
                 if !tracked.is_empty() {
-                    println!("\nTracked ({}):", tracked.len());
+                    println!(
+                        "\n{} ({}):",
+                        "Tracked".success(),
+                        tracked.len().to_string().technical()
+                    );
                     for window in &tracked {
                         if let Some(ref track_info) = window.tracked {
-                            println!("  • {} → {}", window.app_id, track_info.sink_desc);
-                            println!("    {}", window.title);
+                            println!("  {} {}: {}", "•".success(), "app_id".dim(), window.app_id);
+                            println!("    {}: {}", "title".dim(), window.title);
+                            println!(
+                                "    {} {}: {}",
+                                "→".success(),
+                                "sink".dim(),
+                                track_info.sink_desc.as_str().bold()
+                            );
                         }
                     }
                 }
 
                 if !untracked.is_empty() {
-                    println!("\nUntracked ({}):", untracked.len());
+                    println!(
+                        "\n{} ({}):",
+                        "Untracked".dim(),
+                        untracked.len().to_string().technical()
+                    );
                     for window in &untracked {
-                        println!("  • {}", window.app_id);
-                        println!("    {}", window.title);
+                        println!("  {} {}: {}", "•".dim(), "app_id".dim(), window.app_id);
+                        println!("    {}: {}", "title".dim(), window.title);
                     }
                 }
             }
@@ -504,31 +549,38 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                     }))?
                 );
             } else {
-                println!("Testing pattern: {pattern}");
-                println!("================");
+                let pattern_len = pattern.len();
+                println!("Testing pattern: {}", pattern.technical());
+                println!("{}", "=".repeat(16 + pattern_len));
                 if matches.is_empty() {
-                    println!("No matches found.");
+                    println!("{}", "No matches found.".dim());
                 } else {
-                    println!("Matches ({}):", matches.len());
+                    println!(
+                        "{} ({}):",
+                        "Matches".header(),
+                        matches.len().to_string().technical()
+                    );
                     for (i, window) in matches.iter().enumerate() {
                         let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
                         println!(
-                            "{}. app_id: {}{}",
-                            i + 1,
+                            "{}. {}: {}{}",
+                            (i + 1).to_string().dim(),
+                            "app_id".dim(),
                             window.app_id,
                             if matched_on == "app_id" || matched_on == "both" {
-                                " ✓"
+                                format!(" {}", "✓".success())
                             } else {
-                                ""
+                                String::new()
                             }
                         );
                         println!(
-                            "   title: {}{}",
+                            "   {}: {}{}",
+                            "title".dim(),
                             window.title,
                             if matched_on == "title" || matched_on == "both" {
-                                " ✓"
+                                format!(" {}", "✓".success())
                             } else {
-                                ""
+                                String::new()
                             }
                         );
                     }
