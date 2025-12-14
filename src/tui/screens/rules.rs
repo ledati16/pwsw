@@ -369,7 +369,15 @@ fn render_editor(
     let sink_paragraph = if screen_state.editor.sink_ref.is_empty() {
         Paragraph::new(Line::from(vec![
             Span::raw("Target Sink: "),
-            Span::styled("<press Enter to select>", sink_style),
+            Span::styled("<press ", sink_style),
+            Span::styled(
+                "Enter",
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" to select>", sink_style),
         ]))
         .style(sink_style)
     } else {

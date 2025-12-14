@@ -304,7 +304,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let help = vec![
         Line::from(""),
         Line::from(vec![
-            Span::raw("Tab/Shift+Tab: Next/Prev field  |  "),
+            Span::raw("Up/Down/Tab: Next/Prev field  |  "),
             Span::raw("Enter: Save  |  "),
             Span::raw("Esc: Cancel"),
         ]),
