@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::config::{Rule, SinkConfig};
+use crate::tui::editor_state::SimpleEditor;
 use crate::tui::textfield::render_text_field;
 use crate::tui::widgets::centered_rect;
 use regex::Regex;
@@ -25,17 +26,13 @@ pub enum RulesMode {
 /// Editor state for add/edit modal
 #[derive(Debug, Clone)]
 pub struct RuleEditor {
-    pub app_id_pattern: String,
-    pub title_pattern: String,
+    pub app_id_pattern: SimpleEditor,
+    pub title_pattern: SimpleEditor,
     pub sink_ref: String,
-    pub desc: String,
+    pub desc: SimpleEditor,
     pub notify: Option<bool>,
     pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
     pub sink_dropdown_index: usize,
-    // Cursor positions (in character index) for editable fields
-    pub cursor_app: usize,
-    pub cursor_title: usize,
-    pub cursor_desc: usize,
     // Cached compiled regexes to avoid recompiling on every render
     pub compiled_app_id: Option<Regex>,
     pub compiled_title: Option<Regex>,
@@ -47,16 +44,13 @@ pub struct RuleEditor {
 impl RuleEditor {
     pub fn new() -> Self {
         Self {
-            app_id_pattern: String::new(),
-            title_pattern: String::new(),
+            app_id_pattern: SimpleEditor::new(),
+            title_pattern: SimpleEditor::new(),
             sink_ref: String::new(),
-            desc: String::new(),
+            desc: SimpleEditor::new(),
             notify: None,
             focused_field: 0,
             sink_dropdown_index: 0,
-            cursor_app: 0,
-            cursor_title: 0,
-            cursor_desc: 0,
             compiled_app_id: None,
             compiled_title: None,
             compiled_app_id_for: None,
@@ -72,16 +66,15 @@ impl RuleEditor {
         };
 
         Self {
-            app_id_pattern: rule.app_id_pattern.clone(),
-            title_pattern: rule.title_pattern.clone().unwrap_or_default(),
+            app_id_pattern: SimpleEditor::from_string(rule.app_id_pattern.clone()),
+            title_pattern: SimpleEditor::from_string(
+                rule.title_pattern.clone().unwrap_or_default(),
+            ),
             sink_ref: rule.sink_ref.clone(),
-            desc: rule.desc.clone().unwrap_or_default(),
+            desc: SimpleEditor::from_string(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             focused_field: 0,
             sink_dropdown_index: 0,
-            cursor_app: rule.app_id_pattern.chars().count(),
-            cursor_title: rule.title_pattern.as_ref().map_or(0, |s| s.chars().count()),
-            cursor_desc: rule.desc.clone().unwrap_or_default().chars().count(),
             compiled_app_id,
             compiled_title,
             compiled_app_id_for: Some(rule.app_id_pattern.clone()),
@@ -301,9 +294,9 @@ fn render_editor(
         frame,
         chunks[0],
         "App ID Pattern (regex):",
-        &screen_state.editor.app_id_pattern,
+        &screen_state.editor.app_id_pattern.value,
         screen_state.editor.focused_field == 0,
-        Some(screen_state.editor.cursor_app),
+        Some(screen_state.editor.app_id_pattern.cursor),
     );
 
     // Title pattern field
@@ -311,9 +304,9 @@ fn render_editor(
         frame,
         chunks[1],
         "Title Pattern (optional regex):",
-        &screen_state.editor.title_pattern,
+        &screen_state.editor.title_pattern.value,
         screen_state.editor.focused_field == 1,
-        Some(screen_state.editor.cursor_title),
+        Some(screen_state.editor.title_pattern.cursor),
     );
 
     // Sink selector
@@ -345,9 +338,9 @@ fn render_editor(
         frame,
         chunks[3],
         "Description (optional):",
-        &screen_state.editor.desc,
+        &screen_state.editor.desc.value,
         screen_state.editor.focused_field == 3,
-        Some(screen_state.editor.cursor_desc),
+        Some(screen_state.editor.desc.cursor),
     );
 
     // Notify toggle
@@ -406,12 +399,12 @@ fn render_live_preview(
 
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
-        if res.app_pattern == screen_state.editor.app_id_pattern
+        if res.app_pattern == screen_state.editor.app_id_pattern.value
             && res
                 .title_pattern
                 .as_ref()
                 .map_or("".to_string(), |s| s.clone())
-                == screen_state.editor.title_pattern
+                == screen_state.editor.title_pattern.value
         {
             // If background worker marked this preview as pending, show spinner (computing). Otherwise
             // fall through to normal display (No matches / timed out / results).
@@ -475,24 +468,24 @@ fn render_live_preview(
     // Fallback: use local compiled regex matching (fast for small window lists).
     // Ensure compiled regexes correspond to current editor text; compile if needed.
     // Attempt to use cached compiled regex references, or compile temporary ones for this render.
-    let app_id_regex: Option<Regex> = if screen_state.editor.app_id_pattern.is_empty() {
+    let app_id_regex: Option<Regex> = if screen_state.editor.app_id_pattern.value.is_empty() {
         None
     } else if screen_state.editor.compiled_app_id_for.as_ref()
-        == Some(&screen_state.editor.app_id_pattern)
+        == Some(&screen_state.editor.app_id_pattern.value)
     {
         screen_state.editor.compiled_app_id.clone()
     } else {
-        Regex::new(&screen_state.editor.app_id_pattern).ok()
+        Regex::new(&screen_state.editor.app_id_pattern.value).ok()
     };
 
-    let title_regex: Option<Regex> = if screen_state.editor.title_pattern.is_empty() {
+    let title_regex: Option<Regex> = if screen_state.editor.title_pattern.value.is_empty() {
         None
     } else if screen_state.editor.compiled_title_for.as_ref()
-        == Some(&screen_state.editor.title_pattern)
+        == Some(&screen_state.editor.title_pattern.value)
     {
         screen_state.editor.compiled_title.clone()
     } else {
-        Regex::new(&screen_state.editor.title_pattern).ok()
+        Regex::new(&screen_state.editor.title_pattern.value).ok()
     };
 
     // Convert to Option<&Regex> for the matching code below
@@ -537,7 +530,7 @@ fn render_live_preview(
                 Style::default().fg(Color::Gray),
             )]));
         }
-    } else if !screen_state.editor.app_id_pattern.is_empty() {
+    } else if !screen_state.editor.app_id_pattern.value.is_empty() {
         preview_lines.push(Line::from(vec![Span::styled(
             "  Invalid regex pattern",
             Style::default().fg(Color::Red),

@@ -4,7 +4,7 @@ mod tests {
 
     #[test]
     fn short_string_no_truncate() {
-        let (disp, cur, trunc) = compute_display_window("hello", 2, 10);
+        let (disp, cur, trunc, _start) = compute_display_window("hello", 2, 10);
         assert_eq!(disp, "hello");
         assert_eq!(cur, 2);
         assert!(!trunc);
@@ -12,7 +12,7 @@ mod tests {
 
     #[test]
     fn truncate_left_and_center_cursor() {
-        let (disp, cur, trunc) = compute_display_window("abcdefghijklmno", 8, 5);
+        let (disp, cur, trunc, _start) = compute_display_window("abcdefghijklmno", 8, 5);
         assert!(trunc);
         // display length should be <= max
         assert!(disp.chars().count() <= 5);

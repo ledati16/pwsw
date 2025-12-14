@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::config::SinkConfig;
 
+use crate::tui::editor_state::SimpleEditor;
 use crate::tui::textfield::render_text_field;
 use crate::tui::widgets::centered_rect;
 
@@ -22,43 +23,32 @@ pub enum SinksMode {
 }
 
 /// Editor state for add/edit modal
-#[derive(Debug, Clone)]
 pub struct SinkEditor {
-    pub name: String,
-    pub desc: String,
-    pub icon: String,
+    pub name: SimpleEditor,
+    pub desc: SimpleEditor,
+    pub icon: SimpleEditor,
     pub default: bool,
     pub focused_field: usize, // 0=name, 1=desc, 2=icon, 3=default
-    // Cursor positions (character indexes) for editable fields
-    pub cursor_name: usize,
-    pub cursor_desc: usize,
-    pub cursor_icon: usize,
 }
 
 impl SinkEditor {
     pub fn new() -> Self {
         Self {
-            name: String::new(),
-            desc: String::new(),
-            icon: String::new(),
+            name: SimpleEditor::new(),
+            desc: SimpleEditor::new(),
+            icon: SimpleEditor::new(),
             default: false,
             focused_field: 0,
-            cursor_name: 0,
-            cursor_desc: 0,
-            cursor_icon: 0,
         }
     }
 
     pub fn from_sink(sink: &SinkConfig) -> Self {
         Self {
-            name: sink.name.clone(),
-            desc: sink.desc.clone(),
-            icon: sink.icon.clone().unwrap_or_default(),
+            name: SimpleEditor::from_string(sink.name.clone()),
+            desc: SimpleEditor::from_string(sink.desc.clone()),
+            icon: SimpleEditor::from_string(sink.icon.clone().unwrap_or_default()),
             default: sink.default,
             focused_field: 0,
-            cursor_name: sink.name.chars().count(),
-            cursor_desc: sink.desc.chars().count(),
-            cursor_icon: sink.icon.clone().unwrap_or_default().chars().count(),
         }
     }
 
@@ -242,9 +232,9 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         frame,
         chunks[0],
         "Node Name:",
-        &screen_state.editor.name,
+        &screen_state.editor.name.value,
         screen_state.editor.focused_field == 0,
-        Some(screen_state.editor.cursor_name),
+        Some(screen_state.editor.name.cursor),
     );
 
     // Desc field
@@ -252,9 +242,9 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         frame,
         chunks[1],
         "Description:",
-        &screen_state.editor.desc,
+        &screen_state.editor.desc.value,
         screen_state.editor.focused_field == 1,
-        Some(screen_state.editor.cursor_desc),
+        Some(screen_state.editor.desc.cursor),
     );
 
     // Icon field
@@ -262,9 +252,9 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         frame,
         chunks[2],
         "Icon (optional):",
-        &screen_state.editor.icon,
+        &screen_state.editor.icon.value,
         screen_state.editor.focused_field == 2,
-        Some(screen_state.editor.cursor_icon),
+        Some(screen_state.editor.icon.cursor),
     );
 
     // Default checkbox
