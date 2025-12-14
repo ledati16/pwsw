@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Paragraph},
     Frame,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -134,14 +134,23 @@ pub fn render_text_field(
         spans.push(ratatui::text::Span::styled(right, value_style));
     }
 
-    let paragraph = Paragraph::new(Line::from(spans));
-
-    // Draw paragraph; if focused, also draw a thin border around the text area to indicate focus
-    frame.render_widget(paragraph, area);
+    // If focused, render a slim left-side indicator and then the paragraph. This avoids drawing
+    // an inner border that collides visually with the modal's outer border.
     if focused {
-        let focus_block = Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::Cyan));
-        frame.render_widget(focus_block, area);
+        // Build a small area on the left: carve out one column and fill with cyan background
+        if area.width > 2 {
+                    use ratatui::layout::Rect as RRect;
+            let ind = RRect { x: area.x, y: area.y, width: 1, height: area.height };
+            let ind_block = Paragraph::new(" ").style(Style::default().bg(Color::Cyan));
+            frame.render_widget(ind_block, ind);
+
+            // Render the paragraph shifted right by 1 column
+            let shifted = RRect { x: area.x + 1, y: area.y, width: area.width - 1, height: area.height };
+            frame.render_widget(Paragraph::new(Line::from(spans)), shifted);
+        } else {
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        }
+    } else {
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 }
