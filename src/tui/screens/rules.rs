@@ -281,6 +281,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
         "App ID Pattern (regex):",
         &screen_state.editor.app_id_pattern,
         screen_state.editor.focused_field == 0,
+        Some(screen_state.editor.cursor_app),
     );
 
     // Title pattern field
@@ -290,6 +291,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
         "Title Pattern (optional regex):",
         &screen_state.editor.title_pattern,
         screen_state.editor.focused_field == 1,
+        Some(screen_state.editor.cursor_title),
     );
 
     // Sink selector
@@ -319,6 +321,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
         "Description (optional):",
         &screen_state.editor.desc,
         screen_state.editor.focused_field == 3,
+        Some(screen_state.editor.cursor_desc),
     );
 
     // Notify toggle
@@ -556,7 +559,7 @@ fn render_delete_confirmation(
 }
 
 /// Render text field
-fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
+fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool, cursor_pos: Option<usize>) {
     // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
     let label_span = Span::styled(format!("{} ", label), Style::default().fg(Color::Gray));
     let value_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::White) };
@@ -572,20 +575,64 @@ fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, fo
         if max_value_len > 1 { max_value_len -= 1 } else { max_value_len = 0 }
     }
 
-    // Clip value to max_value_len characters (graceful UTF-8 aware truncation)
-    let display_value = if value.chars().count() > max_value_len {
-        value.chars().take(max_value_len).collect::<String>()
+    // Convert value into chars for UTF-8 safe slicing
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    let cursor = cursor_pos.unwrap_or(len).min(len);
+
+    // Determine visible window start index
+    let start = if len <= max_value_len || max_value_len == 0 {
+        0usize
     } else {
-        value.to_string()
+        // aim to center cursor when possible
+        let half = max_value_len / 2;
+        if cursor <= half {
+            0
+        } else if cursor + half >= len {
+            len.saturating_sub(max_value_len)
+        } else {
+            cursor.saturating_sub(half)
+        }
     };
 
-    let mut spans = vec![label_span];
-    spans.push(Span::styled(display_value, value_style));
+    // Build displayed substring, with optional leading ellipsis
+    let display_chars: Vec<char> = if max_value_len == 0 { Vec::new() } else {
+        let mut take = max_value_len;
+        if start > 0 && take > 0 {
+            // reserve one slot for ellipsis
+            if take > 1 {
+                take -= 1;
+            } else {
+                take = 0;
+            }
+        }
+        chars.iter().skip(start).take(take).cloned().collect()
+    };
 
-    // Cursor as separate styled span
+    let displayed_len = display_chars.len();
+    let cursor_rel = if cursor <= start { 0 } else if cursor >= start + displayed_len { displayed_len } else { cursor - start };
+
+    let mut spans = vec![label_span];
+
+    // show leading ellipsis if truncated left
+    if start > 0 {
+        spans.push(Span::raw("…"));
+    }
+
+    // left part (before cursor within displayed_chars)
+    let left: String = display_chars.iter().take(cursor_rel).collect();
+    spans.push(Span::styled(left, value_style));
+
+    // cursor char (either existing char or space at end)
     if focused {
-        spans.push(Span::styled(" ", Style::default())); // small gap
-        spans.push(Span::styled("█", Style::default().fg(Color::Yellow)));
+        let cur_char = if cursor_rel < displayed_len { display_chars[cursor_rel] } else { ' ' };
+        spans.push(Span::styled(cur_char.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+    }
+
+    // right part (after cursor)
+    if cursor_rel < displayed_len {
+        let right: String = display_chars.iter().skip(cursor_rel + (if focused && cursor_rel < displayed_len { 1 } else { 0 })).collect();
+        spans.push(Span::styled(right, value_style));
     }
 
     let paragraph = Paragraph::new(Line::from(spans));
