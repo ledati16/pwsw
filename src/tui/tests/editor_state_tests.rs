@@ -35,7 +35,7 @@ mod tests {
 
         // move end
         editor_state::move_end(&mut cursor, &s);
-        assert_eq!(cursor, s.chars().count());
+        assert_eq!(cursor, s.graphemes(true).count());
 
         // move home
         editor_state::move_home(&mut cursor);
@@ -47,6 +47,6 @@ mod tests {
         let mut s = "hello".to_string();
         let mut cursor = 100usize;
         editor_state::clamp_cursor(&mut cursor, &s);
-        assert_eq!(cursor, s.chars().count());
+        assert_eq!(cursor, s.graphemes(true).count());
     }
 }

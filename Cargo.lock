@@ -1251,6 +1251,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
  "wayland-client",
  "wayland-protocols-wlr",
 ]

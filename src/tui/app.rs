@@ -167,7 +167,10 @@ pub struct App {
     pub active_sinks: Vec<String>,
     /// Pending daemon action to execute (set by input handler, executed by main loop)
     pub pending_daemon_action: Option<DaemonAction>,
-}
+    /// Whether the UI needs to be redrawn
+    pub dirty: bool,
+ }
+
 
 /// Daemon control action to execute
 #[derive(Debug, Clone, Copy)]
@@ -211,6 +214,7 @@ impl App {
             bg_cmd_tx: None,
             bg_update_rx: None,
             preview_in_tx: None,
+            dirty: true,
         })
     }
 
@@ -297,16 +301,19 @@ impl App {
     /// Set a status message to display to the user
     pub fn set_status(&mut self, message: String) {
         self.status_message = Some(message);
+        self.dirty = true;
     }
 
     /// Clear the current status message
     pub fn clear_status(&mut self) {
         self.status_message = None;
+        self.dirty = true;
     }
 
     /// Request application quit
     pub fn quit(&mut self) {
         self.should_quit = true;
+        self.dirty = true;
     }
 
     /// Request quit (with unsaved changes check)
@@ -316,23 +323,27 @@ impl App {
             self.set_status("Unsaved changes! Press 'q' again to quit, Esc to cancel".to_string());
         } else {
             self.should_quit = true;
+            self.dirty = true;
         }
     }
 
     /// Confirm quit (when user presses 'q' again)
     pub fn confirm_quit_action(&mut self) {
         self.should_quit = true;
+        self.dirty = true;
     }
 
     /// Cancel quit confirmation
     pub fn cancel_quit(&mut self) {
         self.confirm_quit = false;
         self.clear_status();
+        self.dirty = true;
     }
 
     /// Mark config as modified
     pub fn mark_dirty(&mut self) {
         self.config_dirty = true;
+        self.dirty = true;
     }
 
     /// Save configuration to disk

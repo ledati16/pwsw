@@ -15,8 +15,8 @@ mod tests {
         let (disp, cur, trunc, _start) = compute_display_window("abcdefghijklmno", 8, 5);
         assert!(trunc);
         // display length should be <= max
-        assert!(disp.chars().count() <= 5);
-        // cursor position should be within displayed length bounds
-        assert!(cur <= disp.chars().count());
+        assert!(disp.graphemes(true).count() <= 5);
+        assert!(cur <= disp.graphemes(true).count());
+
     }
 }

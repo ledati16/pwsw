@@ -1,7 +1,7 @@
-//! Input handling for keyboard and mouse events
+//! Input handling for keyboard events
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use std::time::Duration;
 
 use super::app::{App, DaemonAction, Screen};
@@ -9,23 +9,32 @@ use super::screens::rules::RulesMode;
 use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
-use unicode_segmentation::UnicodeSegmentation;
 
-/// Poll timeout for event checking (non-blocking)
-const POLL_TIMEOUT: Duration = Duration::from_millis(100);
 
-/// Handle keyboard and mouse input events
+/// Poll timeout for event checking (non-blocking). Set to 0 to avoid blocking in the tick loop.
+const POLL_TIMEOUT: Duration = Duration::from_millis(0);
+/// Maximum number of input events to process per tick. Prevents long blocking when the terminal
+/// emits a large flood of input events.
+const MAX_EVENTS_PER_TICK: usize = 64;
+
+/// Handle keyboard input events
 ///
 /// # Errors
 /// Returns an error if event polling fails.
 pub fn handle_events(app: &mut App) -> Result<()> {
-    // Non-blocking event poll
-    if event::poll(POLL_TIMEOUT)? {
+    // Process up to MAX_EVENTS_PER_TICK pending events to avoid blocking the UI for too long.
+    for _ in 0..MAX_EVENTS_PER_TICK {
+        if !event::poll(POLL_TIMEOUT)? {
+            break;
+        }
         match event::read()? {
-            Event::Key(key_event) => handle_key_event(app, key_event),
-            Event::Mouse(mouse_event) => handle_mouse_event(app, mouse_event),
+            Event::Key(key_event) => { handle_key_event(app, key_event); app.dirty = true; }
+            Event::Mouse(_) => {
+                // Mouse events are intentionally ignored in the keyboard-first TUI.
+            }
             Event::Resize(_, _) => {
-                // Ratatui handles resize automatically, nothing to do
+                // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
+                app.dirty = true;
             }
             _ => {}
         }
@@ -540,35 +549,16 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     // insert at cursor_app
                     app.rules_screen.editor.app_id_pattern.insert(c);
 
-                    // invalidate/compile cache
-                    let pat = app.rules_screen.editor.app_id_pattern.value.clone();
-                    if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
-                    }
+                    // Ensure compiled caches are updated eagerly
+                    app.rules_screen.editor.ensure_compiled();
 
                     // Request live-preview
                     if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app
-                            .rules_screen
-                            .editor
-                            .compiled_app_id
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title =
-                            if app.rules_screen.editor.title_pattern.value.is_empty() {
-                                None
-                            } else {
-                                app.rules_screen
-                                    .editor
-                                    .compiled_title
-                                    .as_ref()
-                                    .map(|r| std::sync::Arc::new(r.clone()))
-                            };
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                        let compiled_title = app.rules_screen.editor.compiled_title.clone();
                         let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                            app_pattern: pat.clone(),
-                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty()
-                            {
+                            app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
+                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
                                 None
                             } else {
                                 Some(app.rules_screen.editor.title_pattern.value.clone())
@@ -581,34 +571,26 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 1 => {
                     app.rules_screen.editor.title_pattern.insert(c);
 
-                    let pat = app.rules_screen.editor.title_pattern.value.clone();
-                    if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_title_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
-                    }
+                    // Ensure compiled caches are updated eagerly
+                    app.rules_screen.editor.ensure_compiled();
 
                     if let Some(tx) = &app.bg_cmd_tx {
                         let compiled_app = app
                             .rules_screen
                             .editor
                             .compiled_app_id
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if pat.is_empty() {
-                            None
-                        } else {
-                            app.rules_screen
-                                .editor
-                                .compiled_title
-                                .as_ref()
-                                .map(|r| std::sync::Arc::new(r.clone()))
-                        };
+                            .clone();
+                        let compiled_title = app
+                            .rules_screen
+                            .editor
+                            .compiled_title
+                            .clone();
                         let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                             app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                            title_pattern: if pat.is_empty() {
+                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
                                 None
                             } else {
-                                Some(pat.clone())
+                                Some(app.rules_screen.editor.title_pattern.value.clone())
                             },
                             compiled_app,
                             compiled_title,
@@ -658,32 +640,17 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         KeyCode::Backspace => match app.rules_screen.editor.focused_field {
-            0 => {
+                0 => {
                 app.rules_screen.editor.app_id_pattern.remove_before();
-                let pat = app.rules_screen.editor.app_id_pattern.value.clone();
-                if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
-                    app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
-                    app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
-                }
+
+                // Ensure compiled caches updated eagerly
+                app.rules_screen.editor.ensure_compiled();
 
                 if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app
-                        .rules_screen
-                        .editor
-                        .compiled_app_id
-                        .as_ref()
-                        .map(|r| std::sync::Arc::new(r.clone()));
-                    let compiled_title = if app.rules_screen.editor.title_pattern.value.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen
-                            .editor
-                            .compiled_title
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()))
-                    };
+let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                        let compiled_title = app.rules_screen.editor.compiled_title.clone();
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: pat.clone(),
+                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
                         title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
                             None
                         } else {
@@ -699,7 +666,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 let pat = app.rules_screen.editor.title_pattern.value.clone();
                 if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
                     app.rules_screen.editor.compiled_title_for = Some(pat.clone());
-                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok().map(std::sync::Arc::new);
                 }
 
                 if let Some(tx) = &app.bg_cmd_tx {
@@ -707,16 +674,14 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                         .rules_screen
                         .editor
                         .compiled_app_id
-                        .as_ref()
-                        .map(|r| std::sync::Arc::new(r.clone()));
+                        .clone();
                     let compiled_title = if pat.is_empty() {
                         None
                     } else {
                         app.rules_screen
                             .editor
                             .compiled_title
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()))
+                            .clone()
                     };
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                         app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
@@ -741,25 +706,12 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 let pat = app.rules_screen.editor.app_id_pattern.value.clone();
                 if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
                     app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
-                    app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
+                    app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok().map(std::sync::Arc::new);
                 }
 
                 if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app
-                        .rules_screen
-                        .editor
-                        .compiled_app_id
-                        .as_ref()
-                        .map(|r| std::sync::Arc::new(r.clone()));
-                    let compiled_title = if app.rules_screen.editor.title_pattern.value.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen
-                            .editor
-                            .compiled_title
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()))
-                    };
+let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                    let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.clone() };
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                         app_pattern: pat.clone(),
                         title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
@@ -777,7 +729,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 let pat = app.rules_screen.editor.title_pattern.value.clone();
                 if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
                     app.rules_screen.editor.compiled_title_for = Some(pat.clone());
-                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok().map(std::sync::Arc::new);
                 }
 
                 if let Some(tx) = &app.bg_cmd_tx {
@@ -785,16 +737,14 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                         .rules_screen
                         .editor
                         .compiled_app_id
-                        .as_ref()
-                        .map(|r| std::sync::Arc::new(r.clone()));
+                        .clone();
                     let compiled_title = if pat.is_empty() {
                         None
                     } else {
                         app.rules_screen
                             .editor
                             .compiled_title
-                            .as_ref()
-                            .map(|r| std::sync::Arc::new(r.clone()))
+                            .clone()
                     };
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                         app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
@@ -883,256 +833,6 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Esc => {
             app.rules_screen.cancel();
-        }
-        _ => {}
-    }
-}
-
-/// Handle mouse input
-fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
-    use crate::tui::textfield::compute_display_window;
-    use crate::tui::widgets::centered_rect;
-    use crossterm::terminal::size as terminal_size;
-
-    // Optional debug: show raw mouse events when PWSW_TUI_DEBUG_MOUSE is set
-    if std::env::var("PWSW_TUI_DEBUG_MOUSE").is_ok() {
-        app.set_status(format!("Mouse event: {:?}", mouse));
-    }
-
-    // Optional file logging: enable by setting PWSW_TUI_LOG_MOUSE=1
-    if std::env::var("PWSW_TUI_LOG_MOUSE").is_ok() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        use std::io::Write;
-        let path = std::env::var("PWSW_TUI_MOUSE_LOG_PATH").unwrap_or_else(|_| "/tmp/pwsw-mouse.log".to_string());
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
-            let _ = writeln!(f, "{}\tSCREEN={:?}\t{:?}\tcol={}\trow={}", ts, app.current_screen, mouse.kind, mouse.column, mouse.row);
-        }
-    }
-
-    match mouse.kind {
-        MouseEventKind::Down(button) => {
-            // Only handle left-button presses for click-to-cursor mapping
-            if button != MouseButton::Left {
-                return;
-            }
-            // Translate mouse (column,row) into terminal Rect coords
-            let (cols, rows) = match terminal_size() {
-                Ok((c, r)) => (c as i16, r as i16),
-                Err(_) => return,
-            };
-            let term_rect = ratatui::layout::Rect::new(0, 0, cols as u16, rows as u16);
-
-            // Helper: compute click mapping for a text field
-            let click_set_cursor = |area: ratatui::layout::Rect,
-                                    label: &str,
-                                    value: &str,
-                                    cursor: usize,
-                                    click_x: i16,
-                                    click_y: i16|
-             -> Option<usize> {
-                // area is widget rect; label occupies label.len()+1 cols at left
-                let label_len = label.len() + 1; // space after label
-                let area_x = area.x as i16;
-                let area_y = area.y as i16;
-                if click_y < area_y || click_y >= area_y + area.height as i16 {
-                    return None;
-                }
-                // click column relative to area
-                let rel_col = click_x - area_x;
-                if rel_col < 0 {
-                    return None;
-                }
-                let area_width = area.width as usize;
-                let mut max_value_len = (area_width as isize - label_len as isize) as usize;
-                if max_value_len == 0 {
-                    return Some(0);
-                }
-                // Reserve one char for cursor as render_text_field does
-                if max_value_len > 0 {
-                    if max_value_len > 1 {
-                        max_value_len -= 1;
-                    } else {
-                        max_value_len = 0;
-                    }
-                }
-
-                // click position relative to value area (not including label)
-                let click_in_value = rel_col as usize - label_len;
-                if (rel_col as usize) < label_len {
-                    return None;
-                }
-
-                // Use compute_display_window with current cursor to reproduce displayed substring and start
-                let (display_substr, _cursor_rel, truncated_left, start) =
-                    compute_display_window(value, cursor, max_value_len);
-
-                // When truncated_left is true, render shows an ellipsis occupying one column at start
-                let mut rel = click_in_value;
-                if truncated_left {
-                    if rel == 0 {
-                        // clicked the ellipsis - move to start
-                        return Some(start);
-                    } else {
-                        rel = rel.saturating_sub(1);
-                    }
-                }
-
-                let disp_len = display_substr.graphemes(true).count();
-                let char_pos = if rel >= disp_len { disp_len } else { rel };
-                Some(start + char_pos)
-            };
-
-            let mx = mouse.column as i16;
-            let my = mouse.row as i16;
-
-            match app.current_screen {
-                Screen::Sinks => {
-                    if app.sinks_screen.mode == SinksMode::AddEdit {
-                        // popup area matches render_sinks centered_rect(70,60)
-                        let popup = centered_rect(70, 60, term_rect);
-                        let chunks = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Vertical)
-                            .margin(2)
-                            .constraints([
-                                ratatui::layout::Constraint::Length(3), // Name
-                                ratatui::layout::Constraint::Length(3), // Desc
-                                ratatui::layout::Constraint::Length(3), // Icon
-                                ratatui::layout::Constraint::Length(3), // Default
-                                ratatui::layout::Constraint::Min(0),
-                            ])
-                            .split(popup);
-
-                        // Figure out which field chunk was clicked
-                        for (i, chunk) in chunks.iter().take(3).enumerate() {
-                            if mx >= chunk.x as i16
-                                && mx < (chunk.x + chunk.width) as i16
-                                && my >= chunk.y as i16
-                                && my < (chunk.y + chunk.height) as i16
-                            {
-                                let editor = &mut app.sinks_screen.editor;
-                                match i {
-                                    0 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "Node Name:",
-                                            &editor.name.value,
-                                            editor.name.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.name.cursor = newc;
-                                            editor.focused_field = 0;
-                                        }
-                                    }
-                                    1 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "Description:",
-                                            &editor.desc.value,
-                                            editor.desc.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.desc.cursor = newc;
-                                            editor.focused_field = 1;
-                                        }
-                                    }
-                                    2 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "Icon (optional):",
-                                            &editor.icon.value,
-                                            editor.icon.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.icon.cursor = newc;
-                                            editor.focused_field = 2;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                Screen::Rules => {
-                    if app.rules_screen.mode == RulesMode::AddEdit {
-                        // popup area matches render_rules centered_rect(80,85)
-                        let popup = centered_rect(80, 85, term_rect);
-                        let chunks = ratatui::layout::Layout::default()
-                            .direction(ratatui::layout::Direction::Vertical)
-                            .margin(2)
-                            .constraints([
-                                ratatui::layout::Constraint::Length(3), // App ID
-                                ratatui::layout::Constraint::Length(3), // Title
-                                ratatui::layout::Constraint::Length(3), // Sink
-                                ratatui::layout::Constraint::Length(3), // Desc
-                                ratatui::layout::Constraint::Length(3), // Notify
-                                ratatui::layout::Constraint::Min(5),    // Preview
-                                ratatui::layout::Constraint::Length(3), // Help
-                            ])
-                            .split(popup);
-
-                        for (i, chunk) in chunks.iter().enumerate() {
-                            if mx >= chunk.x as i16
-                                && mx < (chunk.x + chunk.width) as i16
-                                && my >= chunk.y as i16
-                                && my < (chunk.y + chunk.height) as i16
-                            {
-                                let editor = &mut app.rules_screen.editor;
-                                match i {
-                                    0 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "App ID Pattern (regex):",
-                                            &editor.app_id_pattern.value,
-                                            editor.app_id_pattern.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.app_id_pattern.cursor = newc;
-                                            editor.focused_field = 0;
-                                        }
-                                    }
-                                    1 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "Title Pattern (optional regex):",
-                                            &editor.title_pattern.value,
-                                            editor.title_pattern.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.title_pattern.cursor = newc;
-                                            editor.focused_field = 1;
-                                        }
-                                    }
-                                    3 => {
-                                        if let Some(newc) = click_set_cursor(
-                                            *chunk,
-                                            "Description (optional):",
-                                            &editor.desc.value,
-                                            editor.desc.cursor,
-                                            mx,
-                                            my,
-                                        ) {
-                                            editor.desc.cursor = newc;
-                                            editor.focused_field = 3;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-            // Scroll handling for lists will be added in Phase 3-4
         }
         _ => {}
     }

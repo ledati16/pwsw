@@ -16,7 +16,7 @@ mod tests {
         let mut s = String::from("hé😊lo");
         // remove char before index 3 (the emoji)
         let new_pos = remove_char_before(&mut s, 3);
-        assert!(s.chars().count() <= 4);
+        assert!(s.graphemes(true).count() <= 4);
         assert_eq!(new_pos, 2);
     }
 

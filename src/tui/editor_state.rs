@@ -1,6 +1,7 @@
 //! Centralized editor helpers that operate on (String, cursor) pairs.
 
 use crate::tui::editor_helpers as helpers;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Insert `ch` at the given cursor position in `s` and update `cursor`.
 /// Returns the new cursor position (after the inserted char).
@@ -33,7 +34,7 @@ pub fn move_left(cursor: &mut usize) {
 
 /// Move cursor right by one, clamped to string length.
 pub fn move_right(cursor: &mut usize, s: &str) {
-    let len = s.chars().count();
+    let len = s.graphemes(true).count();
     *cursor = usize::min(len, *cursor + 1);
 }
 
@@ -44,13 +45,13 @@ pub fn move_home(cursor: &mut usize) {
 
 /// Move cursor to the end of the string.
 pub fn move_end(cursor: &mut usize, s: &str) {
-    *cursor = s.chars().count();
+    *cursor = s.graphemes(true).count();
 }
 
 /// Ensure cursor is within valid bounds for the string.
 #[allow(dead_code)]
 pub fn clamp_cursor(cursor: &mut usize, s: &str) {
-    let len = s.chars().count();
+    let len = s.graphemes(true).count();
     if *cursor > len {
         *cursor = len;
     }
@@ -77,7 +78,7 @@ impl SimpleEditor {
 
     /// Create from an existing string and place cursor at the end.
     pub fn from_string(s: String) -> Self {
-        let cursor = s.chars().count();
+        let cursor = s.graphemes(true).count();
         Self { value: s, cursor }
     }
 
@@ -128,8 +129,8 @@ impl SimpleEditor {
     /// Clamp cursor to valid range for current value.
     #[allow(dead_code)]
     pub fn clamp(&mut self) {
-        if self.cursor > self.value.chars().count() {
-            self.cursor = self.value.chars().count();
+        if self.cursor > self.value.graphemes(true).count() {
+            self.cursor = self.value.graphemes(true).count();
         }
     }
 }
