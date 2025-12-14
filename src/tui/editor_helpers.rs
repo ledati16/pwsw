@@ -98,11 +98,23 @@ pub(crate) fn remove_word_before(s: &mut String, idx: usize) -> usize {
         return 0;
     }
     let g: Vec<&str> = s.graphemes(true).collect();
-    let start = move_cursor_word_left(idx, s);
-    // Rebuild string without graphemes in [start, idx)
+    let len = g.len();
+
+    // If the cursor is at the start of a word (i.e. the grapheme at `idx` is non-whitespace),
+    // prefer removing the word to the right (the word under the cursor). Otherwise, remove
+    // the previous word (traditional Ctrl+Backspace behavior).
+    let (start, end) = if idx < len && !g[idx].trim().is_empty() {
+        let end = move_cursor_word_right(idx, s);
+        (idx, end)
+    } else {
+        let start = move_cursor_word_left(idx, s);
+        (start, idx)
+    };
+
+    // Rebuild string without graphemes in [start, end)
     let mut new = String::with_capacity(s.len());
     for (i, gr) in g.iter().enumerate() {
-        if i >= start && i < idx {
+        if i >= start && i < end {
             continue;
         }
         new.push_str(gr);

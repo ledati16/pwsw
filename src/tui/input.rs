@@ -44,6 +44,10 @@ pub fn handle_events(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub(crate) fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event::KeyEvent) {
+    handle_key_event(app, key);
+}
 /// Check if any modal or editor is currently active
 fn is_modal_active(app: &App) -> bool {
     // Check if help overlay is shown
