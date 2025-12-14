@@ -82,11 +82,18 @@ async fn main() -> Result<()> {
             commands::cycle_sink(&config, commands::Direction::Prev)
         }
 
-        // Future feature
+        // TUI - Terminal User Interface
         Some(Command::Tui) => {
-            println!("TUI not yet implemented");
-            println!("The terminal user interface is planned for a future release.");
-            Ok(())
+            #[cfg(feature = "tui")]
+            {
+                pwsw::tui::run().await
+            }
+            #[cfg(not(feature = "tui"))]
+            {
+                eprintln!("TUI feature not enabled");
+                eprintln!("Rebuild with: cargo build --features tui");
+                std::process::exit(1);
+            }
         }
     }
 }

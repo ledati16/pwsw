@@ -6,7 +6,7 @@
 use anyhow::{Context, Result};
 use crossterm::style::Stylize;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -67,7 +67,7 @@ pub struct Rule {
 // Config File Deserialization (TOML)
 // ============================================================================
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ConfigFile {
     #[serde(default)]
     settings: SettingsFile,
@@ -77,7 +77,7 @@ struct ConfigFile {
     rules: Vec<RuleConfigFile>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SettingsFile {
     #[serde(default = "default_true")]
     default_on_startup: bool,
@@ -93,7 +93,7 @@ struct SettingsFile {
     log_level: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct SinkConfigFile {
     name: String,
     desc: String,
@@ -103,7 +103,7 @@ struct SinkConfigFile {
     default: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct RuleConfigFile {
     app_id: String,
     #[serde(default)]
@@ -222,6 +222,63 @@ impl Config {
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Save configuration to the default XDG config path
+    ///
+    /// # Errors
+    /// Returns an error if the config cannot be serialized or written to disk.
+    pub fn save(&self) -> Result<()> {
+        let config_file = self.to_config_file();
+        let toml_str = toml::to_string_pretty(&config_file)
+            .context("Failed to serialize config to TOML")?;
+
+        let config_path = Self::get_config_path()?;
+        fs::write(&config_path, toml_str)
+            .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
+
+        Ok(())
+    }
+
+    /// Convert runtime Config back to serializable ConfigFile format
+    fn to_config_file(&self) -> ConfigFile {
+        let settings = SettingsFile {
+            default_on_startup: self.settings.default_on_startup,
+            set_smart_toggle: self.settings.set_smart_toggle,
+            notify_manual: self.settings.notify_manual,
+            notify_rules: self.settings.notify_rules,
+            match_by_index: self.settings.match_by_index,
+            log_level: self.settings.log_level.clone(),
+        };
+
+        let sinks = self
+            .sinks
+            .iter()
+            .map(|s| SinkConfigFile {
+                name: s.name.clone(),
+                desc: s.desc.clone(),
+                icon: s.icon.clone(),
+                default: s.default,
+            })
+            .collect();
+
+        let rules = self
+            .rules
+            .iter()
+            .map(|r| RuleConfigFile {
+                app_id: r.app_id_pattern.clone(),
+                title: r.title_pattern.clone(),
+                sink: r.sink_ref.clone(),
+                desc: r.desc.clone(),
+                notify: r.notify,
+            })
+            .collect();
+
+        ConfigFile {
+            settings,
+            sinks,
+            rules,
+        }
     }
 
     fn validate(&self) -> Result<()> {
