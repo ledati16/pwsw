@@ -31,6 +31,10 @@ pub struct RuleEditor {
     pub notify: Option<bool>,
     pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
     pub sink_dropdown_index: usize,
+    // Cursor positions (in character index) for editable fields
+    pub cursor_app: usize,
+    pub cursor_title: usize,
+    pub cursor_desc: usize,
     // Cached compiled regexes to avoid recompiling on every render
     pub compiled_app_id: Option<Regex>,
     pub compiled_title: Option<Regex>,
@@ -49,6 +53,9 @@ impl RuleEditor {
             notify: None,
             focused_field: 0,
             sink_dropdown_index: 0,
+            cursor_app: 0,
+            cursor_title: 0,
+            cursor_desc: 0,
             compiled_app_id: None,
             compiled_title: None,
             compiled_app_id_for: None,
@@ -71,6 +78,9 @@ impl RuleEditor {
             notify: rule.notify,
             focused_field: 0,
             sink_dropdown_index: 0,
+            cursor_app: rule.app_id_pattern.chars().count(),
+            cursor_title: rule.title_pattern.as_ref().map_or(0, |s| s.chars().count()),
+            cursor_desc: rule.desc.clone().unwrap_or_default().chars().count(),
             compiled_app_id,
             compiled_title,
             compiled_app_id_for: Some(rule.app_id_pattern.clone()),
