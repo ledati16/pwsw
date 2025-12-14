@@ -1,7 +1,7 @@
 //! Input handling for keyboard and mouse events
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind, MouseButton};
 use std::time::Duration;
 
 use super::app::{App, DaemonAction, Screen};
@@ -9,6 +9,7 @@ use super::screens::rules::RulesMode;
 use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Poll timeout for event checking (non-blocking)
 const POLL_TIMEOUT: Duration = Duration::from_millis(100);
@@ -893,8 +894,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     use crate::tui::widgets::centered_rect;
     use crossterm::terminal::size as terminal_size;
 
+    // Optional debug: show raw mouse events when PWSW_TUI_DEBUG_MOUSE is set
+    if std::env::var("PWSW_TUI_DEBUG_MOUSE").is_ok() {
+        app.set_status(format!("Mouse event: {:?}", mouse));
+    }
+
     match mouse.kind {
-        MouseEventKind::Down(_button) => {
+        MouseEventKind::Down(button) => {
+            // Only handle left-button presses for click-to-cursor mapping
+            if button != MouseButton::Left {
+                return;
+            }
             // Translate mouse (column,row) into terminal Rect coords
             let (cols, rows) = match terminal_size() {
                 Ok((c, r)) => (c as i16, r as i16),
@@ -957,7 +967,7 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
                     }
                 }
 
-                let disp_len = display_substr.chars().count();
+                let disp_len = display_substr.graphemes(true).count();
                 let char_pos = if rel >= disp_len { disp_len } else { rel };
                 Some(start + char_pos)
             };
