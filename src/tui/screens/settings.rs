@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::config::Settings;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +210,47 @@ fn render_settings_list(
                 .get(i)
                 .map(|s| s.as_str())
                 .unwrap_or(item.name());
+
+            // Apply color styling to boolean toggles
+            let value_span = match item {
+                SettingItem::LogLevel => Span::styled(value_text, style),
+                SettingItem::DefaultOnStartup => {
+                    if settings.default_on_startup {
+                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                    }
+                }
+                SettingItem::SetSmartToggle => {
+                    if settings.set_smart_toggle {
+                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                    }
+                }
+                SettingItem::NotifyManual => {
+                    if settings.notify_manual {
+                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                    }
+                }
+                SettingItem::NotifyRules => {
+                    if settings.notify_rules {
+                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                    }
+                }
+                SettingItem::MatchByIndex => {
+                    if settings.match_by_index {
+                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                    } else {
+                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                    }
+                }
+            };
+
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
@@ -217,7 +258,7 @@ fn render_settings_list(
                 ),
                 Span::styled(padded_name, style),
                 Span::raw("  "),
-                Span::styled(value_text, style),
+                value_span,
             ]);
 
             ListItem::new(line)
@@ -227,7 +268,7 @@ fn render_settings_list(
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Settings (↑/↓ to select, Space/Enter to toggle)"),
+            .title("Settings ([↑/↓]select [Space]/[Enter]toggle)"),
     );
 
     frame.render_widget(list, area);
@@ -264,7 +305,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
     let log_levels = ["error", "warn", "info", "debug", "trace"];
 
     // Create dropdown in center of screen
-    let popup_area = centered_rect(30, 50, area);
+    let popup_area = centered_modal(modal_size::DROPDOWN, area);
 
     let items: Vec<ListItem> = log_levels
         .iter()

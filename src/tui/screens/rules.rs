@@ -11,7 +11,7 @@ use ratatui::{
 use crate::config::{Rule, SinkConfig};
 use crate::tui::editor_state::SimpleEditor;
 use crate::tui::textfield::render_text_field;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_modal, modal_size};
 use regex::Regex;
 
 /// Rules screen mode
@@ -292,7 +292,7 @@ fn render_list(
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Rules ([a]dd, [e]dit, [x] delete, [↑/↓] move priority, Ctrl+S save)"),
+            .title("Rules ([a]dd [e]dit [x]delete [↑/↓]priority [Ctrl+S]save)"),
     );
 
     frame.render_widget(list, area);
@@ -314,19 +314,19 @@ fn render_editor(
         "Add Rule"
     };
 
-    let popup_area = centered_rect(80, 85, area);
+    let popup_area = centered_modal(modal_size::LARGE, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(2), // App ID pattern (reduced vertical padding)
-            Constraint::Length(2), // Title pattern
-            Constraint::Length(2), // Sink selector
-            Constraint::Length(2), // Description
-            Constraint::Length(2), // Notify toggle
-            Constraint::Min(6),    // Live preview (give preview more room)
-            Constraint::Length(2), // Help text
+            Constraint::Length(3), // App ID pattern (bordered)
+            Constraint::Length(3), // Title pattern (bordered)
+            Constraint::Length(3), // Sink selector (bordered)
+            Constraint::Length(3), // Description (bordered)
+            Constraint::Length(3), // Notify toggle (bordered)
+            Constraint::Min(6),    // Live preview
+            Constraint::Length(1), // Help text (compact)
         ])
         .split(popup_area);
 
@@ -356,53 +356,26 @@ fn render_editor(
         Some(screen_state.editor.title_pattern.cursor),
     );
 
-    // Sink selector
-    let sink_style = if screen_state.editor.focused_field == 2 {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
+    // Sink selector button - find sink description if set
+    let sink_display = if screen_state.editor.sink_ref.is_empty() {
+        None
     } else {
-        Style::default().fg(Color::White)
+        sinks
+            .iter()
+            .find(|s| {
+                s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref
+            })
+            .map(|s| s.desc.as_str())
+            .or(Some(screen_state.editor.sink_ref.as_str()))
     };
 
-    // Render sink selection without allocating a formatted String per-frame.
-    let sink_paragraph = if screen_state.editor.sink_ref.is_empty() {
-        Paragraph::new(Line::from(vec![
-            Span::raw("Target Sink: "),
-            Span::styled("<press ", sink_style),
-            Span::styled(
-                "Enter",
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to select>", sink_style),
-        ]))
-        .style(sink_style)
-    } else {
-        // Try to find the sink and show its description and name as separate spans
-        if let Some(s) = sinks.iter().find(|s| {
-            s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref
-        }) {
-            Paragraph::new(Line::from(vec![
-                Span::raw("Target Sink: "),
-                Span::styled(s.desc.as_str(), sink_style),
-                Span::raw(" ("),
-                Span::styled(s.name.as_str(), sink_style),
-                Span::raw(")"),
-            ]))
-            .style(sink_style)
-        } else {
-            Paragraph::new(Line::from(vec![
-                Span::raw("Target Sink: "),
-                Span::styled(screen_state.editor.sink_ref.as_str(), sink_style),
-            ]))
-            .style(sink_style)
-        }
-    };
-
-    frame.render_widget(sink_paragraph, chunks[2]);
+    crate::tui::widgets::render_selector_button(
+        frame,
+        chunks[2],
+        "Target Sink",
+        sink_display,
+        screen_state.editor.focused_field == 2,
+    );
 
     // Description field
     crate::tui::textfield::render_text_field(
@@ -414,8 +387,7 @@ fn render_editor(
         Some(screen_state.editor.desc.cursor),
     );
 
-    // Notify toggle
-    // Render the notify state using colored spans for clarity
+    // Notify toggle with border-based focus
     let mut notify_spans = Vec::new();
     match screen_state.editor.notify {
         Some(true) => {
@@ -431,14 +403,14 @@ fn render_editor(
             notify_spans.push(Span::raw("Notify (use global setting)"));
         }
     }
-    let notify_style = if screen_state.editor.focused_field == 4 {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let notify_widget = Paragraph::new(Line::from(notify_spans)).style(notify_style);
+
+    let border_style =
+        crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 4);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let notify_widget = Paragraph::new(Line::from(notify_spans)).block(block);
     frame.render_widget(notify_widget, chunks[4]);
 
     // Live preview panel
@@ -452,13 +424,14 @@ fn render_editor(
     );
 
     // Help text
-    let help = vec![Line::from(vec![
-        Span::raw("Tab/Shift+Tab: Next/Prev  |  "),
-        Span::raw("Enter: Save/Select Sink  |  "),
-        Span::raw("Space: Toggle  |  "),
-        Span::raw("Esc: Cancel"),
-    ])];
-    let help_widget = Paragraph::new(help).style(Style::default().fg(Color::Gray));
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Space", "Toggle"),
+        ("Esc", "Cancel"),
+    ]);
+    let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(Color::Gray));
     frame.render_widget(help_widget, chunks[6]);
 }
 
@@ -526,9 +499,11 @@ fn render_live_preview(
                     ]));
                 }
                 if res.matches.len() > 5 {
+                    let remaining = res.matches.len() - 5;
+                    let text = format!("  ...and {} more", remaining);
                     preview_lines.push(Line::from(vec![Span::styled(
-                        (res.matches.len() - 5).to_string(),
-                        Style::default().fg(Color::Gray),
+                        text,
+                        Style::default().fg(Color::DarkGray),
                     )]));
                 }
             }
@@ -639,7 +614,7 @@ fn render_sink_selector(
     sinks: &[SinkConfig],
     screen_state: &RulesScreen,
 ) {
-    let popup_area = centered_rect(60, 50, area);
+    let popup_area = centered_modal(modal_size::DROPDOWN, area);
 
     let items: Vec<ListItem> = sinks
         .iter()
@@ -694,7 +669,7 @@ fn render_delete_confirmation(
     }
 
     let rule = &rules[screen_state.selected];
-    let popup_area = centered_rect(60, 40, area);
+    let popup_area = centered_modal(modal_size::SMALL, area);
 
     let title_line = if let Some(ref title) = rule.title_pattern {
         Line::from(vec![

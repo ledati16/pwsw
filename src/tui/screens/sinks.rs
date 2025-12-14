@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -12,7 +12,7 @@ use crate::config::SinkConfig;
 
 use crate::tui::editor_state::SimpleEditor;
 use crate::tui::textfield::render_text_field;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Sinks screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,7 @@ pub enum SinksMode {
     List,
     AddEdit,
     Delete,
+    SelectSink,
 }
 
 /// Editor state for add/edit modal
@@ -73,6 +74,8 @@ pub struct SinksScreen {
     pub editing_index: Option<usize>, // None = adding, Some(i) = editing
     /// Cached padded descriptions for aligned display (updated when sinks change)
     pub display_descs: Vec<String>,
+    /// Selected index in sink selector (0 = first header, skips headers during selection)
+    pub sink_selector_index: usize,
 }
 
 impl SinksScreen {
@@ -100,6 +103,7 @@ impl SinksScreen {
             editor: SinkEditor::new(),
             editing_index: None,
             display_descs: Vec::new(),
+            sink_selector_index: 0,
         }
     }
 
@@ -145,11 +149,20 @@ pub fn render_sinks(
     sinks: &[SinkConfig],
     screen_state: &SinksScreen,
     active_sinks: &[String],
+    active_sink_list: &[crate::pipewire::ActiveSink],
+    profile_sink_list: &[crate::pipewire::ProfileSink],
 ) {
     match screen_state.mode {
         SinksMode::List => render_list(frame, area, sinks, screen_state, active_sinks),
         SinksMode::AddEdit => render_editor(frame, area, screen_state),
         SinksMode::Delete => render_delete_confirmation(frame, area, sinks, screen_state),
+        SinksMode::SelectSink => render_sink_selector(
+            frame,
+            area,
+            active_sink_list,
+            profile_sink_list,
+            screen_state.sink_selector_index,
+        ),
     }
 }
 
@@ -201,6 +214,7 @@ fn render_list(
                         .unwrap_or(sink.desc.as_str()),
                     style,
                 ),
+                Span::raw(" "),
                 status,
                 default_marker,
             ]);
@@ -218,7 +232,7 @@ fn render_list(
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Sinks ([a]dd, [e]dit, [x] delete, [Space] toggle default, Ctrl+S save)"),
+            .title("Sinks ([a]dd [e]dit [x]delete [Space]toggle [Ctrl+S]save)"),
     );
 
     frame.render_widget(list, area);
@@ -233,16 +247,16 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     };
 
     // Create modal in center
-    let popup_area = centered_rect(70, 60, area);
+    let popup_area = centered_modal(modal_size::MEDIUM, area);
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(2), // Name field
-            Constraint::Length(2), // Desc field
-            Constraint::Length(2), // Icon field
-            Constraint::Length(2), // Default checkbox
+            Constraint::Length(3), // Name field (bordered)
+            Constraint::Length(3), // Desc field (bordered)
+            Constraint::Length(3), // Icon field (bordered)
+            Constraint::Length(3), // Default checkbox (bordered)
             Constraint::Min(0),    // Help text
         ])
         .split(popup_area);
@@ -254,14 +268,19 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         .style(Style::default().bg(Color::Black));
     frame.render_widget(block, popup_area);
 
-    // Name field
-    render_text_field(
+    // Name field - use button-like selector
+    let name_display = if screen_state.editor.name.value.is_empty() {
+        None
+    } else {
+        Some(screen_state.editor.name.value.as_str())
+    };
+
+    crate::tui::widgets::render_selector_button(
         frame,
         chunks[0],
-        "Node Name:",
-        &screen_state.editor.name.value,
+        "Node Name",
+        name_display,
         screen_state.editor.focused_field == 0,
-        Some(screen_state.editor.name.cursor),
     );
 
     // Desc field
@@ -284,7 +303,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         Some(screen_state.editor.icon.cursor),
     );
 
-    // Default checkbox
+    // Default checkbox with border-based focus
     let mut checkbox_spans = Vec::new();
     if screen_state.editor.default {
         checkbox_spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
@@ -293,26 +312,26 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         checkbox_spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
         checkbox_spans.push(Span::raw("Default Sink"));
     }
-    let checkbox_style = if screen_state.editor.focused_field == 3 {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-    let checkbox = Paragraph::new(Line::from(checkbox_spans)).style(checkbox_style);
+
+    let border_style =
+        crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 3);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style);
+
+    let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
     frame.render_widget(checkbox, chunks[3]);
 
     // Help text
-    let help = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw("Up/Down/Tab: Next/Prev field  |  "),
-            Span::raw("Enter: Save  |  "),
-            Span::raw("Esc: Cancel"),
-        ]),
-    ];
-    let help_widget = Paragraph::new(help).style(Style::default().fg(Color::Gray));
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Esc", "Cancel"),
+    ]);
+
+    let help_widget =
+        Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(Color::Gray));
     frame.render_widget(help_widget, chunks[4]);
 }
 
@@ -328,7 +347,7 @@ fn render_delete_confirmation(
     }
 
     let sink = &sinks[screen_state.selected];
-    let popup_area = centered_rect(50, 30, area);
+    let popup_area = centered_modal(modal_size::SMALL, area);
 
     let text = vec![
         Line::from(""),
@@ -359,4 +378,132 @@ fn render_delete_confirmation(
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);
+}
+
+/// Render sink selector modal for adding sinks
+fn render_sink_selector(
+    frame: &mut Frame,
+    area: Rect,
+    active_sinks: &[crate::pipewire::ActiveSink],
+    profile_sinks: &[crate::pipewire::ProfileSink],
+    selected_index: usize,
+) {
+    let popup_area = centered_modal(modal_size::MEDIUM, area);
+    frame.render_widget(Clear, popup_area);
+
+    // Calculate max width for text (accounting for borders, margin, and formatting)
+    let available_width = popup_area.width.saturating_sub(6); // 2 borders + 2 prefix + 2 margin
+    let max_desc_width = available_width.saturating_sub(40); // Reserve space for node name in parens
+
+    // Helper to truncate description (show start with ellipsis at end)
+    let truncate_desc = |text: &str, max_width: u16| -> String {
+        if text.len() > max_width as usize {
+            let mut truncated = text
+                .chars()
+                .take(max_width.saturating_sub(3) as usize)
+                .collect::<String>();
+            truncated.push_str("...");
+            truncated
+        } else {
+            text.to_string()
+        }
+    };
+
+    // Helper to truncate node name (show END with ellipsis at start for distinguishability)
+    let truncate_node_name = |text: &str, max_width: u16| -> String {
+        if text.len() > max_width as usize {
+            let skip = text.len() - (max_width.saturating_sub(3) as usize);
+            let mut truncated = String::from("...");
+            truncated.push_str(&text.chars().skip(skip).collect::<String>());
+            truncated
+        } else {
+            text.to_string()
+        }
+    };
+
+    // Build list items from both active and profile sinks
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut item_index = 0;
+
+    // Active sinks header
+    items.push(ListItem::new(Line::from(Span::styled(
+        "── Active Sinks ──",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    ))));
+
+    for sink in active_sinks {
+        let is_selected = item_index == selected_index;
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        let desc_text = truncate_desc(&sink.description, max_desc_width);
+        let name_text = truncate_node_name(&sink.name, 35);
+
+        let line = Line::from(vec![
+            Span::styled(
+                if is_selected { "> " } else { "  " },
+                Style::default().fg(Color::Cyan),
+            ),
+            Span::styled(desc_text, style),
+            Span::styled(" (", Style::default().fg(Color::DarkGray)),
+            Span::styled(name_text, Style::default().fg(Color::DarkGray)),
+            Span::styled(")", Style::default().fg(Color::DarkGray)),
+        ]);
+        items.push(ListItem::new(line));
+        item_index += 1;
+    }
+
+    // Profile sinks header (if any)
+    if !profile_sinks.is_empty() {
+        items.push(ListItem::new(Line::from("")));
+        items.push(ListItem::new(Line::from(Span::styled(
+            "── Profile Sinks (require switching) ──",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))));
+
+        for sink in profile_sinks {
+            let is_selected = item_index == selected_index;
+            let style = if is_selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let desc_text = truncate_desc(&sink.description, max_desc_width);
+            let name_text = truncate_node_name(&sink.predicted_name, 35);
+
+            let line = Line::from(vec![
+                Span::styled(
+                    if is_selected { "> " } else { "  " },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::styled(desc_text, style),
+                Span::styled(" (", Style::default().fg(Color::DarkGray)),
+                Span::styled(name_text, Style::default().fg(Color::DarkGray)),
+                Span::styled(")", Style::default().fg(Color::DarkGray)),
+            ]);
+            items.push(ListItem::new(line));
+            item_index += 1;
+        }
+    }
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Select Sink ([↑/↓]navigate [Enter]select [Esc]cancel)")
+            .style(Style::default().bg(Color::Black)),
+    );
+
+    frame.render_widget(list, popup_area);
 }

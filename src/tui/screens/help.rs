@@ -4,17 +4,20 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
 use crate::tui::app::Screen;
-use crate::tui::widgets::centered_rect;
+use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Render help overlay on top of the current screen
 pub fn render_help(frame: &mut Frame, area: Rect, current_screen: Screen) {
-    // Create centered modal (60% width, 70% height)
-    let popup_area = centered_rect(60, 70, area);
+    // Create centered modal
+    let popup_area = centered_modal(modal_size::HELP, area);
+
+    // Clear background to prevent bleed-through from underlying screens
+    frame.render_widget(Clear, popup_area);
 
     // Build help content based on current screen
     let help_lines = match current_screen {
@@ -181,10 +184,12 @@ fn get_global_shortcuts() -> Vec<Line<'static>> {
 
 /// Helper to create a formatted help line
 fn help_line(key: &'static str, description: &'static str) -> Line<'static> {
+    // Use fixed-width key column (12 chars) for proper alignment
+    // format! is acceptable here since help renders on-demand, not every frame
+    let padded_key = format!("{:<12}", key);
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(key, Style::default().fg(Color::Green)),
-        Span::raw("    "),
+        Span::styled(padded_key, Style::default().fg(Color::Green)),
         Span::raw(" - "),
         Span::raw(description),
     ])

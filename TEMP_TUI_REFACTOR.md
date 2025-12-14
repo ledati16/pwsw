@@ -93,4 +93,56 @@ Recent micro-step: word-nav helpers and tests
   2. Add accessibility/theme toggle and a short docs entry.
   3. Run a lightweight `terminal.draw()` timing run to validate no regressions in render latency.
 
+Phase 3 UX Polish - Recent Completion (2025-12-14)
+- Implemented consistent focus indicators using border highlighting instead of left-bar approach
+- Standardized modal sizes using constants (SMALL/MEDIUM/LARGE/DROPDOWN/HELP) across all screens
+- Unified keybind notation in block titles to `[key]action` format for consistency
+- Replaced sink selector in rules editor with button-like widget for better discoverability
+- Standardized in-modal help text using `modal_help_line()` helper to avoid allocations
+- Fixed help screen spacing with fixed-width key column (format! acceptable - help renders on-demand)
+- Applied border-based focus styling to checkboxes/toggles for visual consistency
+- Updated layout constraints from `Length(2)` to `Length(3)` for bordered fields
+- All changes preserve Phase 2 performance optimizations (no `format!` in hot render paths)
+- Ran `cargo test` (59 tests passed), `cargo clippy --all-targets` (clean)
+- Created reusable helpers in `src/tui/widgets.rs`: `modal_size`, `focus_border_style()`, `render_selector_button()`, `modal_help_line()`
+
+Files modified:
+- `src/tui/widgets.rs`: Added UX helper functions and modal size constants
+- `src/tui/textfield.rs`: Switched from left-bar to border-based focus indicator
+- `src/tui/screens/sinks.rs`: Updated modal sizes, keybinds, help text, checkbox focus, constraints
+- `src/tui/screens/rules.rs`: Updated modal sizes, keybinds, sink selector button, help text, notify toggle focus, constraints
+- `src/tui/screens/settings.rs`: Updated modal size, keybind notation
+- `src/tui/screens/dashboard.rs`: Updated keybind notation
+- `src/tui/screens/help.rs`: Fixed spacing with fixed-width padding
+
+Phase 3 UX Polish - Additional Improvements (2025-12-14)
+- Fixed help overlay background bleed-through using `Clear` widget
+- Added spacing between sink description and status indicator in sinks list
+- Implemented colored boolean toggles in settings: green ✓ for enabled, red ✗ for disabled
+- Styled [unsaved] indicator in yellow bold for better visibility
+- Fixed dashboard render order issue (block now renders before content using Margin)
+- Implemented full sink selector modal for adding sinks:
+  - Shows both active sinks and profile sinks (requiring profile switching)
+  - Smart text truncation: descriptions truncate from start, node names from end (shows distinguishing suffix)
+  - Manual navigation with ↑/↓ keys, Enter to select, Esc to cancel
+  - Populates both name and description fields when sink selected
+  - Context-sensitive help hint: "Tip: Press Enter on Node Name to select from available sinks"
+- Updated App state to store full sink data (`active_sink_list`, `profile_sink_list`)
+- Modified background worker to fetch both active and profile sinks via `SinksData` message
+- All changes maintain Phase 2 performance optimizations (no allocations in hot paths)
+- Ran `cargo test` (all passed), `cargo clippy --all-targets` (clean)
+
+Files modified:
+- `src/tui/screens/help.rs`: Added `Clear` widget import and usage
+- `src/tui/screens/sinks.rs`: Added spacing, sink selector modal with smart truncation, context help
+- `src/tui/screens/settings.rs`: Colored boolean toggles (green/red)
+- `src/tui/screens/dashboard.rs`: Fixed render order using `Margin`
+- `src/tui/mod.rs`: Styled [unsaved] indicator, updated background worker for full sink data
+- `src/tui/app.rs`: Added `active_sink_list`, `profile_sink_list`, `SinksData` variant
+- `src/tui/input.rs`: Added SelectSink mode handling and Enter-to-select on name field
+
+Next steps:
+- Phase 3 remaining items: accessibility/theme toggle, additional tests if needed
+- Consider moving `TEMP_TUI_REFACTOR.md` content to permanent docs when Phase 3 is complete
+
 -- End of TEMP_TUI_REFACTOR.md

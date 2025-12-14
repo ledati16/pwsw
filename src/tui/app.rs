@@ -81,7 +81,12 @@ impl Screen {
 /// Application state
 /// Messages sent from background worker to UI
 pub enum AppUpdate {
-    ActiveSinks(Vec<String>),
+    /// Full sink data including active and profile sinks
+    SinksData {
+        active: Vec<crate::pipewire::ActiveSink>,
+        profiles: Vec<crate::pipewire::ProfileSink>,
+        names: Vec<String>, // For backwards compat
+    },
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
@@ -165,6 +170,10 @@ pub struct App {
     pub windows: Vec<crate::ipc::WindowInfo>,
     /// Cached active sinks snapshot (updated by background worker)
     pub active_sinks: Vec<String>,
+    /// Cached full active sinks with descriptions
+    pub active_sink_list: Vec<crate::pipewire::ActiveSink>,
+    /// Cached profile sinks for sink selector
+    pub profile_sink_list: Vec<crate::pipewire::ProfileSink>,
     /// Pending daemon action to execute (set by input handler, executed by main loop)
     pub pending_daemon_action: Option<DaemonAction>,
     /// Whether the UI needs to be redrawn
@@ -211,6 +220,8 @@ impl App {
             window_count: 0,
             windows: Vec::new(),
             active_sinks: Vec::new(),
+            active_sink_list: Vec::new(),
+            profile_sink_list: Vec::new(),
             pending_daemon_action: None,
             bg_cmd_tx: None,
             bg_update_rx: None,
