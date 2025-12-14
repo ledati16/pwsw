@@ -20,7 +20,7 @@ Phase 1 — Safety & Responsiveness (completed)
 - Implemented dirty-driven redraw and time-based spinner so UI only redraws on state changes or animation frames.
 - Minimal, surgical changes kept behavior stable and tests passing.
 
-Phase 2 — Regex & Render Optimizations (in progress)
+Phase 2 — Regex & Render Optimizations (completed)
 - Done:
   - Cached compiled `Regex` objects in `RuleEditor` (`compiled_app_id`, `compiled_title` and `*_for` markers). (see `src/tui/screens/rules.rs`)
   - Moved expensive preview matching off the render path into background worker / debouncer; introduced `execute_preview` which supports optional compiled regex caches and runs matching inside `spawn_blocking` with a timeout. (see `src/tui/preview.rs`)
