@@ -899,6 +899,17 @@ fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         app.set_status(format!("Mouse event: {:?}", mouse));
     }
 
+    // Optional file logging: enable by setting PWSW_TUI_LOG_MOUSE=1
+    if std::env::var("PWSW_TUI_LOG_MOUSE").is_ok() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use std::io::Write;
+        let path = std::env::var("PWSW_TUI_MOUSE_LOG_PATH").unwrap_or_else(|_| "/tmp/pwsw-mouse.log".to_string());
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+            let _ = writeln!(f, "{}\tSCREEN={:?}\t{:?}\tcol={}\trow={}", ts, app.current_screen, mouse.kind, mouse.column, mouse.row);
+        }
+    }
+
     match mouse.kind {
         MouseEventKind::Down(button) => {
             // Only handle left-button presses for click-to-cursor mapping
