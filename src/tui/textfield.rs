@@ -14,9 +14,9 @@ pub fn compute_display_window(
     value: &str,
     cursor: usize,
     max_value_len: usize,
-) -> (String, usize, bool) {
+) -> (String, usize, bool, usize) {
     if max_value_len == 0 {
-        return (String::new(), 0, false);
+        return (String::new(), 0, false, 0);
     }
 
     let chars: Vec<char> = value.chars().collect();
@@ -24,7 +24,7 @@ pub fn compute_display_window(
     let cursor = cursor.min(len);
 
     if len <= max_value_len {
-        return (chars.into_iter().collect(), cursor, false);
+        return (chars.into_iter().collect(), cursor, false, 0);
     }
 
     let half = max_value_len / 2;
@@ -56,7 +56,7 @@ pub fn compute_display_window(
         cursor - start
     };
     let truncated_left = start > 0;
-    (display_chars, cursor_rel, truncated_left)
+    (display_chars, cursor_rel, truncated_left, start)
 }
 
 /// Render text field (cursor-aware, clipping, ellipsis)
@@ -94,7 +94,7 @@ pub fn render_text_field(
 
     // Use compute_display_window helper to compute displayed substring and cursor relative index
     let cursor = cursor_pos.unwrap_or_else(|| value.chars().count());
-    let (display_substr, cursor_rel, truncated_left) =
+    let (display_substr, cursor_rel, truncated_left, _start) =
         compute_display_window(value, cursor, max_value_len);
 
     let mut spans = vec![label_span];

@@ -25,6 +25,7 @@ use tokio::sync::mpsc::unbounded_channel;
 mod app;
 mod daemon_control;
 mod editor_helpers;
+mod editor_state;
 mod input;
 mod preview;
 mod screens;
@@ -403,14 +404,14 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         AppUpdate::PreviewPending { app_pattern, title_pattern } => {
                             // Only mark pending if it matches current editor content
-                            if app.rules_screen.editor.app_id_pattern == app_pattern && app.rules_screen.editor.title_pattern == title_pattern.clone().unwrap_or_default() {
+                            if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
                                 // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
                             }
                         }
                         AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
                             // Only apply preview if patterns match current editor content (avoid race)
-                            if app.rules_screen.editor.app_id_pattern == app_pattern && app.rules_screen.editor.title_pattern == title_pattern.clone().unwrap_or_default() {
+                            if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
                                 // Store preview in app.preview as a typed struct
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
                             }
