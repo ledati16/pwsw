@@ -12,9 +12,6 @@ use crate::config::{Rule, SinkConfig};
 use crate::tui::widgets::centered_rect;
 use regex::Regex;
 
-
-
-
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RulesMode {
@@ -175,7 +172,15 @@ pub fn render_rules(
 ) {
     match screen_state.mode {
         RulesMode::List => render_list(frame, area, rules, sinks, screen_state),
-        RulesMode::AddEdit => render_editor(frame, area, sinks, screen_state, windows, preview, spinner_idx),
+        RulesMode::AddEdit => render_editor(
+            frame,
+            area,
+            sinks,
+            screen_state,
+            windows,
+            preview,
+            spinner_idx,
+        ),
         RulesMode::Delete => render_delete_confirmation(frame, area, rules, screen_state),
         RulesMode::SelectSink => render_sink_selector(frame, area, sinks, screen_state),
     }
@@ -203,14 +208,19 @@ fn render_list(
                 .unwrap_or(&rule.sink_ref);
 
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
 
             // Build spans for the title line without allocating a single large String
             let mut title_spans = Vec::with_capacity(4);
-            title_spans.push(Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::Cyan)));
+            title_spans.push(Span::styled(
+                if is_selected { "> " } else { "  " },
+                Style::default().fg(Color::Cyan),
+            ));
             title_spans.push(Span::raw(format!("{}. app_id: ", i + 1)));
             title_spans.push(Span::styled(rule.app_id_pattern.clone(), style));
             if let Some(ref title_pat) = rule.title_pattern {
@@ -248,7 +258,15 @@ fn render_list(
 }
 
 /// Render the add/edit modal
-fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_state: &RulesScreen, windows: &[crate::ipc::WindowInfo], preview: Option<&crate::tui::app::PreviewResult>, spinner_idx: usize) {
+fn render_editor(
+    frame: &mut Frame,
+    area: Rect,
+    sinks: &[SinkConfig],
+    screen_state: &RulesScreen,
+    windows: &[crate::ipc::WindowInfo],
+    preview: Option<&crate::tui::app::PreviewResult>,
+    spinner_idx: usize,
+) {
     let title = if screen_state.editing_index.is_some() {
         "Edit Rule"
     } else {
@@ -304,13 +322,17 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
         // Try to find the sink and show its description
         sinks
             .iter()
-            .find(|s| s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref)
+            .find(|s| {
+                s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref
+            })
             .map(|s| format!("{} ({})", s.desc, s.name))
             .unwrap_or_else(|| screen_state.editor.sink_ref.clone())
     };
 
     let sink_style = if screen_state.editor.focused_field == 2 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
@@ -334,7 +356,9 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
         None => "○ Notify (use global setting)",
     };
     let notify_style = if screen_state.editor.focused_field == 4 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
@@ -342,63 +366,106 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
     frame.render_widget(notify_widget, chunks[4]);
 
     // Live preview panel
-    render_live_preview(frame, chunks[5], screen_state, windows, preview, spinner_idx);
+    render_live_preview(
+        frame,
+        chunks[5],
+        screen_state,
+        windows,
+        preview,
+        spinner_idx,
+    );
 
     // Help text
-    let help = vec![
-        Line::from(vec![
-            Span::raw("Tab/Shift+Tab: Next/Prev  |  "),
-            Span::raw("Enter: Save/Select Sink  |  "),
-            Span::raw("Space: Toggle  |  "),
-            Span::raw("Esc: Cancel"),
-        ]),
-    ];
+    let help = vec![Line::from(vec![
+        Span::raw("Tab/Shift+Tab: Next/Prev  |  "),
+        Span::raw("Enter: Save/Select Sink  |  "),
+        Span::raw("Space: Toggle  |  "),
+        Span::raw("Esc: Cancel"),
+    ])];
     let help_widget = Paragraph::new(help).style(Style::default().fg(Color::Gray));
     frame.render_widget(help_widget, chunks[6]);
 }
 
 /// Render live regex preview showing matching windows
-fn render_live_preview(frame: &mut Frame, area: Rect, screen_state: &RulesScreen, windows: &[crate::ipc::WindowInfo], preview: Option<&crate::tui::app::PreviewResult>, spinner_idx: usize) {
+fn render_live_preview(
+    frame: &mut Frame,
+    area: Rect,
+    screen_state: &RulesScreen,
+    windows: &[crate::ipc::WindowInfo],
+    preview: Option<&crate::tui::app::PreviewResult>,
+    spinner_idx: usize,
+) {
     // If background worker supplied a preview and it matches current editor patterns, render it
-    let mut preview_lines = vec![
-        Line::from(vec![
-            Span::styled("Live Preview: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
-    ];
+    let mut preview_lines = vec![Line::from(vec![Span::styled(
+        "Live Preview: ",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )])];
 
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
-        if res.app_pattern == screen_state.editor.app_id_pattern && res.title_pattern.as_ref().map_or("".to_string(), |s| s.clone()) == screen_state.editor.title_pattern {
+        if res.app_pattern == screen_state.editor.app_id_pattern
+            && res
+                .title_pattern
+                .as_ref()
+                .map_or("".to_string(), |s| s.clone())
+                == screen_state.editor.title_pattern
+        {
             // If background worker marked this preview as pending, show spinner (computing). Otherwise
             // fall through to normal display (No matches / timed out / results).
             if res.pending && res.matches.is_empty() && !res.timed_out {
                 // Show spinner instead of static "Computing..."
-                let spinner_frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+                let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                 // Use app-level spinner index (passed via rules screen state in App) — render frame from spinner_idx
                 // to animate across UI ticks.
-                preview_lines.push(Line::from(vec![Span::styled(format!("  {} Computing...", spinner_frames[spinner_idx % spinner_frames.len()]), Style::default().fg(Color::Yellow))]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    format!(
+                        "  {} Computing...",
+                        spinner_frames[spinner_idx % spinner_frames.len()]
+                    ),
+                    Style::default().fg(Color::Yellow),
+                )]));
 
-                let preview_widget = Paragraph::new(preview_lines)
-                    .block(Block::default().borders(Borders::ALL).title("Matching Windows"));
+                let preview_widget = Paragraph::new(preview_lines).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title("Matching Windows"),
+                );
                 frame.render_widget(preview_widget, area);
                 return;
             }
 
             if res.timed_out {
-                preview_lines.push(Line::from(vec![Span::styled("  Preview timed out or invalid regex", Style::default().fg(Color::Red))]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    "  Preview timed out or invalid regex",
+                    Style::default().fg(Color::Red),
+                )]));
             } else if res.matches.is_empty() {
-                preview_lines.push(Line::from(vec![Span::styled("  No matching windows", Style::default().fg(Color::Yellow))]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    "  No matching windows",
+                    Style::default().fg(Color::Yellow),
+                )]));
             } else {
                 for m in res.matches.iter().take(5) {
-                    preview_lines.push(Line::from(vec![Span::styled("  ✓ ", Style::default().fg(Color::Green)), Span::raw(m)]));
+                    preview_lines.push(Line::from(vec![
+                        Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+                        Span::raw(m),
+                    ]));
                 }
                 if res.matches.len() > 5 {
-                    preview_lines.push(Line::from(vec![Span::styled(format!("  ... and {} more", res.matches.len() - 5), Style::default().fg(Color::Gray))]));
+                    preview_lines.push(Line::from(vec![Span::styled(
+                        format!("  ... and {} more", res.matches.len() - 5),
+                        Style::default().fg(Color::Gray),
+                    )]));
                 }
             }
 
-            let preview_widget = Paragraph::new(preview_lines)
-                .block(Block::default().borders(Borders::ALL).title("Matching Windows"));
+            let preview_widget = Paragraph::new(preview_lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Matching Windows"),
+            );
             frame.render_widget(preview_widget, area);
             return;
         }
@@ -409,7 +476,9 @@ fn render_live_preview(frame: &mut Frame, area: Rect, screen_state: &RulesScreen
     // Attempt to use cached compiled regex references, or compile temporary ones for this render.
     let app_id_regex: Option<Regex> = if screen_state.editor.app_id_pattern.is_empty() {
         None
-    } else if screen_state.editor.compiled_app_id_for.as_ref() == Some(&screen_state.editor.app_id_pattern) {
+    } else if screen_state.editor.compiled_app_id_for.as_ref()
+        == Some(&screen_state.editor.app_id_pattern)
+    {
         screen_state.editor.compiled_app_id.clone()
     } else {
         Regex::new(&screen_state.editor.app_id_pattern).ok()
@@ -417,7 +486,9 @@ fn render_live_preview(frame: &mut Frame, area: Rect, screen_state: &RulesScreen
 
     let title_regex: Option<Regex> = if screen_state.editor.title_pattern.is_empty() {
         None
-    } else if screen_state.editor.compiled_title_for.as_ref() == Some(&screen_state.editor.title_pattern) {
+    } else if screen_state.editor.compiled_title_for.as_ref()
+        == Some(&screen_state.editor.title_pattern)
+    {
         screen_state.editor.compiled_title.clone()
     } else {
         Regex::new(&screen_state.editor.title_pattern).ok()
@@ -439,33 +510,59 @@ fn render_live_preview(frame: &mut Frame, area: Rect, screen_state: &RulesScreen
                 if app_id_match && title_match {
                     match_count += 1;
                     if shown < 5 {
-                        preview_lines.push(Line::from(vec![Span::styled("  ✓ ", Style::default().fg(Color::Green)), Span::raw(format!("{} | {}", window.app_id, window.title))]));
+                        preview_lines.push(Line::from(vec![
+                            Span::styled("  ✓ ", Style::default().fg(Color::Green)),
+                            Span::raw(format!("{} | {}", window.app_id, window.title)),
+                        ]));
                         shown += 1;
                     }
                 }
             }
 
             if match_count == 0 {
-                preview_lines.push(Line::from(vec![Span::styled("  No matching windows", Style::default().fg(Color::Yellow))]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    "  No matching windows",
+                    Style::default().fg(Color::Yellow),
+                )]));
             } else if match_count > 5 {
-                preview_lines.push(Line::from(vec![Span::styled(format!("  ... and {} more", match_count - 5), Style::default().fg(Color::Gray))]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    format!("  ... and {} more", match_count - 5),
+                    Style::default().fg(Color::Gray),
+                )]));
             }
         } else {
-            preview_lines.push(Line::from(vec![Span::styled("  (daemon not running)", Style::default().fg(Color::Gray))]));
+            preview_lines.push(Line::from(vec![Span::styled(
+                "  (daemon not running)",
+                Style::default().fg(Color::Gray),
+            )]));
         }
     } else if !screen_state.editor.app_id_pattern.is_empty() {
-        preview_lines.push(Line::from(vec![Span::styled("  Invalid regex pattern", Style::default().fg(Color::Red))]));
+        preview_lines.push(Line::from(vec![Span::styled(
+            "  Invalid regex pattern",
+            Style::default().fg(Color::Red),
+        )]));
     } else {
-        preview_lines.push(Line::from(vec![Span::styled("  Enter app_id pattern to see preview", Style::default().fg(Color::Gray))]));
+        preview_lines.push(Line::from(vec![Span::styled(
+            "  Enter app_id pattern to see preview",
+            Style::default().fg(Color::Gray),
+        )]));
     }
 
-    let preview_widget = Paragraph::new(preview_lines)
-        .block(Block::default().borders(Borders::ALL).title("Matching Windows"));
+    let preview_widget = Paragraph::new(preview_lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Matching Windows"),
+    );
     frame.render_widget(preview_widget, area);
 }
 
 /// Render sink selector dropdown
-fn render_sink_selector(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_state: &RulesScreen) {
+fn render_sink_selector(
+    frame: &mut Frame,
+    area: Rect,
+    sinks: &[SinkConfig],
+    screen_state: &RulesScreen,
+) {
     let popup_area = centered_rect(60, 50, area);
 
     let items: Vec<ListItem> = sinks
@@ -474,7 +571,9 @@ fn render_sink_selector(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], scr
         .map(|(i, sink)| {
             let is_selected = i == screen_state.editor.sink_dropdown_index;
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -538,9 +637,7 @@ fn render_delete_confirmation(
             Span::raw("App ID: "),
             Span::styled(&rule.app_id_pattern, Style::default().fg(Color::White)),
         ]),
-        Line::from(vec![
-            Span::raw(&title_info),
-        ]),
+        Line::from(vec![Span::raw(&title_info)]),
         Line::from(vec![
             Span::raw("Sink: "),
             Span::styled(&rule.sink_ref, Style::default().fg(Color::Yellow)),
@@ -560,4 +657,3 @@ fn render_delete_confirmation(
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);
 }
-

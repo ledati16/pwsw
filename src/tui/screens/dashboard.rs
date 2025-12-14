@@ -46,10 +46,10 @@ pub fn render_dashboard(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // Daemon status + controls
-            Constraint::Length(5),  // Current sink
-            Constraint::Length(5),  // Active windows
-            Constraint::Min(0),     // Quick actions (future)
+            Constraint::Length(7), // Daemon status + controls
+            Constraint::Length(5), // Current sink
+            Constraint::Length(5), // Active windows
+            Constraint::Min(0),    // Quick actions (future)
         ])
         .split(area);
 
@@ -64,7 +64,12 @@ pub fn render_dashboard(
 }
 
 /// Render daemon status widget with control buttons
-fn render_daemon_status(frame: &mut Frame, area: Rect, screen_state: &DashboardScreen, daemon_running: bool) {
+fn render_daemon_status(
+    frame: &mut Frame,
+    area: Rect,
+    screen_state: &DashboardScreen,
+    daemon_running: bool,
+) {
     let (status_text, status_color) = if daemon_running {
         ("Running", Color::Green)
     } else {
@@ -83,7 +88,12 @@ fn render_daemon_status(frame: &mut Frame, area: Rect, screen_state: &DashboardS
         Line::from(""),
         Line::from(vec![
             Span::styled("Status: ", Style::default().fg(Color::Cyan)),
-            Span::styled(status_text, Style::default().fg(status_color).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status_text,
+                Style::default()
+                    .fg(status_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     ];
 
@@ -98,7 +108,9 @@ fn render_daemon_status(frame: &mut Frame, area: Rect, screen_state: &DashboardS
         .map(|(i, action)| {
             let is_selected = i == screen_state.selected_action;
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -115,7 +127,9 @@ fn render_daemon_status(frame: &mut Frame, area: Rect, screen_state: &DashboardS
     frame.render_widget(controls_list, chunks[1]);
 
     // Outer block
-    let block = Block::default().borders(Borders::ALL).title("PWSW Daemon ([↑/↓] select, [Enter] execute)");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("PWSW Daemon ([↑/↓] select, [Enter] execute)");
     frame.render_widget(block, area);
 }
 
@@ -126,7 +140,9 @@ fn render_current_sink(frame: &mut Frame, area: Rect, config: &Config) {
     let sink_desc = current_sink_name
         .as_ref()
         .and_then(|name| {
-            config.sinks.iter()
+            config
+                .sinks
+                .iter()
                 .find(|s| &s.name == name)
                 .map(|s| s.desc.as_str())
         })
@@ -136,12 +152,21 @@ fn render_current_sink(frame: &mut Frame, area: Rect, config: &Config) {
         Line::from(""),
         Line::from(vec![
             Span::styled("Active Sink: ", Style::default().fg(Color::Cyan)),
-            Span::styled(sink_desc, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                sink_desc,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
     ];
 
     let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Current Audio Output"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Current Audio Output"),
+        )
         .alignment(Alignment::Left);
 
     frame.render_widget(paragraph, area);
@@ -155,13 +180,19 @@ fn render_active_windows(frame: &mut Frame, area: Rect, window_count: usize) {
             Span::styled("Tracked Windows: ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 format!("{window_count}"),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
 
     let paragraph = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL).title("Window Tracking"))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Window Tracking"),
+        )
         .alignment(Alignment::Left);
 
     frame.render_widget(paragraph, area);

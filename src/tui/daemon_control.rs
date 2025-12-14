@@ -60,8 +60,8 @@ impl DaemonManager {
             }
             DaemonManager::Direct => {
                 // Spawn daemon process in background
-                let pwsw_path = std::env::current_exe()
-                    .context("Failed to get current executable path")?;
+                let pwsw_path =
+                    std::env::current_exe().context("Failed to get current executable path")?;
 
                 Command::new(&pwsw_path)
                     .arg("daemon")

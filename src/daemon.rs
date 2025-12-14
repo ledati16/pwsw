@@ -201,7 +201,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 // Handle IPC request - clone what we need for the task
                 let tracked_with_sinks = state.get_tracked_windows_with_sinks();
                 let all_windows = state.get_all_windows();
-                
+
                 let ctx = IpcContext {
                     version: crate::version_string(),
                     uptime_secs: start_time.elapsed().as_secs(),

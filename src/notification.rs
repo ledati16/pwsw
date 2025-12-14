@@ -88,7 +88,11 @@ mod tests {
 
     #[test]
     fn test_get_sink_icon_custom_override() {
-        let sink = make_test_sink("Test Speakers", "test.sink", Some("custom-icon".to_string()));
+        let sink = make_test_sink(
+            "Test Speakers",
+            "test.sink",
+            Some("custom-icon".to_string()),
+        );
         assert_eq!(get_sink_icon(&sink), "custom-icon");
     }
 

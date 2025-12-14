@@ -242,7 +242,8 @@ impl State {
             info!("Rule matched: '{}' → {}", app_id, sink_desc);
 
             // Only update opened_at for new windows, preserve original time for existing
-            #[allow(clippy::if_not_else)] // More readable: new window (track) is main path, update is edge case
+            #[allow(clippy::if_not_else)]
+            // More readable: new window (track) is main path, update is edge case
             if !was_tracked {
                 self.track_window(
                     id,

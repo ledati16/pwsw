@@ -10,7 +10,11 @@ use ratatui::{
 
 /// Helper: compute displayed substring and cursor relative index for text field clipping.
 /// Returns (display_string, cursor_relative_index, truncated_left).
-pub fn compute_display_window(value: &str, cursor: usize, max_value_len: usize) -> (String, usize, bool) {
+pub fn compute_display_window(
+    value: &str,
+    cursor: usize,
+    max_value_len: usize,
+) -> (String, usize, bool) {
     if max_value_len == 0 {
         return (String::new(), 0, false);
     }
@@ -44,16 +48,34 @@ pub fn compute_display_window(value: &str, cursor: usize, max_value_len: usize) 
 
     let display_chars: String = chars.iter().skip(start).take(take).collect();
     let displayed_len = display_chars.chars().count();
-    let cursor_rel = if cursor <= start { 0 } else if cursor >= start + displayed_len { displayed_len } else { cursor - start };
+    let cursor_rel = if cursor <= start {
+        0
+    } else if cursor >= start + displayed_len {
+        displayed_len
+    } else {
+        cursor - start
+    };
     let truncated_left = start > 0;
     (display_chars, cursor_rel, truncated_left)
 }
 
 /// Render text field (cursor-aware, clipping, ellipsis)
-pub fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool, cursor_pos: Option<usize>) {
+pub fn render_text_field(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+    cursor_pos: Option<usize>,
+) {
     // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
-    let label_span = ratatui::text::Span::styled(format!("{} ", label), Style::default().fg(Color::Gray));
-    let value_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::White) };
+    let label_span =
+        ratatui::text::Span::styled(format!("{} ", label), Style::default().fg(Color::Gray));
+    let value_style = if focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::White)
+    };
 
     // Compute available width for value (area.width is u16)
     let area_width = area.width as usize;
@@ -63,12 +85,17 @@ pub fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str
 
     // Reserve one char for cursor when focused
     if focused && max_value_len > 0 {
-        if max_value_len > 1 { max_value_len -= 1 } else { max_value_len = 0 }
+        if max_value_len > 1 {
+            max_value_len -= 1
+        } else {
+            max_value_len = 0
+        }
     }
 
     // Use compute_display_window helper to compute displayed substring and cursor relative index
     let cursor = cursor_pos.unwrap_or_else(|| value.chars().count());
-    let (display_substr, cursor_rel, truncated_left) = compute_display_window(value, cursor, max_value_len);
+    let (display_substr, cursor_rel, truncated_left) =
+        compute_display_window(value, cursor, max_value_len);
 
     let mut spans = vec![label_span];
 
@@ -82,7 +109,12 @@ pub fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str
 
     if focused {
         let cur_char = display_substr.chars().nth(cursor_rel).unwrap_or(' ');
-        spans.push(ratatui::text::Span::styled(cur_char.to_string(), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)));
+        spans.push(ratatui::text::Span::styled(
+            cur_char.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     // right part

@@ -643,14 +643,20 @@ mod tests {
     fn test_metadata_get_name_object_format() {
         let objects: Vec<PwObject> = serde_json::from_str(METADATA_OBJECT_FORMAT_JSON).unwrap();
         let metadata = &objects[0].metadata.as_ref().unwrap()[0];
-        assert_eq!(metadata.get_name(), Some("alsa_output.test.stereo".to_string()));
+        assert_eq!(
+            metadata.get_name(),
+            Some("alsa_output.test.stereo".to_string())
+        );
     }
 
     #[test]
     fn test_metadata_get_name_string_format() {
         let objects: Vec<PwObject> = serde_json::from_str(METADATA_STRING_FORMAT_JSON).unwrap();
         let metadata = &objects[0].metadata.as_ref().unwrap()[0];
-        assert_eq!(metadata.get_name(), Some("alsa_output.test.stereo".to_string()));
+        assert_eq!(
+            metadata.get_name(),
+            Some("alsa_output.test.stereo".to_string())
+        );
     }
 
     #[test]
@@ -668,7 +674,10 @@ mod tests {
         let objects: Vec<PwObject> = serde_json::from_str(MINIMAL_SINK_JSON).unwrap();
         let props = objects[0].get_props();
         assert!(props.is_some());
-        assert_eq!(props.unwrap().node_name.as_deref(), Some("alsa_output.test.stereo"));
+        assert_eq!(
+            props.unwrap().node_name.as_deref(),
+            Some("alsa_output.test.stereo")
+        );
     }
 
     #[test]
@@ -809,6 +818,9 @@ mod tests {
 
         assert_eq!(profile_sinks.len(), 1);
         // Should predict: alsa_output.pci-0000_00_1f.3.analog-stereo
-        assert_eq!(profile_sinks[0].predicted_name, "alsa_output.pci-0000_00_1f.3.analog-stereo");
+        assert_eq!(
+            profile_sinks[0].predicted_name,
+            "alsa_output.pci-0000_00_1f.3.analog-stereo"
+        );
     }
 }

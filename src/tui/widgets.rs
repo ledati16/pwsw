@@ -1,8 +1,6 @@
 //! Shared TUI widget helpers
 
-use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
-};
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 /// Helper to create centered rect for modals
 ///

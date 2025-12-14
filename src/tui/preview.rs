@@ -78,7 +78,11 @@ pub async fn execute_preview(
             let app_re_ref: &regex::Regex = app_re.as_ref();
 
             // If title pattern provided, prefer compiled_title if present, else compile on the fly
-            let title_re = title_re_opt.cloned().or_else(|| patterns_title.as_deref().and_then(|tp| regex::Regex::new(tp).ok()));
+            let title_re = title_re_opt.cloned().or_else(|| {
+                patterns_title
+                    .as_deref()
+                    .and_then(|tp| regex::Regex::new(tp).ok())
+            });
 
             // perform matching
             let mut out = Vec::new();
@@ -95,7 +99,12 @@ pub async fn execute_preview(
         }
 
         // Fallback: no compiled app regex provided - call existing helper which compiles from strings
-        match_windows(&patterns_app, patterns_title.as_deref(), &windows, max_results)
+        match_windows(
+            &patterns_app,
+            patterns_title.as_deref(),
+            &windows,
+            max_results,
+        )
     };
 
     match run_blocking_with_timeout(blocking_closure, timeout).await {
@@ -105,7 +114,6 @@ pub async fn execute_preview(
     }
 }
 
-
 // Debouncer & test harness
 #[cfg(test)]
 mod tests {
@@ -113,13 +121,20 @@ mod tests {
     use crate::ipc::WindowInfo;
     use crate::tui::app::AppUpdate;
     use std::time::Duration;
-    use tokio::sync::mpsc::unbounded_channel;
     use tokio::sync::mpsc as bounded;
+    use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::Instant;
 
     /// Run a simple debouncer that consumes preview requests from `preview_rx`, debounces them by `debounce_ms`,
     /// executes `execute_preview` and sends `AppUpdate::PreviewPending` and `AppUpdate::PreviewMatches` on `bg_tx`.
-    async fn run_debouncer(mut preview_rx: bounded::Receiver<(String, Option<String>)>, bg_tx: tokio::sync::mpsc::UnboundedSender<AppUpdate>, windows: Vec<WindowInfo>, debounce_ms: Duration, timeout: Duration, poll_interval: Duration) {
+    async fn run_debouncer(
+        mut preview_rx: bounded::Receiver<(String, Option<String>)>,
+        bg_tx: tokio::sync::mpsc::UnboundedSender<AppUpdate>,
+        windows: Vec<WindowInfo>,
+        debounce_ms: Duration,
+        timeout: Duration,
+        poll_interval: Duration,
+    ) {
         use tokio::time::sleep;
 
         let mut last_preview_req: Option<(String, Option<String>, Instant)> = None;
@@ -134,12 +149,29 @@ mod tests {
                     last_preview_req = None;
 
                     // send pending
-                    let _ = bg_tx.send(AppUpdate::PreviewPending { app_pattern: app_pat.clone(), title_pattern: title_pat.clone() });
+                    let _ = bg_tx.send(AppUpdate::PreviewPending {
+                        app_pattern: app_pat.clone(),
+                        title_pattern: title_pat.clone(),
+                    });
 
                     // execute preview
-                    let (matches_out, timed_out) = execute_preview(app_pat.clone(), title_pat.clone(), windows.clone(), 100, timeout, None, None).await;
+                    let (matches_out, timed_out) = execute_preview(
+                        app_pat.clone(),
+                        title_pat.clone(),
+                        windows.clone(),
+                        100,
+                        timeout,
+                        None,
+                        None,
+                    )
+                    .await;
 
-                    let _ = bg_tx.send(AppUpdate::PreviewMatches { app_pattern: app_pat.clone(), title_pattern: title_pat.clone(), matches: matches_out.into_iter().take(10).collect(), timed_out });
+                    let _ = bg_tx.send(AppUpdate::PreviewMatches {
+                        app_pattern: app_pat.clone(),
+                        title_pattern: title_pat.clone(),
+                        matches: matches_out.into_iter().take(10).collect(),
+                        timed_out,
+                    });
                 }
             }
 
@@ -150,14 +182,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_debouncer_collapses_rapid_requests() {
-        let windows = vec![
-            WindowInfo { app_id: "firefox".into(), title: "Firefox Browser".into(), matched_on: None, tracked: None },
-        ];
+        let windows = vec![WindowInfo {
+            app_id: "firefox".into(),
+            title: "Firefox Browser".into(),
+            matched_on: None,
+            tracked: None,
+        }];
 
         let (preview_tx, preview_rx) = bounded::channel::<(String, Option<String>)>(8);
         let (bg_tx, mut bg_rx) = unbounded_channel::<AppUpdate>();
 
-        let debouncer = tokio::spawn(run_debouncer(preview_rx, bg_tx, windows.clone(), Duration::from_millis(150), Duration::from_millis(200), Duration::from_millis(10)));
+        let debouncer = tokio::spawn(run_debouncer(
+            preview_rx,
+            bg_tx,
+            windows.clone(),
+            Duration::from_millis(150),
+            Duration::from_millis(200),
+            Duration::from_millis(10),
+        ));
 
         // Send a burst of preview requests rapidly
         let _ = preview_tx.try_send(("f".to_string(), None));
@@ -202,18 +244,30 @@ mod tests {
         // create a window list that will cause the blocking matching to sleep (simulate long work)
         // execute_preview runs match_windows which doesn't sleep; instead, we test timeout by passing a very small timeout.
 
-        let windows = vec![WindowInfo { app_id: "a".into(), title: "b".into(), matched_on: None, tracked: None }];
+        let windows = vec![WindowInfo {
+            app_id: "a".into(),
+            title: "b".into(),
+            matched_on: None,
+            tracked: None,
+        }];
         let (preview_tx, preview_rx) = bounded::channel::<(String, Option<String>)>(8);
         let (bg_tx, mut bg_rx) = unbounded_channel::<AppUpdate>();
 
-        let debouncer = tokio::spawn(run_debouncer(preview_rx, bg_tx, windows.clone(), Duration::from_millis(10), Duration::from_millis(1), Duration::from_millis(5)));
+        let debouncer = tokio::spawn(run_debouncer(
+            preview_rx,
+            bg_tx,
+            windows.clone(),
+            Duration::from_millis(10),
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+        ));
 
         let _ = preview_tx.try_send(("a".to_string(), None));
         tokio::time::sleep(Duration::from_millis(20)).await;
         tokio::task::yield_now().await;
 
         // Expect a PreviewMatches with timed_out == true (because timeout very small)
-            let mut saw = false;
+        let mut saw = false;
         while let Ok(msg) = bg_rx.try_recv() {
             if let AppUpdate::PreviewMatches { .. } = msg {
                 saw = true;
@@ -246,11 +300,30 @@ mod tests {
     #[tokio::test]
     async fn test_execute_preview_basic() {
         let windows = vec![
-            WindowInfo { app_id: "firefox".into(), title: "Firefox Browser".into(), matched_on: None, tracked: None },
-            WindowInfo { app_id: "mpv".into(), title: "mpv video".into(), matched_on: None, tracked: None },
+            WindowInfo {
+                app_id: "firefox".into(),
+                title: "Firefox Browser".into(),
+                matched_on: None,
+                tracked: None,
+            },
+            WindowInfo {
+                app_id: "mpv".into(),
+                title: "mpv video".into(),
+                matched_on: None,
+                tracked: None,
+            },
         ];
 
-        let (matches, timed_out) = execute_preview("firefox".into(), None, windows, 10, Duration::from_millis(200), None, None).await;
+        let (matches, timed_out) = execute_preview(
+            "firefox".into(),
+            None,
+            windows,
+            10,
+            Duration::from_millis(200),
+            None,
+            None,
+        )
+        .await;
         assert!(!timed_out);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0], "firefox | Firefox Browser");
@@ -259,7 +332,16 @@ mod tests {
     #[tokio::test]
     async fn test_execute_preview_invalid_regex() {
         let windows: Vec<WindowInfo> = Vec::new();
-        let (matches, timed_out) = execute_preview("(".into(), None, windows, 10, Duration::from_millis(200), None, None).await;
+        let (matches, timed_out) = execute_preview(
+            "(".into(),
+            None,
+            windows,
+            10,
+            Duration::from_millis(200),
+            None,
+            None,
+        )
+        .await;
         assert!(timed_out);
         assert!(matches.is_empty());
     }

@@ -5,8 +5,8 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent,
 use std::time::Duration;
 
 use super::app::{App, DaemonAction, Screen};
-use super::screens::sinks::SinksMode;
 use super::screens::rules::RulesMode;
+use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
 
@@ -187,13 +187,13 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 2 => DaemonAction::Restart,
                 _ => return,
             };
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
-                        app.set_status("Daemon action requested".to_string());
-                    } else {
-                        // Fallback: queue as pending (old behaviour)
-                        app.pending_daemon_action = Some(action);
-                    }
+            if let Some(tx) = &app.bg_cmd_tx {
+                let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
+                app.set_status("Daemon action requested".to_string());
+            } else {
+                // Fallback: queue as pending (old behaviour)
+                app.pending_daemon_action = Some(action);
+            }
         }
         _ => {}
     }
@@ -217,7 +217,8 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 // Apply the selected log level
                 let log_levels = ["error", "warn", "info", "debug", "trace"];
-                app.config.settings.log_level = log_levels[app.settings_screen.log_level_index].to_string();
+                app.config.settings.log_level =
+                    log_levels[app.settings_screen.log_level_index].to_string();
                 app.settings_screen.editing_log_level = false;
                 app.mark_dirty();
             }
@@ -304,7 +305,9 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         }
 
                         // Adjust selection
-                        if app.sinks_screen.selected >= app.config.sinks.len() && !app.config.sinks.is_empty() {
+                        if app.sinks_screen.selected >= app.config.sinks.len()
+                            && !app.config.sinks.is_empty()
+                        {
                             app.sinks_screen.selected = app.config.sinks.len() - 1;
                         }
 
@@ -360,87 +363,87 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        KeyCode::Left => {
-            match app.sinks_screen.editor.focused_field {
-                0 => app.sinks_screen.editor.cursor_name = app.sinks_screen.editor.cursor_name.saturating_sub(1),
-                1 => app.sinks_screen.editor.cursor_desc = app.sinks_screen.editor.cursor_desc.saturating_sub(1),
-                2 => app.sinks_screen.editor.cursor_icon = app.sinks_screen.editor.cursor_icon.saturating_sub(1),
-                _ => {}
+        KeyCode::Left => match app.sinks_screen.editor.focused_field {
+            0 => {
+                app.sinks_screen.editor.cursor_name =
+                    app.sinks_screen.editor.cursor_name.saturating_sub(1)
             }
-        }
-        KeyCode::Right => {
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    let len = app.sinks_screen.editor.name.chars().count();
-                    app.sinks_screen.editor.cursor_name = usize::min(len, app.sinks_screen.editor.cursor_name + 1);
-                }
-                1 => {
-                    let len = app.sinks_screen.editor.desc.chars().count();
-                    app.sinks_screen.editor.cursor_desc = usize::min(len, app.sinks_screen.editor.cursor_desc + 1);
-                }
-                2 => {
-                    let len = app.sinks_screen.editor.icon.chars().count();
-                    app.sinks_screen.editor.cursor_icon = usize::min(len, app.sinks_screen.editor.cursor_icon + 1);
-                }
-                _ => {}
+            1 => {
+                app.sinks_screen.editor.cursor_desc =
+                    app.sinks_screen.editor.cursor_desc.saturating_sub(1)
             }
-        }
-        KeyCode::Home => {
-            match app.sinks_screen.editor.focused_field {
-                0 => app.sinks_screen.editor.cursor_name = 0,
-                1 => app.sinks_screen.editor.cursor_desc = 0,
-                2 => app.sinks_screen.editor.cursor_icon = 0,
-                _ => {}
+            2 => {
+                app.sinks_screen.editor.cursor_icon =
+                    app.sinks_screen.editor.cursor_icon.saturating_sub(1)
             }
-        }
-        KeyCode::End => {
-            match app.sinks_screen.editor.focused_field {
-                0 => app.sinks_screen.editor.cursor_name = app.sinks_screen.editor.name.chars().count(),
-                1 => app.sinks_screen.editor.cursor_desc = app.sinks_screen.editor.desc.chars().count(),
-                2 => app.sinks_screen.editor.cursor_icon = app.sinks_screen.editor.icon.chars().count(),
-                _ => {}
+            _ => {}
+        },
+        KeyCode::Right => match app.sinks_screen.editor.focused_field {
+            0 => {
+                let len = app.sinks_screen.editor.name.chars().count();
+                app.sinks_screen.editor.cursor_name =
+                    usize::min(len, app.sinks_screen.editor.cursor_name + 1);
             }
-        }
-        KeyCode::Backspace => {
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    let cur = app.sinks_screen.editor.cursor_name;
-                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.name, cur);
-                    app.sinks_screen.editor.cursor_name = new_cur;
-                }
-                1 => {
-                    let cur = app.sinks_screen.editor.cursor_desc;
-                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.desc, cur);
-                    app.sinks_screen.editor.cursor_desc = new_cur;
-                }
-                2 => {
-                    let cur = app.sinks_screen.editor.cursor_icon;
-                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.icon, cur);
-                    app.sinks_screen.editor.cursor_icon = new_cur;
-                }
-                _ => {}
+            1 => {
+                let len = app.sinks_screen.editor.desc.chars().count();
+                app.sinks_screen.editor.cursor_desc =
+                    usize::min(len, app.sinks_screen.editor.cursor_desc + 1);
             }
-        }
-        KeyCode::Delete => {
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    let cur = app.sinks_screen.editor.cursor_name;
-                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.name, cur);
-                    app.sinks_screen.editor.cursor_name = new_cur;
-                }
-                1 => {
-                    let cur = app.sinks_screen.editor.cursor_desc;
-                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.desc, cur);
-                    app.sinks_screen.editor.cursor_desc = new_cur;
-                }
-                2 => {
-                    let cur = app.sinks_screen.editor.cursor_icon;
-                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.icon, cur);
-                    app.sinks_screen.editor.cursor_icon = new_cur;
-                }
-                _ => {}
+            2 => {
+                let len = app.sinks_screen.editor.icon.chars().count();
+                app.sinks_screen.editor.cursor_icon =
+                    usize::min(len, app.sinks_screen.editor.cursor_icon + 1);
             }
-        }
+            _ => {}
+        },
+        KeyCode::Home => match app.sinks_screen.editor.focused_field {
+            0 => app.sinks_screen.editor.cursor_name = 0,
+            1 => app.sinks_screen.editor.cursor_desc = 0,
+            2 => app.sinks_screen.editor.cursor_icon = 0,
+            _ => {}
+        },
+        KeyCode::End => match app.sinks_screen.editor.focused_field {
+            0 => app.sinks_screen.editor.cursor_name = app.sinks_screen.editor.name.chars().count(),
+            1 => app.sinks_screen.editor.cursor_desc = app.sinks_screen.editor.desc.chars().count(),
+            2 => app.sinks_screen.editor.cursor_icon = app.sinks_screen.editor.icon.chars().count(),
+            _ => {}
+        },
+        KeyCode::Backspace => match app.sinks_screen.editor.focused_field {
+            0 => {
+                let cur = app.sinks_screen.editor.cursor_name;
+                let new_cur = remove_char_before(&mut app.sinks_screen.editor.name, cur);
+                app.sinks_screen.editor.cursor_name = new_cur;
+            }
+            1 => {
+                let cur = app.sinks_screen.editor.cursor_desc;
+                let new_cur = remove_char_before(&mut app.sinks_screen.editor.desc, cur);
+                app.sinks_screen.editor.cursor_desc = new_cur;
+            }
+            2 => {
+                let cur = app.sinks_screen.editor.cursor_icon;
+                let new_cur = remove_char_before(&mut app.sinks_screen.editor.icon, cur);
+                app.sinks_screen.editor.cursor_icon = new_cur;
+            }
+            _ => {}
+        },
+        KeyCode::Delete => match app.sinks_screen.editor.focused_field {
+            0 => {
+                let cur = app.sinks_screen.editor.cursor_name;
+                let new_cur = remove_char_at(&mut app.sinks_screen.editor.name, cur);
+                app.sinks_screen.editor.cursor_name = new_cur;
+            }
+            1 => {
+                let cur = app.sinks_screen.editor.cursor_desc;
+                let new_cur = remove_char_at(&mut app.sinks_screen.editor.desc, cur);
+                app.sinks_screen.editor.cursor_desc = new_cur;
+            }
+            2 => {
+                let cur = app.sinks_screen.editor.cursor_icon;
+                let new_cur = remove_char_at(&mut app.sinks_screen.editor.icon, cur);
+                app.sinks_screen.editor.cursor_icon = new_cur;
+            }
+            _ => {}
+        },
         KeyCode::Enter => {
             // Save the sink
             if app.sinks_screen.editor.name.is_empty() || app.sinks_screen.editor.desc.is_empty() {
@@ -514,53 +517,51 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
         RulesMode::AddEdit => {
             handle_rule_editor_input(app, key);
         }
-        RulesMode::Delete => {
-            match key.code {
-                KeyCode::Enter => {
-                    let idx = app.rules_screen.selected;
-                    if idx < app.config.rules.len() {
-                        app.config.rules.remove(idx);
+        RulesMode::Delete => match key.code {
+            KeyCode::Enter => {
+                let idx = app.rules_screen.selected;
+                if idx < app.config.rules.len() {
+                    app.config.rules.remove(idx);
 
-                        if app.rules_screen.selected >= app.config.rules.len() && !app.config.rules.is_empty() {
-                            app.rules_screen.selected = app.config.rules.len() - 1;
-                        }
+                    if app.rules_screen.selected >= app.config.rules.len()
+                        && !app.config.rules.is_empty()
+                    {
+                        app.rules_screen.selected = app.config.rules.len() - 1;
+                    }
 
-                        app.mark_dirty();
-                        app.set_status("Rule deleted".to_string());
-                    }
-                    app.rules_screen.cancel();
+                    app.mark_dirty();
+                    app.set_status("Rule deleted".to_string());
                 }
-                KeyCode::Esc => {
-                    app.rules_screen.cancel();
-                }
-                _ => {}
+                app.rules_screen.cancel();
             }
-        }
-        RulesMode::SelectSink => {
-            match key.code {
-                KeyCode::Up => {
-                    if app.rules_screen.editor.sink_dropdown_index > 0 {
-                        app.rules_screen.editor.sink_dropdown_index -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if app.rules_screen.editor.sink_dropdown_index < app.config.sinks.len() - 1 {
-                        app.rules_screen.editor.sink_dropdown_index += 1;
-                    }
-                }
-                KeyCode::Enter => {
-                    let idx = app.rules_screen.editor.sink_dropdown_index;
-                    if idx < app.config.sinks.len() {
-                        app.rules_screen.editor.sink_ref = app.config.sinks[idx].desc.clone();
-                    }
-                    app.rules_screen.mode = RulesMode::AddEdit;
-                }
-                KeyCode::Esc => {
-                    app.rules_screen.mode = RulesMode::AddEdit;
-                }
-                _ => {}
+            KeyCode::Esc => {
+                app.rules_screen.cancel();
             }
-        }
+            _ => {}
+        },
+        RulesMode::SelectSink => match key.code {
+            KeyCode::Up => {
+                if app.rules_screen.editor.sink_dropdown_index > 0 {
+                    app.rules_screen.editor.sink_dropdown_index -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if app.rules_screen.editor.sink_dropdown_index < app.config.sinks.len() - 1 {
+                    app.rules_screen.editor.sink_dropdown_index += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let idx = app.rules_screen.editor.sink_dropdown_index;
+                if idx < app.config.sinks.len() {
+                    app.rules_screen.editor.sink_ref = app.config.sinks[idx].desc.clone();
+                }
+                app.rules_screen.mode = RulesMode::AddEdit;
+            }
+            KeyCode::Esc => {
+                app.rules_screen.mode = RulesMode::AddEdit;
+            }
+            _ => {}
+        },
     }
 }
 
@@ -623,7 +624,8 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 0 => {
                     // insert at cursor_app
                     let cur = app.rules_screen.editor.cursor_app;
-                    let new_cur = insert_char_at(&mut app.rules_screen.editor.app_id_pattern, c, cur);
+                    let new_cur =
+                        insert_char_at(&mut app.rules_screen.editor.app_id_pattern, c, cur);
                     app.rules_screen.editor.cursor_app = new_cur;
 
                     // invalidate/compile cache
@@ -635,14 +637,37 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
 
                     // Request live-preview
                     if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: pat.clone(), title_pattern: if app.rules_screen.editor.title_pattern.is_empty() { None } else { Some(app.rules_screen.editor.title_pattern.clone()) }, compiled_app, compiled_title });
+                        let compiled_app = app
+                            .rules_screen
+                            .editor
+                            .compiled_app_id
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() {
+                            None
+                        } else {
+                            app.rules_screen
+                                .editor
+                                .compiled_title
+                                .as_ref()
+                                .map(|r| std::sync::Arc::new(r.clone()))
+                        };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                            app_pattern: pat.clone(),
+                            title_pattern: if app.rules_screen.editor.title_pattern.is_empty() {
+                                None
+                            } else {
+                                Some(app.rules_screen.editor.title_pattern.clone())
+                            },
+                            compiled_app,
+                            compiled_title,
+                        });
                     }
                 }
                 1 => {
                     let cur = app.rules_screen.editor.cursor_title;
-                    let new_cur = insert_char_at(&mut app.rules_screen.editor.title_pattern, c, cur);
+                    let new_cur =
+                        insert_char_at(&mut app.rules_screen.editor.title_pattern, c, cur);
                     app.rules_screen.editor.cursor_title = new_cur;
 
                     let pat = app.rules_screen.editor.title_pattern.clone();
@@ -652,9 +677,31 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     }
 
                     if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app.rules_screen.editor.app_id_pattern.clone(), title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) }, compiled_app, compiled_title });
+                        let compiled_app = app
+                            .rules_screen
+                            .editor
+                            .compiled_app_id
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if pat.is_empty() {
+                            None
+                        } else {
+                            app.rules_screen
+                                .editor
+                                .compiled_title
+                                .as_ref()
+                                .map(|r| std::sync::Arc::new(r.clone()))
+                        };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                            app_pattern: app.rules_screen.editor.app_id_pattern.clone(),
+                            title_pattern: if pat.is_empty() {
+                                None
+                            } else {
+                                Some(pat.clone())
+                            },
+                            compiled_app,
+                            compiled_title,
+                        });
                     }
                 }
                 2 => {
@@ -677,131 +724,225 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        KeyCode::Left => {
-            match app.rules_screen.editor.focused_field {
-                0 => app.rules_screen.editor.cursor_app = app.rules_screen.editor.cursor_app.saturating_sub(1),
-                1 => app.rules_screen.editor.cursor_title = app.rules_screen.editor.cursor_title.saturating_sub(1),
-                3 => app.rules_screen.editor.cursor_desc = app.rules_screen.editor.cursor_desc.saturating_sub(1),
-                _ => {}
+        KeyCode::Left => match app.rules_screen.editor.focused_field {
+            0 => {
+                app.rules_screen.editor.cursor_app =
+                    app.rules_screen.editor.cursor_app.saturating_sub(1)
             }
-        }
-        KeyCode::Right => {
-            match app.rules_screen.editor.focused_field {
-                0 => {
-                    let len = app.rules_screen.editor.app_id_pattern.chars().count();
-                    app.rules_screen.editor.cursor_app = usize::min(len, app.rules_screen.editor.cursor_app + 1);
+            1 => {
+                app.rules_screen.editor.cursor_title =
+                    app.rules_screen.editor.cursor_title.saturating_sub(1)
+            }
+            3 => {
+                app.rules_screen.editor.cursor_desc =
+                    app.rules_screen.editor.cursor_desc.saturating_sub(1)
+            }
+            _ => {}
+        },
+        KeyCode::Right => match app.rules_screen.editor.focused_field {
+            0 => {
+                let len = app.rules_screen.editor.app_id_pattern.chars().count();
+                app.rules_screen.editor.cursor_app =
+                    usize::min(len, app.rules_screen.editor.cursor_app + 1);
+            }
+            1 => {
+                let len = app.rules_screen.editor.title_pattern.chars().count();
+                app.rules_screen.editor.cursor_title =
+                    usize::min(len, app.rules_screen.editor.cursor_title + 1);
+            }
+            3 => {
+                let len = app.rules_screen.editor.desc.chars().count();
+                app.rules_screen.editor.cursor_desc =
+                    usize::min(len, app.rules_screen.editor.cursor_desc + 1);
+            }
+            _ => {}
+        },
+        KeyCode::Home => match app.rules_screen.editor.focused_field {
+            0 => app.rules_screen.editor.cursor_app = 0,
+            1 => app.rules_screen.editor.cursor_title = 0,
+            3 => app.rules_screen.editor.cursor_desc = 0,
+            _ => {}
+        },
+        KeyCode::End => match app.rules_screen.editor.focused_field {
+            0 => {
+                app.rules_screen.editor.cursor_app =
+                    app.rules_screen.editor.app_id_pattern.chars().count()
+            }
+            1 => {
+                app.rules_screen.editor.cursor_title =
+                    app.rules_screen.editor.title_pattern.chars().count()
+            }
+            3 => app.rules_screen.editor.cursor_desc = app.rules_screen.editor.desc.chars().count(),
+            _ => {}
+        },
+        KeyCode::Backspace => match app.rules_screen.editor.focused_field {
+            0 => {
+                let cur = app.rules_screen.editor.cursor_app;
+                let new_cur = remove_char_before(&mut app.rules_screen.editor.app_id_pattern, cur);
+                app.rules_screen.editor.cursor_app = new_cur;
+                let pat = app.rules_screen.editor.app_id_pattern.clone();
+                if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
+                    app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
+                    app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
                 }
-                1 => {
-                    let len = app.rules_screen.editor.title_pattern.chars().count();
-                    app.rules_screen.editor.cursor_title = usize::min(len, app.rules_screen.editor.cursor_title + 1);
-                }
-                3 => {
-                    let len = app.rules_screen.editor.desc.chars().count();
-                    app.rules_screen.editor.cursor_desc = usize::min(len, app.rules_screen.editor.cursor_desc + 1);
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Home => {
-            match app.rules_screen.editor.focused_field {
-                0 => app.rules_screen.editor.cursor_app = 0,
-                1 => app.rules_screen.editor.cursor_title = 0,
-                3 => app.rules_screen.editor.cursor_desc = 0,
-                _ => {}
-            }
-        }
-        KeyCode::End => {
-            match app.rules_screen.editor.focused_field {
-                0 => app.rules_screen.editor.cursor_app = app.rules_screen.editor.app_id_pattern.chars().count(),
-                1 => app.rules_screen.editor.cursor_title = app.rules_screen.editor.title_pattern.chars().count(),
-                3 => app.rules_screen.editor.cursor_desc = app.rules_screen.editor.desc.chars().count(),
-                _ => {}
-            }
-        }
-        KeyCode::Backspace => {
-            match app.rules_screen.editor.focused_field {
-                0 => {
-                    let cur = app.rules_screen.editor.cursor_app;
-                    let new_cur = remove_char_before(&mut app.rules_screen.editor.app_id_pattern, cur);
-                    app.rules_screen.editor.cursor_app = new_cur;
-                    let pat = app.rules_screen.editor.app_id_pattern.clone();
-                    if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
-                    }
 
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: pat.clone(), title_pattern: if app.rules_screen.editor.title_pattern.is_empty() { None } else { Some(app.rules_screen.editor.title_pattern.clone()) }, compiled_app, compiled_title });
-                    }
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app
+                        .rules_screen
+                        .editor
+                        .compiled_app_id
+                        .as_ref()
+                        .map(|r| std::sync::Arc::new(r.clone()));
+                    let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen
+                            .editor
+                            .compiled_title
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()))
+                    };
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: pat.clone(),
+                        title_pattern: if app.rules_screen.editor.title_pattern.is_empty() {
+                            None
+                        } else {
+                            Some(app.rules_screen.editor.title_pattern.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
                 }
-                1 => {
-                    let cur = app.rules_screen.editor.cursor_title;
-                    let new_cur = remove_char_before(&mut app.rules_screen.editor.title_pattern, cur);
-                    app.rules_screen.editor.cursor_title = new_cur;
-                    let pat = app.rules_screen.editor.title_pattern.clone();
-                    if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_title_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
-                    }
-
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app.rules_screen.editor.app_id_pattern.clone(), title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) }, compiled_app, compiled_title });
-                    }
-                }
-                3 => {
-                    let cur = app.rules_screen.editor.cursor_desc;
-                    let new_cur = remove_char_before(&mut app.rules_screen.editor.desc, cur);
-                    app.rules_screen.editor.cursor_desc = new_cur;
-                }
-                _ => {}
             }
-        }
-        KeyCode::Delete => {
-            match app.rules_screen.editor.focused_field {
-                0 => {
-                    let cur = app.rules_screen.editor.cursor_app;
-                    let new_cur = remove_char_at(&mut app.rules_screen.editor.app_id_pattern, cur);
-                    app.rules_screen.editor.cursor_app = new_cur;
-                    let pat = app.rules_screen.editor.app_id_pattern.clone();
-                    if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
-                    }
+            1 => {
+                let cur = app.rules_screen.editor.cursor_title;
+                let new_cur = remove_char_before(&mut app.rules_screen.editor.title_pattern, cur);
+                app.rules_screen.editor.cursor_title = new_cur;
+                let pat = app.rules_screen.editor.title_pattern.clone();
+                if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
+                    app.rules_screen.editor.compiled_title_for = Some(pat.clone());
+                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                }
 
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: pat.clone(), title_pattern: if app.rules_screen.editor.title_pattern.is_empty() { None } else { Some(app.rules_screen.editor.title_pattern.clone()) }, compiled_app, compiled_title });
-                    }
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app
+                        .rules_screen
+                        .editor
+                        .compiled_app_id
+                        .as_ref()
+                        .map(|r| std::sync::Arc::new(r.clone()));
+                    let compiled_title = if pat.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen
+                            .editor
+                            .compiled_title
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()))
+                    };
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: app.rules_screen.editor.app_id_pattern.clone(),
+                        title_pattern: if pat.is_empty() {
+                            None
+                        } else {
+                            Some(pat.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
                 }
-                1 => {
-                    let cur = app.rules_screen.editor.cursor_title;
-                    let new_cur = remove_char_at(&mut app.rules_screen.editor.title_pattern, cur);
-                    app.rules_screen.editor.cursor_title = new_cur;
-                    let pat = app.rules_screen.editor.title_pattern.clone();
-                    if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
-                        app.rules_screen.editor.compiled_title_for = Some(pat.clone());
-                        app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
-                    }
-
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
-                        let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app.rules_screen.editor.app_id_pattern.clone(), title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) }, compiled_app, compiled_title });
-                    }
-                }
-                3 => {
-                    let cur = app.rules_screen.editor.cursor_desc;
-                    let new_cur = remove_char_at(&mut app.rules_screen.editor.desc, cur);
-                    app.rules_screen.editor.cursor_desc = new_cur;
-                }
-                _ => {}
             }
-        }
+            3 => {
+                let cur = app.rules_screen.editor.cursor_desc;
+                let new_cur = remove_char_before(&mut app.rules_screen.editor.desc, cur);
+                app.rules_screen.editor.cursor_desc = new_cur;
+            }
+            _ => {}
+        },
+        KeyCode::Delete => match app.rules_screen.editor.focused_field {
+            0 => {
+                let cur = app.rules_screen.editor.cursor_app;
+                let new_cur = remove_char_at(&mut app.rules_screen.editor.app_id_pattern, cur);
+                app.rules_screen.editor.cursor_app = new_cur;
+                let pat = app.rules_screen.editor.app_id_pattern.clone();
+                if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
+                    app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
+                    app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
+                }
+
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app
+                        .rules_screen
+                        .editor
+                        .compiled_app_id
+                        .as_ref()
+                        .map(|r| std::sync::Arc::new(r.clone()));
+                    let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen
+                            .editor
+                            .compiled_title
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()))
+                    };
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: pat.clone(),
+                        title_pattern: if app.rules_screen.editor.title_pattern.is_empty() {
+                            None
+                        } else {
+                            Some(app.rules_screen.editor.title_pattern.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
+                }
+            }
+            1 => {
+                let cur = app.rules_screen.editor.cursor_title;
+                let new_cur = remove_char_at(&mut app.rules_screen.editor.title_pattern, cur);
+                app.rules_screen.editor.cursor_title = new_cur;
+                let pat = app.rules_screen.editor.title_pattern.clone();
+                if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
+                    app.rules_screen.editor.compiled_title_for = Some(pat.clone());
+                    app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                }
+
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app
+                        .rules_screen
+                        .editor
+                        .compiled_app_id
+                        .as_ref()
+                        .map(|r| std::sync::Arc::new(r.clone()));
+                    let compiled_title = if pat.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen
+                            .editor
+                            .compiled_title
+                            .as_ref()
+                            .map(|r| std::sync::Arc::new(r.clone()))
+                    };
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: app.rules_screen.editor.app_id_pattern.clone(),
+                        title_pattern: if pat.is_empty() {
+                            None
+                        } else {
+                            Some(pat.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
+                }
+            }
+            3 => {
+                let cur = app.rules_screen.editor.cursor_desc;
+                let new_cur = remove_char_at(&mut app.rules_screen.editor.desc, cur);
+                app.rules_screen.editor.cursor_desc = new_cur;
+            }
+            _ => {}
+        },
         KeyCode::Enter => {
             // If on sink field, open selector
             if app.rules_screen.editor.focused_field == 2 {

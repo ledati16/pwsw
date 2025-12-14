@@ -27,16 +27,29 @@ pub fn render_help(frame: &mut Frame, area: Rect, current_screen: Screen) {
     // Add global shortcuts at the end
     let mut all_lines = help_lines;
     all_lines.push(Line::from(""));
-    all_lines.push(Line::from(vec![
-        Span::styled("Global Shortcuts", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-    ]));
+    all_lines.push(Line::from(vec![Span::styled(
+        "Global Shortcuts",
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
+    )]));
     all_lines.extend(get_global_shortcuts());
     all_lines.push(Line::from(""));
     all_lines.push(Line::from(vec![
         Span::styled("Press ", Style::default().fg(Color::Gray)),
-        Span::styled("?", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "?",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" or ", Style::default().fg(Color::Gray)),
-        Span::styled("Esc", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Esc",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(" to close help", Style::default().fg(Color::Gray)),
     ]));
 
@@ -55,9 +68,12 @@ pub fn render_help(frame: &mut Frame, area: Rect, current_screen: Screen) {
 /// Dashboard screen shortcuts
 fn get_dashboard_help() -> Vec<Line<'static>> {
     vec![
-        Line::from(vec![
-            Span::styled("Dashboard Screen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Dashboard Screen",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         help_line("↑/↓", "Navigate daemon control actions"),
         help_line("Enter", "Execute selected action (Start/Stop/Restart)"),
@@ -67,9 +83,12 @@ fn get_dashboard_help() -> Vec<Line<'static>> {
 /// Sinks screen shortcuts
 fn get_sinks_help() -> Vec<Line<'static>> {
     vec![
-        Line::from(vec![
-            Span::styled("Sinks Screen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Sinks Screen",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         help_line("↑/↓", "Navigate sinks"),
         help_line("a", "Add new sink"),
@@ -77,9 +96,10 @@ fn get_sinks_help() -> Vec<Line<'static>> {
         help_line("x", "Delete selected sink"),
         help_line("Space", "Toggle default status"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("In Editor (Add/Edit)", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(vec![Span::styled(
+            "In Editor (Add/Edit)",
+            Style::default().fg(Color::Yellow),
+        )]),
         help_line("Tab", "Next field"),
         help_line("Shift+Tab", "Previous field"),
         help_line("Space", "Toggle default checkbox (on checkbox field)"),
@@ -91,18 +111,22 @@ fn get_sinks_help() -> Vec<Line<'static>> {
 /// Rules screen shortcuts
 fn get_rules_help() -> Vec<Line<'static>> {
     vec![
-        Line::from(vec![
-            Span::styled("Rules Screen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Rules Screen",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         help_line("↑/↓", "Navigate rules"),
         help_line("a", "Add new rule"),
         help_line("e", "Edit selected rule"),
         help_line("x", "Delete selected rule"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("In Editor (Add/Edit)", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(vec![Span::styled(
+            "In Editor (Add/Edit)",
+            Style::default().fg(Color::Yellow),
+        )]),
         help_line("Tab", "Next field"),
         help_line("Shift+Tab", "Previous field"),
         help_line("Space", "Cycle notify option (on notify field)"),
@@ -119,16 +143,20 @@ fn get_rules_help() -> Vec<Line<'static>> {
 /// Settings screen shortcuts
 fn get_settings_help() -> Vec<Line<'static>> {
     vec![
-        Line::from(vec![
-            Span::styled("Settings Screen", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "Settings Screen",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         help_line("↑/↓", "Navigate settings"),
         help_line("Enter/Space", "Toggle setting / Open log level dropdown"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("In Log Level Dropdown", Style::default().fg(Color::Yellow)),
-        ]),
+        Line::from(vec![Span::styled(
+            "In Log Level Dropdown",
+            Style::default().fg(Color::Yellow),
+        )]),
         help_line("↑/↓", "Navigate log levels"),
         help_line("Enter", "Confirm selection"),
         help_line("Esc", "Cancel"),
