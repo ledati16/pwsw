@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::config::SinkConfig;
 
+use crate::tui::textfield::render_text_field;
 use crate::tui::widgets::centered_rect;
 
 /// Sinks screen mode
@@ -237,7 +238,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     frame.render_widget(block, popup_area);
 
     // Name field
-    crate::tui::textfield::render_text_field(
+    render_text_field(
         frame,
         chunks[0],
         "Node Name:",
@@ -247,7 +248,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     );
 
     // Desc field
-    crate::tui::textfield::render_text_field(
+    render_text_field(
         frame,
         chunks[1],
         "Description:",
@@ -257,7 +258,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     );
 
     // Icon field
-    crate::tui::textfield::render_text_field(
+    render_text_field(
         frame,
         chunks[2],
         "Icon (optional):",
