@@ -349,6 +349,14 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
 /// Handle sink editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
+        KeyCode::Up => {
+            // Move focus to previous field in the editor (arrow up behaves like Shift+Tab)
+            app.sinks_screen.editor.prev_field();
+        }
+        KeyCode::Down => {
+            // Move focus to next field in the editor (arrow down behaves like Tab)
+            app.sinks_screen.editor.next_field();
+        }
         KeyCode::Tab => {
             app.sinks_screen.editor.next_field();
         }
@@ -564,6 +572,8 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     // Helper functions to operate on strings by character index
 
     match key.code {
+        KeyCode::Up => app.rules_screen.editor.prev_field(),
+        KeyCode::Down => app.rules_screen.editor.next_field(),
         KeyCode::Tab => app.rules_screen.editor.next_field(),
         KeyCode::BackTab => app.rules_screen.editor.prev_field(),
         KeyCode::Char(c) => {

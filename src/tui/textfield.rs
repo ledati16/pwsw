@@ -72,8 +72,12 @@ pub fn render_text_field(
     // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
     let label_span = ratatui::text::Span::styled(label, Style::default().fg(Color::Gray));
     // We'll add a raw space as a separate span to avoid allocating a new String for label + space.
+    // Emphasize focused field with cyan + bold and a subtle inverted background for clarity.
     let value_style = if focused {
-        Style::default().fg(Color::Cyan)
+        Style::default()
+            .fg(Color::Cyan)
+            .bg(Color::Rgb(20, 20, 40))
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
