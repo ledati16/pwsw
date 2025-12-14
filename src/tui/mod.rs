@@ -189,11 +189,14 @@ pub async fn run() -> Result<()> {
             let pipewire_tx = bg_tx.clone();
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(objects) = crate::pipewire::PipeWire::dump() {
-                    let sinks = crate::pipewire::PipeWire::get_active_sinks(&objects)
-                        .into_iter()
-                        .map(|s| s.name)
-                        .collect::<Vec<_>>();
-                    let _ = pipewire_tx.send(AppUpdate::ActiveSinks(sinks));
+                    let active = crate::pipewire::PipeWire::get_active_sinks(&objects);
+                    let profiles = crate::pipewire::PipeWire::get_profile_sinks(&objects, &active);
+                    let names = active.iter().map(|s| s.name.clone()).collect();
+                    let _ = pipewire_tx.send(AppUpdate::SinksData {
+                        active,
+                        profiles,
+                        names,
+                    });
                 }
             })
             .await;
@@ -434,8 +437,10 @@ async fn run_app<B: ratatui::backend::Backend>(
             } => {
                 if let Some(update) = maybe_update {
                     match update {
-                        AppUpdate::ActiveSinks(sinks) => {
-                            app.active_sinks = sinks;
+                        AppUpdate::SinksData { active, profiles, names } => {
+                            app.active_sink_list = active;
+                            app.profile_sink_list = profiles;
+                            app.active_sinks = names;
                             app.dirty = true;
                         }
                         AppUpdate::DaemonState { running, windows } => {
@@ -506,6 +511,8 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
             &app.config.sinks,
             &app.sinks_screen,
             &app.active_sinks,
+            &app.active_sink_list,
+            &app.profile_sink_list,
         ),
         Screen::Rules => render_rules(
             frame,
@@ -556,23 +563,26 @@ fn render_header(
         .position(|&s| s == current_screen)
         .unwrap_or(0);
 
-    // Build title with unsaved indicator if needed
+    // Build title with optional styled [unsaved] indicator
     let version = crate::version_string();
-    let title = if config_dirty {
-        let mut t = String::with_capacity(5 + 1 + version.len() + 10);
-        t.push_str("PWSW ");
-        t.push_str(&version);
-        t.push_str(" [unsaved]");
-        t
+    let title_line = if config_dirty {
+        Line::from(vec![
+            Span::raw("PWSW "),
+            Span::raw(&version),
+            Span::raw(" "),
+            Span::styled(
+                "[unsaved]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
     } else {
-        let mut t = String::with_capacity(5 + 1 + version.len());
-        t.push_str("PWSW ");
-        t.push_str(&version);
-        t
+        Line::from(vec![Span::raw("PWSW "), Span::raw(&version)])
     };
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .block(Block::default().borders(Borders::ALL).title(title_line))
         .select(selected)
         .style(Style::default().fg(Color::White))
         .highlight_style(

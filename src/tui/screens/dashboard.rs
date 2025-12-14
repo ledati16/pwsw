@@ -1,7 +1,7 @@
 //! Dashboard screen - Overview and quick actions
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
@@ -76,12 +76,23 @@ fn render_daemon_status(
         ("Not Running", Color::Red)
     };
 
+    // Render outer block FIRST
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("PWSW Daemon ([↑/↓]select [Enter]execute)");
+    frame.render_widget(block, area);
+
+    // Get inner area for content (accounting for borders)
+    let inner = area.inner(Margin {
+        vertical: 1,
+        horizontal: 1,
+    });
+
     // Create horizontal layout: [Status | Controls]
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .margin(1)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
+        .split(inner);
 
     // Left: Status
     let status_text_widget = vec![
@@ -125,12 +136,6 @@ fn render_daemon_status(
 
     let controls_list = List::new(items);
     frame.render_widget(controls_list, chunks[1]);
-
-    // Outer block
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("PWSW Daemon ([↑/↓] select, [Enter] execute)");
-    frame.render_widget(block, area);
 }
 
 /// Render current sink widget

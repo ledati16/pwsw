@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::{Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -71,12 +71,10 @@ pub fn render_text_field(
 ) {
     // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
     let label_span = ratatui::text::Span::styled(label, Style::default().fg(Color::Gray));
-    // We'll add a raw space as a separate span to avoid allocating a new String for label + space.
-    // Emphasize focused field with cyan + bold and a subtle inverted background for clarity.
+    // Focused fields use cyan text with bold modifier; border provides visual feedback
     let value_style = if focused {
         Style::default()
             .fg(Color::Cyan)
-            .bg(Color::Rgb(20, 20, 40))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
@@ -84,9 +82,10 @@ pub fn render_text_field(
 
     // Compute available width for value (area.width is u16)
     let area_width = area.width as usize;
-    // Rough estimate of label width in chars
+    // Account for borders (2 chars) and label width
     let label_len = label.len() + 1; // including space
-    let mut max_value_len = area_width.saturating_sub(label_len);
+    let border_width = 2; // left + right border
+    let mut max_value_len = area_width.saturating_sub(label_len + border_width);
 
     // Reserve one char for cursor when focused
     if focused && max_value_len > 0 {
@@ -134,23 +133,14 @@ pub fn render_text_field(
         spans.push(ratatui::text::Span::styled(right, value_style));
     }
 
-    // If focused, render a slim left-side indicator and then the paragraph. This avoids drawing
-    // an inner border that collides visually with the modal's outer border.
-    if focused {
-        // Build a small area on the left: carve out one column and fill with cyan background
-        if area.width > 2 {
-                    use ratatui::layout::Rect as RRect;
-            let ind = RRect { x: area.x, y: area.y, width: 1, height: area.height };
-            let ind_block = Paragraph::new(" ").style(Style::default().bg(Color::Cyan));
-            frame.render_widget(ind_block, ind);
+    // Use border-based focus indicator for consistency across all widgets
+    let border_style = crate::tui::widgets::focus_border_style(focused);
 
-            // Render the paragraph shifted right by 1 column
-            let shifted = RRect { x: area.x + 1, y: area.y, width: area.width - 1, height: area.height };
-            frame.render_widget(Paragraph::new(Line::from(spans)), shifted);
-        } else {
-            frame.render_widget(Paragraph::new(Line::from(spans)), area);
-        }
-    } else {
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    }
+    let block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(border_style);
+
+    let paragraph = Paragraph::new(Line::from(spans));
+    let widget = paragraph.block(block);
+    frame.render_widget(widget, area);
 }

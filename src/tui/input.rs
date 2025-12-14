@@ -343,6 +343,66 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
+        SinksMode::SelectSink => {
+            // Total number of selectable items (active + profile sinks, excluding headers)
+            let total_items = app.active_sink_list.len() + app.profile_sink_list.len();
+
+            match key.code {
+                KeyCode::Up => {
+                    if total_items > 0 && app.sinks_screen.sink_selector_index > 0 {
+                        app.sinks_screen.sink_selector_index -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if total_items > 0 && app.sinks_screen.sink_selector_index < total_items - 1 {
+                        app.sinks_screen.sink_selector_index += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    // Select the chosen sink and populate editor fields
+                    let idx = app.sinks_screen.sink_selector_index;
+
+                    if idx < app.active_sink_list.len() {
+                        // Active sink selected
+                        let sink = &app.active_sink_list[idx];
+                        app.sinks_screen.editor.name.value.clone_from(&sink.name);
+                        app.sinks_screen.editor.name.cursor = sink.name.len();
+                        app.sinks_screen
+                            .editor
+                            .desc
+                            .value
+                            .clone_from(&sink.description);
+                        app.sinks_screen.editor.desc.cursor = sink.description.len();
+                    } else {
+                        // Profile sink selected
+                        let profile_idx = idx - app.active_sink_list.len();
+                        if profile_idx < app.profile_sink_list.len() {
+                            let sink = &app.profile_sink_list[profile_idx];
+                            app.sinks_screen
+                                .editor
+                                .name
+                                .value
+                                .clone_from(&sink.predicted_name);
+                            app.sinks_screen.editor.name.cursor = sink.predicted_name.len();
+                            app.sinks_screen
+                                .editor
+                                .desc
+                                .value
+                                .clone_from(&sink.description);
+                            app.sinks_screen.editor.desc.cursor = sink.description.len();
+                        }
+                    }
+
+                    // Return to editor mode
+                    app.sinks_screen.mode = SinksMode::AddEdit;
+                }
+                KeyCode::Esc => {
+                    // Cancel and return to editor
+                    app.sinks_screen.mode = SinksMode::AddEdit;
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -442,6 +502,14 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         KeyCode::Enter => {
+            // If on name field, open sink selector; otherwise save
+            if app.sinks_screen.editor.focused_field == 0 {
+                // Open sink selector modal
+                app.sinks_screen.mode = SinksMode::SelectSink;
+                app.sinks_screen.sink_selector_index = 0; // Reset to first item
+                return;
+            }
+
             // Save the sink
             if app.sinks_screen.editor.name.value.is_empty()
                 || app.sinks_screen.editor.desc.value.is_empty()
