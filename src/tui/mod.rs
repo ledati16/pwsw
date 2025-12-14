@@ -131,9 +131,9 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen,
 
     // Build title with unsaved indicator if needed
     let title = if config_dirty {
-        format!("PWSW v{} [unsaved]", env!("CARGO_PKG_VERSION"))
+        format!("PWSW {} [unsaved]", crate::version_string())
     } else {
-        format!("PWSW v{}", env!("CARGO_PKG_VERSION"))
+        format!("PWSW {}", crate::version_string())
     };
 
     let tabs = Tabs::new(titles)

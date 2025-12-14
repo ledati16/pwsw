@@ -139,7 +139,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
-    info!("Starting PWSW daemon");
+    info!("Starting PWSW daemon {}", crate::version_string());
     info!(
         "Loaded {} sinks, {} rules",
         config.sinks.len(),
@@ -203,7 +203,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 let all_windows = state.get_all_windows();
                 
                 let ctx = IpcContext {
-                    version: env!("CARGO_PKG_VERSION").to_string(),
+                    version: crate::version_string(),
                     uptime_secs: start_time.elapsed().as_secs(),
                     current_sink_name: state.current_sink_name.clone(),
                     active_window: state.get_most_recent_window()
