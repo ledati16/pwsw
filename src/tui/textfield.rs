@@ -7,6 +7,7 @@ use ratatui::{
     widgets::Paragraph,
     Frame,
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Helper: compute displayed substring and cursor relative index for text field clipping.
 /// Returns (display_string, cursor_relative_index, truncated_left).
@@ -19,12 +20,12 @@ pub fn compute_display_window(
         return (String::new(), 0, false, 0);
     }
 
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
+    let g: Vec<&str> = value.graphemes(true).collect();
+    let len = g.len();
     let cursor = cursor.min(len);
 
     if len <= max_value_len {
-        return (chars.into_iter().collect(), cursor, false, 0);
+        return (g.join(""), cursor, false, 0);
     }
 
     let half = max_value_len / 2;
@@ -46,8 +47,8 @@ pub fn compute_display_window(
         }
     }
 
-    let display_chars: String = chars.iter().skip(start).take(take).collect();
-    let displayed_len = display_chars.chars().count();
+    let display_chars: String = g.iter().skip(start).take(take).copied().collect();
+    let displayed_len = display_chars.graphemes(true).count();
     let cursor_rel = if cursor <= start {
         0
     } else if cursor >= start + displayed_len {
@@ -93,7 +94,7 @@ pub fn render_text_field(
     }
 
     // Use compute_display_window helper to compute displayed substring and cursor relative index
-    let cursor = cursor_pos.unwrap_or_else(|| value.chars().count());
+    let cursor = cursor_pos.unwrap_or_else(|| value.graphemes(true).count());
     let (display_substr, cursor_rel, truncated_left, _start) =
         compute_display_window(value, cursor, max_value_len);
 
@@ -104,13 +105,16 @@ pub fn render_text_field(
     }
 
     // left part
-    let left: String = display_substr.chars().take(cursor_rel).collect();
+    let left: String = display_substr.graphemes(true).take(cursor_rel).collect();
     spans.push(ratatui::text::Span::styled(left, value_style));
 
     if focused {
-        let cur_char = display_substr.chars().nth(cursor_rel).unwrap_or(' ');
+        let cur_grapheme = display_substr
+            .graphemes(true)
+            .nth(cursor_rel)
+            .unwrap_or(" ");
         spans.push(ratatui::text::Span::styled(
-            cur_char.to_string(),
+            cur_grapheme.to_string(),
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -119,8 +123,8 @@ pub fn render_text_field(
 
     // right part
     let right_start = cursor_rel + if focused { 1 } else { 0 };
-    if right_start <= display_substr.chars().count() {
-        let right: String = display_substr.chars().skip(right_start).collect();
+    if right_start <= display_substr.graphemes(true).count() {
+        let right: String = display_substr.graphemes(true).skip(right_start).collect();
         spans.push(ratatui::text::Span::styled(right, value_style));
     }
 

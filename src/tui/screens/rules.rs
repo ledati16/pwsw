@@ -34,8 +34,8 @@ pub struct RuleEditor {
     pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
     pub sink_dropdown_index: usize,
     // Cached compiled regexes to avoid recompiling on every render
-    pub compiled_app_id: Option<Regex>,
-    pub compiled_title: Option<Regex>,
+    pub compiled_app_id: Option<std::sync::Arc<Regex>>,
+    pub compiled_title: Option<std::sync::Arc<Regex>>,
     // Track which pattern strings the compiled regex corresponds to
     pub compiled_app_id_for: Option<String>,
     pub compiled_title_for: Option<String>,
@@ -59,9 +59,9 @@ impl RuleEditor {
     }
 
     pub fn from_rule(rule: &Rule) -> Self {
-        let compiled_app_id = Regex::new(&rule.app_id_pattern).ok();
+        let compiled_app_id = Regex::new(&rule.app_id_pattern).ok().map(std::sync::Arc::new);
         let compiled_title = match &rule.title_pattern {
-            Some(t) if !t.is_empty() => Regex::new(t).ok(),
+            Some(t) if !t.is_empty() => Regex::new(t).ok().map(std::sync::Arc::new),
             _ => None,
         };
 
@@ -91,6 +91,31 @@ impl RuleEditor {
     pub fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
+        }
+    }
+
+    /// Ensure compiled regex caches are up-to-date for current editor patterns
+    pub fn ensure_compiled(&mut self) {
+        // Compile app id pattern if non-empty and store which string it corresponds to
+        if !self.app_id_pattern.value.is_empty() {
+            if self.compiled_app_id_for.as_ref() != Some(&self.app_id_pattern.value) {
+                self.compiled_app_id = Regex::new(&self.app_id_pattern.value).ok().map(std::sync::Arc::new);
+                self.compiled_app_id_for = Some(self.app_id_pattern.value.clone());
+            }
+        } else {
+            self.compiled_app_id = None;
+            self.compiled_app_id_for = None;
+        }
+
+        // Compile title pattern if non-empty
+        if !self.title_pattern.value.is_empty() {
+            if self.compiled_title_for.as_ref() != Some(&self.title_pattern.value) {
+                self.compiled_title = Regex::new(&self.title_pattern.value).ok().map(std::sync::Arc::new);
+                self.compiled_title_for = Some(self.title_pattern.value.clone());
+            }
+        } else {
+            self.compiled_title = None;
+            self.compiled_title_for = None;
         }
     }
 }
@@ -399,12 +424,8 @@ fn render_live_preview(
 
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
-        if res.app_pattern == screen_state.editor.app_id_pattern.value
-            && res
-                .title_pattern
-                .as_ref()
-                .map_or("".to_string(), |s| s.clone())
-                == screen_state.editor.title_pattern.value
+if res.app_pattern == screen_state.editor.app_id_pattern.value
+            && res.title_pattern.as_deref().unwrap_or("") == screen_state.editor.title_pattern.value.as_str()
         {
             // If background worker marked this preview as pending, show spinner (computing). Otherwise
             // fall through to normal display (No matches / timed out / results).
@@ -444,7 +465,7 @@ fn render_live_preview(
                 for m in res.matches.iter().take(5) {
                     preview_lines.push(Line::from(vec![
                         Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                        Span::raw(m),
+                        Span::raw(m.clone()),
                     ]));
                 }
                 if res.matches.len() > 5 {
@@ -468,29 +489,29 @@ fn render_live_preview(
     // Fallback: use local compiled regex matching (fast for small window lists).
     // Ensure compiled regexes correspond to current editor text; compile if needed.
     // Attempt to use cached compiled regex references, or compile temporary ones for this render.
-    let app_id_regex: Option<Regex> = if screen_state.editor.app_id_pattern.value.is_empty() {
+    let app_id_regex: Option<std::sync::Arc<Regex>> = if screen_state.editor.app_id_pattern.value.is_empty() {
         None
     } else if screen_state.editor.compiled_app_id_for.as_ref()
         == Some(&screen_state.editor.app_id_pattern.value)
     {
         screen_state.editor.compiled_app_id.clone()
     } else {
-        Regex::new(&screen_state.editor.app_id_pattern.value).ok()
+        Regex::new(&screen_state.editor.app_id_pattern.value).ok().map(std::sync::Arc::new)
     };
 
-    let title_regex: Option<Regex> = if screen_state.editor.title_pattern.value.is_empty() {
+    let title_regex: Option<std::sync::Arc<Regex>> = if screen_state.editor.title_pattern.value.is_empty() {
         None
     } else if screen_state.editor.compiled_title_for.as_ref()
         == Some(&screen_state.editor.title_pattern.value)
     {
         screen_state.editor.compiled_title.clone()
     } else {
-        Regex::new(&screen_state.editor.title_pattern.value).ok()
+        Regex::new(&screen_state.editor.title_pattern.value).ok().map(std::sync::Arc::new)
     };
 
     // Convert to Option<&Regex> for the matching code below
-    let app_id_regex_ref = app_id_regex.as_ref();
-    let title_regex_ref = title_regex.as_ref();
+    let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(|a| a.as_ref());
+    let title_regex_ref: Option<&Regex> = title_regex.as_ref().map(|a| a.as_ref());
 
     if let Some(app_regex) = app_id_regex_ref {
         if !windows.is_empty() {
@@ -506,7 +527,9 @@ fn render_live_preview(
                     if shown < 5 {
                         preview_lines.push(Line::from(vec![
                             Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                            Span::raw(format!("{} | {}", window.app_id, window.title)),
+                            Span::raw(window.app_id.clone()),
+                            Span::raw(" | "),
+                            Span::raw(window.title.clone()),
                         ]));
                         shown += 1;
                     }

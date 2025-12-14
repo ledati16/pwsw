@@ -5,7 +5,7 @@ mod tests {
     #[test]
     fn cursor_insert_remove_unicode() {
         let mut s = String::from("héllo");
-        let mut cursor = s.chars().count();
+        let mut cursor = s.graphemes(true).count();
         // insert '!' at end
         cursor = insert_char_at(&mut s, '!', cursor);
         assert_eq!(s, "héllo!");

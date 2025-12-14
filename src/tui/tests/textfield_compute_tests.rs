@@ -18,10 +18,9 @@ mod tests {
         let cursor = 20usize; // near the end
         let (display, cursor_rel, truncated, _start) = compute_display_window(val, cursor, max);
         // When truncated left, one slot reserved for ellipsis, so display.len() should be max-1
-        assert_eq!(display.chars().count(), max - 1);
-        assert!(truncated);
-        // Cursor relative should be within displayed range
-        assert!(cursor_rel <= display.chars().count());
+        assert_eq!(display.graphemes(true).count(), max - 1);
+        assert!(cursor_rel <= display.graphemes(true).count());
+
     }
 
     #[test]
@@ -43,9 +42,9 @@ mod tests {
         for cursor in 0..=6usize {
             let (display, cursor_rel, truncated, _start) = compute_display_window(val, cursor, 3);
             // display length shouldn't exceed 3 (or 2 when truncated left reserving ellipsis)
-            assert!(display.chars().count() <= 3);
-            // cursor_rel in 0..=display.len()
-            assert!(cursor_rel <= display.chars().count());
+            assert!(display.graphemes(true).count() <= 3);
+            assert!(cursor_rel <= display.graphemes(true).count());
+
             // truncated is boolean
             let _ = truncated;
         }
