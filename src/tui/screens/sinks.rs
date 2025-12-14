@@ -193,7 +193,14 @@ fn render_list(
                     if is_selected { "> " } else { "  " },
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::styled(screen_state.display_descs.get(i).map(|s| s.as_str()).unwrap_or(sink.desc.as_str()), style),
+                Span::styled(
+                    screen_state
+                        .display_descs
+                        .get(i)
+                        .map(|s| s.as_str())
+                        .unwrap_or(sink.desc.as_str()),
+                    style,
+                ),
                 status,
                 default_marker,
             ]);

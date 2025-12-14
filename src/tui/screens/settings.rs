@@ -87,7 +87,10 @@ impl SettingsScreen {
         };
 
         // Build padded names cache based on longest setting name
-        let names: Vec<String> = SettingItem::all().iter().map(|i| i.name().to_string()).collect();
+        let names: Vec<String> = SettingItem::all()
+            .iter()
+            .map(|i| i.name().to_string())
+            .collect();
         let max_len = names.iter().map(|s| s.len()).max().unwrap_or(0);
         let padded_names = names
             .into_iter()
@@ -202,7 +205,11 @@ fn render_settings_list(
                 Style::default().fg(Color::White)
             };
 
-            let padded_name = screen_state.padded_names.get(i).map(|s| s.as_str()).unwrap_or(item.name());
+            let padded_name = screen_state
+                .padded_names
+                .get(i)
+                .map(|s| s.as_str())
+                .unwrap_or(item.name());
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },

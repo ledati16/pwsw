@@ -169,8 +169,7 @@ pub struct App {
     pub pending_daemon_action: Option<DaemonAction>,
     /// Whether the UI needs to be redrawn
     pub dirty: bool,
- }
-
+}
 
 /// Daemon control action to execute
 #[derive(Debug, Clone, Copy)]

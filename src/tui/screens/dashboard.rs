@@ -179,7 +179,7 @@ fn render_active_windows(frame: &mut Frame, area: Rect, window_count: usize) {
         Line::from(vec![
             Span::styled("Tracked Windows: ", Style::default().fg(Color::Cyan)),
             Span::styled(
-                format!("{window_count}"),
+                window_count.to_string(),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),

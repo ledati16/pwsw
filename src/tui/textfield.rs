@@ -116,7 +116,7 @@ pub fn render_text_field(
             .nth(cursor_rel)
             .unwrap_or(" ");
         spans.push(ratatui::text::Span::styled(
-            cur_grapheme.to_string(),
+            cur_grapheme,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
