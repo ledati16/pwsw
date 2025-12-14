@@ -278,7 +278,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
     frame.render_widget(block, popup_area);
 
     // App ID pattern field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[0],
         "App ID Pattern (regex):",
@@ -288,7 +288,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
     );
 
     // Title pattern field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[1],
         "Title Pattern (optional regex):",
@@ -318,7 +318,7 @@ fn render_editor(frame: &mut Frame, area: Rect, sinks: &[SinkConfig], screen_sta
     frame.render_widget(sink_widget, chunks[2]);
 
     // Description field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[3],
         "Description (optional):",
@@ -561,7 +561,3 @@ fn render_delete_confirmation(
     frame.render_widget(paragraph, popup_area);
 }
 
-/// Render text field
-pub fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool, cursor_pos: Option<usize>) {
-    crate::tui::textfield::render_text_field(frame, area, label, value, focused, cursor_pos)
-}
