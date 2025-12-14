@@ -50,24 +50,14 @@ impl SettingItem {
     /// Get the description for this setting
     pub const fn description(self) -> &'static str {
         match self {
-            SettingItem::DefaultOnStartup => {
-                "Switch to default sink when daemon starts"
-            }
-            SettingItem::SetSmartToggle => {
-                "set-sink toggles back to default if already active"
-            }
-            SettingItem::NotifyManual => {
-                "Show notifications for manual sink switches"
-            }
-            SettingItem::NotifyRules => {
-                "Show notifications for rule-triggered switches"
-            }
+            SettingItem::DefaultOnStartup => "Switch to default sink when daemon starts",
+            SettingItem::SetSmartToggle => "set-sink toggles back to default if already active",
+            SettingItem::NotifyManual => "Show notifications for manual sink switches",
+            SettingItem::NotifyRules => "Show notifications for rule-triggered switches",
             SettingItem::MatchByIndex => {
                 "Prioritize by rule position (true) or most recent window (false)"
             }
-            SettingItem::LogLevel => {
-                "Logging verbosity: error, warn, info, debug, trace"
-            }
+            SettingItem::LogLevel => "Logging verbosity: error, warn, info, debug, trace",
         }
     }
 }
@@ -157,13 +147,18 @@ impl SettingsScreen {
 }
 
 /// Render the settings screen
-pub fn render_settings(frame: &mut Frame, area: Rect, settings: &Settings, screen_state: &SettingsScreen) {
+pub fn render_settings(
+    frame: &mut Frame,
+    area: Rect,
+    settings: &Settings,
+    screen_state: &SettingsScreen,
+) {
     // Split into [settings list | description]
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),    // Settings list
-            Constraint::Length(4),  // Description
+            Constraint::Min(10),   // Settings list
+            Constraint::Length(4), // Description
         ])
         .split(area);
 
@@ -175,7 +170,12 @@ pub fn render_settings(frame: &mut Frame, area: Rect, settings: &Settings, scree
 }
 
 /// Render the settings list
-fn render_settings_list(frame: &mut Frame, area: Rect, settings: &Settings, screen_state: &SettingsScreen) {
+fn render_settings_list(
+    frame: &mut Frame,
+    area: Rect,
+    settings: &Settings,
+    screen_state: &SettingsScreen,
+) {
     let items: Vec<ListItem> = SettingItem::all()
         .iter()
         .enumerate()
@@ -184,7 +184,9 @@ fn render_settings_list(frame: &mut Frame, area: Rect, settings: &Settings, scre
             let is_selected = i == screen_state.selected;
 
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -250,7 +252,9 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
         .map(|(i, level)| {
             let is_selected = i == screen_state.log_level_index;
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -290,7 +294,8 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScre
         )]),
     ];
 
-    let paragraph = Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Description"));
+    let paragraph =
+        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Description"));
 
     frame.render_widget(paragraph, area);
 }

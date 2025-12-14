@@ -4,13 +4,18 @@
 
 use anyhow::Result;
 
-use crate::config::Config;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
+use crate::config::Config;
 use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
 type CompiledRegex = Arc<regex::Regex>;
-type PreviewInMsg = (String, Option<String>, Option<CompiledRegex>, Option<CompiledRegex>);
+type PreviewInMsg = (
+    String,
+    Option<String>,
+    Option<CompiledRegex>,
+    Option<CompiledRegex>,
+);
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,10 +82,16 @@ impl Screen {
 /// Messages sent from background worker to UI
 pub enum AppUpdate {
     ActiveSinks(Vec<String>),
-    DaemonState { running: bool, windows: Vec<crate::ipc::WindowInfo> },
+    DaemonState {
+        running: bool,
+        windows: Vec<crate::ipc::WindowInfo>,
+    },
     ActionResult(String),
     /// Live-preview started (pending)
-    PreviewPending { app_pattern: String, title_pattern: Option<String> },
+    PreviewPending {
+        app_pattern: String,
+        title_pattern: Option<String>,
+    },
     /// Live-preview results for the rules editor
     PreviewMatches {
         app_pattern: String,
@@ -217,7 +228,11 @@ impl App {
             };
 
             // Show immediate feedback
-            self.set_status(format!("{}ing daemon via {}...", action_name, daemon_manager.display_name()));
+            self.set_status(format!(
+                "{}ing daemon via {}...",
+                action_name,
+                daemon_manager.display_name()
+            ));
 
             // Execute the action
             let result = match action {
@@ -228,7 +243,11 @@ impl App {
 
             match result {
                 Ok(msg) => self.set_status(msg),
-                Err(e) => self.set_status(format!("Failed to {} daemon: {:#}", action_name.to_lowercase(), e)),
+                Err(e) => self.set_status(format!(
+                    "Failed to {} daemon: {:#}",
+                    action_name.to_lowercase(),
+                    e
+                )),
             }
         }
     }
@@ -243,7 +262,9 @@ impl App {
 
         // Fetch window list if daemon is running
         if self.daemon_running {
-            if let Ok(crate::ipc::Response::Windows { windows }) = crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
+            if let Ok(crate::ipc::Response::Windows { windows }) =
+                crate::ipc::send_request(crate::ipc::Request::ListWindows).await
+            {
                 self.window_count = windows.len();
                 self.windows = windows;
                 return;

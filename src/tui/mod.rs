@@ -5,9 +5,12 @@
 
 use anyhow::{Context, Result};
 // `Write` import removed — unused in this module
-use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crate::tui::app::{AppUpdate, BgCommand};
 use crossterm::cursor::Show;
+use crossterm::execute;
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -18,16 +21,15 @@ use ratatui::{
 };
 use std::io;
 use tokio::sync::mpsc::unbounded_channel;
-use crate::tui::app::{AppUpdate, BgCommand};
 
 mod app;
 mod daemon_control;
-mod input;
-mod screens;
-mod widgets;
-mod preview;
 mod editor_helpers;
+mod input;
+mod preview;
+mod screens;
 mod textfield;
+mod widgets;
 
 use app::{App, Screen};
 use input::handle_events;
@@ -62,7 +64,6 @@ pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     }
     hasher.finish()
 }
-
 
 /// Run the TUI application
 ///
@@ -119,7 +120,12 @@ pub async fn run() -> Result<()> {
     // can push preview requests quickly without blocking. We'll spawn a forwarder task that
     // collapses rapid preview updates (keeps latest) and forwards them to the bounded `cmd_tx`.
     type CompiledRegex = std::sync::Arc<regex::Regex>;
-    type PreviewInMsg = (String, Option<String>, Option<CompiledRegex>, Option<CompiledRegex>);
+    type PreviewInMsg = (
+        String,
+        Option<String>,
+        Option<CompiledRegex>,
+        Option<CompiledRegex>,
+    );
     let (preview_in_tx, mut preview_in_rx) = unbounded_channel::<PreviewInMsg>();
     app.preview_in_tx = Some(preview_in_tx.clone());
 
@@ -127,10 +133,20 @@ pub async fn run() -> Result<()> {
     let forward_cmd = cmd_tx.clone();
     let _preview_forwarder = tokio::spawn(async move {
         use tokio::time::{sleep, Duration};
-        while let Some((app_pattern, title_pattern, compiled_app, compiled_title)) = preview_in_rx.recv().await {
+        while let Some((app_pattern, title_pattern, compiled_app, compiled_title)) =
+            preview_in_rx.recv().await
+        {
             // Try to flush immediately (a few retries). If unable to send, next recv will overwrite the pending request.
             for _ in 0..3 {
-                if forward_cmd.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app_pattern.clone(), title_pattern: title_pattern.clone(), compiled_app: compiled_app.clone(), compiled_title: compiled_title.clone() }).is_ok() {
+                if forward_cmd
+                    .try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: app_pattern.clone(),
+                        title_pattern: title_pattern.clone(),
+                        compiled_app: compiled_app.clone(),
+                        compiled_title: compiled_title.clone(),
+                    })
+                    .is_ok()
+                {
                     break;
                 }
                 sleep(Duration::from_millis(20)).await;
@@ -138,7 +154,6 @@ pub async fn run() -> Result<()> {
             // If still not sent, loop will continue and the next recv will overwrite the previous request.
         }
     });
-
 
     // Spawn background worker that polls daemon state and PipeWire every interval
     let bg_handle = tokio::spawn(async move {
@@ -150,7 +165,9 @@ pub async fn run() -> Result<()> {
         let debounce_ms = Duration::from_millis(150);
         loop {
             // Poll daemon state in blocking-friendly way
-            let running = crate::tui::daemon_control::DaemonManager::detect().is_running().await;
+            let running = crate::tui::daemon_control::DaemonManager::detect()
+                .is_running()
+                .await;
             let windows = if running {
                 match crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
                     Ok(crate::ipc::Response::Windows { windows }) => windows,
@@ -162,7 +179,10 @@ pub async fn run() -> Result<()> {
 
             // Compute a fingerprint for the current window snapshot so we can re-run previews
             let current_fp = windows_fingerprint(&windows);
-            let _ = bg_tx.send(AppUpdate::DaemonState { running, windows: windows.clone() });
+            let _ = bg_tx.send(AppUpdate::DaemonState {
+                running,
+                windows: windows.clone(),
+            });
 
             // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
             let pipewire_tx = bg_tx.clone();
@@ -174,7 +194,8 @@ pub async fn run() -> Result<()> {
                         .collect::<Vec<_>>();
                     let _ = pipewire_tx.send(AppUpdate::ActiveSinks(sinks));
                 }
-            }).await;
+            })
+            .await;
 
             // Process any incoming commands sent from UI (non-blocking checks)
             while let Ok(cmd) = cmd_rx.try_recv() {
@@ -192,13 +213,25 @@ pub async fn run() -> Result<()> {
                                 let _ = bg_tx.send(AppUpdate::ActionResult(msg));
                             }
                             Err(e) => {
-                                let _ = bg_tx.send(AppUpdate::ActionResult(format!("Failed: {:#}", e)));
+                                let _ =
+                                    bg_tx.send(AppUpdate::ActionResult(format!("Failed: {:#}", e)));
                             }
                         }
                     }
-                        BgCommand::PreviewRequest { app_pattern, title_pattern, compiled_app, compiled_title } => {
+                    BgCommand::PreviewRequest {
+                        app_pattern,
+                        title_pattern,
+                        compiled_app,
+                        compiled_title,
+                    } => {
                         // Update last_preview_req (debounce). We don't spawn matching yet.
-                        last_preview_req = Some(PreviewReq { app_pattern, title_pattern, compiled_app, compiled_title, ts: Instant::now() });
+                        last_preview_req = Some(PreviewReq {
+                            app_pattern,
+                            title_pattern,
+                            compiled_app,
+                            compiled_title,
+                            ts: Instant::now(),
+                        });
                     }
                 }
             }
@@ -213,7 +246,10 @@ pub async fn run() -> Result<()> {
                     let windows_clone = windows.clone();
 
                     // Send pending update so UI can show spinner after a short visual delay
-                    let _ = tx.send(AppUpdate::PreviewPending { app_pattern: req.app_pattern.clone(), title_pattern: req.title_pattern.clone() });
+                    let _ = tx.send(AppUpdate::PreviewPending {
+                        app_pattern: req.app_pattern.clone(),
+                        title_pattern: req.title_pattern.clone(),
+                    });
 
                     // Clone patterns and compiled caches for the closure and for the message
                     let app_pat_send = req.app_pattern.clone();
@@ -222,7 +258,12 @@ pub async fn run() -> Result<()> {
                     let compiled_title_send = req.compiled_title.clone();
 
                     // Record this as the last executed preview (for auto re-run on window changes)
-                    last_executed_preview = Some(PreviewExec { app_pattern: app_pat_send.clone(), title_pattern: title_pat_send.clone(), compiled_app: compiled_app_send.clone(), compiled_title: compiled_title_send.clone() });
+                    last_executed_preview = Some(PreviewExec {
+                        app_pattern: app_pat_send.clone(),
+                        title_pattern: title_pat_send.clone(),
+                        compiled_app: compiled_app_send.clone(),
+                        compiled_title: compiled_title_send.clone(),
+                    });
                     last_windows_fp = Some(current_fp);
 
                     tokio::spawn(async move {
@@ -238,7 +279,8 @@ pub async fn run() -> Result<()> {
                             timeout,
                             compiled_app_send,
                             compiled_title_send,
-                        ).await;
+                        )
+                        .await;
 
                         let _ = tx.send(AppUpdate::PreviewMatches {
                             app_pattern: app_pat_send.clone(),
@@ -262,7 +304,10 @@ pub async fn run() -> Result<()> {
                         let windows_clone = windows.clone();
 
                         // Send pending update so UI can show spinner
-                        let _ = tx.send(AppUpdate::PreviewPending { app_pattern: exec.app_pattern.clone(), title_pattern: exec.title_pattern.clone() });
+                        let _ = tx.send(AppUpdate::PreviewPending {
+                            app_pattern: exec.app_pattern.clone(),
+                            title_pattern: exec.title_pattern.clone(),
+                        });
 
                         let app_pat_send = exec.app_pattern.clone();
                         let title_pat_send = exec.title_pattern.clone();
@@ -281,7 +326,8 @@ pub async fn run() -> Result<()> {
                                 timeout,
                                 compiled_app_send,
                                 compiled_title_send,
-                            ).await;
+                            )
+                            .await;
 
                             let _ = tx.send(AppUpdate::PreviewMatches {
                                 app_pattern: app_pat_send.clone(),
@@ -386,9 +432,9 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // Header with tabs
-            Constraint::Min(0),     // Content area
-            Constraint::Length(1),  // Footer
+            Constraint::Length(3), // Header with tabs
+            Constraint::Min(0),    // Content area
+            Constraint::Length(1), // Footer
         ])
         .split(size);
 
@@ -397,10 +443,34 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
 
     // Render screen content
     match app.current_screen {
-        Screen::Dashboard => render_dashboard(frame, chunks[1], &app.config, &app.dashboard_screen, app.daemon_running, app.window_count),
-        Screen::Sinks => render_sinks(frame, chunks[1], &app.config.sinks, &app.sinks_screen, &app.active_sinks),
-        Screen::Rules => render_rules(frame, chunks[1], &app.config.rules, &app.config.sinks, &app.rules_screen, &app.windows, app.preview.as_ref(), app.spinner_idx),
-        Screen::Settings => render_settings(frame, chunks[1], &app.config.settings, &app.settings_screen),
+        Screen::Dashboard => render_dashboard(
+            frame,
+            chunks[1],
+            &app.config,
+            &app.dashboard_screen,
+            app.daemon_running,
+            app.window_count,
+        ),
+        Screen::Sinks => render_sinks(
+            frame,
+            chunks[1],
+            &app.config.sinks,
+            &app.sinks_screen,
+            &app.active_sinks,
+        ),
+        Screen::Rules => render_rules(
+            frame,
+            chunks[1],
+            &app.config.rules,
+            &app.config.sinks,
+            &app.rules_screen,
+            &app.windows,
+            app.preview.as_ref(),
+            app.spinner_idx,
+        ),
+        Screen::Settings => {
+            render_settings(frame, chunks[1], &app.config.settings, &app.settings_screen)
+        }
     }
 
     // Render footer
@@ -413,7 +483,12 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
 }
 
 /// Render the header with tab navigation
-fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen, config_dirty: bool) {
+fn render_header(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    current_screen: Screen,
+    config_dirty: bool,
+) {
     let titles: Vec<_> = Screen::all()
         .iter()
         .map(|s| format!("[{}]{}", s.key(), s.name()))
@@ -432,11 +507,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen,
     };
 
     let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title),
-        )
+        .block(Block::default().borders(Borders::ALL).title(title))
         .select(selected)
         .style(Style::default().fg(Color::White))
         .highlight_style(
@@ -476,4 +547,3 @@ fn render_footer(frame: &mut ratatui::Frame, area: Rect, status_message: &Option
     let footer = Paragraph::new(text);
     frame.render_widget(footer, area);
 }
-

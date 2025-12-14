@@ -230,8 +230,8 @@ impl Config {
     /// Returns an error if the config cannot be serialized or written to disk.
     pub fn save(&self) -> Result<()> {
         let config_file = self.to_config_file();
-        let toml_str = toml::to_string_pretty(&config_file)
-            .context("Failed to serialize config to TOML")?;
+        let toml_str =
+            toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
 
         let config_path = Self::get_config_path()?;
         fs::write(&config_path, toml_str)
@@ -641,7 +641,10 @@ mod tests {
         );
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("default sinks found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("default sinks found"));
     }
 
     #[test]
@@ -680,10 +683,7 @@ mod tests {
         );
         let result = config.validate();
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("unknown sink"));
+        assert!(result.unwrap_err().to_string().contains("unknown sink"));
     }
 
     #[test]

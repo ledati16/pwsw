@@ -170,7 +170,9 @@ fn render_list(
             };
 
             let style = if is_selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -271,7 +273,9 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         "✗ Default Sink"
     };
     let checkbox_style = if screen_state.editor.focused_field == 3 {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
     };
@@ -290,7 +294,6 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let help_widget = Paragraph::new(help).style(Style::default().fg(Color::Gray));
     frame.render_widget(help_widget, chunks[4]);
 }
-
 
 /// Render delete confirmation modal
 fn render_delete_confirmation(
