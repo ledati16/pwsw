@@ -213,18 +213,32 @@ fn render_list(
     sinks: &[SinkConfig],
     screen_state: &RulesScreen,
 ) {
+    // Build a lookup from sink name/desc -> padded display string once per render to avoid per-row formatting.
+    let max_desc_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
+    let mut sink_display_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for s in sinks.iter() {
+        let display = if s.desc.len() >= max_desc_len {
+            s.desc.clone()
+        } else {
+            let mut st = s.desc.clone();
+            st.push_str(&" ".repeat(max_desc_len - s.desc.len()));
+            st
+        };
+        sink_display_map.insert(s.name.clone(), display.clone());
+        sink_display_map.insert(s.desc.clone(), display);
+    }
+
     let items: Vec<ListItem> = rules
         .iter()
         .enumerate()
         .map(|(i, rule)| {
             let is_selected = i == screen_state.selected;
 
-            // Find sink description (borrowed str)
-            let sink_desc = sinks
-                .iter()
-                .find(|s| s.name == rule.sink_ref || s.desc == rule.sink_ref)
-                .map(|s| s.desc.as_str())
-                .unwrap_or(&rule.sink_ref);
+            // Lookup precomputed padded sink display (fall back to raw sink_ref)
+            let sink_display = sink_display_map
+                .get(&rule.sink_ref)
+                .map(|s| s.as_str())
+                .unwrap_or(rule.sink_ref.as_str());
 
             let style = if is_selected {
                 Style::default()
@@ -240,7 +254,8 @@ fn render_list(
                 if is_selected { "> " } else { "  " },
                 Style::default().fg(Color::Cyan),
             ));
-            title_spans.push(Span::raw(format!("{}. app_id: ", i + 1)));
+            title_spans.push(Span::raw((i + 1).to_string()));
+            title_spans.push(Span::raw(". app_id: "));
             title_spans.push(Span::styled(rule.app_id_pattern.clone(), style));
             if let Some(ref title_pat) = rule.title_pattern {
                 title_spans.push(Span::raw(" + title: "));
@@ -251,7 +266,7 @@ fn render_list(
                 Line::from(title_spans),
                 Line::from(vec![
                     Span::raw("     → "),
-                    Span::styled(sink_desc, Style::default().fg(Color::Yellow)),
+                    Span::styled(sink_display, Style::default().fg(Color::Yellow)),
                 ]),
             ];
 
@@ -335,19 +350,6 @@ fn render_editor(
     );
 
     // Sink selector
-    let sink_display = if screen_state.editor.sink_ref.is_empty() {
-        "<press Enter to select>".to_string()
-    } else {
-        // Try to find the sink and show its description
-        sinks
-            .iter()
-            .find(|s| {
-                s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref
-            })
-            .map(|s| format!("{} ({})", s.desc, s.name))
-            .unwrap_or_else(|| screen_state.editor.sink_ref.clone())
-    };
-
     let sink_style = if screen_state.editor.focused_field == 2 {
         Style::default()
             .fg(Color::Cyan)
@@ -355,8 +357,37 @@ fn render_editor(
     } else {
         Style::default().fg(Color::White)
     };
-    let sink_widget = Paragraph::new(format!("Target Sink: {}", sink_display)).style(sink_style);
-    frame.render_widget(sink_widget, chunks[2]);
+
+    // Render sink selection without allocating a formatted String per-frame.
+    let sink_paragraph = if screen_state.editor.sink_ref.is_empty() {
+        Paragraph::new(Line::from(vec![
+            Span::raw("Target Sink: "),
+            Span::styled("<press Enter to select>", sink_style),
+        ]))
+        .style(sink_style)
+    } else {
+        // Try to find the sink and show its description and name as separate spans
+        if let Some(s) = sinks.iter().find(|s| {
+            s.name == screen_state.editor.sink_ref || s.desc == screen_state.editor.sink_ref
+        }) {
+            Paragraph::new(Line::from(vec![
+                Span::raw("Target Sink: "),
+                Span::styled(s.desc.as_str(), sink_style),
+                Span::raw(" ("),
+                Span::styled(s.name.as_str(), sink_style),
+                Span::raw(")"),
+            ]))
+            .style(sink_style)
+        } else {
+            Paragraph::new(Line::from(vec![
+                Span::raw("Target Sink: "),
+                Span::styled(screen_state.editor.sink_ref.as_str(), sink_style),
+            ]))
+            .style(sink_style)
+        }
+    };
+
+    frame.render_widget(sink_paragraph, chunks[2]);
 
     // Description field
     crate::tui::textfield::render_text_field(
@@ -470,7 +501,7 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                 }
                 if res.matches.len() > 5 {
                     preview_lines.push(Line::from(vec![Span::styled(
-                        format!("  ... and {} more", res.matches.len() - 5),
+                        (res.matches.len() - 5).to_string(),
                         Style::default().fg(Color::Gray),
                     )]));
                 }
@@ -496,7 +527,7 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
     {
         screen_state.editor.compiled_app_id.clone()
     } else {
-        Regex::new(&screen_state.editor.app_id_pattern.value).ok().map(std::sync::Arc::new)
+        None
     };
 
     let title_regex: Option<std::sync::Arc<Regex>> = if screen_state.editor.title_pattern.value.is_empty() {
@@ -506,7 +537,7 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
     {
         screen_state.editor.compiled_title.clone()
     } else {
-        Regex::new(&screen_state.editor.title_pattern.value).ok().map(std::sync::Arc::new)
+        None
     };
 
     // Convert to Option<&Regex> for the matching code below
@@ -542,10 +573,10 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                     Style::default().fg(Color::Yellow),
                 )]));
             } else if match_count > 5 {
-                preview_lines.push(Line::from(vec![Span::styled(
-                    format!("  ... and {} more", match_count - 5),
-                    Style::default().fg(Color::Gray),
-                )]));
+                    preview_lines.push(Line::from(vec![Span::styled(
+                        (match_count - 5).to_string(),
+                        Style::default().fg(Color::Gray),
+                    )]));
             }
         } else {
             preview_lines.push(Line::from(vec![Span::styled(
@@ -638,7 +669,10 @@ fn render_delete_confirmation(
     let popup_area = centered_rect(60, 40, area);
 
     let title_info = if let Some(ref title) = rule.title_pattern {
-        format!("Title: {}", title)
+        let mut s = String::with_capacity(7 + title.len());
+        s.push_str("Title: ");
+        s.push_str(title);
+        s
     } else {
         "Title: (any)".to_string()
     };

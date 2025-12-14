@@ -71,15 +71,35 @@ pub struct SinksScreen {
     pub selected: usize,
     pub editor: SinkEditor,
     pub editing_index: Option<usize>, // None = adding, Some(i) = editing
+    /// Cached padded descriptions for aligned display (updated when sinks change)
+    pub display_descs: Vec<String>,
 }
 
 impl SinksScreen {
+    /// Update cached padded descriptions for the list. Call when `sinks` changed.
+    pub fn update_display_descs(&mut self, sinks: &[SinkConfig]) {
+        // Compute max desc length and produce left-aligned padded strings
+        let max_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
+        self.display_descs = sinks
+            .iter()
+            .map(|s| {
+                if s.desc.len() >= max_len {
+                    s.desc.clone()
+                } else {
+                    let mut st = s.desc.clone();
+                    st.push_str(&" ".repeat(max_len - s.desc.len()));
+                    st
+                }
+            })
+            .collect();
+    }
     pub fn new() -> Self {
         Self {
             mode: SinksMode::List,
             selected: 0,
             editor: SinkEditor::new(),
             editing_index: None,
+            display_descs: Vec::new(),
         }
     }
 
@@ -173,7 +193,7 @@ fn render_list(
                     if is_selected { "> " } else { "  " },
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::styled(format!("{:<30}", sink.desc), style),
+                Span::styled(screen_state.display_descs.get(i).map(|s| s.as_str()).unwrap_or(sink.desc.as_str()), style),
                 status,
                 default_marker,
             ]);

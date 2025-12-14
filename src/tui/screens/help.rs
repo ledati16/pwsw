@@ -183,7 +183,8 @@ fn get_global_shortcuts() -> Vec<Line<'static>> {
 fn help_line(key: &'static str, description: &'static str) -> Line<'static> {
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("{:12}", key), Style::default().fg(Color::Green)),
+        Span::styled(key, Style::default().fg(Color::Green)),
+        Span::raw("    "),
         Span::raw(" - "),
         Span::raw(description),
     ])
