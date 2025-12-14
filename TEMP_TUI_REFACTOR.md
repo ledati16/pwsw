@@ -8,16 +8,17 @@ Overview
 - Goal: Improve the TUI (ratatui + crossterm) for robustness, responsiveness, and consistency while aligning with project standards in `CLAUDE.md`.
 - Approach: Implement the work in three phases. Each phase builds on the previous and targets high-impact issues first.
 
-Phase 1 — Safety & Responsiveness (current focus)
+Phase 1 — Safety & Responsiveness (completed)
 - Make terminal initialization and cleanup panic-safe and reliable.
-  - Add a panic hook that restores terminal state (disable raw mode, leave alternate screen, show cursor) on panic.
+  - Added a panic hook that restores terminal state (disable raw mode, leave alternate screen, show cursor) on panic.
 - Decouple blocking/background work from the render loop.
-  - Spawn a background updater task that polls daemon state, window list, and PipeWire sink snapshot on an interval.
-  - Use a tokio `mpsc` channel to send updates into the UI main loop.
+  - Spawned a background updater task that polls daemon state, window list, and PipeWire sink snapshot on an interval.
+  - Uses a tokio `mpsc` channel to send updates into the UI main loop.
 - Make daemon control actions asynchronous and non-blocking for the UI.
-  - When user issues Start/Stop/Restart, spawn a background task and send result back via channel.
-- Introduce a cached `active_sinks` snapshot in `App` for the UI to consume (avoid calling `PipeWire::dump()` from render path).
-- Minimal, surgical changes to achieve the above without changing major UI behavior.
+  - When user issues Start/Stop/Restart, background task executes action and sends result back via channel.
+- Introduced a cached `active_sinks` snapshot in `App` for the UI to consume (avoid calling `PipeWire::dump()` from render path).
+- Implemented dirty-driven redraw and time-based spinner so UI only redraws on state changes or animation frames.
+- Minimal, surgical changes kept behavior stable and tests passing.
 
 Phase 2 — Regex & Render Optimizations
 - Cache compiled `Regex` objects in `RuleEditor` to avoid re-compiling on each render.
@@ -27,7 +28,7 @@ Phase 2 — Regex & Render Optimizations
 
 Phase 3 — UX, Accessibility & Polishing
 - Improve keyboard editing behavior: left/right, Home/End, delete word, selection where reasonable.
-- Add mouse support and hit testing for clickable widgets (popups, lists).
+- (pointer interactions intentionally omitted)
 - Add TUI theme mapping and a `--tui-no-color` or `PWSW_TUI_MONOCHROME=1` option for accessibility/term compatibility.
 - Add tests for critical helpers (e.g., `centered_rect`, selection clamping) and expand documentation comments to satisfy `CLAUDE.md`.
 - Run full `cargo clippy --all-targets` and `cargo test`, resolve new warnings and errors.

@@ -7,7 +7,6 @@ use anyhow::{Context, Result};
 // `Write` import removed — unused in this module
 use crate::tui::app::{AppUpdate, BgCommand};
 use crossterm::cursor::Show;
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -78,7 +77,7 @@ pub async fn run() -> Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+        let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = execute!(std::io::stdout(), Show);
         // Delegate to the original hook to preserve normal panic output
         original_hook(info);
@@ -87,7 +86,7 @@ pub async fn run() -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+    execute!(stdout, EnterAlternateScreen)
         .context("Failed to enter alternate screen")?;
 
     let backend = CrosstermBackend::new(stdout);
@@ -103,7 +102,7 @@ pub async fn run() -> Result<()> {
             // Best-effort restore; ignore errors here
             let _ = disable_raw_mode();
             let mut stdout = std::io::stdout();
-            let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+            let _ = execute!(stdout, LeaveAlternateScreen);
             let _ = execute!(std::io::stdout(), Show);
         }
     }
@@ -370,17 +369,30 @@ async fn run_app<B: ratatui::backend::Backend>(
     // Use small tick for rendering and input; background updates arrive via app.bg_update_rx
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
+    // Animation timing (time-based spinner)
+    use std::time::Instant;
+    let mut last_anim = Instant::now();
+    const ANIM_MS: u64 = 120; // spinner frame every 120ms
+
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                    // Render UI regularly
-                terminal.draw(|frame| render_ui(frame, app))?;
+                // Advance animation if enough time elapsed
+                let now = Instant::now();
+                if now.duration_since(last_anim).as_millis() >= ANIM_MS as u128 {
+                    app.spinner_idx = (app.spinner_idx + 1) % 10;
+                    last_anim = now;
+                    app.dirty = true;
+                }
 
                 // Handle any keystrokes
                 handle_events(app)?;
 
-                // Advance spinner frame for animations
-                app.spinner_idx = (app.spinner_idx + 1) % 10;
+                // Only redraw when needed (dirty) or when animation advanced
+                if app.dirty {
+                    terminal.draw(|frame| render_ui(frame, app))?;
+                    app.dirty = false;
+                }
 
                 // Check if we should quit
                 if app.should_quit {
@@ -395,20 +407,24 @@ async fn run_app<B: ratatui::backend::Backend>(
                     match update {
                         AppUpdate::ActiveSinks(sinks) => {
                             app.active_sinks = sinks;
+                            app.dirty = true;
                         }
                         AppUpdate::DaemonState { running, windows } => {
                             app.daemon_running = running;
                             app.window_count = windows.len();
                             app.windows = windows;
+                            app.dirty = true;
                         }
                         AppUpdate::ActionResult(msg) => {
                             app.set_status(msg);
+                            // set_status sets dirty already
                         }
                         AppUpdate::PreviewPending { app_pattern, title_pattern } => {
                             // Only mark pending if it matches current editor content
                             if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
                                 // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
+                                app.dirty = true;
                             }
                         }
                         AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
@@ -416,6 +432,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                             if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
                                 // Store preview in app.preview as a typed struct
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
+                                app.dirty = true;
                             }
                         }
                     }
