@@ -10,7 +10,6 @@ use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
 
-
 /// Poll timeout for event checking (non-blocking). Set to 0 to avoid blocking in the tick loop.
 const POLL_TIMEOUT: Duration = Duration::from_millis(0);
 /// Maximum number of input events to process per tick. Prevents long blocking when the terminal
@@ -28,7 +27,10 @@ pub fn handle_events(app: &mut App) -> Result<()> {
             break;
         }
         match event::read()? {
-            Event::Key(key_event) => { handle_key_event(app, key_event); app.dirty = true; }
+            Event::Key(key_event) => {
+                handle_key_event(app, key_event);
+                app.dirty = true;
+            }
             Event::Mouse(_) => {
                 // Mouse events are intentionally ignored in the keyboard-first TUI.
             }
@@ -438,7 +440,7 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 default: app.sinks_screen.editor.default,
             };
 
-                if let Some(idx) = app.sinks_screen.editing_index {
+            if let Some(idx) = app.sinks_screen.editing_index {
                 // Editing existing
                 app.config.sinks[idx] = new_sink;
                 app.set_status("Sink updated".to_string());
@@ -566,7 +568,8 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                         let compiled_title = app.rules_screen.editor.compiled_title.clone();
                         let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                             app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
+                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty()
+                            {
                                 None
                             } else {
                                 Some(app.rules_screen.editor.title_pattern.value.clone())
@@ -583,19 +586,12 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     app.rules_screen.editor.ensure_compiled();
 
                     if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app
-                            .rules_screen
-                            .editor
-                            .compiled_app_id
-                            .clone();
-                        let compiled_title = app
-                            .rules_screen
-                            .editor
-                            .compiled_title
-                            .clone();
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                        let compiled_title = app.rules_screen.editor.compiled_title.clone();
                         let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                             app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
+                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty()
+                            {
                                 None
                             } else {
                                 Some(app.rules_screen.editor.title_pattern.value.clone())
@@ -648,7 +644,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         KeyCode::Backspace => match app.rules_screen.editor.focused_field {
-                0 => {
+            0 => {
                 app.rules_screen.editor.app_id_pattern.remove_before();
 
                 // Ensure compiled caches updated eagerly
@@ -669,7 +665,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     });
                 }
             }
-                1 => {
+            1 => {
                 app.rules_screen.editor.title_pattern.remove_before();
                 // Eagerly update compiled caches for current editor patterns
                 app.rules_screen.editor.ensure_compiled();
@@ -684,7 +680,11 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     };
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                         app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) },
+                        title_pattern: if pat.is_empty() {
+                            None
+                        } else {
+                            Some(pat.clone())
+                        },
                         compiled_app,
                         compiled_title,
                     });
@@ -696,7 +696,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             _ => {}
         },
         KeyCode::Delete => match app.rules_screen.editor.focused_field {
-                0 => {
+            0 => {
                 app.rules_screen.editor.app_id_pattern.remove_at();
                 // Eagerly update compiled caches
                 app.rules_screen.editor.ensure_compiled();
@@ -704,7 +704,11 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
 
                 if let Some(tx) = &app.bg_cmd_tx {
                     let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.clone() };
+                    let compiled_title = if pat.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen.editor.compiled_title.clone()
+                    };
                     let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
                         app_pattern: pat.clone(),
                         title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
@@ -717,7 +721,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     });
                 }
             }
-                1 => {
+            1 => {
                 app.rules_screen.editor.title_pattern.remove_at();
                 // Eagerly update compiled caches
                 app.rules_screen.editor.ensure_compiled();
@@ -767,7 +771,13 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
 
             // Validate regexes
             // Validate regexes: prefer using compiled caches when available
-            let app_id_regex = match app.rules_screen.editor.compiled_app_id.as_ref().map(|a| a.as_ref()) {
+            let app_id_regex = match app
+                .rules_screen
+                .editor
+                .compiled_app_id
+                .as_ref()
+                .map(|a| a.as_ref())
+            {
                 Some(r) => r.clone(),
                 None => match Regex::new(&app.rules_screen.editor.app_id_pattern.value) {
                     Ok(r) => r,
@@ -780,7 +790,13 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
 
             let title_regex = if app.rules_screen.editor.title_pattern.value.is_empty() {
                 None
-            } else if let Some(r) = app.rules_screen.editor.compiled_title.as_ref().map(|a| a.as_ref()) {
+            } else if let Some(r) = app
+                .rules_screen
+                .editor
+                .compiled_title
+                .as_ref()
+                .map(|a| a.as_ref())
+            {
                 Some(r.clone())
             } else {
                 match Regex::new(&app.rules_screen.editor.title_pattern.value) {

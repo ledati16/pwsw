@@ -59,7 +59,9 @@ impl RuleEditor {
     }
 
     pub fn from_rule(rule: &Rule) -> Self {
-        let compiled_app_id = Regex::new(&rule.app_id_pattern).ok().map(std::sync::Arc::new);
+        let compiled_app_id = Regex::new(&rule.app_id_pattern)
+            .ok()
+            .map(std::sync::Arc::new);
         let compiled_title = match &rule.title_pattern {
             Some(t) if !t.is_empty() => Regex::new(t).ok().map(std::sync::Arc::new),
             _ => None,
@@ -99,7 +101,9 @@ impl RuleEditor {
         // Compile app id pattern if non-empty and store which string it corresponds to
         if !self.app_id_pattern.value.is_empty() {
             if self.compiled_app_id_for.as_ref() != Some(&self.app_id_pattern.value) {
-                self.compiled_app_id = Regex::new(&self.app_id_pattern.value).ok().map(std::sync::Arc::new);
+                self.compiled_app_id = Regex::new(&self.app_id_pattern.value)
+                    .ok()
+                    .map(std::sync::Arc::new);
                 self.compiled_app_id_for = Some(self.app_id_pattern.value.clone());
             }
         } else {
@@ -110,7 +114,9 @@ impl RuleEditor {
         // Compile title pattern if non-empty
         if !self.title_pattern.value.is_empty() {
             if self.compiled_title_for.as_ref() != Some(&self.title_pattern.value) {
-                self.compiled_title = Regex::new(&self.title_pattern.value).ok().map(std::sync::Arc::new);
+                self.compiled_title = Regex::new(&self.title_pattern.value)
+                    .ok()
+                    .map(std::sync::Arc::new);
                 self.compiled_title_for = Some(self.title_pattern.value.clone());
             }
         } else {
@@ -215,7 +221,8 @@ fn render_list(
 ) {
     // Build a lookup from sink name/desc -> padded display string once per render to avoid per-row formatting.
     let max_desc_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
-    let mut sink_display_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut sink_display_map: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for s in sinks.iter() {
         let display = if s.desc.len() >= max_desc_len {
             s.desc.clone()
@@ -256,10 +263,10 @@ fn render_list(
             ));
             title_spans.push(Span::raw((i + 1).to_string()));
             title_spans.push(Span::raw(". app_id: "));
-            title_spans.push(Span::styled(rule.app_id_pattern.clone(), style));
+            title_spans.push(Span::styled(rule.app_id_pattern.as_str(), style));
             if let Some(ref title_pat) = rule.title_pattern {
                 title_spans.push(Span::raw(" + title: "));
-                title_spans.push(Span::raw(title_pat.clone()));
+                title_spans.push(Span::raw(title_pat.as_str()));
             }
 
             let mut lines = vec![
@@ -274,7 +281,7 @@ fn render_list(
             if let Some(ref desc) = rule.desc {
                 lines.push(Line::from(vec![
                     Span::raw("     "),
-                    Span::styled(desc.clone(), Style::default().fg(Color::Gray)),
+                    Span::styled(desc.as_str(), Style::default().fg(Color::Gray)),
                 ]));
             }
 
@@ -455,8 +462,9 @@ fn render_live_preview(
 
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
-if res.app_pattern == screen_state.editor.app_id_pattern.value
-            && res.title_pattern.as_deref().unwrap_or("") == screen_state.editor.title_pattern.value.as_str()
+        if res.app_pattern == screen_state.editor.app_id_pattern.value
+            && res.title_pattern.as_deref().unwrap_or("")
+                == screen_state.editor.title_pattern.value.as_str()
         {
             // If background worker marked this preview as pending, show spinner (computing). Otherwise
             // fall through to normal display (No matches / timed out / results).
@@ -465,13 +473,12 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                 let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
                 // Use app-level spinner index (passed via rules screen state in App) — render frame from spinner_idx
                 // to animate across UI ticks.
-                preview_lines.push(Line::from(vec![Span::styled(
-                    format!(
-                        "  {} Computing...",
-                        spinner_frames[spinner_idx % spinner_frames.len()]
-                    ),
-                    Style::default().fg(Color::Yellow),
-                )]));
+                let spinner_char = spinner_frames[spinner_idx % spinner_frames.len()];
+                preview_lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(spinner_char, Style::default().fg(Color::Yellow)),
+                    Span::styled(" Computing...", Style::default().fg(Color::Yellow)),
+                ]));
 
                 let preview_widget = Paragraph::new(preview_lines).block(
                     Block::default()
@@ -496,7 +503,7 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                 for m in res.matches.iter().take(5) {
                     preview_lines.push(Line::from(vec![
                         Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                        Span::raw(m.clone()),
+                        Span::raw(m.as_str()),
                     ]));
                 }
                 if res.matches.len() > 5 {
@@ -520,25 +527,27 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
     // Fallback: use local compiled regex matching (fast for small window lists).
     // Ensure compiled regexes correspond to current editor text; compile if needed.
     // Attempt to use cached compiled regex references, or compile temporary ones for this render.
-    let app_id_regex: Option<std::sync::Arc<Regex>> = if screen_state.editor.app_id_pattern.value.is_empty() {
-        None
-    } else if screen_state.editor.compiled_app_id_for.as_ref()
-        == Some(&screen_state.editor.app_id_pattern.value)
-    {
-        screen_state.editor.compiled_app_id.clone()
-    } else {
-        None
-    };
+    let app_id_regex: Option<std::sync::Arc<Regex>> =
+        if screen_state.editor.app_id_pattern.value.is_empty() {
+            None
+        } else if screen_state.editor.compiled_app_id_for.as_ref()
+            == Some(&screen_state.editor.app_id_pattern.value)
+        {
+            screen_state.editor.compiled_app_id.clone()
+        } else {
+            None
+        };
 
-    let title_regex: Option<std::sync::Arc<Regex>> = if screen_state.editor.title_pattern.value.is_empty() {
-        None
-    } else if screen_state.editor.compiled_title_for.as_ref()
-        == Some(&screen_state.editor.title_pattern.value)
-    {
-        screen_state.editor.compiled_title.clone()
-    } else {
-        None
-    };
+    let title_regex: Option<std::sync::Arc<Regex>> =
+        if screen_state.editor.title_pattern.value.is_empty() {
+            None
+        } else if screen_state.editor.compiled_title_for.as_ref()
+            == Some(&screen_state.editor.title_pattern.value)
+        {
+            screen_state.editor.compiled_title.clone()
+        } else {
+            None
+        };
 
     // Convert to Option<&Regex> for the matching code below
     let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(|a| a.as_ref());
@@ -558,9 +567,9 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                     if shown < 5 {
                         preview_lines.push(Line::from(vec![
                             Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                            Span::raw(window.app_id.clone()),
+                            Span::raw(window.app_id.as_str()),
                             Span::raw(" | "),
-                            Span::raw(window.title.clone()),
+                            Span::raw(window.title.as_str()),
                         ]));
                         shown += 1;
                     }
@@ -573,10 +582,10 @@ if res.app_pattern == screen_state.editor.app_id_pattern.value
                     Style::default().fg(Color::Yellow),
                 )]));
             } else if match_count > 5 {
-                    preview_lines.push(Line::from(vec![Span::styled(
-                        (match_count - 5).to_string(),
-                        Style::default().fg(Color::Gray),
-                    )]));
+                preview_lines.push(Line::from(vec![Span::styled(
+                    (match_count - 5).to_string(),
+                    Style::default().fg(Color::Gray),
+                )]));
             }
         } else {
             preview_lines.push(Line::from(vec![Span::styled(
@@ -668,13 +677,13 @@ fn render_delete_confirmation(
     let rule = &rules[screen_state.selected];
     let popup_area = centered_rect(60, 40, area);
 
-    let title_info = if let Some(ref title) = rule.title_pattern {
-        let mut s = String::with_capacity(7 + title.len());
-        s.push_str("Title: ");
-        s.push_str(title);
-        s
+    let title_line = if let Some(ref title) = rule.title_pattern {
+        Line::from(vec![
+            Span::raw("Title: "),
+            Span::styled(title.as_str(), Style::default().fg(Color::White)),
+        ])
     } else {
-        "Title: (any)".to_string()
+        Line::from("Title: (any)")
     };
 
     let text = vec![
@@ -688,7 +697,7 @@ fn render_delete_confirmation(
             Span::raw("App ID: "),
             Span::styled(&rule.app_id_pattern, Style::default().fg(Color::White)),
         ]),
-        Line::from(vec![Span::raw(&title_info)]),
+        title_line,
         Line::from(vec![
             Span::raw("Sink: "),
             Span::styled(&rule.sink_ref, Style::default().fg(Color::Yellow)),

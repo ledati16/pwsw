@@ -21,7 +21,13 @@ pub fn match_windows(
     let mut out = Vec::new();
     for w in windows.iter() {
         if app_re.is_match(&w.app_id) && title_re.as_ref().map_or(true, |r| r.is_match(&w.title)) {
-            out.push(format!("{} | {}", w.app_id, w.title));
+            {
+                let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
+                s.push_str(&w.app_id);
+                s.push_str(" | ");
+                s.push_str(&w.title);
+                out.push(s);
+            }
             if out.len() >= max_results {
                 break;
             }
@@ -89,7 +95,13 @@ pub async fn execute_preview(
             for w in windows.iter() {
                 let title_ok = title_re.as_ref().map_or(true, |r| r.is_match(&w.title));
                 if app_re_ref.is_match(&w.app_id) && title_ok {
-                    out.push(format!("{} | {}", w.app_id, w.title));
+                    {
+                        let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
+                        s.push_str(&w.app_id);
+                        s.push_str(" | ");
+                        s.push_str(&w.title);
+                        out.push(s);
+                    }
                     if out.len() >= max_results {
                         break;
                     }

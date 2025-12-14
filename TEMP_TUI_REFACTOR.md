@@ -37,12 +37,18 @@ Phase 2 — Regex & Render Optimizations (in progress)
 
 - Work completed in this session:
   - Replaced multiple `format!` allocations in hot render paths with span-based rendering (rules, textfield, help).
-- Added cached padded display strings for the Settings screen (`SettingsScreen.padded_names`) to restore fixed-width alignment without per-frame allocations.
+  - Added cached padded display strings for the Settings screen (`SettingsScreen.padded_names`) to restore fixed-width alignment without per-frame allocations.
   - Completed a `Regex::new` audit in `src/tui` and updated editor input paths to call `RuleEditor::ensure_compiled()` eagerly on edits/removals so the background preview can reuse cached `Arc<Regex>` instead of compiling on render.
   - Updated the rule save/validate path to prefer using cached compiled regexes when available, falling back to explicit compilation on the explicit save action.
   - Implemented cached, padded sink descriptions in `SinksScreen::display_descs` with `update_display_descs(&[SinkConfig])` to restore alignment without per-frame `format!` allocations. This cache is initialized at `App::new()` and updated whenever sinks are added/edited/deleted or when defaults change.
   - Updated `render_list` in `src/tui/screens/rules.rs` to use a small per-render lookup of padded sink display strings (derived from sinks) so rule sink columns are aligned without per-row formatting allocations.
+  - Moved preview match string construction out of the render path into the blocking preview executor (`src/tui/preview.rs`) and replaced `format!` allocations there with direct `String` building.
+  - Replaced header tab/title `format!` calls with precomputed `String` builders to avoid format allocations per-render.
+  - Replaced per-render Title allocation in rules delete modal with Span-based Line to avoid one `String` allocation per render.
+  - Replaced some `to_string()`/`clone()` usages in render paths with `as_str()` references where possible.
   - Ran `cargo test` (all tests passed) and `cargo clippy --all-targets -- -D warnings` (passed).
+  - Added debug-only `terminal.draw()` timing instrumentation to log slow frames (>15ms) to stderr in debug builds.
+  - Enhanced slow-frame logs to include run-relative timestamp, current screen name, preview pending flag, and window count for easier correlation.
 
 These changes reduce per-frame heap allocations and ensure regex compilation happens during edit events or explicit saves rather than silently during rendering.
 
@@ -67,6 +73,11 @@ Current suggestions to finish Phase 2 (next actions)
 3. Add a microbenchmark/test or an instrumentation log around `terminal.draw()` to identify any expensive frames.
 4. Optionally move input reading to a blocking thread and forward events to the async loop.
 
-If you want, I can start with action (1) and scan the render functions to propose minimal, surgical optimizations. Otherwise tell me which Phase 2 item you'd like me to pick up next.
+Recent micro-step
+- Action A completed: added explicit `RuleEditor::ensure_compiled()` calls across editor mutation paths so compiled regex caches are updated eagerly and included when forwarder sends `PreviewRequest` to background worker.
+- Action B completed: swept remaining render allocations and reduced clones/formatting in hot paths.
+- Action C completed: added richer debug logs for slow frames including run-relative timestamp, screen name, preview pending, and window count.
+
+If you want, I can now perform another interactive run and analyze the `tui_stderr.log` for correlation and targeted fixes.
 
 -- End of TEMP_TUI_REFACTOR.md

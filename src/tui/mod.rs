@@ -86,8 +86,7 @@ pub async fn run() -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)
-        .context("Failed to enter alternate screen")?;
+    execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
@@ -215,8 +214,12 @@ pub async fn run() -> Result<()> {
                                 let _ = bg_tx.send(AppUpdate::ActionResult(msg));
                             }
                             Err(e) => {
-                                let _ =
-                                    bg_tx.send(AppUpdate::ActionResult(format!("Failed: {:#}", e)));
+                                let _ = bg_tx.send(AppUpdate::ActionResult({
+                                    let mut s = String::with_capacity(10);
+                                    s.push_str("Failed: ");
+                                    s.push_str(&format!("{:#}", e));
+                                    s
+                                }));
                             }
                         }
                     }
@@ -390,7 +393,33 @@ async fn run_app<B: ratatui::backend::Backend>(
 
                 // Only redraw when needed (dirty) or when animation advanced
                 if app.dirty {
-                    terminal.draw(|frame| render_ui(frame, app))?;
+                    #[cfg(debug_assertions)]
+                    {
+                        use std::time::Instant as Ti;
+                        let start = Ti::now();
+                        terminal.draw(|frame| render_ui(frame, app))?;
+                        let elapsed = start.elapsed();
+
+                        // Extra context for slow-frame logs: run-relative ms, screen, preview pending, window count
+                        if elapsed.as_millis() > 15 {
+                            let run_ms = start.duration_since(std::time::Instant::now() - std::time::Duration::from_secs(0)).as_millis();
+                            let screen_name = format!("{:?}", app.current_screen);
+                            let preview_pending = app.preview.as_ref().map(|p| p.pending).unwrap_or(false);
+                            let windows = app.window_count;
+                            eprintln!(
+                                "[tui] {} ms [{}] slow frame: {} ms preview_pending={} windows={}",
+                                run_ms,
+                                screen_name,
+                                elapsed.as_millis(),
+                                preview_pending,
+                                windows
+                            );
+                        }
+                    }
+                    #[cfg(not(debug_assertions))]
+                    {
+                        terminal.draw(|frame| render_ui(frame, app))?;
+                    }
                     app.dirty = false;
                 }
 
@@ -511,7 +540,15 @@ fn render_header(
 ) {
     let titles: Vec<_> = Screen::all()
         .iter()
-        .map(|s| format!("[{}]{}", s.key(), s.name()))
+        .map(|s| {
+            let name = s.name();
+            let mut t = String::with_capacity(1 + 1 + name.len());
+            t.push('[');
+            t.push(s.key());
+            t.push(']');
+            t.push_str(name);
+            t
+        })
         .collect();
 
     let selected = Screen::all()
@@ -520,10 +557,18 @@ fn render_header(
         .unwrap_or(0);
 
     // Build title with unsaved indicator if needed
+    let version = crate::version_string();
     let title = if config_dirty {
-        format!("PWSW {} [unsaved]", crate::version_string())
+        let mut t = String::with_capacity(5 + 1 + version.len() + 10);
+        t.push_str("PWSW ");
+        t.push_str(&version);
+        t.push_str(" [unsaved]");
+        t
     } else {
-        format!("PWSW {}", crate::version_string())
+        let mut t = String::with_capacity(5 + 1 + version.len());
+        t.push_str("PWSW ");
+        t.push_str(&version);
+        t
     };
 
     let tabs = Tabs::new(titles)
