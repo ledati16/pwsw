@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use crate::config::{Rule, SinkConfig};
+use crate::tui::textfield::render_text_field;
 use crate::tui::widgets::centered_rect;
 use regex::Regex;
 
@@ -296,7 +297,7 @@ fn render_editor(
     frame.render_widget(block, popup_area);
 
     // App ID pattern field
-    crate::tui::textfield::render_text_field(
+    render_text_field(
         frame,
         chunks[0],
         "App ID Pattern (regex):",
@@ -306,7 +307,7 @@ fn render_editor(
     );
 
     // Title pattern field
-    crate::tui::textfield::render_text_field(
+    render_text_field(
         frame,
         chunks[1],
         "Title Pattern (optional regex):",
