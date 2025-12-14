@@ -182,18 +182,12 @@ fn render_list(
         .map(|(i, rule)| {
             let is_selected = i == screen_state.selected;
 
-            // Find sink description
+            // Find sink description (borrowed str)
             let sink_desc = sinks
                 .iter()
                 .find(|s| s.name == rule.sink_ref || s.desc == rule.sink_ref)
                 .map(|s| s.desc.as_str())
                 .unwrap_or(&rule.sink_ref);
-
-            let title_info = if let Some(ref title) = rule.title_pattern {
-                format!(" + title: {}", title)
-            } else {
-                String::new()
-            };
 
             let style = if is_selected {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -201,17 +195,18 @@ fn render_list(
                 Style::default().fg(Color::White)
             };
 
+            // Build spans for the title line without allocating a single large String
+            let mut title_spans = Vec::with_capacity(4);
+            title_spans.push(Span::styled(if is_selected { "> " } else { "  " }, Style::default().fg(Color::Cyan)));
+            title_spans.push(Span::raw(format!("{}. app_id: ", i + 1)));
+            title_spans.push(Span::styled(rule.app_id_pattern.clone(), style));
+            if let Some(ref title_pat) = rule.title_pattern {
+                title_spans.push(Span::raw(" + title: "));
+                title_spans.push(Span::raw(title_pat.clone()));
+            }
+
             let mut lines = vec![
-                Line::from(vec![
-                    Span::styled(
-                        if is_selected { "> " } else { "  " },
-                        Style::default().fg(Color::Cyan),
-                    ),
-                    Span::styled(
-                        format!("{}. app_id: {}{}", i + 1, rule.app_id_pattern, title_info),
-                        style,
-                    ),
-                ]),
+                Line::from(title_spans),
                 Line::from(vec![
                     Span::raw("     → "),
                     Span::styled(sink_desc, Style::default().fg(Color::Yellow)),
@@ -222,7 +217,7 @@ fn render_list(
             if let Some(ref desc) = rule.desc {
                 lines.push(Line::from(vec![
                     Span::raw("     "),
-                    Span::styled(desc, Style::default().fg(Color::Gray)),
+                    Span::styled(desc.clone(), Style::default().fg(Color::Gray)),
                 ]));
             }
 
@@ -552,14 +547,37 @@ fn render_delete_confirmation(
 
 /// Render text field
 fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
-    let style = if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
+    let label_span = Span::styled(format!("{} ", label), Style::default().fg(Color::Gray));
+    let value_style = if focused { Style::default().fg(Color::Cyan) } else { Style::default().fg(Color::White) };
+
+    // Compute available width for value (area.width is u16)
+    let area_width = area.width as usize;
+    // Rough estimate of label width in chars
+    let label_len = label.len() + 1; // including space
+    let mut max_value_len = area_width.saturating_sub(label_len);
+
+    // Reserve one char for cursor when focused
+    if focused && max_value_len > 0 {
+        if max_value_len > 1 { max_value_len -= 1 } else { max_value_len = 0 }
+    }
+
+    // Clip value to max_value_len characters (graceful UTF-8 aware truncation)
+    let display_value = if value.chars().count() > max_value_len {
+        value.chars().take(max_value_len).collect::<String>()
     } else {
-        Style::default().fg(Color::White)
+        value.to_string()
     };
 
-    let cursor = if focused { "█" } else { "" };
-    let text = format!("{} {}{}", label, value, cursor);
-    let paragraph = Paragraph::new(text).style(style);
+    let mut spans = vec![label_span];
+    spans.push(Span::styled(display_value, value_style));
+
+    // Cursor as separate styled span
+    if focused {
+        spans.push(Span::styled(" ", Style::default())); // small gap
+        spans.push(Span::styled("█", Style::default().fg(Color::Yellow)));
+    }
+
+    let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
 }
