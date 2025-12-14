@@ -12,6 +12,49 @@ use crate::config::{Rule, SinkConfig};
 use crate::tui::widgets::centered_rect;
 use regex::Regex;
 
+// Helper: compute displayed substring and cursor relative index for text field clipping.
+// Returns (display_string, cursor_relative_index, truncated_left).
+// The logic mirrors the clipping behavior used in `render_text_field`.
+pub(crate) fn compute_display_window(value: &str, cursor: usize, max_value_len: usize) -> (String, usize, bool) {
+    if max_value_len == 0 {
+        return (String::new(), 0, false);
+    }
+
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    let cursor = cursor.min(len);
+
+    if len <= max_value_len {
+        return (chars.into_iter().collect(), cursor, false);
+    }
+
+    let half = max_value_len / 2;
+    let start = if cursor <= half {
+        0
+    } else if cursor + half >= len {
+        len.saturating_sub(max_value_len)
+    } else {
+        cursor.saturating_sub(half)
+    };
+
+    // When truncated on the left we reserve one slot for ellipsis
+    let mut take = max_value_len;
+    if start > 0 && take > 0 {
+        if take > 1 {
+            take -= 1;
+        } else {
+            take = 0;
+        }
+    }
+
+    let display_chars: String = chars.iter().skip(start).take(take).collect();
+    let displayed_len = display_chars.chars().count();
+    let cursor_rel = if cursor <= start { 0 } else if cursor >= start + displayed_len { displayed_len } else { cursor - start };
+    let truncated_left = start > 0;
+    (display_chars, cursor_rel, truncated_left)
+}
+
+
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RulesMode {
