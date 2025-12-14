@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::config::SinkConfig;
-use crate::pipewire::PipeWire;
+
 use crate::tui::widgets::centered_rect;
 
 /// Sinks screen mode
@@ -123,9 +123,10 @@ pub fn render_sinks(
     area: Rect,
     sinks: &[SinkConfig],
     screen_state: &SinksScreen,
+    active_sinks: &[String],
 ) {
     match screen_state.mode {
-        SinksMode::List => render_list(frame, area, sinks, screen_state),
+        SinksMode::List => render_list(frame, area, sinks, screen_state, active_sinks),
         SinksMode::AddEdit => render_editor(frame, area, screen_state),
         SinksMode::Delete => render_delete_confirmation(frame, area, sinks, screen_state),
     }
@@ -137,16 +138,8 @@ fn render_list(
     area: Rect,
     sinks: &[SinkConfig],
     screen_state: &SinksScreen,
+    active_sinks: &[String],
 ) {
-    // Get active sinks from PipeWire
-    let active_sinks = PipeWire::dump()
-        .ok()
-        .map(|objects| {
-            let sinks = PipeWire::get_active_sinks(&objects);
-            sinks.into_iter().map(|s| s.name).collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
     let items: Vec<ListItem> = sinks
         .iter()
         .enumerate()
