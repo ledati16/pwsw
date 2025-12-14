@@ -25,6 +25,9 @@ pub mod pipewire;
 pub mod state;
 pub mod style;
 
+#[cfg(feature = "tui")]
+pub mod tui;
+
 // Re-export commonly used types for convenience
 pub use cli::Args;
 pub use config::Config;

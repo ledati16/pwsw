@@ -40,6 +40,8 @@ pub enum Request {
     ListWindows,
     /// Test a rule pattern against current windows
     TestRule { pattern: String },
+    /// Manually switch to a specific sink
+    SetSink { sink: String },
     /// Gracefully shutdown the daemon
     Shutdown,
 }
