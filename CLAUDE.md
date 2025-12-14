@@ -438,13 +438,18 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `perf`
 
 ### Git Push Policy
+
 **Push commits to remote ONLY when explicitly approved by the user.**
 
+**NEVER push changes to remote without explicit user approval.**
+
 When creating commits:
-1. Always create the commit locally
-2. Inform the user that the commit was created but not pushed
-3. Wait for explicit approval (e.g., "push it", "go ahead and push", "yes push") before running `git push`
-4. If approved, push with: `git push` (or `git push -u origin <branch>` for new branches)
+  1. Always create the commit locally
+  2. Inform the user that the commit was created but not pushed
+  3. Wait for explicit approval (e.g., "push it", "go ahead and push", "yes push") before running `git push`
+  4. If approved, push with: `git push` (or `git push -u origin <branch>` for new branches)
+
+Note: For the ongoing TUI refactor, agents and contributors must also keep `TEMP_TUI_REFACTOR.md` updated at every small step; see the AGENTS.md operational checklist.
 
 ### Testing Approach
 
