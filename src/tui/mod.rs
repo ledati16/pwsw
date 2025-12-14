@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 // `Write` import removed — unused in this module
 use crate::tui::app::{AppUpdate, BgCommand};
 use crossterm::cursor::Show;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -77,7 +78,7 @@ pub async fn run() -> Result<()> {
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
         let _ = execute!(std::io::stdout(), Show);
         // Delegate to the original hook to preserve normal panic output
         original_hook(info);
@@ -86,7 +87,8 @@ pub async fn run() -> Result<()> {
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).context("Failed to enter alternate screen")?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
+        .context("Failed to enter alternate screen")?;
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
@@ -101,7 +103,7 @@ pub async fn run() -> Result<()> {
             // Best-effort restore; ignore errors here
             let _ = disable_raw_mode();
             let mut stdout = std::io::stdout();
-            let _ = execute!(stdout, LeaveAlternateScreen);
+            let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
             let _ = execute!(std::io::stdout(), Show);
         }
     }
