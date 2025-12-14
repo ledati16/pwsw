@@ -29,11 +29,11 @@ Phase 2 — Regex & Render Optimizations (completed)
   - Render code was optimized in places to avoid large temporary String allocations (building `Span` vectors, etc.), and live preview rendering uses cached compiled regexes when available.
   - The mouse experiment was implemented and then removed; the codebase now intentionally omits pointer interactions (mouse code removed from `src/tui/input.rs`).
 
-- Remaining / suggested for Phase 2:
-  - Further reduce allocations during render: audit hot render paths (`render_rules`, `render_sinks`) and avoid reallocating `Vec`/`String` on every draw when data unchanged. Use small object reuse patterns where helpful.
-  - Ensure all render-time regex work reuses compiled caches when possible (some fallback code still compiles per-render when cache missing; consider moving compilation earlier on edit events to ensure compiled regex is available for preview fallback).
-  - Consider replacing per-tick `handle_events` poll with a blocking input thread to decouple input immediately from the tick cadence (optional; current approach is acceptable with dirty redraws).
-  - Add a couple of microbenchmarks or runtime instrumentation to spot expensive renders while interacting.
+- Deferred / moved to Phase 3:
+  - Further reduce allocations during render: low-ROI micro-optimizations (e.g., tiny string->Span tweaks, Vec reuse) deferred until we have profiling evidence.
+  - Ensure compiled-regex compilation occurs eagerly everywhere: largely implemented via `RuleEditor::ensure_compiled()`; remaining `Regex::new` calls are intentional (validation, blocking preview executor) and acceptable for now.
+  - Consider replacing per-tick `handle_events` poll with a blocking input thread: non-trivial design change with behavioral risk; defer to Phase 3 if we choose to rework input handling.
+  - Add microbenchmarks/runtime instrumentation: we added debug slow-frame logging; deeper instrumentation or CSV logging is deferred unless profiling shows need.
 
 - Work completed in this session:
   - Replaced multiple `format!` allocations in hot render paths with span-based rendering (rules, textfield, help).
