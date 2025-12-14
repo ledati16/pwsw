@@ -180,13 +180,20 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
             app.dashboard_screen.select_next();
         }
         KeyCode::Enter => {
-            // Queue the daemon action to be executed in the main loop
-            app.pending_daemon_action = Some(match app.dashboard_screen.selected_action {
+            // Send the daemon action to the background worker if available
+            let action = match app.dashboard_screen.selected_action {
                 0 => DaemonAction::Start,
                 1 => DaemonAction::Stop,
                 2 => DaemonAction::Restart,
                 _ => return,
-            });
+            };
+                    if let Some(tx) = &app.bg_cmd_tx {
+                        let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
+                        app.set_status("Daemon action requested".to_string());
+                    } else {
+                        // Fallback: queue as pending (old behaviour)
+                        app.pending_daemon_action = Some(action);
+                    }
         }
         _ => {}
     }
@@ -482,8 +489,36 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c) => {
             match app.rules_screen.editor.focused_field {
-                0 => app.rules_screen.editor.app_id_pattern.push(c),
-                1 => app.rules_screen.editor.title_pattern.push(c),
+                0 => {
+                    app.rules_screen.editor.app_id_pattern.push(c);
+                    // invalidate/compile cache
+                    let pat = app.rules_screen.editor.app_id_pattern.clone();
+                    if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
+                        app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
+                        app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
+                    }
+
+                    // Request live-preview from background worker using the bounded bg_cmd_tx (non-blocking)
+                    if let Some(tx) = &app.bg_cmd_tx {
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: pat.clone(), title_pattern: if app.rules_screen.editor.title_pattern.is_empty() { None } else { Some(app.rules_screen.editor.title_pattern.clone()) }, compiled_app, compiled_title });
+                    }
+                }
+                1 => {
+                    app.rules_screen.editor.title_pattern.push(c);
+                    let pat = app.rules_screen.editor.title_pattern.clone();
+                    if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
+                        app.rules_screen.editor.compiled_title_for = Some(pat.clone());
+                        app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                    }
+
+                    if let Some(tx) = &app.bg_cmd_tx {
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app.rules_screen.editor.app_id_pattern.clone(), title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) }, compiled_app, compiled_title });
+                    }
+                }
                 2 => {
                     // Sink field - don't type, must use selector
                 }
@@ -503,8 +538,34 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Backspace => {
             match app.rules_screen.editor.focused_field {
-                0 => { app.rules_screen.editor.app_id_pattern.pop(); }
-                1 => { app.rules_screen.editor.title_pattern.pop(); }
+                0 => {
+                    app.rules_screen.editor.app_id_pattern.pop();
+                    let pat = app.rules_screen.editor.app_id_pattern.clone();
+                    if app.rules_screen.editor.compiled_app_id_for.as_ref() != Some(&pat) {
+                        app.rules_screen.editor.compiled_app_id_for = Some(pat.clone());
+                        app.rules_screen.editor.compiled_app_id = Regex::new(&pat).ok();
+                    }
+
+                    if let Some(tx) = &app.bg_cmd_tx {
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if app.rules_screen.editor.title_pattern.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: pat.clone(), title_pattern: if app.rules_screen.editor.title_pattern.is_empty() { None } else { Some(app.rules_screen.editor.title_pattern.clone()) }, compiled_app, compiled_title });
+                    }
+                }
+                1 => {
+                    app.rules_screen.editor.title_pattern.pop();
+                    let pat = app.rules_screen.editor.title_pattern.clone();
+                    if app.rules_screen.editor.compiled_title_for.as_ref() != Some(&pat) {
+                        app.rules_screen.editor.compiled_title_for = Some(pat.clone());
+                        app.rules_screen.editor.compiled_title = Regex::new(&pat).ok();
+                    }
+
+                    if let Some(tx) = &app.bg_cmd_tx {
+                        let compiled_app = app.rules_screen.editor.compiled_app_id.as_ref().map(|r| std::sync::Arc::new(r.clone()));
+                        let compiled_title = if pat.is_empty() { None } else { app.rules_screen.editor.compiled_title.as_ref().map(|r| std::sync::Arc::new(r.clone())) };
+                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app.rules_screen.editor.app_id_pattern.clone(), title_pattern: if pat.is_empty() { None } else { Some(pat.clone()) }, compiled_app, compiled_title });
+                    }
+                }
                 3 => { app.rules_screen.editor.desc.pop(); }
                 _ => {}
             }

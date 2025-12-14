@@ -4,10 +4,10 @@
 //! monitoring daemon status, and controlling sinks.
 
 use anyhow::{Context, Result};
-use crossterm::{
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+// `Write` import removed — unused in this module
+use crossterm::execute;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::cursor::Show;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -17,22 +17,95 @@ use ratatui::{
     Terminal,
 };
 use std::io;
+use tokio::sync::mpsc::unbounded_channel;
+use crate::tui::app::{AppUpdate, BgCommand};
 
 mod app;
 mod daemon_control;
 mod input;
 mod screens;
 mod widgets;
+mod preview;
 
 use app::{App, Screen};
 use input::handle_events;
 use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks};
+use std::sync::Arc as StdArc;
+
+// Aliases and small struct to keep complex types readable
+type CompiledRegex = StdArc<regex::Regex>;
+#[derive(Clone)]
+struct PreviewReq {
+    app_pattern: String,
+    title_pattern: Option<String>,
+    compiled_app: Option<CompiledRegex>,
+    compiled_title: Option<CompiledRegex>,
+    ts: std::time::Instant,
+}
+
+#[derive(Clone)]
+struct PreviewExec {
+    app_pattern: String,
+    title_pattern: Option<String>,
+    compiled_app: Option<CompiledRegex>,
+    compiled_title: Option<CompiledRegex>,
+}
+
+fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for w in windows.iter() {
+        w.app_id.hash(&mut hasher);
+        w.title.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::windows_fingerprint;
+    use crate::ipc::WindowInfo;
+
+    #[test]
+    fn test_windows_fingerprint_deterministic_and_sensitive() {
+        let a = WindowInfo { app_id: "firefox".into(), title: "Firefox".into(), matched_on: None, tracked: None };
+        let b = WindowInfo { app_id: "mpv".into(), title: "mpv video".into(), matched_on: None, tracked: None };
+
+        // Same order -> equal
+        let v1 = vec![a.clone(), b.clone()];
+        let v2 = vec![a.clone(), b.clone()];
+        assert_eq!(windows_fingerprint(&v1), windows_fingerprint(&v2));
+
+        // Different order -> likely different fingerprint
+        let v3 = vec![b.clone(), a.clone()];
+        assert_ne!(windows_fingerprint(&v1), windows_fingerprint(&v3));
+
+        // Content change -> different
+        let mut v4 = v1.clone();
+        v4[0].title = "Different Title".into();
+        assert_ne!(windows_fingerprint(&v1), windows_fingerprint(&v4));
+    }
+}
+
 
 /// Run the TUI application
 ///
 /// # Errors
 /// Returns an error if TUI initialization fails or terminal operations fail.
 pub async fn run() -> Result<()> {
+    // Install a panic hook to restore terminal on panic (best-effort).
+    // This ensures the terminal is left in a usable state if a panic occurs.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(std::io::stdout(), Show);
+        // Delegate to the original hook to preserve normal panic output
+        original_hook(info);
+    }));
+
     // Initialize terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     let mut stdout = io::stdout();
@@ -44,6 +117,212 @@ pub async fn run() -> Result<()> {
     // Create app state
     let mut app = App::new()?;
 
+    // Terminal guard to ensure we restore terminal state on panic/return
+    struct TerminalGuard;
+    impl Drop for TerminalGuard {
+        fn drop(&mut self) {
+            // Best-effort restore; ignore errors here
+            let _ = disable_raw_mode();
+            let mut stdout = std::io::stdout();
+            let _ = execute!(stdout, LeaveAlternateScreen);
+            let _ = execute!(std::io::stdout(), Show);
+        }
+    }
+    let _term_guard = TerminalGuard;
+
+    // Setup background update channels and spawn worker
+    // We'll keep an unbounded AppUpdate channel for updates back to UI, a bounded command channel for rare daemon actions,
+    // and a small bounded preview-only channel used by input handlers to avoid allocating large queues while typing.
+    let (bg_tx, bg_rx) = unbounded_channel::<AppUpdate>();
+    let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::channel::<BgCommand>(64);
+    app.bg_update_rx = Some(bg_rx);
+
+    // Set the bounded `cmd_tx` into app.bg_cmd_tx so UI can use non-blocking `try_send` directly.
+    app.bg_cmd_tx = Some(cmd_tx.clone());
+
+    // Create an unbounded preview input channel and store sender in App so input handlers
+    // can push preview requests quickly without blocking. We'll spawn a forwarder task that
+    // collapses rapid preview updates (keeps latest) and forwards them to the bounded `cmd_tx`.
+    type CompiledRegex = std::sync::Arc<regex::Regex>;
+    type PreviewInMsg = (String, Option<String>, Option<CompiledRegex>, Option<CompiledRegex>);
+    let (preview_in_tx, mut preview_in_rx) = unbounded_channel::<PreviewInMsg>();
+    app.preview_in_tx = Some(preview_in_tx.clone());
+
+    // Forwarder task: collapse rapid preview updates and attempt to flush to `cmd_tx`.
+    let forward_cmd = cmd_tx.clone();
+    let _preview_forwarder = tokio::spawn(async move {
+        use tokio::time::{sleep, Duration};
+        while let Some((app_pattern, title_pattern, compiled_app, compiled_title)) = preview_in_rx.recv().await {
+            // Try to flush immediately (a few retries). If unable to send, next recv will overwrite the pending request.
+            for _ in 0..3 {
+                if forward_cmd.try_send(crate::tui::app::BgCommand::PreviewRequest { app_pattern: app_pattern.clone(), title_pattern: title_pattern.clone(), compiled_app: compiled_app.clone(), compiled_title: compiled_title.clone() }).is_ok() {
+                    break;
+                }
+                sleep(Duration::from_millis(20)).await;
+            }
+            // If still not sent, loop will continue and the next recv will overwrite the previous request.
+        }
+    });
+
+
+    // Spawn background worker that polls daemon state and PipeWire every interval
+    let bg_handle = tokio::spawn(async move {
+        use std::time::{Duration, Instant};
+        // Debounce state for preview requests (capture last request, optional compiled regex caches, and timestamp)
+        let mut last_preview_req: Option<PreviewReq> = None;
+        let mut last_executed_preview: Option<PreviewExec> = None;
+        let mut last_windows_fp: Option<u64> = None;
+        let debounce_ms = Duration::from_millis(150);
+        loop {
+            // Poll daemon state in blocking-friendly way
+            let running = crate::tui::daemon_control::DaemonManager::detect().is_running().await;
+            let windows = if running {
+                match crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
+                    Ok(crate::ipc::Response::Windows { windows }) => windows,
+                    _ => Vec::new(),
+                }
+            } else {
+                Vec::new()
+            };
+
+            // Compute a fingerprint for the current window snapshot so we can re-run previews
+            let current_fp = windows_fingerprint(&windows);
+            let _ = bg_tx.send(AppUpdate::DaemonState { running, windows: windows.clone() });
+
+            // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
+            let pipewire_tx = bg_tx.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(objects) = crate::pipewire::PipeWire::dump() {
+                    let sinks = crate::pipewire::PipeWire::get_active_sinks(&objects)
+                        .into_iter()
+                        .map(|s| s.name)
+                        .collect::<Vec<_>>();
+                    let _ = pipewire_tx.send(AppUpdate::ActiveSinks(sinks));
+                }
+            }).await;
+
+            // Process any incoming commands sent from UI (non-blocking checks)
+            while let Ok(cmd) = cmd_rx.try_recv() {
+                match cmd {
+                    BgCommand::DaemonAction(action) => {
+                        // execute action and send result back
+                        let dm = crate::tui::daemon_control::DaemonManager::detect();
+                        let res = match action {
+                            crate::tui::app::DaemonAction::Start => dm.start().await,
+                            crate::tui::app::DaemonAction::Stop => dm.stop().await,
+                            crate::tui::app::DaemonAction::Restart => dm.restart().await,
+                        };
+                        match res {
+                            Ok(msg) => {
+                                let _ = bg_tx.send(AppUpdate::ActionResult(msg));
+                            }
+                            Err(e) => {
+                                let _ = bg_tx.send(AppUpdate::ActionResult(format!("Failed: {:#}", e)));
+                            }
+                        }
+                    }
+                        BgCommand::PreviewRequest { app_pattern, title_pattern, compiled_app, compiled_title } => {
+                        // Update last_preview_req (debounce). We don't spawn matching yet.
+                        last_preview_req = Some(PreviewReq { app_pattern, title_pattern, compiled_app, compiled_title, ts: Instant::now() });
+                    }
+                }
+            }
+
+            // If we have a pending preview request and it has aged enough, execute it
+            if let Some(req) = last_preview_req.clone() {
+                if req.ts.elapsed() >= debounce_ms {
+                    // Clear last request before running to avoid races
+                    last_preview_req = None;
+
+                    let tx = bg_tx.clone();
+                    let windows_clone = windows.clone();
+
+                    // Send pending update so UI can show spinner after a short visual delay
+                    let _ = tx.send(AppUpdate::PreviewPending { app_pattern: req.app_pattern.clone(), title_pattern: req.title_pattern.clone() });
+
+                    // Clone patterns and compiled caches for the closure and for the message
+                    let app_pat_send = req.app_pattern.clone();
+                    let title_pat_send = req.title_pattern.clone();
+                    let compiled_app_send = req.compiled_app.clone();
+                    let compiled_title_send = req.compiled_title.clone();
+
+                    // Record this as the last executed preview (for auto re-run on window changes)
+                    last_executed_preview = Some(PreviewExec { app_pattern: app_pat_send.clone(), title_pattern: title_pat_send.clone(), compiled_app: compiled_app_send.clone(), compiled_title: compiled_title_send.clone() });
+                    last_windows_fp = Some(current_fp);
+
+                    tokio::spawn(async move {
+                        use std::time::Duration;
+                        let timeout = Duration::from_millis(200);
+
+                        // Use the new execute_preview helper which handles spawn_blocking + timeout and accepts optional compiled regexes
+                        let (matches_out, timed_out) = crate::tui::preview::execute_preview(
+                            app_pat_send.clone(),
+                            title_pat_send.clone(),
+                            windows_clone,
+                            100,
+                            timeout,
+                            compiled_app_send,
+                            compiled_title_send,
+                        ).await;
+
+                        let _ = tx.send(AppUpdate::PreviewMatches {
+                            app_pattern: app_pat_send.clone(),
+                            title_pattern: title_pat_send.clone(),
+                            matches: matches_out.into_iter().take(10).collect(),
+                            timed_out,
+                        });
+                    });
+                }
+            }
+
+            // Auto-retrigger previews when window snapshot changes and no user preview pending
+            if last_windows_fp != Some(current_fp) {
+                // Update last_windows_fp first to avoid repeated triggers for the same snapshot
+                last_windows_fp = Some(current_fp);
+
+                // Only auto-re-run when there is no pending user request (debounce) and we have a previously executed preview
+                if last_preview_req.is_none() {
+                    if let Some(exec) = last_executed_preview.clone() {
+                        let tx = bg_tx.clone();
+                        let windows_clone = windows.clone();
+
+                        // Send pending update so UI can show spinner
+                        let _ = tx.send(AppUpdate::PreviewPending { app_pattern: exec.app_pattern.clone(), title_pattern: exec.title_pattern.clone() });
+
+                        let app_pat_send = exec.app_pattern.clone();
+                        let title_pat_send = exec.title_pattern.clone();
+                        let compiled_app_send = exec.compiled_app.clone();
+                        let compiled_title_send = exec.compiled_title.clone();
+
+                        tokio::spawn(async move {
+                            use std::time::Duration;
+                            let timeout = Duration::from_millis(200);
+
+                            let (matches_out, timed_out) = crate::tui::preview::execute_preview(
+                                app_pat_send.clone(),
+                                title_pat_send.clone(),
+                                windows_clone,
+                                100,
+                                timeout,
+                                compiled_app_send,
+                                compiled_title_send,
+                            ).await;
+
+                            let _ = tx.send(AppUpdate::PreviewMatches {
+                                app_pattern: app_pat_send.clone(),
+                                title_pattern: title_pat_send.clone(),
+                                matches: matches_out.into_iter().take(10).collect(),
+                                timed_out,
+                            });
+                        });
+                    }
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(700)).await;
+        }
+    });
+
     // Main event loop
     let result = run_app(&mut terminal, &mut app).await;
 
@@ -53,6 +332,9 @@ pub async fn run() -> Result<()> {
         .context("Failed to leave alternate screen")?;
     terminal.show_cursor().context("Failed to show cursor")?;
 
+    // Background worker: abort when exiting
+    bg_handle.abort();
+
     result
 }
 
@@ -61,22 +343,60 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
+    // Use small tick for rendering and input; background updates arrive via app.bg_update_rx
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
+
     loop {
-        // Execute any pending daemon action first
-        app.execute_pending_daemon_action().await;
+        tokio::select! {
+            _ = tick.tick() => {
+                    // Render UI regularly
+                terminal.draw(|frame| render_ui(frame, app))?;
 
-        // Update daemon state before rendering (async operation)
-        app.update_daemon_state().await;
+                // Handle any keystrokes
+                handle_events(app)?;
 
-        // Render UI
-        terminal.draw(|frame| render_ui(frame, app))?;
+                // Advance spinner frame for animations
+                app.spinner_idx = (app.spinner_idx + 1) % 10;
 
-        // Handle input events
-        handle_events(app)?;
-
-        // Check if we should quit
-        if app.should_quit {
-            break;
+                // Check if we should quit
+                if app.should_quit {
+                    break;
+                }
+            }
+            // Process background updates if any
+            maybe_update = async {
+                if let Some(rx) = &mut app.bg_update_rx { rx.recv().await } else { None }
+            } => {
+                if let Some(update) = maybe_update {
+                    match update {
+                        AppUpdate::ActiveSinks(sinks) => {
+                            app.active_sinks = sinks;
+                        }
+                        AppUpdate::DaemonState { running, windows } => {
+                            app.daemon_running = running;
+                            app.window_count = windows.len();
+                            app.windows = windows;
+                        }
+                        AppUpdate::ActionResult(msg) => {
+                            app.set_status(msg);
+                        }
+                        AppUpdate::PreviewPending { app_pattern, title_pattern } => {
+                            // Only mark pending if it matches current editor content
+                            if app.rules_screen.editor.app_id_pattern == app_pattern && app.rules_screen.editor.title_pattern == title_pattern.clone().unwrap_or_default() {
+                                // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
+                                app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
+                            }
+                        }
+                        AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
+                            // Only apply preview if patterns match current editor content (avoid race)
+                            if app.rules_screen.editor.app_id_pattern == app_pattern && app.rules_screen.editor.title_pattern == title_pattern.clone().unwrap_or_default() {
+                                // Store preview in app.preview as a typed struct
+                                app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -103,8 +423,8 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
     // Render screen content
     match app.current_screen {
         Screen::Dashboard => render_dashboard(frame, chunks[1], &app.config, &app.dashboard_screen, app.daemon_running, app.window_count),
-        Screen::Sinks => render_sinks(frame, chunks[1], &app.config.sinks, &app.sinks_screen),
-        Screen::Rules => render_rules(frame, chunks[1], &app.config.rules, &app.config.sinks, &app.rules_screen, &app.windows),
+        Screen::Sinks => render_sinks(frame, chunks[1], &app.config.sinks, &app.sinks_screen, &app.active_sinks),
+        Screen::Rules => render_rules(frame, chunks[1], &app.config.rules, &app.config.sinks, &app.rules_screen, &app.windows, app.preview.as_ref(), app.spinner_idx),
         Screen::Settings => render_settings(frame, chunks[1], &app.config.settings, &app.settings_screen),
     }
 

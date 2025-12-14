@@ -6,6 +6,11 @@ use anyhow::Result;
 
 use crate::config::Config;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
+use std::sync::Arc;
+
+// Type aliases to reduce complex type signatures for TUI preview channel
+type CompiledRegex = Arc<regex::Regex>;
+type PreviewInMsg = (String, Option<String>, Option<CompiledRegex>, Option<CompiledRegex>);
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +74,51 @@ impl Screen {
 }
 
 /// Application state
+/// Messages sent from background worker to UI
+pub enum AppUpdate {
+    ActiveSinks(Vec<String>),
+    DaemonState { running: bool, windows: Vec<crate::ipc::WindowInfo> },
+    ActionResult(String),
+    /// Live-preview started (pending)
+    PreviewPending { app_pattern: String, title_pattern: Option<String> },
+    /// Live-preview results for the rules editor
+    PreviewMatches {
+        app_pattern: String,
+        title_pattern: Option<String>,
+        matches: Vec<String>,
+        timed_out: bool,
+    },
+}
+
+/// Commands sent from UI to background worker
+pub enum BgCommand {
+    DaemonAction(DaemonAction),
+    /// Request a live-preview match for given patterns. Optionally include compiled regex caches.
+    PreviewRequest {
+        app_pattern: String,
+        title_pattern: Option<String>,
+        compiled_app: Option<std::sync::Arc<regex::Regex>>,
+        compiled_title: Option<std::sync::Arc<regex::Regex>>,
+    },
+}
+
+/// Preview result stored in app state
+pub struct PreviewResult {
+    pub app_pattern: String,
+    pub title_pattern: Option<String>,
+    pub matches: Vec<String>,
+    pub timed_out: bool,
+    pub pending: bool,
+}
+
 pub struct App {
+    /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
+    pub bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
+    /// Channel receiver to accept background updates (set by run())
+    pub bg_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppUpdate>>,
+    /// Unbounded preview input sender. Input handlers push preview requests here.
+    pub preview_in_tx: Option<tokio::sync::mpsc::UnboundedSender<PreviewInMsg>>,
+
     /// Currently active screen
     pub current_screen: Screen,
     /// Whether the application should quit
@@ -78,6 +127,11 @@ pub struct App {
     pub config: Config,
     /// Status message to display (errors, confirmations)
     pub status_message: Option<String>,
+    /// Last preview results from background worker
+    pub preview: Option<PreviewResult>,
+    /// Spinner frame index for small loading animations
+    pub spinner_idx: usize,
+
     /// Dashboard screen state
     pub dashboard_screen: DashboardScreen,
     /// Settings screen state
@@ -92,12 +146,14 @@ pub struct App {
     pub show_help: bool,
     /// Whether user requested quit (waiting for confirmation if config_dirty)
     pub confirm_quit: bool,
-    /// Cached daemon running status (updated each render cycle)
+    /// Cached daemon running status (updated by background worker)
     pub daemon_running: bool,
-    /// Cached window count (updated each render cycle)
+    /// Cached window count (updated by background worker)
     pub window_count: usize,
-    /// Cached window list for live preview (updated each render cycle)
+    /// Cached window list for live preview (updated by background worker)
     pub windows: Vec<crate::ipc::WindowInfo>,
+    /// Cached active sinks snapshot (updated by background worker)
+    pub active_sinks: Vec<String>,
     /// Pending daemon action to execute (set by input handler, executed by main loop)
     pub pending_daemon_action: Option<DaemonAction>,
 }
@@ -117,6 +173,7 @@ impl App {
     /// Returns an error if config loading fails.
     pub fn new() -> Result<Self> {
         let config = Config::load()?;
+        // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
         let settings_screen = SettingsScreen::new(&config.settings);
         let sinks_screen = SinksScreen::new();
@@ -126,6 +183,8 @@ impl App {
             should_quit: false,
             config,
             status_message: None,
+            preview: None,
+            spinner_idx: 0,
             dashboard_screen,
             settings_screen,
             sinks_screen,
@@ -136,11 +195,16 @@ impl App {
             daemon_running: false,
             window_count: 0,
             windows: Vec::new(),
+            active_sinks: Vec::new(),
             pending_daemon_action: None,
+            bg_cmd_tx: None,
+            bg_update_rx: None,
+            preview_in_tx: None,
         })
     }
 
     /// Execute pending daemon action if any
+    #[allow(dead_code)]
     pub async fn execute_pending_daemon_action(&mut self) {
         use crate::tui::daemon_control::DaemonManager;
 
@@ -170,6 +234,7 @@ impl App {
     }
 
     /// Update cached daemon state (call before rendering)
+    #[allow(dead_code)]
     pub async fn update_daemon_state(&mut self) {
         use crate::tui::daemon_control::DaemonManager;
 
