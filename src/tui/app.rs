@@ -190,8 +190,10 @@ impl App {
         // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
         let settings_screen = SettingsScreen::new(&config.settings);
-        let sinks_screen = SinksScreen::new();
+        let mut sinks_screen = SinksScreen::new();
         let rules_screen = RulesScreen::new();
+        // Initialize sinks display cache from loaded config
+        sinks_screen.update_display_descs(&config.sinks);
         Ok(Self {
             current_screen: Screen::Dashboard,
             should_quit: false,

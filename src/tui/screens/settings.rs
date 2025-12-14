@@ -70,6 +70,8 @@ pub struct SettingsScreen {
     pub editing_log_level: bool,
     /// Selected log level index (0-4 for error/warn/info/debug/trace)
     pub log_level_index: usize,
+    /// Cached padded display names for settings (left-aligned)
+    pub padded_names: Vec<String>,
 }
 
 impl SettingsScreen {
@@ -84,10 +86,19 @@ impl SettingsScreen {
             _ => 2, // Default to info
         };
 
+        // Build padded names cache based on longest setting name
+        let names: Vec<String> = SettingItem::all().iter().map(|i| i.name().to_string()).collect();
+        let max_len = names.iter().map(|s| s.len()).max().unwrap_or(0);
+        let padded_names = names
+            .into_iter()
+            .map(|n| format!("{:<width$}", n, width = max_len))
+            .collect();
+
         Self {
             selected: 0,
             editing_log_level: false,
             log_level_index,
+            padded_names,
         }
     }
 
@@ -191,12 +202,14 @@ fn render_settings_list(
                 Style::default().fg(Color::White)
             };
 
+            let padded_name = screen_state.padded_names.get(i).map(|s| s.as_str()).unwrap_or(item.name());
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::styled(format!("{:<30}", item.name()), style),
+                Span::styled(padded_name, style),
+                Span::raw("  "),
                 Span::styled(value_text, style),
             ]);
 

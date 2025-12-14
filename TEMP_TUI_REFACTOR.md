@@ -35,6 +35,17 @@ Phase 2 — Regex & Render Optimizations (in progress)
   - Consider replacing per-tick `handle_events` poll with a blocking input thread to decouple input immediately from the tick cadence (optional; current approach is acceptable with dirty redraws).
   - Add a couple of microbenchmarks or runtime instrumentation to spot expensive renders while interacting.
 
+- Work completed in this session:
+  - Replaced multiple `format!` allocations in hot render paths with span-based rendering (rules, textfield, help).
+- Added cached padded display strings for the Settings screen (`SettingsScreen.padded_names`) to restore fixed-width alignment without per-frame allocations.
+  - Completed a `Regex::new` audit in `src/tui` and updated editor input paths to call `RuleEditor::ensure_compiled()` eagerly on edits/removals so the background preview can reuse cached `Arc<Regex>` instead of compiling on render.
+  - Updated the rule save/validate path to prefer using cached compiled regexes when available, falling back to explicit compilation on the explicit save action.
+  - Implemented cached, padded sink descriptions in `SinksScreen::display_descs` with `update_display_descs(&[SinkConfig])` to restore alignment without per-frame `format!` allocations. This cache is initialized at `App::new()` and updated whenever sinks are added/edited/deleted or when defaults change.
+  - Updated `render_list` in `src/tui/screens/rules.rs` to use a small per-render lookup of padded sink display strings (derived from sinks) so rule sink columns are aligned without per-row formatting allocations.
+  - Ran `cargo test` (all tests passed) and `cargo clippy --all-targets -- -D warnings` (passed).
+
+These changes reduce per-frame heap allocations and ensure regex compilation happens during edit events or explicit saves rather than silently during rendering.
+
 Phase 3 — UX, Accessibility & Polishing (pending)
 - Improve keyboard editing behavior: left/right, Home/End, delete word, selection where reasonable.
 - Add TUI theme mapping and a `--tui-no-color` or `PWSW_TUI_MONOCHROME=1` option for accessibility/term compatibility.

@@ -70,8 +70,8 @@ pub fn render_text_field(
     cursor_pos: Option<usize>,
 ) {
     // Build spans for label, value and cursor to avoid a single allocation and allow clipping.
-    let label_span =
-        ratatui::text::Span::styled(format!("{} ", label), Style::default().fg(Color::Gray));
+    let label_span = ratatui::text::Span::styled(label, Style::default().fg(Color::Gray));
+    // We'll add a raw space as a separate span to avoid allocating a new String for label + space.
     let value_style = if focused {
         Style::default().fg(Color::Cyan)
     } else {
@@ -98,13 +98,15 @@ pub fn render_text_field(
     let (display_substr, cursor_rel, truncated_left, _start) =
         compute_display_window(value, cursor, max_value_len);
 
-    let mut spans = vec![label_span];
+    let mut spans = Vec::new();
+    spans.push(label_span);
+    spans.push(ratatui::text::Span::raw(" "));
 
     if truncated_left {
         spans.push(ratatui::text::Span::raw("…"));
     }
 
-    // left part
+    // left part (collect into String once)
     let left: String = display_substr.graphemes(true).take(cursor_rel).collect();
     spans.push(ratatui::text::Span::styled(left, value_style));
 
