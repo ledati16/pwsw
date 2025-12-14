@@ -32,11 +32,77 @@ pub fn handle_events(app: &mut App) -> Result<()> {
     Ok(())
 }
 
+/// Check if any modal or editor is currently active
+fn is_modal_active(app: &App) -> bool {
+    // Check if help overlay is shown
+    if app.show_help {
+        return true;
+    }
+
+    // Check screen-specific modals
+    match app.current_screen {
+        Screen::Sinks => app.sinks_screen.mode != SinksMode::List,
+        Screen::Rules => app.rules_screen.mode != RulesMode::List,
+        Screen::Settings => app.settings_screen.editing_log_level,
+        Screen::Dashboard => false,
+    }
+}
+
 /// Handle keyboard input
 fn handle_key_event(app: &mut App, key: KeyEvent) {
-    // Global keybindings (work on all screens)
+    // Always-global keybindings (work even in modals)
     match (key.code, key.modifiers) {
-        // Quit: q or Ctrl+C
+        // Ctrl+C always quits immediately
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+            app.quit();
+            return;
+        }
+
+        // Ctrl+S: Save config (global)
+        (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
+            if app.config_dirty {
+                if let Err(e) = app.save_config() {
+                    app.set_status(format!("Failed to save config: {e}"));
+                }
+            }
+            return;
+        }
+
+        _ => {}
+    }
+
+    // If a modal is active, pass most keys to screen-specific handlers
+    // (except always-global shortcuts handled above)
+    if is_modal_active(app) {
+        // Handle escape and help toggle at global level
+        match key.code {
+            KeyCode::Esc => {
+                // Priority: quit confirmation > help overlay > modal/status
+                if app.confirm_quit {
+                    app.cancel_quit();
+                } else if app.show_help {
+                    app.show_help = false;
+                } else {
+                    // Let screen handler close modal
+                    handle_screen_specific_input(app, key);
+                }
+                return;
+            }
+            KeyCode::Char('?') => {
+                app.show_help = !app.show_help;
+                return;
+            }
+            _ => {
+                // All other keys go to screen-specific handlers when modal is active
+                handle_screen_specific_input(app, key);
+                return;
+            }
+        }
+    }
+
+    // Normal global keybindings (only when no modal is active)
+    match (key.code, key.modifiers) {
+        // Quit: q
         (KeyCode::Char('q'), KeyModifiers::NONE) => {
             if app.confirm_quit {
                 // User already confirmed, actually quit
@@ -45,10 +111,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 // First quit request - check for unsaved changes
                 app.request_quit();
             }
-        }
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
-            // Ctrl+C always quits immediately
-            app.quit();
         }
 
         // Tab: next screen
@@ -89,15 +151,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // ?: Toggle help overlay
         (KeyCode::Char('?'), KeyModifiers::NONE) | (KeyCode::Char('?'), KeyModifiers::SHIFT) => {
             app.show_help = !app.show_help;
-        }
-
-        // Ctrl+S: Save config
-        (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-            if app.config_dirty {
-                if let Err(e) = app.save_config() {
-                    app.set_status(format!("Failed to save config: {e}"));
-                }
-            }
         }
 
         // Screen-specific input
