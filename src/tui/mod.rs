@@ -26,6 +26,8 @@ mod input;
 mod screens;
 mod widgets;
 mod preview;
+mod editor_helpers;
+mod textfield;
 
 use app::{App, Screen};
 use input::handle_events;

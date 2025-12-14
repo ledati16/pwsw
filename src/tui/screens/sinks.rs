@@ -28,6 +28,10 @@ pub struct SinkEditor {
     pub icon: String,
     pub default: bool,
     pub focused_field: usize, // 0=name, 1=desc, 2=icon, 3=default
+    // Cursor positions (character indexes) for editable fields
+    pub cursor_name: usize,
+    pub cursor_desc: usize,
+    pub cursor_icon: usize,
 }
 
 impl SinkEditor {
@@ -38,6 +42,9 @@ impl SinkEditor {
             icon: String::new(),
             default: false,
             focused_field: 0,
+            cursor_name: 0,
+            cursor_desc: 0,
+            cursor_icon: 0,
         }
     }
 
@@ -48,6 +55,9 @@ impl SinkEditor {
             icon: sink.icon.clone().unwrap_or_default(),
             default: sink.default,
             focused_field: 0,
+            cursor_name: sink.name.chars().count(),
+            cursor_desc: sink.desc.chars().count(),
+            cursor_icon: sink.icon.clone().unwrap_or_default().chars().count(),
         }
     }
 
@@ -225,30 +235,33 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     frame.render_widget(block, popup_area);
 
     // Name field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[0],
         "Node Name:",
         &screen_state.editor.name,
         screen_state.editor.focused_field == 0,
+        Some(screen_state.editor.cursor_name),
     );
 
     // Desc field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[1],
         "Description:",
         &screen_state.editor.desc,
         screen_state.editor.focused_field == 1,
+        Some(screen_state.editor.cursor_desc),
     );
 
     // Icon field
-    render_text_field(
+    crate::tui::textfield::render_text_field(
         frame,
         chunks[2],
         "Icon (optional):",
         &screen_state.editor.icon,
         screen_state.editor.focused_field == 2,
+        Some(screen_state.editor.cursor_icon),
     );
 
     // Default checkbox
@@ -278,19 +291,6 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     frame.render_widget(help_widget, chunks[4]);
 }
 
-/// Render a text input field
-fn render_text_field(frame: &mut Frame, area: Rect, label: &str, value: &str, focused: bool) {
-    let style = if focused {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    let cursor = if focused { "█" } else { "" };
-    let text = format!("{} {}{}", label, value, cursor);
-    let paragraph = Paragraph::new(text).style(style);
-    frame.render_widget(paragraph, area);
-}
 
 /// Render delete confirmation modal
 fn render_delete_confirmation(

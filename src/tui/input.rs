@@ -324,6 +324,8 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
 
 /// Handle sink editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
+    use crate::tui::editor_helpers::{insert_char_at, remove_char_at, remove_char_before};
+
     match key.code {
         KeyCode::Tab => {
             app.sinks_screen.editor.next_field();
@@ -332,11 +334,23 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             app.sinks_screen.editor.prev_field();
         }
         KeyCode::Char(c) => {
-            // Type into focused field
+            // Type into focused field (insert at cursor)
             match app.sinks_screen.editor.focused_field {
-                0 => app.sinks_screen.editor.name.push(c),
-                1 => app.sinks_screen.editor.desc.push(c),
-                2 => app.sinks_screen.editor.icon.push(c),
+                0 => {
+                    let cur = app.sinks_screen.editor.cursor_name;
+                    let new_cur = insert_char_at(&mut app.sinks_screen.editor.name, c, cur);
+                    app.sinks_screen.editor.cursor_name = new_cur;
+                }
+                1 => {
+                    let cur = app.sinks_screen.editor.cursor_desc;
+                    let new_cur = insert_char_at(&mut app.sinks_screen.editor.desc, c, cur);
+                    app.sinks_screen.editor.cursor_desc = new_cur;
+                }
+                2 => {
+                    let cur = app.sinks_screen.editor.cursor_icon;
+                    let new_cur = insert_char_at(&mut app.sinks_screen.editor.icon, c, cur);
+                    app.sinks_screen.editor.cursor_icon = new_cur;
+                }
                 3 => {
                     // Toggle default checkbox with space
                     if c == ' ' {
@@ -346,12 +360,84 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        KeyCode::Backspace => {
-            // Delete from focused field
+        KeyCode::Left => {
             match app.sinks_screen.editor.focused_field {
-                0 => { app.sinks_screen.editor.name.pop(); }
-                1 => { app.sinks_screen.editor.desc.pop(); }
-                2 => { app.sinks_screen.editor.icon.pop(); }
+                0 => app.sinks_screen.editor.cursor_name = app.sinks_screen.editor.cursor_name.saturating_sub(1),
+                1 => app.sinks_screen.editor.cursor_desc = app.sinks_screen.editor.cursor_desc.saturating_sub(1),
+                2 => app.sinks_screen.editor.cursor_icon = app.sinks_screen.editor.cursor_icon.saturating_sub(1),
+                _ => {}
+            }
+        }
+        KeyCode::Right => {
+            match app.sinks_screen.editor.focused_field {
+                0 => {
+                    let len = app.sinks_screen.editor.name.chars().count();
+                    app.sinks_screen.editor.cursor_name = usize::min(len, app.sinks_screen.editor.cursor_name + 1);
+                }
+                1 => {
+                    let len = app.sinks_screen.editor.desc.chars().count();
+                    app.sinks_screen.editor.cursor_desc = usize::min(len, app.sinks_screen.editor.cursor_desc + 1);
+                }
+                2 => {
+                    let len = app.sinks_screen.editor.icon.chars().count();
+                    app.sinks_screen.editor.cursor_icon = usize::min(len, app.sinks_screen.editor.cursor_icon + 1);
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Home => {
+            match app.sinks_screen.editor.focused_field {
+                0 => app.sinks_screen.editor.cursor_name = 0,
+                1 => app.sinks_screen.editor.cursor_desc = 0,
+                2 => app.sinks_screen.editor.cursor_icon = 0,
+                _ => {}
+            }
+        }
+        KeyCode::End => {
+            match app.sinks_screen.editor.focused_field {
+                0 => app.sinks_screen.editor.cursor_name = app.sinks_screen.editor.name.chars().count(),
+                1 => app.sinks_screen.editor.cursor_desc = app.sinks_screen.editor.desc.chars().count(),
+                2 => app.sinks_screen.editor.cursor_icon = app.sinks_screen.editor.icon.chars().count(),
+                _ => {}
+            }
+        }
+        KeyCode::Backspace => {
+            match app.sinks_screen.editor.focused_field {
+                0 => {
+                    let cur = app.sinks_screen.editor.cursor_name;
+                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.name, cur);
+                    app.sinks_screen.editor.cursor_name = new_cur;
+                }
+                1 => {
+                    let cur = app.sinks_screen.editor.cursor_desc;
+                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.desc, cur);
+                    app.sinks_screen.editor.cursor_desc = new_cur;
+                }
+                2 => {
+                    let cur = app.sinks_screen.editor.cursor_icon;
+                    let new_cur = remove_char_before(&mut app.sinks_screen.editor.icon, cur);
+                    app.sinks_screen.editor.cursor_icon = new_cur;
+                }
+                _ => {}
+            }
+        }
+        KeyCode::Delete => {
+            match app.sinks_screen.editor.focused_field {
+                0 => {
+                    let cur = app.sinks_screen.editor.cursor_name;
+                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.name, cur);
+                    app.sinks_screen.editor.cursor_name = new_cur;
+                }
+                1 => {
+                    let cur = app.sinks_screen.editor.cursor_desc;
+                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.desc, cur);
+                    app.sinks_screen.editor.cursor_desc = new_cur;
+                }
+                2 => {
+                    let cur = app.sinks_screen.editor.cursor_icon;
+                    let new_cur = remove_char_at(&mut app.sinks_screen.editor.icon, cur);
+                    app.sinks_screen.editor.cursor_icon = new_cur;
+                }
                 _ => {}
             }
         }
