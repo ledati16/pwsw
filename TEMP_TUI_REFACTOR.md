@@ -80,4 +80,17 @@ Recent micro-step
 
 If you want, I can now perform another interactive run and analyze the `tui_stderr.log` for correlation and targeted fixes.
 
+
+
+Recent micro-step: word-nav helpers and tests
+- Implemented grapheme-aware word navigation helpers and SimpleEditor wrappers in `src/tui/editor_helpers.rs` and `src/tui/editor_state.rs`.
+- Wired Ctrl+Left/Ctrl+Right/Ctrl+Backspace in `src/tui/input.rs` for Sinks and Rules editors.
+- Added unit tests `src/tui/tests/editor_word_nav_tests.rs` (basic + multibyte) and expanded edge-case tests in follow-up commit.
+- Ran `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt` successfully after these changes.
+
+- Next small steps:
+  1. Add integration tests that simulate key events to validate end-to-end input wiring for editors.
+  2. Add accessibility/theme toggle and a short docs entry.
+  3. Run a lightweight `terminal.draw()` timing run to validate no regressions in render latency.
+
 -- End of TEMP_TUI_REFACTOR.md

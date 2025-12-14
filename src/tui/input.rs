@@ -372,16 +372,22 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        KeyCode::Left => match app.sinks_screen.editor.focused_field {
-            0 => app.sinks_screen.editor.name.move_left(),
-            1 => app.sinks_screen.editor.desc.move_left(),
-            2 => app.sinks_screen.editor.icon.move_left(),
+        KeyCode::Left => match (app.sinks_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.move_word_left(),
+            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.move_word_left(),
+            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.move_word_left(),
+            (0, _) => app.sinks_screen.editor.name.move_left(),
+            (1, _) => app.sinks_screen.editor.desc.move_left(),
+            (2, _) => app.sinks_screen.editor.icon.move_left(),
             _ => {}
         },
-        KeyCode::Right => match app.sinks_screen.editor.focused_field {
-            0 => app.sinks_screen.editor.name.move_right(),
-            1 => app.sinks_screen.editor.desc.move_right(),
-            2 => app.sinks_screen.editor.icon.move_right(),
+        KeyCode::Right => match (app.sinks_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.move_word_right(),
+            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.move_word_right(),
+            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.move_word_right(),
+            (0, _) => app.sinks_screen.editor.name.move_right(),
+            (1, _) => app.sinks_screen.editor.desc.move_right(),
+            (2, _) => app.sinks_screen.editor.icon.move_right(),
             _ => {}
         },
         KeyCode::Home => match app.sinks_screen.editor.focused_field {
@@ -396,14 +402,17 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             2 => app.sinks_screen.editor.icon.move_end(),
             _ => {}
         },
-        KeyCode::Backspace => match app.sinks_screen.editor.focused_field {
-            0 => {
+        KeyCode::Backspace => match (app.sinks_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.remove_word_before(),
+            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.remove_word_before(),
+            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.remove_word_before(),
+            (0, _) => {
                 app.sinks_screen.editor.name.remove_before();
             }
-            1 => {
+            (1, _) => {
                 app.sinks_screen.editor.desc.remove_before();
             }
-            2 => {
+            (2, _) => {
                 app.sinks_screen.editor.icon.remove_before();
             }
             _ => {}
@@ -619,16 +628,22 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        KeyCode::Left => match app.rules_screen.editor.focused_field {
-            0 => app.rules_screen.editor.app_id_pattern.move_left(),
-            1 => app.rules_screen.editor.title_pattern.move_left(),
-            3 => app.rules_screen.editor.desc.move_left(),
+        KeyCode::Left => match (app.rules_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => app.rules_screen.editor.app_id_pattern.move_word_left(),
+            (1, KeyModifiers::CONTROL) => app.rules_screen.editor.title_pattern.move_word_left(),
+            (3, KeyModifiers::CONTROL) => app.rules_screen.editor.desc.move_word_left(),
+            (0, _) => app.rules_screen.editor.app_id_pattern.move_left(),
+            (1, _) => app.rules_screen.editor.title_pattern.move_left(),
+            (3, _) => app.rules_screen.editor.desc.move_left(),
             _ => {}
         },
-        KeyCode::Right => match app.rules_screen.editor.focused_field {
-            0 => app.rules_screen.editor.app_id_pattern.move_right(),
-            1 => app.rules_screen.editor.title_pattern.move_right(),
-            3 => app.rules_screen.editor.desc.move_right(),
+        KeyCode::Right => match (app.rules_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => app.rules_screen.editor.app_id_pattern.move_word_right(),
+            (1, KeyModifiers::CONTROL) => app.rules_screen.editor.title_pattern.move_word_right(),
+            (3, KeyModifiers::CONTROL) => app.rules_screen.editor.desc.move_word_right(),
+            (0, _) => app.rules_screen.editor.app_id_pattern.move_right(),
+            (1, _) => app.rules_screen.editor.title_pattern.move_right(),
+            (3, _) => app.rules_screen.editor.desc.move_right(),
             _ => {}
         },
         KeyCode::Home => match app.rules_screen.editor.focused_field {
@@ -643,8 +658,55 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             3 => app.rules_screen.editor.desc.move_end(),
             _ => {}
         },
-        KeyCode::Backspace => match app.rules_screen.editor.focused_field {
-            0 => {
+        KeyCode::Backspace => match (app.rules_screen.editor.focused_field, key.modifiers) {
+            (0, KeyModifiers::CONTROL) => {
+                app.rules_screen.editor.app_id_pattern.remove_word_before();
+                // Ensure compiled caches updated eagerly
+                app.rules_screen.editor.ensure_compiled();
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                    let compiled_title = app.rules_screen.editor.compiled_title.clone();
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
+                        title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
+                            None
+                        } else {
+                            Some(app.rules_screen.editor.title_pattern.value.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
+                }
+            }
+            (1, KeyModifiers::CONTROL) => {
+                app.rules_screen.editor.title_pattern.remove_word_before();
+                // Eagerly update compiled caches for current editor patterns
+                app.rules_screen.editor.ensure_compiled();
+
+                let pat = app.rules_screen.editor.title_pattern.value.clone();
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                    let compiled_title = if pat.is_empty() {
+                        None
+                    } else {
+                        app.rules_screen.editor.compiled_title.clone()
+                    };
+                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
+                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
+                        title_pattern: if pat.is_empty() {
+                            None
+                        } else {
+                            Some(pat.clone())
+                        },
+                        compiled_app,
+                        compiled_title,
+                    });
+                }
+            }
+            (3, KeyModifiers::CONTROL) => {
+                app.rules_screen.editor.desc.remove_word_before();
+            }
+            (0, _) => {
                 app.rules_screen.editor.app_id_pattern.remove_before();
 
                 // Ensure compiled caches updated eagerly
@@ -665,7 +727,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     });
                 }
             }
-            1 => {
+            (1, _) => {
                 app.rules_screen.editor.title_pattern.remove_before();
                 // Eagerly update compiled caches for current editor patterns
                 app.rules_screen.editor.ensure_compiled();
@@ -690,7 +752,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     });
                 }
             }
-            3 => {
+            (3, _) => {
                 app.rules_screen.editor.desc.remove_before();
             }
             _ => {}

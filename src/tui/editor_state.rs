@@ -32,7 +32,7 @@ pub fn move_left(cursor: &mut usize) {
     *cursor = cursor.saturating_sub(1);
 }
 
-/// Move cursor right by one, clamped to string length.
+/// Move cursor right by one char.
 pub fn move_right(cursor: &mut usize, s: &str) {
     let len = s.graphemes(true).count();
     *cursor = usize::min(len, *cursor + 1);
@@ -46,6 +46,22 @@ pub fn move_home(cursor: &mut usize) {
 /// Move cursor to the end of the string.
 pub fn move_end(cursor: &mut usize, s: &str) {
     *cursor = s.graphemes(true).count();
+}
+
+/// Move cursor to start of previous word.
+pub fn move_word_left(cursor: &mut usize, s: &str) {
+    *cursor = crate::tui::editor_helpers::move_cursor_word_left(*cursor, s);
+}
+
+/// Move cursor to end of next word.
+pub fn move_word_right(cursor: &mut usize, s: &str) {
+    *cursor = crate::tui::editor_helpers::move_cursor_word_right(*cursor, s);
+}
+
+/// Remove word before cursor (Ctrl+Backspace).
+pub fn remove_word_before(s: &mut String, cursor: &mut usize) {
+    let new_cur = crate::tui::editor_helpers::remove_word_before(s, *cursor);
+    *cursor = new_cur;
 }
 
 /// Ensure cursor is within valid bounds for the string.
@@ -124,6 +140,21 @@ impl SimpleEditor {
     /// Move cursor to the end.
     pub fn move_end(&mut self) {
         move_end(&mut self.cursor, self.value.as_str());
+    }
+
+    /// Move cursor to start of previous word.
+    pub fn move_word_left(&mut self) {
+        move_word_left(&mut self.cursor, self.value.as_str());
+    }
+
+    /// Move cursor to end of next word.
+    pub fn move_word_right(&mut self) {
+        move_word_right(&mut self.cursor, self.value.as_str());
+    }
+
+    /// Remove previous word (Ctrl+Backspace).
+    pub fn remove_word_before(&mut self) {
+        remove_word_before(&mut self.value, &mut self.cursor);
     }
 
     /// Clamp cursor to valid range for current value.
