@@ -320,13 +320,13 @@ fn render_editor(
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3), // App ID pattern
-            Constraint::Length(3), // Title pattern
-            Constraint::Length(3), // Sink selector
-            Constraint::Length(3), // Description
-            Constraint::Length(3), // Notify toggle
-            Constraint::Min(5),    // Live preview
-            Constraint::Length(3), // Help text
+            Constraint::Length(2), // App ID pattern (reduced vertical padding)
+            Constraint::Length(2), // Title pattern
+            Constraint::Length(2), // Sink selector
+            Constraint::Length(2), // Description
+            Constraint::Length(2), // Notify toggle
+            Constraint::Min(6),    // Live preview (give preview more room)
+            Constraint::Length(2), // Help text
         ])
         .split(popup_area);
 
@@ -415,11 +415,22 @@ fn render_editor(
     );
 
     // Notify toggle
-    let notify_text = match screen_state.editor.notify {
-        Some(true) => "✓ Notify (enabled)",
-        Some(false) => "✗ Notify (disabled)",
-        None => "○ Notify (use global setting)",
-    };
+    // Render the notify state using colored spans for clarity
+    let mut notify_spans = Vec::new();
+    match screen_state.editor.notify {
+        Some(true) => {
+            notify_spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+            notify_spans.push(Span::raw("Notify (enabled)"));
+        }
+        Some(false) => {
+            notify_spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+            notify_spans.push(Span::raw("Notify (disabled)"));
+        }
+        None => {
+            notify_spans.push(Span::styled("○ ", Style::default().fg(Color::Gray)));
+            notify_spans.push(Span::raw("Notify (use global setting)"));
+        }
+    }
     let notify_style = if screen_state.editor.focused_field == 4 {
         Style::default()
             .fg(Color::Cyan)
@@ -427,7 +438,7 @@ fn render_editor(
     } else {
         Style::default().fg(Color::White)
     };
-    let notify_widget = Paragraph::new(notify_text).style(notify_style);
+    let notify_widget = Paragraph::new(Line::from(notify_spans)).style(notify_style);
     frame.render_widget(notify_widget, chunks[4]);
 
     // Live preview panel
