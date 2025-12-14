@@ -239,10 +239,10 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         .direction(Direction::Vertical)
         .margin(2)
         .constraints([
-            Constraint::Length(3), // Name field
-            Constraint::Length(3), // Desc field
-            Constraint::Length(3), // Icon field
-            Constraint::Length(3), // Default checkbox
+            Constraint::Length(2), // Name field
+            Constraint::Length(2), // Desc field
+            Constraint::Length(2), // Icon field
+            Constraint::Length(2), // Default checkbox
             Constraint::Min(0),    // Help text
         ])
         .split(popup_area);
@@ -285,11 +285,14 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     );
 
     // Default checkbox
-    let checkbox_text = if screen_state.editor.default {
-        "✓ Default Sink"
+    let mut checkbox_spans = Vec::new();
+    if screen_state.editor.default {
+        checkbox_spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+        checkbox_spans.push(Span::raw("Default Sink"));
     } else {
-        "✗ Default Sink"
-    };
+        checkbox_spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+        checkbox_spans.push(Span::raw("Default Sink"));
+    }
     let checkbox_style = if screen_state.editor.focused_field == 3 {
         Style::default()
             .fg(Color::Cyan)
@@ -297,7 +300,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     } else {
         Style::default().fg(Color::White)
     };
-    let checkbox = Paragraph::new(checkbox_text).style(checkbox_style);
+    let checkbox = Paragraph::new(Line::from(checkbox_spans)).style(checkbox_style);
     frame.render_widget(checkbox, chunks[3]);
 
     // Help text

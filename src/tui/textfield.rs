@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::Line,
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -135,5 +135,13 @@ pub fn render_text_field(
     }
 
     let paragraph = Paragraph::new(Line::from(spans));
+
+    // Draw paragraph; if focused, also draw a thin border around the text area to indicate focus
     frame.render_widget(paragraph, area);
+    if focused {
+        let focus_block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::Cyan));
+        frame.render_widget(focus_block, area);
+    }
 }
