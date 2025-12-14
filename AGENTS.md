@@ -4,6 +4,7 @@ This file gives explicit instructions for automated agents and human contributor
 
 Scope
 - The scope of this file is the entire repository. Agents must follow these rules when touching any files, and must pay special attention when editing files under `src/tui/`.
+- Agents must read `CLAUDE.md` at the start of any session and treat it as the authoritative project policy; `AGENTS.md` is a concise operational checklist derived from it.
 - Before making changes that touch the TUI, consult `TEMP_TUI_REFACTOR.md` for the current plan and progress. `TEMP_TUI_REFACTOR.md` is the canonical progress log for the TUI refactor and must be updated for each minor step.
 
 Quick checklist (required before committing any changes that touch source code)
