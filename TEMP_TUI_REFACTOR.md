@@ -89,7 +89,7 @@ Recent micro-step: word-nav helpers and tests
 - Ran `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt` successfully after these changes.
 
 - Next small steps:
-  1. Add integration tests that simulate key events to validate end-to-end input wiring for editors.
+  1. Add integration tests that simulate key events to validate end-to-end input wiring for editors. (Added `src/tui/tests/input_integration_tests.rs` and `pub(crate) simulate_key_event` wrapper in `src/tui/input.rs`.)
   2. Add accessibility/theme toggle and a short docs entry.
   3. Run a lightweight `terminal.draw()` timing run to validate no regressions in render latency.
 
