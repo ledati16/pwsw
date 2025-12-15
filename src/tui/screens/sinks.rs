@@ -566,7 +566,8 @@ fn render_sink_selector(
                 .title("Select Sink ([↑/↓]navigate [Enter]select [Esc]cancel)")
                 .style(Style::default().bg(Color::Black)),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol(" "); // Fix: ensure no default symbol
 
     // Sync state
     screen_state
