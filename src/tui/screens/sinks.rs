@@ -5,8 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Scrollbar,
-        ScrollbarOrientation, ScrollbarState, Table, TableState,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
     },
     Frame,
 };
@@ -263,29 +262,38 @@ fn render_list(
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(table, area, &mut screen_state.state);
 
-    // Render scrollbar
-    let scrollbar = Scrollbar::default()
-        .orientation(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("▲"))
-        .end_symbol(Some("▼"));
-
-    // Compute visible viewport height for scrollbar: inner height minus top/bottom margins (2)
+    // Compute visible viewport (inner area) for arrow indicators
     let inner = area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
     let view_height = inner.height as usize;
 
-    let mut scroll_state = ScrollbarState::default()
-        .content_length(sinks.len())
-        .position(screen_state.state.offset())
-        .viewport_length(view_height);
+    let raw_offset = screen_state.state.offset();
+    let total = sinks.len();
+    let has_above = raw_offset > 0;
+    let has_below = raw_offset + view_height < total;
 
-    frame.render_stateful_widget(
-        scrollbar,
-        area.inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scroll_state,
-    );
+    // Draw top arrow if there's more above
+    if has_above {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y,
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
+
+    // Draw bottom arrow if there's more below
+    if has_below {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y + inner.height.saturating_sub(1),
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
 }
 
 /// Render the add/edit modal
@@ -562,33 +570,71 @@ fn render_sink_selector(
         .select(Some(visual_index));
     frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
 
-    // Render scrollbar
-    let scrollbar = Scrollbar::default()
-        .orientation(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("▲"))
-        .end_symbol(Some("▼"));
-
-    // Total length = items + headers (1 fixed header + 1 optional header + 1 optional spacer)
-    let total_len = active_sinks.len()
-        + profile_sinks.len()
-        + 1 // Active header
-        + if profile_sinks.is_empty() { 0 } else { 2 }; // Profile header + spacer
-
-    // Compute visible viewport height for scrollbar: inner height minus top/bottom margins (2)
+    // Compute visible viewport height for indicators
     let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
     let view_height = inner.height as usize;
 
-    let mut scroll_state = ScrollbarState::default()
-        .content_length(total_len)
-        .position(screen_state.sink_selector_state.offset())
-        .viewport_length(view_height);
+    // Build a vector of displayed strings (headers, spacers, and items) to measure wrapping
+    let mut visual_items: Vec<String> = Vec::new();
+    visual_items.push("── Active Sinks ──".to_string());
+    for sink in active_sinks {
+        let desc_text = truncate_desc(&sink.description, max_desc_width);
+        let name_text = truncate_node_name(&sink.name, 35);
+        visual_items.push(format!("  {} ({})", desc_text, name_text));
+    }
 
-    frame.render_stateful_widget(
-        scrollbar,
-        popup_area.inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scroll_state,
-    );
+    if !profile_sinks.is_empty() {
+        visual_items.push(String::new()); // spacer
+        visual_items.push("── Profile Sinks (require switching) ──".to_string());
+        for sink in profile_sinks {
+            let desc_text = truncate_desc(&sink.description, max_desc_width);
+            let name_text = truncate_node_name(&sink.predicted_name, 35);
+            visual_items.push(format!("  {} ({})", desc_text, name_text));
+        }
+    }
+
+    // Compute visual line counts per item using the inner width
+    let content_width = inner.width as usize;
+    let mut per_row_lines: Vec<usize> = Vec::with_capacity(visual_items.len());
+    for s in visual_items.iter() {
+        let w = content_width.max(1);
+        let lines = (s.len().saturating_add(w - 1)) / w;
+        per_row_lines.push(lines.max(1));
+    }
+
+    let total_visual_lines: usize = per_row_lines.iter().sum();
+
+    // Map ListState offset (logical row offset) -> visual line position by summing heights of preceding rows
+    let raw_offset = screen_state.sink_selector_state.offset();
+    let mut visual_pos = 0usize;
+    for i in 0..raw_offset.min(per_row_lines.len()) {
+        visual_pos += per_row_lines[i];
+    }
+
+    let has_above = raw_offset > 0;
+    let has_below = (visual_pos + view_height) < total_visual_lines;
+
+    // Draw top arrow if there's more above
+    if has_above {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y,
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
+
+    // Draw bottom arrow if there's more below
+    if has_below {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y + inner.height.saturating_sub(1),
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
 }

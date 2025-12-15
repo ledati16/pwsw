@@ -39,10 +39,9 @@ Phase 2 — Regex & Render Optimizations (completed)
   - Replaced multiple `format!` allocations in hot render paths with span-based rendering (rules, textfield, help).
   - Added cached padded display strings for the Settings screen (`SettingsScreen.padded_names`) to restore fixed-width alignment without per-frame allocations.
   - Completed a `Regex::new` audit in `src/tui` and updated editor input paths to call `RuleEditor::ensure_compiled()` eagerly on edits/removals so the background preview can reuse cached `Arc<Regex>` instead of compiling on render.
-  - Updated the rule save/validate path to prefer using cached compiled regexes when available, falling back to explicit compilation on the explicit save action.
-  - Implemented cached, padded sink descriptions in `SinksScreen::display_descs` with `update_display_descs(&[SinkConfig])` to restore alignment without per-frame `format!` allocations. This cache is initialized at `App::new()` and updated whenever sinks are added/edited/deleted or when defaults change.
-  - Updated `render_list` in `src/tui/screens/rules.rs` to use a small per-render lookup of padded sink display strings (derived from sinks) so rule sink columns are aligned without per-row formatting allocations.
   - Moved preview match string construction out of the render path into the blocking preview executor (`src/tui/preview.rs`) and replaced `format!` allocations there with direct `String` building.
+  - Preview forwarder/debouncer collapses rapid preview updates and throttles execution; tests present for forwarder and debouncer. (see `src/tui/mod.rs` and tests in `src/tui/tests`)
+  - Render code was optimized in places to avoid large temporary String allocations (building `Span` vectors, etc.), and live preview rendering uses cached compiled regexes when available.
   - Replaced header tab/title `format!` calls with precomputed `String` builders to avoid format allocations per-render.
   - Replaced per-render Title allocation in rules delete modal with Span-based Line to avoid one `String` allocation per render.
   - Replaced some `to_string()`/`clone()` usages in render paths with `as_str()` references where possible.
@@ -78,8 +77,7 @@ Recent micro-step
 - Action B completed: swept remaining render allocations and reduced clones/formatting in hot paths.
 - Action C completed: added richer debug logs for slow frames including run-relative timestamp, screen name, preview pending, and window count.
 
-If you want, I can now perform another interactive run and analyze the `tui_stderr.log` for correlation and targeted fixes.
-
+These changes reduce per-frame heap allocations and ensure regex compilation happens during edit events or explicit saves rather than silently during rendering.
 
 
 Recent micro-step: word-nav helpers and tests
@@ -99,12 +97,21 @@ Phase 3 UX Polish - Recent Completion (2025-12-14)
 - Unified keybind notation in block titles to `[key]action` format for consistency
 - Replaced sink selector in rules editor with button-like widget for better discoverability
 - Standardized in-modal help text using `modal_help_line()` helper to avoid allocations
+- Applied border-based focus styling to checkboxes/toggles for visual consistency
 - Fixed help screen spacing with fixed-width key column (format! acceptable - help renders on-demand)
 - Applied border-based focus styling to checkboxes/toggles for visual consistency
-- Updated layout constraints from `Length(2)` to `Length(3)` for bordered fields
-- All changes preserve Phase 2 performance optimizations (no `format!` in hot render paths)
-- Ran `cargo test` (59 tests passed), `cargo clippy --all-targets` (clean)
-- Created reusable helpers in `src/tui/widgets.rs`: `modal_size`, `focus_border_style()`, `render_selector_button()`, `modal_help_line()`
+- Styled [unsaved] indicator in yellow bold for better visibility
+- Fixed dashboard render order issue (block now renders before content using Margin)
+- Implemented full sink selector modal for adding sinks:
+  - Shows both active sinks and profile sinks (requiring profile switching)
+  - Smart text truncation: descriptions truncate from start, node names from end (shows distinguishing suffix)
+  - Manual navigation with ↑/↓ keys, Enter to select, Esc to cancel
+  - Populates both name and description fields when sink selected
+  - Context-sensitive help hint: "Tip: Press Enter on Node Name to select from available sinks"
+- Updated App state to store full sink data (`active_sink_list`, `profile_sink_list`, `SinksData` variant)
+- Modified background worker to fetch both active and profile sinks via `SinksData` message
+- All changes maintain Phase 2 performance optimizations (no allocations in hot paths)
+- Ran `cargo test` (all passed), `cargo clippy --all-targets` (clean)
 
 Files modified:
 - `src/tui/widgets.rs`: Added UX helper functions and modal size constants
@@ -127,7 +134,7 @@ Phase 3 UX Polish - Additional Improvements (2025-12-14)
   - Manual navigation with ↑/↓ keys, Enter to select, Esc to cancel
   - Populates both name and description fields when sink selected
   - Context-sensitive help hint: "Tip: Press Enter on Node Name to select from available sinks"
-- Updated App state to store full sink data (`active_sink_list`, `profile_sink_list`)
+- Updated App state to store full sink data (`active_sink_list`, `profile_sink_list`, `SinksData` variant)
 - Modified background worker to fetch both active and profile sinks via `SinksData` message
 - All changes maintain Phase 2 performance optimizations (no allocations in hot paths)
 - Ran `cargo test` (all passed), `cargo clippy --all-targets` (clean)
@@ -167,4 +174,11 @@ Next steps:
 - Accessibility/theme toggle.
 - Final polish and documentation.
 
+-- Recent micro-step: Instrumentation (2025-12-15)
+- Replaced remaining `Scrollbar` widgets in `src/tui/screens/rules.rs` and `src/tui/screens/settings.rs` with simple up/down arrow indicators (▲/▼) that appear at the top-right and bottom-right of the inner viewports.
+- Replaced `Scrollbar` in `src/tui/screens/sinks.rs` earlier; all Scrollbar imports and `ScrollbarState` usages removed.
+- Kept lightweight instrumentation `eprintln!` lines to aid verification; they can be removed once behavior is validated.
+- Rationale: arrows are simpler and avoid brittle thumb-position mapping when rows wrap; they also match the user's preference to "no more scrollbars — use the arrows everywhere".
+
 -- End of TEMP_TUI_REFACTOR.md
+
