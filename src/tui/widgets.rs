@@ -123,7 +123,7 @@ pub fn render_selector_button(
     if focused {
         // Focused: Show as clickable button with dropdown arrow and hint
         spans.push(Span::styled(
-            "▼ [ ",
+            "↓ [ ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -146,7 +146,7 @@ pub fn render_selector_button(
         ));
     } else {
         // Unfocused: Show as button with subtle dropdown arrow
-        spans.push(Span::styled("▼ [ ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("↓ [ ", Style::default().fg(Color::DarkGray)));
         spans.push(Span::raw(display_value));
         spans.push(Span::styled(" ]", Style::default().fg(Color::DarkGray)));
     }
