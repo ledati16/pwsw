@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
+        ScrollbarState,
+    },
     Frame,
 };
 
@@ -72,6 +75,8 @@ pub struct SettingsScreen {
     pub log_level_index: usize,
     /// Cached padded display names for settings (left-aligned)
     pub padded_names: Vec<String>,
+    /// List scroll state
+    pub state: ListState,
 }
 
 impl SettingsScreen {
@@ -102,6 +107,7 @@ impl SettingsScreen {
             editing_log_level: false,
             log_level_index,
             padded_names,
+            state: ListState::default(),
         }
     }
 
@@ -165,7 +171,7 @@ pub fn render_settings(
     frame: &mut Frame,
     area: Rect,
     settings: &Settings,
-    screen_state: &SettingsScreen,
+    screen_state: &mut SettingsScreen,
 ) {
     // Split into [settings list | description]
     let chunks = Layout::default()
@@ -188,7 +194,7 @@ fn render_settings_list(
     frame: &mut Frame,
     area: Rect,
     settings: &Settings,
-    screen_state: &SettingsScreen,
+    screen_state: &mut SettingsScreen,
 ) {
     let items: Vec<ListItem> = SettingItem::all()
         .iter()
@@ -271,7 +277,28 @@ fn render_settings_list(
             .title("Settings ([↑/↓]select [Space]/[Enter]toggle)"),
     );
 
-    frame.render_widget(list, area);
+    // Sync state
+    screen_state.state.select(Some(screen_state.selected));
+    frame.render_stateful_widget(list, area, &mut screen_state.state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    let mut scroll_state = ScrollbarState::default()
+        .content_length(SettingItem::all().len())
+        .position(screen_state.state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scroll_state,
+    );
 
     // Render log level dropdown if editing
     if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {

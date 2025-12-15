@@ -141,8 +141,29 @@ Files modified:
 - `src/tui/app.rs`: Added `active_sink_list`, `profile_sink_list`, `SinksData` variant
 - `src/tui/input.rs`: Added SelectSink mode handling and Enter-to-select on name field
 
+Phase 3 UX Polish - TUI Revamp & Scrolling (2025-12-15)
+- Revamped Dashboard, Sinks, and Rules screens with modern, grid-based layouts and Table widgets.
+- Replaced raw text lists with `Table` widgets in Sinks and Rules screens for better column alignment and readability.
+- Added `Scrollbar` widgets to Sinks, Rules, Settings lists, and Sink Selector dropdowns.
+- Implemented proper scrolling logic using `TableState` and `ListState` in App/Screens structs to maintain state across renders.
+- Added "smart" modal resizing: Help text in add/edit modals is hidden if window height is too small (<20/25 rows).
+- Fixed Sink Selector dropdown selection logic:
+  - Removed duplicate `> ` visual indicators to fix double-selection glitch.
+  - Implemented correct `visual_index` calculation to account for headers/spacers in the list, ensuring the highlighted row matches logical selection.
+- Fixed Help Screen scrolling:
+  - Rewired input handling to manipulate `TableState` offset directly for true viewport scrolling (instead of selection-based).
+  - Exposed `get_help_row_count` to clamp scrolling correctly.
+  - Removed confusing selection highlight in Help screen (pure view mode).
+- Verified with `cargo test` and `cargo clippy`.
+
+Files modified:
+- `src/tui/screens/dashboard.rs`, `sinks.rs`, `rules.rs`, `settings.rs`, `help.rs`: UI layout & widget updates.
+- `src/tui/app.rs`: State struct updates.
+- `src/tui/input.rs`: Input handling logic updates.
+- `src/tui/mod.rs`: Render function signature updates.
+
 Next steps:
-- Phase 3 remaining items: accessibility/theme toggle, additional tests if needed
-- Consider moving `TEMP_TUI_REFACTOR.md` content to permanent docs when Phase 3 is complete
+- Accessibility/theme toggle.
+- Final polish and documentation.
 
 -- End of TEMP_TUI_REFACTOR.md

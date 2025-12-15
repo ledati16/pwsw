@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, TableState,
+    },
     Frame,
 };
 
@@ -76,6 +79,10 @@ pub struct SinksScreen {
     pub display_descs: Vec<String>,
     /// Selected index in sink selector (0 = first header, skips headers during selection)
     pub sink_selector_index: usize,
+    /// State for sink selector dropdown
+    pub sink_selector_state: ListState,
+    /// Table scroll state
+    pub state: TableState,
 }
 
 impl SinksScreen {
@@ -104,6 +111,8 @@ impl SinksScreen {
             editing_index: None,
             display_descs: Vec::new(),
             sink_selector_index: 0,
+            sink_selector_state: ListState::default(),
+            state: TableState::default(),
         }
     }
 
@@ -147,7 +156,7 @@ pub fn render_sinks(
     frame: &mut Frame,
     area: Rect,
     sinks: &[SinkConfig],
-    screen_state: &SinksScreen,
+    screen_state: &mut SinksScreen,
     active_sinks: &[String],
     active_sink_list: &[crate::pipewire::ActiveSink],
     profile_sink_list: &[crate::pipewire::ProfileSink],
@@ -161,7 +170,7 @@ pub fn render_sinks(
             area,
             active_sink_list,
             profile_sink_list,
-            screen_state.sink_selector_index,
+            screen_state,
         ),
     }
 }
@@ -171,71 +180,107 @@ fn render_list(
     frame: &mut Frame,
     area: Rect,
     sinks: &[SinkConfig],
-    screen_state: &SinksScreen,
+    screen_state: &mut SinksScreen,
     active_sinks: &[String],
 ) {
-    let items: Vec<ListItem> = sinks
+    let rows: Vec<Row> = sinks
         .iter()
         .enumerate()
         .map(|(i, sink)| {
             let is_selected = i == screen_state.selected;
             let is_active = active_sinks.contains(&sink.name);
 
-            let status = if is_active {
-                Span::styled("● active", Style::default().fg(Color::Green))
+            // Status Cell
+            let status_cell = if is_active {
+                Cell::from(Span::styled("● Active", Style::default().fg(Color::Green)))
             } else {
-                Span::styled("○ inactive", Style::default().fg(Color::Gray))
+                Cell::from(Span::styled("○", Style::default().fg(Color::DarkGray)))
             };
 
-            let default_marker = if sink.default {
-                Span::styled(" [DEFAULT]", Style::default().fg(Color::Yellow))
+            // Description Cell (with icon if present)
+            let mut desc_text = sink.desc.clone();
+            if let Some(icon) = &sink.icon {
+                desc_text = format!("{} {}", icon, desc_text);
+            }
+            let desc_cell = Cell::from(Span::styled(
+                desc_text,
+                if is_selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                },
+            ));
+
+            // Name Cell (Technical ID)
+            let name_cell = Cell::from(Span::styled(&sink.name, Style::default().fg(Color::Gray)));
+
+            // Flags Cell
+            let flags_cell = if sink.default {
+                Cell::from(Span::styled("DEFAULT", Style::default().fg(Color::Yellow)))
             } else {
-                Span::raw("")
+                Cell::from("")
             };
 
-            let style = if is_selected {
+            let row_style = if is_selected {
+                Style::default().bg(Color::DarkGray)
+            } else {
                 Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "> " } else { "  " },
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(
-                    screen_state
-                        .display_descs
-                        .get(i)
-                        .map(|s| s.as_str())
-                        .unwrap_or(sink.desc.as_str()),
-                    style,
-                ),
-                Span::raw(" "),
-                status,
-                default_marker,
-            ]);
-
-            ListItem::new(vec![
-                line,
-                Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(&sink.name, Style::default().fg(Color::Gray)),
-                ]),
-            ])
+            Row::new(vec![status_cell, desc_cell, name_cell, flags_cell])
+                .style(row_style)
+                .height(1)
         })
         .collect();
 
-    let list = List::new(items).block(
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(10),     // Status
+            Constraint::Percentage(40), // Desc
+            Constraint::Percentage(40), // Name
+            Constraint::Length(10),     // Flags
+        ],
+    )
+    .header(
+        Row::new(vec!["Status", "Description", "Node Name", "Flags"])
+            .style(
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .bottom_margin(1),
+    )
+    .block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Sinks ([a]dd [e]dit [x]delete [Space]toggle [Ctrl+S]save)"),
+            .title(" Sinks ([a]dd [e]dit [x]delete [Space]toggle [Ctrl+S]save) "),
     );
 
-    frame.render_widget(list, area);
+    // Sync state
+    screen_state.state.select(Some(screen_state.selected));
+    frame.render_stateful_widget(table, area, &mut screen_state.state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    let mut scroll_state = ScrollbarState::default()
+        .content_length(sinks.len())
+        .position(screen_state.state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scroll_state,
+    );
 }
 
 /// Render the add/edit modal
@@ -249,16 +294,30 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Create modal in center
     let popup_area = centered_modal(modal_size::MEDIUM, area);
 
+    // Dynamic layout: hide help if height is too small
+    let show_help = area.height > 20;
+
+    let constraints = if show_help {
+        vec![
+            Constraint::Length(3), // Name field
+            Constraint::Length(3), // Desc field
+            Constraint::Length(3), // Icon field
+            Constraint::Length(3), // Default checkbox
+            Constraint::Min(0),    // Help text
+        ]
+    } else {
+        vec![
+            Constraint::Length(3), // Name field
+            Constraint::Length(3), // Desc field
+            Constraint::Length(3), // Icon field
+            Constraint::Length(3), // Default checkbox
+        ]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
-        .constraints([
-            Constraint::Length(3), // Name field (bordered)
-            Constraint::Length(3), // Desc field (bordered)
-            Constraint::Length(3), // Icon field (bordered)
-            Constraint::Length(3), // Default checkbox (bordered)
-            Constraint::Min(0),    // Help text
-        ])
+        .constraints(constraints)
         .split(popup_area);
 
     // Background block
@@ -322,17 +381,19 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
     frame.render_widget(checkbox, chunks[3]);
 
-    // Help text
-    let help_line = crate::tui::widgets::modal_help_line(&[
-        ("Tab", "Next"),
-        ("Shift+Tab", "Prev"),
-        ("Enter", "Save/Select"),
-        ("Esc", "Cancel"),
-    ]);
+    // Help text (only if space allows)
+    if show_help && chunks.len() > 4 {
+        let help_line = crate::tui::widgets::modal_help_line(&[
+            ("Tab", "Next"),
+            ("Shift+Tab", "Prev"),
+            ("Enter", "Save/Select"),
+            ("Esc", "Cancel"),
+        ]);
 
-    let help_widget =
-        Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(Color::Gray));
-    frame.render_widget(help_widget, chunks[4]);
+        let help_widget =
+            Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(Color::Gray));
+        frame.render_widget(help_widget, chunks[4]);
+    }
 }
 
 /// Render delete confirmation modal
@@ -386,7 +447,7 @@ fn render_sink_selector(
     area: Rect,
     active_sinks: &[crate::pipewire::ActiveSink],
     profile_sinks: &[crate::pipewire::ProfileSink],
-    selected_index: usize,
+    screen_state: &mut SinksScreen,
 ) {
     let popup_area = centered_modal(modal_size::MEDIUM, area);
     frame.render_widget(Clear, popup_area);
@@ -434,7 +495,7 @@ fn render_sink_selector(
     ))));
 
     for sink in active_sinks {
-        let is_selected = item_index == selected_index;
+        let is_selected = item_index == screen_state.sink_selector_index;
         let style = if is_selected {
             Style::default()
                 .fg(Color::Cyan)
@@ -471,7 +532,7 @@ fn render_sink_selector(
         ))));
 
         for sink in profile_sinks {
-            let is_selected = item_index == selected_index;
+            let is_selected = item_index == screen_state.sink_selector_index;
             let style = if is_selected {
                 Style::default()
                     .fg(Color::Cyan)
@@ -498,12 +559,43 @@ fn render_sink_selector(
         }
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Select Sink ([↑/↓]navigate [Enter]select [Esc]cancel)")
-            .style(Style::default().bg(Color::Black)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Sink ([↑/↓]navigate [Enter]select [Esc]cancel)")
+                .style(Style::default().bg(Color::Black)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
 
-    frame.render_widget(list, popup_area);
+    // Sync state
+    screen_state
+        .sink_selector_state
+        .select(Some(screen_state.sink_selector_index));
+    frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    // Total length = items + headers (1 fixed header + 1 optional header + 1 optional spacer)
+    let total_len = active_sinks.len()
+        + profile_sinks.len()
+        + 1 // Active header
+        + if profile_sinks.is_empty() { 0 } else { 2 }; // Profile header + spacer
+
+    let mut scroll_state = ScrollbarState::default()
+        .content_length(total_len)
+        .position(screen_state.sink_selector_state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        popup_area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scroll_state,
+    );
 }

@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table, TableState,
+    },
     Frame,
 };
 
@@ -33,6 +36,8 @@ pub struct RuleEditor {
     pub notify: Option<bool>,
     pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
     pub sink_dropdown_index: usize,
+    /// State for sink selector dropdown
+    pub sink_selector_state: ListState,
     // Cached compiled regexes to avoid recompiling on every render
     pub compiled_app_id: Option<std::sync::Arc<Regex>>,
     pub compiled_title: Option<std::sync::Arc<Regex>>,
@@ -51,6 +56,7 @@ impl RuleEditor {
             notify: None,
             focused_field: 0,
             sink_dropdown_index: 0,
+            sink_selector_state: ListState::default(),
             compiled_app_id: None,
             compiled_title: None,
             compiled_app_id_for: None,
@@ -77,6 +83,7 @@ impl RuleEditor {
             notify: rule.notify,
             focused_field: 0,
             sink_dropdown_index: 0,
+            sink_selector_state: ListState::default(),
             compiled_app_id,
             compiled_title,
             compiled_app_id_for: Some(rule.app_id_pattern.clone()),
@@ -132,6 +139,8 @@ pub struct RulesScreen {
     pub selected: usize,
     pub editor: RuleEditor,
     pub editing_index: Option<usize>,
+    /// Table scroll state
+    pub state: TableState,
 }
 
 impl RulesScreen {
@@ -141,6 +150,7 @@ impl RulesScreen {
             selected: 0,
             editor: RuleEditor::new(),
             editing_index: None,
+            state: TableState::default(),
         }
     }
 
@@ -190,7 +200,7 @@ pub fn render_rules(
     area: Rect,
     rules: &[Rule],
     sinks: &[SinkConfig],
-    screen_state: &RulesScreen,
+    screen_state: &mut RulesScreen,
     windows: &[crate::ipc::WindowInfo],
     preview: Option<&crate::tui::app::PreviewResult>,
     spinner_idx: usize,
@@ -207,7 +217,7 @@ pub fn render_rules(
             spinner_idx,
         ),
         RulesMode::Delete => render_delete_confirmation(frame, area, rules, screen_state),
-        RulesMode::SelectSink => render_sink_selector(frame, area, sinks, screen_state),
+        RulesMode::SelectSink => render_sink_selector(frame, area, sinks, &mut screen_state.editor),
     }
 }
 
@@ -217,7 +227,7 @@ fn render_list(
     area: Rect,
     rules: &[Rule],
     sinks: &[SinkConfig],
-    screen_state: &RulesScreen,
+    screen_state: &mut RulesScreen,
 ) {
     // Build a lookup from sink name/desc -> padded display string once per render to avoid per-row formatting.
     let max_desc_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
@@ -235,67 +245,107 @@ fn render_list(
         sink_display_map.insert(s.desc.clone(), display);
     }
 
-    let items: Vec<ListItem> = rules
+    let rows: Vec<Row> = rules
         .iter()
         .enumerate()
         .map(|(i, rule)| {
             let is_selected = i == screen_state.selected;
 
-            // Lookup precomputed padded sink display (fall back to raw sink_ref)
+            // Resolve sink display name
             let sink_display = sink_display_map
                 .get(&rule.sink_ref)
                 .map(|s| s.as_str())
                 .unwrap_or(rule.sink_ref.as_str());
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+            // Prepare cells
+            let index_cell = Cell::from((i + 1).to_string());
+            let app_id_cell = Cell::from(rule.app_id_pattern.as_str());
+            let title_cell = rule
+                .title_pattern
+                .as_ref()
+                .map(|s| Cell::from(s.as_str()))
+                .unwrap_or_else(|| {
+                    Cell::from(Span::styled("*", Style::default().fg(Color::DarkGray)))
+                });
+            let sink_cell =
+                Cell::from(Span::styled(sink_display, Style::default().fg(Color::Cyan)));
+            let desc_cell = rule
+                .desc
+                .as_ref()
+                .map(|s| Cell::from(s.as_str()))
+                .unwrap_or_else(|| Cell::from(""));
+
+            let row_style = if is_selected {
+                Style::default().bg(Color::DarkGray)
             } else {
-                Style::default().fg(Color::White)
+                Style::default()
             };
 
-            // Build spans for the title line without allocating a single large String
-            let mut title_spans = Vec::with_capacity(4);
-            title_spans.push(Span::styled(
-                if is_selected { "> " } else { "  " },
-                Style::default().fg(Color::Cyan),
-            ));
-            title_spans.push(Span::raw((i + 1).to_string()));
-            title_spans.push(Span::raw(". app_id: "));
-            title_spans.push(Span::styled(rule.app_id_pattern.as_str(), style));
-            if let Some(ref title_pat) = rule.title_pattern {
-                title_spans.push(Span::raw(" + title: "));
-                title_spans.push(Span::raw(title_pat.as_str()));
-            }
-
-            let mut lines = vec![
-                Line::from(title_spans),
-                Line::from(vec![
-                    Span::raw("     → "),
-                    Span::styled(sink_display, Style::default().fg(Color::Yellow)),
-                ]),
-            ];
-
-            // Add description if present
-            if let Some(ref desc) = rule.desc {
-                lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(desc.as_str(), Style::default().fg(Color::Gray)),
-                ]));
-            }
-
-            ListItem::new(lines)
+            Row::new(vec![
+                index_cell,
+                app_id_cell,
+                title_cell,
+                sink_cell,
+                desc_cell,
+            ])
+            .style(row_style)
+            .height(1)
         })
         .collect();
 
-    let list = List::new(items).block(
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(3),      // #
+            Constraint::Percentage(25), // App ID
+            Constraint::Percentage(25), // Title
+            Constraint::Percentage(20), // Target
+            Constraint::Percentage(30), // Description
+        ],
+    )
+    .header(
+        Row::new(vec![
+            "#",
+            "App ID Pattern",
+            "Title Pattern",
+            "Target Sink",
+            "Description",
+        ])
+        .style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1),
+    )
+    .block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Rules ([a]dd [e]dit [x]delete [↑/↓]priority [Ctrl+S]save)"),
+            .title(" Rules ([a]dd [e]dit [x]delete [↑/↓]priority [Ctrl+S]save) "),
     );
 
-    frame.render_widget(list, area);
+    // Sync state
+    screen_state.state.select(Some(screen_state.selected));
+    frame.render_stateful_widget(table, area, &mut screen_state.state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    let mut scroll_state = ScrollbarState::default()
+        .content_length(rules.len())
+        .position(screen_state.state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scroll_state,
+    );
 }
 
 /// Render the add/edit modal
@@ -316,18 +366,34 @@ fn render_editor(
 
     let popup_area = centered_modal(modal_size::LARGE, area);
 
+    // Dynamic layout: hide help if height is too small
+    let show_help = area.height > 25;
+
+    let constraints = if show_help {
+        vec![
+            Constraint::Length(3), // App ID pattern
+            Constraint::Length(3), // Title pattern
+            Constraint::Length(3), // Sink selector
+            Constraint::Length(3), // Description
+            Constraint::Length(3), // Notify toggle
+            Constraint::Min(6),    // Live preview
+            Constraint::Length(1), // Help text
+        ]
+    } else {
+        vec![
+            Constraint::Length(3), // App ID pattern
+            Constraint::Length(3), // Title pattern
+            Constraint::Length(3), // Sink selector
+            Constraint::Length(3), // Description
+            Constraint::Length(3), // Notify toggle
+            Constraint::Min(3),    // Live preview (reduced min height)
+        ]
+    };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
-        .constraints([
-            Constraint::Length(3), // App ID pattern (bordered)
-            Constraint::Length(3), // Title pattern (bordered)
-            Constraint::Length(3), // Sink selector (bordered)
-            Constraint::Length(3), // Description (bordered)
-            Constraint::Length(3), // Notify toggle (bordered)
-            Constraint::Min(6),    // Live preview
-            Constraint::Length(1), // Help text (compact)
-        ])
+        .constraints(constraints)
         .split(popup_area);
 
     let block = Block::default()
@@ -424,15 +490,17 @@ fn render_editor(
     );
 
     // Help text
-    let help_line = crate::tui::widgets::modal_help_line(&[
-        ("Tab", "Next"),
-        ("Shift+Tab", "Prev"),
-        ("Enter", "Save/Select"),
-        ("Space", "Toggle"),
-        ("Esc", "Cancel"),
-    ]);
-    let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(Color::Gray));
-    frame.render_widget(help_widget, chunks[6]);
+    if show_help && chunks.len() > 6 {
+        let help_line = crate::tui::widgets::modal_help_line(&[
+            ("Tab", "Next"),
+            ("Shift+Tab", "Prev"),
+            ("Enter", "Save/Select"),
+            ("Space", "Toggle"),
+            ("Esc", "Cancel"),
+        ]);
+        let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(Color::Gray));
+        frame.render_widget(help_widget, chunks[6]);
+    }
 }
 
 /// Render live regex preview showing matching windows
@@ -612,29 +680,16 @@ fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,
     sinks: &[SinkConfig],
-    screen_state: &RulesScreen,
+    editor: &mut RuleEditor,
 ) {
     let popup_area = centered_modal(modal_size::DROPDOWN, area);
 
     let items: Vec<ListItem> = sinks
         .iter()
-        .enumerate()
-        .map(|(i, sink)| {
-            let is_selected = i == screen_state.editor.sink_dropdown_index;
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
+        .map(|sink| {
             let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "> " } else { "  " },
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(&sink.desc, style),
+                Span::raw("  "),
+                Span::styled(&sink.desc, Style::default().fg(Color::White)),
             ]);
 
             ListItem::new(vec![
@@ -647,14 +702,39 @@ fn render_sink_selector(
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
-            .style(Style::default().bg(Color::Black)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
+                .style(Style::default().bg(Color::Black)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
 
-    frame.render_widget(list, popup_area);
+    // Sync state
+    editor
+        .sink_selector_state
+        .select(Some(editor.sink_dropdown_index));
+    frame.render_stateful_widget(list, popup_area, &mut editor.sink_selector_state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    let mut scroll_state = ScrollbarState::default()
+        .content_length(sinks.len())
+        .position(editor.sink_selector_state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        popup_area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scroll_state,
+    );
 }
 
 /// Render delete confirmation

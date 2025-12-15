@@ -479,7 +479,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 }
 
 /// Render the complete UI
-fn render_ui(frame: &mut ratatui::Frame, app: &App) {
+fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let size = frame.area();
 
     // Create main layout: [Header (tabs) | Content | Footer (status)]
@@ -509,7 +509,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
             frame,
             chunks[1],
             &app.config.sinks,
-            &app.sinks_screen,
+            &mut app.sinks_screen,
             &app.active_sinks,
             &app.active_sink_list,
             &app.profile_sink_list,
@@ -519,14 +519,17 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
             chunks[1],
             &app.config.rules,
             &app.config.sinks,
-            &app.rules_screen,
+            &mut app.rules_screen,
             &app.windows,
             app.preview.as_ref(),
             app.spinner_idx,
         ),
-        Screen::Settings => {
-            render_settings(frame, chunks[1], &app.config.settings, &app.settings_screen)
-        }
+        Screen::Settings => render_settings(
+            frame,
+            chunks[1],
+            &app.config.settings,
+            &mut app.settings_screen,
+        ),
     }
 
     // Render footer
@@ -534,7 +537,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &App) {
 
     // Render help overlay on top if active
     if app.show_help {
-        render_help(frame, size, app.current_screen);
+        render_help(frame, size, app.current_screen, &mut app.help_scroll_state);
     }
 }
 
