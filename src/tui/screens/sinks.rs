@@ -484,7 +484,6 @@ fn render_sink_selector(
 
     // Build list items from both active and profile sinks
     let mut items: Vec<ListItem> = Vec::new();
-    let mut item_index = 0;
 
     // Active sinks header
     items.push(ListItem::new(Line::from(Span::styled(
@@ -495,30 +494,17 @@ fn render_sink_selector(
     ))));
 
     for sink in active_sinks {
-        let is_selected = item_index == screen_state.sink_selector_index;
-        let style = if is_selected {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
         let desc_text = truncate_desc(&sink.description, max_desc_width);
         let name_text = truncate_node_name(&sink.name, 35);
 
         let line = Line::from(vec![
-            Span::styled(
-                if is_selected { "> " } else { "  " },
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(desc_text, style),
+            Span::raw("  "),
+            Span::styled(desc_text, Style::default().fg(Color::White)),
             Span::styled(" (", Style::default().fg(Color::DarkGray)),
             Span::styled(name_text, Style::default().fg(Color::DarkGray)),
             Span::styled(")", Style::default().fg(Color::DarkGray)),
         ]);
         items.push(ListItem::new(line));
-        item_index += 1;
     }
 
     // Profile sinks header (if any)
@@ -532,30 +518,17 @@ fn render_sink_selector(
         ))));
 
         for sink in profile_sinks {
-            let is_selected = item_index == screen_state.sink_selector_index;
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-
             let desc_text = truncate_desc(&sink.description, max_desc_width);
             let name_text = truncate_node_name(&sink.predicted_name, 35);
 
             let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "> " } else { "  " },
-                    Style::default().fg(Color::Cyan),
-                ),
-                Span::styled(desc_text, style),
+                Span::raw("  "),
+                Span::styled(desc_text, Style::default().fg(Color::White)),
                 Span::styled(" (", Style::default().fg(Color::DarkGray)),
                 Span::styled(name_text, Style::default().fg(Color::DarkGray)),
                 Span::styled(")", Style::default().fg(Color::DarkGray)),
             ]);
             items.push(ListItem::new(line));
-            item_index += 1;
         }
     }
 
@@ -567,12 +540,21 @@ fn render_sink_selector(
                 .style(Style::default().bg(Color::Black)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
-        .highlight_symbol(" "); // Fix: ensure no default symbol
+        .highlight_symbol(""); // Ensure no default symbol
+
+    // Calculate visual index for selection
+    // Active header is at 0. Items start at 1.
+    // If profile sinks exist: Spacer is at active_len+1, Header at active_len+2. Items start at active_len+3.
+    let visual_index = if screen_state.sink_selector_index < active_sinks.len() {
+        screen_state.sink_selector_index + 1
+    } else {
+        screen_state.sink_selector_index + 3
+    };
 
     // Sync state
     screen_state
         .sink_selector_state
-        .select(Some(screen_state.sink_selector_index));
+        .select(Some(visual_index));
     frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
 
     // Render scrollbar
