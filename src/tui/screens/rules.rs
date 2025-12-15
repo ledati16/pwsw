@@ -710,7 +710,7 @@ fn render_sink_selector(
                 .style(Style::default().bg(Color::Black)),
         )
         .highlight_style(Style::default().bg(Color::DarkGray))
-        .highlight_symbol(" "); // Fix: ensure no default symbol
+        .highlight_symbol(""); // Ensure no default symbol
 
     // Sync state
     editor
