@@ -346,7 +346,7 @@ fn render_list(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 
@@ -358,7 +358,7 @@ fn render_list(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 }
@@ -773,7 +773,7 @@ fn render_sink_selector(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 
@@ -785,7 +785,7 @@ fn render_sink_selector(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 }

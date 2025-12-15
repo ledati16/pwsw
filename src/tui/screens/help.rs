@@ -85,8 +85,15 @@ pub fn render_help(
 
     // Replace scrollbar with simple up/down arrow indicators
     let raw_row_offset = scroll_state.offset();
-    let has_above = raw_row_offset > 0;
-    let has_below = (raw_row_offset as usize) + view_height < total_visual_lines;
+
+    // Map TableState logical row offset -> visual line position by summing heights of preceding rows
+    let mut visual_pos = 0usize;
+    for i in 0..raw_row_offset.min(per_row_lines.len()) {
+        visual_pos += per_row_lines[i];
+    }
+
+    let has_above = visual_pos > 0;
+    let has_below = (visual_pos + view_height) < total_visual_lines;
 
     // Draw top arrow if there's more above
     if has_above {
@@ -96,7 +103,7 @@ pub fn render_help(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 
@@ -108,7 +115,7 @@ pub fn render_help(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
         frame.render_widget(p, r);
     }
 }
