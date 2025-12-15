@@ -5,8 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph, Scrollbar, ScrollbarOrientation,
-        ScrollbarState,
+        Block, Borders, List, ListItem, ListState, Paragraph,
     },
     Frame,
 };
@@ -281,29 +280,38 @@ fn render_settings_list(
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(list, area, &mut screen_state.state);
 
-    // Render scrollbar
-    let scrollbar = Scrollbar::default()
-        .orientation(ScrollbarOrientation::VerticalRight)
-        .begin_symbol(Some("▲"))
-        .end_symbol(Some("▼"));
-
-    // Compute visible viewport height for scrollbar: inner height minus top/bottom margins (2)
+    // Compute visible viewport (inner area) for arrow indicators
     let inner = area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
     let view_height = inner.height as usize;
 
-    let mut scroll_state = ScrollbarState::default()
-        .content_length(SettingItem::all().len())
-        .position(screen_state.state.offset())
-        .viewport_length(view_height);
+    let offset = screen_state.state.offset();
+    let total = SettingItem::all().len();
+    let has_above = offset > 0;
+    let has_below = offset + view_height < total;
 
-    frame.render_stateful_widget(
-        scrollbar,
-        area.inner(ratatui::layout::Margin {
-            vertical: 1,
-            horizontal: 0,
-        }),
-        &mut scroll_state,
-    );
+    // Draw top arrow if there's more above
+    if has_above {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y,
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▲", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
+
+    // Draw bottom arrow if there's more below
+    if has_below {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y + inner.height.saturating_sub(1),
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("▼", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
 
     // Render log level dropdown if editing
     if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
