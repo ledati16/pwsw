@@ -84,6 +84,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
     // Help overlay input (blocks everything else)
     if app.show_help {
+        // Fix: handled in specific block
         match key.code {
             KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
                 app.show_help = false;
