@@ -50,11 +50,6 @@ pub(crate) fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm:
 }
 /// Check if any modal or editor is currently active
 fn is_modal_active(app: &App) -> bool {
-    // Check if help overlay is shown
-    if app.show_help {
-        return true;
-    }
-
     // Check screen-specific modals
     match app.current_screen {
         Screen::Sinks => app.sinks_screen.mode != SinksMode::List,
@@ -87,29 +82,73 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         _ => {}
     }
 
-    // If a modal is active, pass most keys to screen-specific handlers
-    // (except always-global shortcuts handled above)
+    // Help overlay input (blocks everything else)
+    if app.show_help {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                app.show_help = false;
+            }
+            KeyCode::Up => {
+                app.help_scroll_state.select(None); // Ensure view mode
+                let offset = app.help_scroll_state.offset_mut();
+                *offset = offset.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                app.help_scroll_state.select(None); // Ensure view mode
+                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
+                let offset = app.help_scroll_state.offset_mut();
+                // Allow scrolling until the last item is at the top (or slightly less, but this is safe)
+                if *offset < count.saturating_sub(1) {
+                    *offset += 1;
+                }
+            }
+            KeyCode::Home => {
+                app.help_scroll_state.select(None);
+                *app.help_scroll_state.offset_mut() = 0;
+            }
+            KeyCode::End => {
+                app.help_scroll_state.select(None);
+                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
+                *app.help_scroll_state.offset_mut() = count.saturating_sub(1);
+            }
+            KeyCode::PageUp => {
+                app.help_scroll_state.select(None);
+                let offset = app.help_scroll_state.offset_mut();
+                *offset = offset.saturating_sub(15); // Approximate page size
+            }
+            KeyCode::PageDown => {
+                app.help_scroll_state.select(None);
+                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
+                let offset = app.help_scroll_state.offset_mut();
+                *offset = (*offset + 15).min(count.saturating_sub(1));
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // If a modal is active (other than help), pass most keys to screen-specific handlers
     if is_modal_active(app) {
-        // Handle escape and help toggle at global level
         match key.code {
             KeyCode::Esc => {
-                // Priority: quit confirmation > help overlay > modal/status
+                // Priority: quit confirmation > modal
                 if app.confirm_quit {
                     app.cancel_quit();
-                } else if app.show_help {
-                    app.show_help = false;
                 } else {
                     // Let screen handler close modal
                     handle_screen_specific_input(app, key);
                 }
                 return;
             }
+            // Help toggle is handled in global section below if no modal,
+            // but if modal is active, we might want to allow it?
+            // "Global shortcuts" say ? is global.
+            // Let's allow ? to open help even over a modal.
             KeyCode::Char('?') => {
-                app.show_help = !app.show_help;
+                app.show_help = true;
                 return;
             }
             _ => {
-                // All other keys go to screen-specific handlers when modal is active
                 handle_screen_specific_input(app, key);
                 return;
             }
@@ -153,12 +192,10 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             app.goto_screen(Screen::Settings);
         }
 
-        // Escape: cancel quit confirmation, close help, or clear status message
+        // Escape: cancel quit confirmation or clear status message
         (KeyCode::Esc, KeyModifiers::NONE) => {
             if app.confirm_quit {
                 app.cancel_quit();
-            } else if app.show_help {
-                app.show_help = false;
             } else {
                 app.clear_status();
             }
@@ -166,7 +203,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
         // ?: Toggle help overlay
         (KeyCode::Char('?'), KeyModifiers::NONE) | (KeyCode::Char('?'), KeyModifiers::SHIFT) => {
-            app.show_help = !app.show_help;
+            app.show_help = true;
         }
 
         // Screen-specific input

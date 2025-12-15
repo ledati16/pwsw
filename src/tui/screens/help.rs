@@ -1,44 +1,183 @@
 //! Help overlay - Context-aware keyboard shortcut reference
 
 use ratatui::{
-    layout::{Alignment, Rect},
+    layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{
+        Block, Borders, Cell, Clear, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
+        TableState,
+    },
     Frame,
 };
 
 use crate::tui::app::Screen;
 use crate::tui::widgets::{centered_modal, modal_size};
 
+/// Get the number of rows in the help content for a given screen
+pub fn get_help_row_count(current_screen: Screen) -> usize {
+    build_help_rows(current_screen).len()
+}
+
 /// Render help overlay on top of the current screen
-pub fn render_help(frame: &mut Frame, area: Rect, current_screen: Screen) {
+pub fn render_help(
+    frame: &mut Frame,
+    area: Rect,
+    current_screen: Screen,
+    scroll_state: &mut TableState,
+) {
     // Create centered modal
     let popup_area = centered_modal(modal_size::HELP, area);
 
     // Clear background to prevent bleed-through from underlying screens
     frame.render_widget(Clear, popup_area);
 
-    // Build help content based on current screen
-    let help_lines = match current_screen {
-        Screen::Dashboard => get_dashboard_help(),
-        Screen::Sinks => get_sinks_help(),
-        Screen::Rules => get_rules_help(),
-        Screen::Settings => get_settings_help(),
+    // Build help content
+    let rows = build_help_rows(current_screen);
+    let total_rows = rows.len();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(15), // Key column
+            Constraint::Min(10),    // Description column
+        ],
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Help (↑/↓ to scroll)")
+            .style(Style::default().bg(Color::Black).fg(Color::White)),
+    );
+
+    // No selection enforced - we control offset manually for view scrolling
+
+    frame.render_stateful_widget(table, popup_area, scroll_state);
+
+    // Render scrollbar
+    let scrollbar = Scrollbar::default()
+        .orientation(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(Some("▲"))
+        .end_symbol(Some("▼"));
+
+    let mut scrollbar_state = ScrollbarState::default()
+        .content_length(total_rows)
+        .position(scroll_state.offset());
+
+    frame.render_stateful_widget(
+        scrollbar,
+        popup_area.inner(ratatui::layout::Margin {
+            vertical: 1,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
+}
+
+/// Build the list of rows for the help table
+fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
+    let mut rows = Vec::new();
+
+    // Helper to add a section header
+    let add_header = |rows: &mut Vec<Row>, text: &str| {
+        rows.push(Row::new(vec![Cell::from(Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))]));
+        rows.push(Row::new(vec![Cell::from("")])); // Spacer
     };
 
-    // Add global shortcuts at the end
-    let mut all_lines = help_lines;
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(vec![Span::styled(
-        "Global Shortcuts",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )]));
-    all_lines.extend(get_global_shortcuts());
-    all_lines.push(Line::from(""));
-    all_lines.push(Line::from(vec![
+    // Helper to add a keybind row
+    let add_keybind = |rows: &mut Vec<Row>, key: &str, desc: &str| {
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(
+                key.to_string(),
+                Style::default().fg(Color::Green),
+            )),
+            Cell::from(Span::raw(desc.to_string())),
+        ]));
+    };
+
+    // Helper to add a sub-header
+    let add_subheader = |rows: &mut Vec<Row>, text: &str| {
+        rows.push(Row::new(vec![Cell::from("")])); // Spacer
+        rows.push(Row::new(vec![Cell::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(Color::Yellow),
+        ))]));
+    };
+
+    // Populate rows based on screen
+    match current_screen {
+        Screen::Dashboard => {
+            add_header(&mut rows, "Dashboard Screen");
+            add_keybind(&mut rows, "↑/↓", "Navigate daemon control actions");
+            add_keybind(&mut rows, "Enter", "Execute selected action");
+        }
+        Screen::Sinks => {
+            add_header(&mut rows, "Sinks Screen");
+            add_keybind(&mut rows, "↑/↓", "Navigate sinks");
+            add_keybind(&mut rows, "a", "Add new sink");
+            add_keybind(&mut rows, "e", "Edit selected sink");
+            add_keybind(&mut rows, "x", "Delete selected sink");
+            add_keybind(&mut rows, "Space", "Toggle default status");
+            add_subheader(&mut rows, "In Editor (Add/Edit)");
+            add_keybind(&mut rows, "Tab", "Next field");
+            add_keybind(&mut rows, "Shift+Tab", "Previous field");
+            add_keybind(&mut rows, "Space", "Toggle checkbox");
+            add_keybind(&mut rows, "Enter", "Save");
+            add_keybind(&mut rows, "Esc", "Cancel");
+        }
+        Screen::Rules => {
+            add_header(&mut rows, "Rules Screen");
+            add_keybind(&mut rows, "↑/↓", "Navigate rules");
+            add_keybind(&mut rows, "a", "Add new rule");
+            add_keybind(&mut rows, "e", "Edit selected rule");
+            add_keybind(&mut rows, "x", "Delete selected rule");
+            add_subheader(&mut rows, "In Editor (Add/Edit)");
+            add_keybind(&mut rows, "Tab", "Next field");
+            add_keybind(&mut rows, "Shift+Tab", "Previous field");
+            add_keybind(&mut rows, "Space", "Cycle notify option");
+            add_keybind(&mut rows, "Enter", "Save / Open sink selector");
+            add_keybind(&mut rows, "Esc", "Cancel");
+            rows.push(Row::new(vec![
+                Cell::from(Span::styled(
+                    "Live Preview",
+                    Style::default().fg(Color::Green),
+                )),
+                Cell::from("Shows matching windows as you type"),
+            ]));
+        }
+        Screen::Settings => {
+            add_header(&mut rows, "Settings Screen");
+            add_keybind(&mut rows, "↑/↓", "Navigate settings");
+            add_keybind(&mut rows, "Enter/Space", "Toggle setting / Dropdown");
+            add_subheader(&mut rows, "In Log Level Dropdown");
+            add_keybind(&mut rows, "↑/↓", "Navigate log levels");
+            add_keybind(&mut rows, "Enter", "Confirm selection");
+            add_keybind(&mut rows, "Esc", "Cancel");
+        }
+    }
+
+    // Global shortcuts
+    rows.push(Row::new(vec![Cell::from("")]));
+    add_header(&mut rows, "Global Shortcuts");
+    add_keybind(&mut rows, "q/Ctrl+C", "Quit application");
+    add_keybind(&mut rows, "Tab", "Next screen");
+    add_keybind(&mut rows, "Shift+Tab", "Previous screen");
+    add_keybind(&mut rows, "d", "Go to Dashboard");
+    add_keybind(&mut rows, "s", "Go to Sinks");
+    add_keybind(&mut rows, "r", "Go to Rules");
+    add_keybind(&mut rows, "t", "Go to Settings");
+    add_keybind(&mut rows, "Ctrl+S", "Save configuration");
+    add_keybind(&mut rows, "Esc", "Clear status message");
+    add_keybind(&mut rows, "?", "Toggle help");
+
+    // Close instruction
+    rows.push(Row::new(vec![Cell::from("")]));
+    rows.push(Row::new(vec![Cell::from(Line::from(vec![
         Span::styled("Press ", Style::default().fg(Color::Gray)),
         Span::styled(
             "?",
@@ -54,143 +193,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, current_screen: Screen) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(" to close help", Style::default().fg(Color::Gray)),
-    ]));
+    ]))]));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Help")
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-
-    let paragraph = Paragraph::new(all_lines)
-        .block(block)
-        .alignment(Alignment::Left);
-
-    frame.render_widget(paragraph, popup_area);
-}
-
-/// Dashboard screen shortcuts
-fn get_dashboard_help() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![Span::styled(
-            "Dashboard Screen",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        help_line("↑/↓", "Navigate daemon control actions"),
-        help_line("Enter", "Execute selected action (Start/Stop/Restart)"),
-    ]
-}
-
-/// Sinks screen shortcuts
-fn get_sinks_help() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![Span::styled(
-            "Sinks Screen",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        help_line("↑/↓", "Navigate sinks"),
-        help_line("a", "Add new sink"),
-        help_line("e", "Edit selected sink"),
-        help_line("x", "Delete selected sink"),
-        help_line("Space", "Toggle default status"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "In Editor (Add/Edit)",
-            Style::default().fg(Color::Yellow),
-        )]),
-        help_line("Tab", "Next field"),
-        help_line("Shift+Tab", "Previous field"),
-        help_line("Space", "Toggle default checkbox (on checkbox field)"),
-        help_line("Enter", "Save"),
-        help_line("Esc", "Cancel"),
-    ]
-}
-
-/// Rules screen shortcuts
-fn get_rules_help() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![Span::styled(
-            "Rules Screen",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        help_line("↑/↓", "Navigate rules"),
-        help_line("a", "Add new rule"),
-        help_line("e", "Edit selected rule"),
-        help_line("x", "Delete selected rule"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "In Editor (Add/Edit)",
-            Style::default().fg(Color::Yellow),
-        )]),
-        help_line("Tab", "Next field"),
-        help_line("Shift+Tab", "Previous field"),
-        help_line("Space", "Cycle notify option (on notify field)"),
-        help_line("Enter", "Save / Open sink selector (on sink field)"),
-        help_line("Esc", "Cancel"),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Live Preview", Style::default().fg(Color::Green)),
-            Span::raw(": Shows matching windows as you type regex patterns"),
-        ]),
-    ]
-}
-
-/// Settings screen shortcuts
-fn get_settings_help() -> Vec<Line<'static>> {
-    vec![
-        Line::from(vec![Span::styled(
-            "Settings Screen",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from(""),
-        help_line("↑/↓", "Navigate settings"),
-        help_line("Enter/Space", "Toggle setting / Open log level dropdown"),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "In Log Level Dropdown",
-            Style::default().fg(Color::Yellow),
-        )]),
-        help_line("↑/↓", "Navigate log levels"),
-        help_line("Enter", "Confirm selection"),
-        help_line("Esc", "Cancel"),
-    ]
-}
-
-/// Global shortcuts available on all screens
-fn get_global_shortcuts() -> Vec<Line<'static>> {
-    vec![
-        help_line("q/Ctrl+C", "Quit application"),
-        help_line("Tab", "Next screen"),
-        help_line("Shift+Tab", "Previous screen"),
-        help_line("d", "Go to Dashboard"),
-        help_line("s", "Go to Sinks"),
-        help_line("r", "Go to Rules"),
-        help_line("t", "Go to Settings"),
-        help_line("Ctrl+S", "Save configuration"),
-        help_line("Esc", "Clear status message"),
-        help_line("?", "Toggle help"),
-    ]
-}
-
-/// Helper to create a formatted help line
-fn help_line(key: &'static str, description: &'static str) -> Line<'static> {
-    // Use fixed-width key column (12 chars) for proper alignment
-    // format! is acceptable here since help renders on-demand, not every frame
-    let padded_key = format!("{:<12}", key);
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(padded_key, Style::default().fg(Color::Green)),
-        Span::raw(" - "),
-        Span::raw(description),
-    ])
+    rows
 }

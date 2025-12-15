@@ -160,6 +160,8 @@ pub struct App {
     pub config_dirty: bool,
     /// Whether to show help overlay
     pub show_help: bool,
+    /// Scroll state for help overlay
+    pub help_scroll_state: ratatui::widgets::TableState,
     /// Whether user requested quit (waiting for confirmation if config_dirty)
     pub confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
@@ -215,6 +217,7 @@ impl App {
             rules_screen,
             config_dirty: false,
             show_help: false,
+            help_scroll_state: ratatui::widgets::TableState::default(),
             confirm_quit: false,
             daemon_running: false,
             window_count: 0,

@@ -1,7 +1,7 @@
 //! Dashboard screen - Overview and quick actions
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
@@ -42,63 +42,67 @@ pub fn render_dashboard(
     daemon_running: bool,
     window_count: usize,
 ) {
-    // Split screen into sections
+    // Split screen into sections: Header (Status/Control) and Content (Cards)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7), // Daemon status + controls
-            Constraint::Length(5), // Current sink
-            Constraint::Length(5), // Active windows
-            Constraint::Min(0),    // Quick actions (future)
+            Constraint::Length(8), // Daemon status + controls
+            Constraint::Min(0),    // Info cards
         ])
         .split(area);
 
     // Daemon Status Section
-    render_daemon_status(frame, chunks[0], screen_state, daemon_running);
+    render_daemon_section(frame, chunks[0], screen_state, daemon_running);
 
-    // Current Sink Section
-    render_current_sink(frame, chunks[1], config);
+    // Info Grid (Horizontal split)
+    let card_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .margin(1) // Add margin between top section and cards
+        .split(chunks[1]);
 
-    // Active Windows Section
-    render_active_windows(frame, chunks[2], window_count);
+    // Current Sink Card
+    render_sink_card(frame, card_chunks[0], config);
+
+    // Stats Card
+    render_stats_card(frame, card_chunks[1], window_count);
 }
 
 /// Render daemon status widget with control buttons
-fn render_daemon_status(
+fn render_daemon_section(
     frame: &mut Frame,
     area: Rect,
     screen_state: &DashboardScreen,
     daemon_running: bool,
 ) {
-    let (status_text, status_color) = if daemon_running {
-        ("Running", Color::Green)
-    } else {
-        ("Not Running", Color::Red)
-    };
-
-    // Render outer block FIRST
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("PWSW Daemon ([↑/↓]select [Enter]execute)");
-    frame.render_widget(block, area);
+        .title(" System Control ");
+    frame.render_widget(block.clone(), area);
 
-    // Get inner area for content (accounting for borders)
-    let inner = area.inner(Margin {
-        vertical: 1,
-        horizontal: 1,
-    });
+    let inner = block.inner(area);
 
-    // Create horizontal layout: [Status | Controls]
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(inner);
 
-    // Left: Status
-    let status_text_widget = vec![
+    // Left: Status Indicator
+    let (status_text, status_color, status_icon) = if daemon_running {
+        ("RUNNING", Color::Green, "●")
+    } else {
+        ("STOPPED", Color::Red, "○")
+    };
+
+    let status_content = vec![
         Line::from(""),
+        Line::from(vec![Span::styled(
+            "Daemon Status",
+            Style::default().fg(Color::Gray),
+        )]),
         Line::from(vec![
-            Span::styled("Status: ", Style::default().fg(Color::Cyan)),
+            Span::styled(status_icon, Style::default().fg(status_color)),
+            Span::raw(" "),
             Span::styled(
                 status_text,
                 Style::default()
@@ -108,11 +112,11 @@ fn render_daemon_status(
         ]),
     ];
 
-    let status_paragraph = Paragraph::new(status_text_widget).alignment(Alignment::Left);
+    let status_paragraph = Paragraph::new(status_content).alignment(Alignment::Center);
     frame.render_widget(status_paragraph, chunks[0]);
 
-    // Right: Control buttons
-    let actions = ["Start", "Stop", "Restart"];
+    // Right: Actions List
+    let actions = ["Start Daemon", "Stop Daemon", "Restart Daemon"];
     let items: Vec<ListItem> = actions
         .iter()
         .enumerate()
@@ -122,11 +126,12 @@ fn render_daemon_status(
                 Style::default()
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
+                    .bg(Color::DarkGray)
             } else {
                 Style::default().fg(Color::White)
             };
 
-            let prefix = if is_selected { "> " } else { "  " };
+            let prefix = if is_selected { " ▶ " } else { "   " };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(Color::Cyan)),
                 Span::styled(*action, style),
@@ -134,29 +139,35 @@ fn render_daemon_status(
         })
         .collect();
 
-    let controls_list = List::new(items);
+    let controls_list = List::new(items).block(
+        Block::default()
+            .borders(Borders::LEFT)
+            .title(" Actions ([Enter] to execute) "),
+    );
     frame.render_widget(controls_list, chunks[1]);
 }
 
-/// Render current sink widget
-fn render_current_sink(frame: &mut Frame, area: Rect, config: &Config) {
+/// Render current sink card
+fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
     let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
 
-    let sink_desc = current_sink_name
+    let (sink_desc, sink_name) = current_sink_name
         .as_ref()
         .and_then(|name| {
-            config
-                .sinks
-                .iter()
-                .find(|s| &s.name == name)
-                .map(|s| s.desc.as_str())
+            config.sinks.iter().find(|s| &s.name == name).map(|s| {
+                (
+                    s.desc.clone(),
+                    s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+                )
+            })
         })
-        .unwrap_or("Unknown");
+        .unwrap_or(("Unknown Sink".to_string(), "?".to_string()));
 
     let text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("Active Sink: ", Style::default().fg(Color::Cyan)),
+            Span::styled(sink_name, Style::default().fg(Color::Cyan)),
+            Span::raw(" "),
             Span::styled(
                 sink_desc,
                 Style::default()
@@ -164,41 +175,53 @@ fn render_current_sink(frame: &mut Frame, area: Rect, config: &Config) {
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Active Audio Output",
+            Style::default().fg(Color::Gray),
+        )),
     ];
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Current Audio Output"),
+                .title(" Active Sink ")
+                .border_style(Style::default().fg(Color::Cyan)),
         )
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, area);
 }
 
-/// Render active windows widget
-fn render_active_windows(frame: &mut Frame, area: Rect, window_count: usize) {
+/// Render active windows card
+fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
     let text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("Tracked Windows: ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 window_count.to_string(),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::raw(" windows"),
         ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Currently Tracked",
+            Style::default().fg(Color::Gray),
+        )),
     ];
 
     let paragraph = Paragraph::new(text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Window Tracking"),
+                .title(" Statistics ")
+                .border_style(Style::default().fg(Color::Yellow)),
         )
-        .alignment(Alignment::Left);
+        .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, area);
 }
