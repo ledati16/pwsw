@@ -60,9 +60,14 @@ pub fn render_help(
         .begin_symbol(Some("▲"))
         .end_symbol(Some("▼"));
 
+    // Compute visible viewport height for scrollbar: inner height minus top/bottom margins (2)
+    let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let view_height = inner.height as usize;
+
     let mut scrollbar_state = ScrollbarState::default()
         .content_length(total_rows)
-        .position(scroll_state.offset());
+        .position(scroll_state.offset())
+        .viewport_length(view_height);
 
     frame.render_stateful_widget(
         scrollbar,

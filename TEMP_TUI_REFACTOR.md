@@ -142,6 +142,7 @@ Files modified:
 - `src/tui/input.rs`: Added SelectSink mode handling and Enter-to-select on name field
 
 Phase 3 UX Polish - TUI Revamp & Scrolling (2025-12-15)
+- Fixed scrollbar thumb sizing by setting `viewport_length()` for ScrollbarState in popup and table widgets.
 - Revamped Dashboard, Sinks, and Rules screens with modern, grid-based layouts and Table widgets.
 - Replaced raw text lists with `Table` widgets in Sinks and Rules screens for better column alignment and readability.
 - Added `Scrollbar` widgets to Sinks, Rules, Settings lists, and Sink Selector dropdowns.
