@@ -201,7 +201,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
             .sinks
             .iter()
             .enumerate()
-            .map(|(i, s)| format!("{index}. '{desc}'", index = i + 1, desc = s.desc))
+            .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
             .collect();
         anyhow::anyhow!(
             "Unknown sink '{}'. Available: {}",
@@ -583,7 +583,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                             "app_id".dim(),
                             window.app_id,
                             if matched_on == "app_id" || matched_on == "both" {
-                                format!(" {check}", check = "✓".success())
+                                format!(" {}", "✓".success())
                             } else {
                                 String::new()
                             }
@@ -593,7 +593,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                             "title".dim(),
                             window.title,
                             if matched_on == "title" || matched_on == "both" {
-                                format!(" {check}", check = "✓".success())
+                                format!(" {}", "✓".success())
                             } else {
                                 String::new()
                             }
