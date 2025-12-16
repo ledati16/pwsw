@@ -724,8 +724,12 @@ fn render_sink_selector(
     let content_width = inner.width as usize;
 
     // Use helper to compute whether content exists above/below (accounts for wrapping)
-    let (has_above, has_below) =
-        crate::tui::widgets::compute_has_above_below(&visual_items, content_width, raw_offset, view_height);
+    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
+        &visual_items,
+        content_width,
+        raw_offset,
+        view_height,
+    );
 
     // Render arrows via helper
     crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
