@@ -23,7 +23,7 @@ pub fn handle_event(app: &mut App, event: &Event) {
     }
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event::KeyEvent) {
     handle_key_event(app, key);
 }

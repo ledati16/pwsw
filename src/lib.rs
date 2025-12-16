@@ -49,9 +49,9 @@ pub fn version_string() -> String {
         } else {
             ""
         };
-        format!("v{}+{}{}", base_version, git_commit, dirty)
+        format!("v{base_version}+{git_commit}{dirty}")
     } else {
-        format!("v{}", base_version)
+        format!("v{base_version}")
     }
 }
 

@@ -198,7 +198,8 @@ pub struct PipeWire;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex as StdMutex};
 
-static DEVICE_LOCKS: OnceLock<StdMutex<std::collections::HashMap<u32, Arc<StdMutex<()>>>>> = OnceLock::new();
+static DEVICE_LOCKS: OnceLock<StdMutex<std::collections::HashMap<u32, Arc<StdMutex<()>>>>> =
+    OnceLock::new();
 
 impl PipeWire {
     /// Validate that all required `PipeWire` tools are available in `PATH`
@@ -207,6 +208,11 @@ impl PipeWire {
     ///
     /// # Errors
     /// Returns an error with installation instructions if any tools are missing.
+    /// # Panics
+    ///
+    /// May call `unwrap()` on a process exit `Result` when probing tools; this is
+    /// defensive and should not panic under normal conditions. In the unlikely event
+    /// of a platform-specific error, callers should treat this as a diagnostic issue.
     pub fn validate_tools() -> Result<()> {
         let required_tools = ["pw-dump", "pw-metadata", "pw-cli"];
         let mut missing = Vec::new();
@@ -502,6 +508,11 @@ impl PipeWire {
     /// # Concurrency
     /// This function is not thread-safe for concurrent profile switches on the same device.
     /// Callers should ensure only one profile switch occurs at a time per device.
+    /// # Panics
+    ///
+    /// This function uses `StdMutex::lock().unwrap()` when initializing per-device
+    /// locks; `unwrap()` may panic in out-of-memory or poisoned mutex scenarios.
+    /// Callers should assume this is unlikely in normal operation.
     pub fn activate_sink(sink_name: &str) -> Result<()> {
         let objects = Self::dump()?;
 
@@ -574,8 +585,8 @@ impl PipeWire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::thread;
     use std::time::Duration;
 
@@ -900,4 +911,5 @@ mod tests {
             profile_sinks[0].predicted_name,
             "alsa_output.pci-0000_00_1f.3.analog-stereo"
         );
-    }}
+    }
+}

@@ -32,6 +32,9 @@ mod preview;
 mod screens;
 mod widgets;
 
+#[cfg(test)]
+mod tests;
+
 use app::{App, Screen};
 use input::handle_event;
 use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks};
@@ -416,7 +419,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 "[tui] {} ms [{}] slow frame: {} ms preview_pending={} windows={}",
                                 run_ms,
                                 screen_name,
-                                elapsed.as_millis(),
+                                run_ms,
                                 preview_pending,
                                 windows
                             );

@@ -93,7 +93,7 @@ impl SettingsScreen {
             .iter()
             .map(|i| i.name().to_string())
             .collect();
-        let max_len = names.iter().map(|s| s.len()).max().unwrap_or(0);
+        let max_len = names.iter().map(String::len).max().unwrap_or(0);
         let padded_names = names
             .into_iter()
             .map(|n| format!("{n:<max_len$}"))
