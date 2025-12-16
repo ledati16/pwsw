@@ -230,6 +230,18 @@ impl Config {
             toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
 
         let config_path = Self::get_config_path()?;
+        Self::save_to_path_str(&toml_str, &config_path)
+    }
+
+    /// Save configuration to the specified path (used by tests to avoid touching XDG paths)
+    pub fn save_to<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
+        let config_file = self.to_config_file();
+        let toml_str =
+            toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
+        Self::save_to_path_str(&toml_str, path.as_ref())
+    }
+
+    fn save_to_path_str(path_str: &str, config_path: &std::path::Path) -> Result<()> {
         let dir = config_path
             .parent()
             .expect("Config path must have a parent directory");
@@ -239,7 +251,7 @@ impl Config {
             .context("Failed to create temporary file for atomic config save")?;
         // Write bytes to temporary file
         tmp.as_file_mut()
-            .write_all(toml_str.as_bytes())
+            .write_all(path_str.as_bytes())
             .context("Failed to write config to temporary file")?;
 
         // Ensure user-only permissions on Unix
@@ -256,7 +268,7 @@ impl Config {
         }
 
         // Persist atomically
-        tmp.persist(&config_path).with_context(|| {
+        tmp.persist(config_path).with_context(|| {
             format!(
                 "Failed to persist temporary config file to {}",
                 config_path.display()
@@ -267,7 +279,7 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+            std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600))
                 .with_context(|| {
                     format!(
                         "Failed to set final config permissions: {}",
@@ -839,9 +851,10 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", dir.path());
 
         let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-        cfg.save().unwrap();
-
         let path = Config::get_config_path().unwrap();
+        // Use test-specific save_to to avoid touching global XDG paths
+        cfg.save_to(&path).unwrap();
+
         assert!(path.exists());
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -888,7 +901,8 @@ mod tests {
             vec![make_rule("firefox", None, "Sink 1")],
         );
 
-        cfg.save().unwrap();
+        let path = Config::get_config_path().unwrap();
+        cfg.save_to(&path).unwrap();
 
         let loaded = Config::load().unwrap();
         assert_eq!(loaded.sinks.len(), 2);
