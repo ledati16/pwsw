@@ -120,8 +120,7 @@ pub async fn execute_preview(
 
     match run_blocking_with_timeout(blocking_closure, timeout).await {
         Ok(Ok(v)) => (v, false),
-        Ok(Err(_)) => (Vec::new(), true), // invalid regex
-        Err(_) => (Vec::new(), true),     // timed out or join error
+        Ok(Err(_)) | Err(_) => (Vec::new(), true), // invalid regex or timed out / join error
     }
 }
 

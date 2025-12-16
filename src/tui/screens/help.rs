@@ -219,6 +219,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
 }
 
 /// Build the list of rows for the help table (unchanged rendering semantics)
+#[allow(clippy::too_many_lines)]
 fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
     let mut rows = Vec::new();
 

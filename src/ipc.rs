@@ -531,9 +531,7 @@ mod tests {
 
         // Socket should be removed, but in some environments the socket may be re-created
         // by external processes between checks. Accept either removed or active.
-        if !socket_path.exists() {
-            // removed - success
-        } else {
+        if socket_path.exists() {
             // If it still exists, it must be active (i.e., connect succeeds)
             let conn = tokio::time::timeout(
                 Duration::from_millis(100),
@@ -546,6 +544,8 @@ mod tests {
                 }
                 _ => panic!("Stale socket should be removed"),
             }
+        } else {
+            // removed - success
         }
     }
 

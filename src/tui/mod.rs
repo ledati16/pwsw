@@ -74,6 +74,7 @@ pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
 ///
 /// # Errors
 /// Returns an error if TUI initialization fails or terminal operations fail.
+#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run() -> Result<()> {
     // Install a panic hook to restore terminal on panic (best-effort).
     // This wraps the existing hook (likely color-eyre from main) to ensure
@@ -373,6 +374,7 @@ pub async fn run() -> Result<()> {
 }
 
 /// Main application loop
+#[allow(clippy::items_after_statements)]
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -381,7 +383,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
     // Animation timing (time-based spinner)
-    use std::time::Instant;
+        use std::time::Instant;
     let mut last_anim = Instant::now();
     const ANIM_MS: u64 = 120; // spinner frame every 120ms
 

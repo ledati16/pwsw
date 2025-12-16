@@ -29,6 +29,7 @@ pub struct Config {
 
 /// Global settings
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub default_on_startup: bool,
     pub set_smart_toggle: bool,
@@ -79,6 +80,7 @@ struct ConfigFile {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct SettingsFile {
     #[serde(default = "default_true")]
     default_on_startup: bool,

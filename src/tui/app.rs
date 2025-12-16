@@ -129,6 +129,7 @@ pub struct PreviewResult {
     pub pending: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
     pub bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
