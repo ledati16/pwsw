@@ -286,9 +286,11 @@ impl Config {
         // If the target path is the real user config, require an explicit opt-in
         // via `PWSW_ALLOW_CONFIG_WRITE=1` to allow writing. This prevents accidental
         // overwrites during tests or other automated runs.
-        if let Some(cfg_dir) = dirs::config_dir() {
-            let real_cfg = cfg_dir.join("pwsw").join("config.toml");
-            if config_path == real_cfg {
+        // Determine the canonical *home-based* config path to avoid treating
+        // an XDG override (e.g., tests setting XDG_CONFIG_HOME) as the real user config.
+        if let Some(home_dir) = dirs::home_dir() {
+            let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
+            if config_path == home_cfg {
                 match std::env::var("PWSW_ALLOW_CONFIG_WRITE") {
                     Ok(val) if val == "1" => {
                         // explicit allow; proceed
