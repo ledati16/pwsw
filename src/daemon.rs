@@ -418,38 +418,35 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
 
         Request::SetSink { sink } => {
             // Resolve sink reference (name, description, or 1-indexed position)
-            match ctx.config.resolve_sink(&sink) {
-                Some(target) => {
-                    // Attempt to activate the sink via PipeWire
-                    match PipeWire::activate_sink(&target.name) {
-                        Ok(()) => Response::Ok {
-                            message: format!("Switched to sink: {}", target.desc),
-                        },
-                        Err(e) => Response::Error {
-                            message: format!(
-                                "Failed to activate sink '{target_desc}': {e:#}",
-                                target_desc = target.desc,
-                                e = e
-                            ),
-                        },
-                    }
-                }
-                None => {
-                    // Build helpful error message with available sinks
-                    let available: Vec<_> = ctx
-                        .config
-                        .sinks
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
-                        .collect();
-                    Response::Error {
+            if let Some(target) = ctx.config.resolve_sink(&sink) {
+                // Attempt to activate the sink via PipeWire
+                match PipeWire::activate_sink(&target.name) {
+                    Ok(()) => Response::Ok {
+                        message: format!("Switched to sink: {}", target.desc),
+                    },
+                    Err(e) => Response::Error {
                         message: format!(
-                            "Unknown sink '{}'. Available: [{}]",
-                            sink,
-                            available.join(", ")
+                            "Failed to activate sink '{target_desc}': {e:#}",
+                            target_desc = target.desc,
+                            e = e
                         ),
-                    }
+                    },
+                }
+            } else {
+                // Build helpful error message with available sinks
+                let available: Vec<_> = ctx
+                    .config
+                    .sinks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
+                    .collect();
+                Response::Error {
+                    message: format!(
+                        "Unknown sink '{}'. Available: [{}]",
+                        sink,
+                        available.join(", ")
+                    ),
                 }
             }
         }
