@@ -525,6 +525,64 @@ fn render_sink_selector(
         });
     }
 
+    let active_len = active_sinks.len();
+
+    if !profile_sinks.is_empty() {
+        visual_items.push(String::new()); // spacer
+        visual_items.push("── Profile Sinks (require switching) ──".to_string());
+        for sink in profile_sinks {
+            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
+            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
+            visual_items.push({
+                let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
+                let _ = write!(tmp, "  {desc_text} ({name_text})");
+                tmp
+            });
+        }
+    }
+
+    // Build and render the list widget (was removed accidentally during refactor)
+    let list = ratatui::widgets::List::new(items.clone())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Select Node (↑/↓, Enter to confirm, Esc to cancel)")
+                .style(Style::default().bg(Color::Black)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_symbol("");
+
+    // Map our logical selector index (skipping headers) to the list item index
+    let total_selectable = active_sinks.len() + profile_sinks.len();
+    if total_selectable > 0 {
+        let sel = screen_state.sink_selector_index.min(total_selectable - 1);
+        let list_index = if sel < active_len {
+            // Active sink: after the active header
+            1 + sel
+        } else {
+            // Profile sink: account for active items + spacer + profile header
+            let profile_idx = sel - active_len;
+            3 + active_len + profile_idx
+        };
+        screen_state.sink_selector_state.select(Some(list_index));
+    } else {
+        screen_state.sink_selector_state.select(None);
+    }
+
+    frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
+
+    // Compute visual line counts per item using the inner width
+    let content_width = inner.width as usize;
+    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
+        &visual_items,
+        content_width,
+        screen_state.sink_selector_state.offset(),
+        view_height,
+    );
+
+    // Render scroll arrows
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
+
     if !profile_sinks.is_empty() {
         visual_items.push(String::new()); // spacer
         visual_items.push("── Profile Sinks (require switching) ──".to_string());
