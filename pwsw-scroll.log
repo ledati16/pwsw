@@ -1,4 +1,4 @@
    Compiling pwsw v0.3.1 (/home/tim/builds/misc/nasw)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.09s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.01s
      Running `target/debug/pwsw tui`
 [tui] 18 ms [Dashboard] slow frame: 18 ms preview_pending=false windows=0

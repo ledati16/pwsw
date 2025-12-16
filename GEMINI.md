@@ -443,15 +443,17 @@ Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`, `perf`
 
 ### Git Push Policy
 
-**Push commits to remote ONLY when explicitly approved by the user.**
+- **Push commits to remote ONLY when explicitly approved by the user.**
 
-**NEVER push changes to remote without explicit user approval.**
+- **NEVER push changes to remote without explicit user approval.**
 
 When creating commits:
   1. Always create the commit locally
   2. Inform the user that the commit was created but not pushed
   3. Wait for explicit approval (e.g., "push it", "go ahead and push", "yes push") before running `git push`
   4. If approved, push with: `git push` (or `git push -u origin <branch>` for new branches)
+
+Note: See `CONTRIBUTING.md` at the repository root for developer onboarding steps, the verification script, git-hook installer usage, and the policy for protecting real user config during tests.
 
 ### Testing Approach
 
