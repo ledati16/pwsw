@@ -316,7 +316,7 @@ pwsw validate            # Check config without starting daemon
 
 5. **Default sink requirement**: Config must have exactly one sink with `default = true`. Daemon will fail to start otherwise. This is enforced at config validation time.
 
-6. **Unsupported compositors**: 
+6. **Unsupported compositors**:
    - GNOME/Mutter doesn't expose window management protocols
    - KDE Plasma 6 removed the plasma-window-management protocol and hasn't implemented a replacement yet
    - These are compositor limitations, not code issues
@@ -448,8 +448,6 @@ When creating commits:
   2. Inform the user that the commit was created but not pushed
   3. Wait for explicit approval (e.g., "push it", "go ahead and push", "yes push") before running `git push`
   4. If approved, push with: `git push` (or `git push -u origin <branch>` for new branches)
-
-Note: For the ongoing TUI refactor, agents and contributors must also keep `TEMP_TUI_REFACTOR.md` updated at every small step; see the AGENTS.md operational checklist.
 
 ### Testing Approach
 

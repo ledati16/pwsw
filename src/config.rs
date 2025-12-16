@@ -105,9 +105,10 @@ struct SinkConfigFile {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct RuleConfigFile {
-    app_id: String,
-    #[serde(default)]
-    title: Option<String>,
+    #[serde(with = "serde_regex")]
+    app_id: Regex,
+    #[serde(default, with = "serde_regex")]
+    title: Option<Regex>,
     sink: String,
     #[serde(default)]
     desc: Option<String>,
@@ -187,33 +188,23 @@ impl Config {
             })
             .collect();
 
-        let mut rules = Vec::with_capacity(config_file.rules.len());
-        for (i, rule_config) in config_file.rules.iter().enumerate() {
-            let app_id_regex = Regex::new(&rule_config.app_id).with_context(|| {
-                format!(
-                    "Invalid regex in rule {} app_id: '{}'",
-                    i + 1,
-                    rule_config.app_id
-                )
-            })?;
-
-            let title_regex = match &rule_config.title {
-                Some(pattern) => Some(Regex::new(pattern).with_context(|| {
-                    format!("Invalid regex in rule {} title: '{}'", i + 1, pattern)
-                })?),
-                None => None,
-            };
-
-            rules.push(Rule {
-                app_id_regex,
-                title_regex,
-                sink_ref: rule_config.sink.clone(),
-                desc: rule_config.desc.clone(),
-                notify: rule_config.notify,
-                app_id_pattern: rule_config.app_id.clone(),
-                title_pattern: rule_config.title.clone(),
-            });
-        }
+        let rules = config_file
+            .rules
+            .into_iter()
+            .map(|r| {
+                let app_id_pattern = r.app_id.as_str().to_string();
+                let title_pattern = r.title.as_ref().map(|t| t.as_str().to_string());
+                Rule {
+                    app_id_regex: r.app_id,
+                    title_regex: r.title,
+                    sink_ref: r.sink,
+                    desc: r.desc,
+                    notify: r.notify,
+                    app_id_pattern,
+                    title_pattern,
+                }
+            })
+            .collect();
 
         let config = Config {
             settings,
@@ -266,8 +257,8 @@ impl Config {
             .rules
             .iter()
             .map(|r| RuleConfigFile {
-                app_id: r.app_id_pattern.clone(),
-                title: r.title_pattern.clone(),
+                app_id: r.app_id_regex.clone(),
+                title: r.title_regex.clone(),
                 sink: r.sink_ref.clone(),
                 desc: r.desc.clone(),
                 notify: r.notify,

@@ -1,8 +1,8 @@
 //! Input handling for keyboard events
 
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use std::time::Duration;
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, DaemonAction, Screen};
 use super::screens::rules::RulesMode;
@@ -10,36 +10,24 @@ use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
 
-/// Poll timeout for event checking (non-blocking). Set to 0 to avoid blocking in the tick loop.
-const POLL_TIMEOUT: Duration = Duration::from_millis(0);
-/// Maximum number of input events to process per tick. Prevents long blocking when the terminal
-/// emits a large flood of input events.
-const MAX_EVENTS_PER_TICK: usize = 64;
-
-/// Handle keyboard input events
+/// Handle a single input event (async-friendly)
 ///
 /// # Errors
-/// Returns an error if event polling fails.
-pub fn handle_events(app: &mut App) -> Result<()> {
-    // Process up to MAX_EVENTS_PER_TICK pending events to avoid blocking the UI for too long.
-    for _ in 0..MAX_EVENTS_PER_TICK {
-        if !event::poll(POLL_TIMEOUT)? {
-            break;
+/// Returns an error if internal processing fails (currently infallible).
+pub fn handle_event(app: &mut App, event: Event) -> Result<()> {
+    match event {
+        Event::Key(key_event) => {
+            handle_key_event(app, key_event);
+            app.dirty = true;
         }
-        match event::read()? {
-            Event::Key(key_event) => {
-                handle_key_event(app, key_event);
-                app.dirty = true;
-            }
-            Event::Mouse(_) => {
-                // Mouse events are intentionally ignored in the keyboard-first TUI.
-            }
-            Event::Resize(_, _) => {
-                // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
-                app.dirty = true;
-            }
-            _ => {}
+        Event::Mouse(_) => {
+            // Mouse events are intentionally ignored in the keyboard-first TUI.
         }
+        Event::Resize(_, _) => {
+            // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
+            app.dirty = true;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -403,31 +391,15 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     if idx < app.active_sink_list.len() {
                         // Active sink selected
                         let sink = &app.active_sink_list[idx];
-                        app.sinks_screen.editor.name.value.clone_from(&sink.name);
-                        app.sinks_screen.editor.name.cursor = sink.name.len();
-                        app.sinks_screen
-                            .editor
-                            .desc
-                            .value
-                            .clone_from(&sink.description);
-                        app.sinks_screen.editor.desc.cursor = sink.description.len();
+                        app.sinks_screen.editor.name.set_value(sink.name.clone());
+                        app.sinks_screen.editor.desc.set_value(sink.description.clone());
                     } else {
                         // Profile sink selected
                         let profile_idx = idx - app.active_sink_list.len();
                         if profile_idx < app.profile_sink_list.len() {
                             let sink = &app.profile_sink_list[profile_idx];
-                            app.sinks_screen
-                                .editor
-                                .name
-                                .value
-                                .clone_from(&sink.predicted_name);
-                            app.sinks_screen.editor.name.cursor = sink.predicted_name.len();
-                            app.sinks_screen
-                                .editor
-                                .desc
-                                .value
-                                .clone_from(&sink.description);
-                            app.sinks_screen.editor.desc.cursor = sink.description.len();
+                            app.sinks_screen.editor.name.set_value(sink.predicted_name.clone());
+                            app.sinks_screen.editor.desc.set_value(sink.description.clone());
                         }
                     }
 
@@ -461,84 +433,6 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::BackTab => {
             app.sinks_screen.editor.prev_field();
         }
-        KeyCode::Char(c) => {
-            // Type into focused field (insert at cursor)
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    app.sinks_screen.editor.name.insert(c);
-                }
-                1 => {
-                    app.sinks_screen.editor.desc.insert(c);
-                }
-                2 => {
-                    app.sinks_screen.editor.icon.insert(c);
-                }
-                3 => {
-                    // Toggle default checkbox with space
-                    if c == ' ' {
-                        app.sinks_screen.editor.default = !app.sinks_screen.editor.default;
-                    }
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Left => match (app.sinks_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.move_word_left(),
-            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.move_word_left(),
-            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.move_word_left(),
-            (0, _) => app.sinks_screen.editor.name.move_left(),
-            (1, _) => app.sinks_screen.editor.desc.move_left(),
-            (2, _) => app.sinks_screen.editor.icon.move_left(),
-            _ => {}
-        },
-        KeyCode::Right => match (app.sinks_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.move_word_right(),
-            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.move_word_right(),
-            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.move_word_right(),
-            (0, _) => app.sinks_screen.editor.name.move_right(),
-            (1, _) => app.sinks_screen.editor.desc.move_right(),
-            (2, _) => app.sinks_screen.editor.icon.move_right(),
-            _ => {}
-        },
-        KeyCode::Home => match app.sinks_screen.editor.focused_field {
-            0 => app.sinks_screen.editor.name.move_home(),
-            1 => app.sinks_screen.editor.desc.move_home(),
-            2 => app.sinks_screen.editor.icon.move_home(),
-            _ => {}
-        },
-        KeyCode::End => match app.sinks_screen.editor.focused_field {
-            0 => app.sinks_screen.editor.name.move_end(),
-            1 => app.sinks_screen.editor.desc.move_end(),
-            2 => app.sinks_screen.editor.icon.move_end(),
-            _ => {}
-        },
-        KeyCode::Backspace => match (app.sinks_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => app.sinks_screen.editor.name.remove_word_before(),
-            (1, KeyModifiers::CONTROL) => app.sinks_screen.editor.desc.remove_word_before(),
-            (2, KeyModifiers::CONTROL) => app.sinks_screen.editor.icon.remove_word_before(),
-            (0, _) => {
-                app.sinks_screen.editor.name.remove_before();
-            }
-            (1, _) => {
-                app.sinks_screen.editor.desc.remove_before();
-            }
-            (2, _) => {
-                app.sinks_screen.editor.icon.remove_before();
-            }
-            _ => {}
-        },
-        KeyCode::Delete => match app.sinks_screen.editor.focused_field {
-            0 => {
-                app.sinks_screen.editor.name.remove_at();
-            }
-            1 => {
-                app.sinks_screen.editor.desc.remove_at();
-            }
-            2 => {
-                app.sinks_screen.editor.icon.remove_at();
-            }
-            _ => {}
-        },
         KeyCode::Enter => {
             // If on name field, open sink selector; otherwise save
             if app.sinks_screen.editor.focused_field == 0 {
@@ -549,20 +443,20 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             }
 
             // Save the sink
-            if app.sinks_screen.editor.name.value.is_empty()
-                || app.sinks_screen.editor.desc.value.is_empty()
+            if app.sinks_screen.editor.name.value().is_empty()
+                || app.sinks_screen.editor.desc.value().is_empty()
             {
                 app.set_status("Name and Description are required".to_string());
                 return;
             }
 
             let new_sink = SinkConfig {
-                name: app.sinks_screen.editor.name.value.clone(),
-                desc: app.sinks_screen.editor.desc.value.clone(),
-                icon: if app.sinks_screen.editor.icon.value.is_empty() {
+                name: app.sinks_screen.editor.name.value().to_string(),
+                desc: app.sinks_screen.editor.desc.value().to_string(),
+                icon: if app.sinks_screen.editor.icon.value().is_empty() {
                     None
                 } else {
-                    Some(app.sinks_screen.editor.icon.value.clone())
+                    Some(app.sinks_screen.editor.icon.value().to_string())
                 },
                 default: app.sinks_screen.editor.default,
             };
@@ -592,7 +486,27 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.sinks_screen.cancel();
         }
-        _ => {}
+        _ => {
+            let event = Event::Key(key);
+            match app.sinks_screen.editor.focused_field {
+                0 => {
+                    app.sinks_screen.editor.name.input.handle_event(&event);
+                }
+                1 => {
+                    app.sinks_screen.editor.desc.input.handle_event(&event);
+                }
+                2 => {
+                    app.sinks_screen.editor.icon.input.handle_event(&event);
+                }
+                3 => {
+                    // Toggle default checkbox with space
+                    if key.code == KeyCode::Char(' ') {
+                        app.sinks_screen.editor.default = !app.sinks_screen.editor.default;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -675,264 +589,11 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 
 /// Handle rule editor input (add/edit modal)
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
-    // Helper functions to operate on strings by character index
-
     match key.code {
         KeyCode::Up => app.rules_screen.editor.prev_field(),
         KeyCode::Down => app.rules_screen.editor.next_field(),
         KeyCode::Tab => app.rules_screen.editor.next_field(),
         KeyCode::BackTab => app.rules_screen.editor.prev_field(),
-        KeyCode::Char(c) => {
-            match app.rules_screen.editor.focused_field {
-                0 => {
-                    // insert at cursor_app
-                    app.rules_screen.editor.app_id_pattern.insert(c);
-
-                    // Ensure compiled caches are updated eagerly
-                    app.rules_screen.editor.ensure_compiled();
-
-                    // Request live-preview
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                        let compiled_title = app.rules_screen.editor.compiled_title.clone();
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                            app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty()
-                            {
-                                None
-                            } else {
-                                Some(app.rules_screen.editor.title_pattern.value.clone())
-                            },
-                            compiled_app,
-                            compiled_title,
-                        });
-                    }
-                }
-                1 => {
-                    app.rules_screen.editor.title_pattern.insert(c);
-
-                    // Ensure compiled caches are updated eagerly
-                    app.rules_screen.editor.ensure_compiled();
-
-                    if let Some(tx) = &app.bg_cmd_tx {
-                        let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                        let compiled_title = app.rules_screen.editor.compiled_title.clone();
-                        let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                            app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                            title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty()
-                            {
-                                None
-                            } else {
-                                Some(app.rules_screen.editor.title_pattern.value.clone())
-                            },
-                            compiled_app,
-                            compiled_title,
-                        });
-                    }
-                }
-                2 => {
-                    // Sink field - don't type
-                }
-                3 => {
-                    app.rules_screen.editor.desc.insert(c);
-                }
-                4 => {
-                    if c == ' ' {
-                        app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
-                            None => Some(true),
-                            Some(true) => Some(false),
-                            Some(false) => None,
-                        };
-                    }
-                }
-                _ => {}
-            }
-        }
-        KeyCode::Left => match (app.rules_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => app.rules_screen.editor.app_id_pattern.move_word_left(),
-            (1, KeyModifiers::CONTROL) => app.rules_screen.editor.title_pattern.move_word_left(),
-            (3, KeyModifiers::CONTROL) => app.rules_screen.editor.desc.move_word_left(),
-            (0, _) => app.rules_screen.editor.app_id_pattern.move_left(),
-            (1, _) => app.rules_screen.editor.title_pattern.move_left(),
-            (3, _) => app.rules_screen.editor.desc.move_left(),
-            _ => {}
-        },
-        KeyCode::Right => match (app.rules_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => app.rules_screen.editor.app_id_pattern.move_word_right(),
-            (1, KeyModifiers::CONTROL) => app.rules_screen.editor.title_pattern.move_word_right(),
-            (3, KeyModifiers::CONTROL) => app.rules_screen.editor.desc.move_word_right(),
-            (0, _) => app.rules_screen.editor.app_id_pattern.move_right(),
-            (1, _) => app.rules_screen.editor.title_pattern.move_right(),
-            (3, _) => app.rules_screen.editor.desc.move_right(),
-            _ => {}
-        },
-        KeyCode::Home => match app.rules_screen.editor.focused_field {
-            0 => app.rules_screen.editor.app_id_pattern.move_home(),
-            1 => app.rules_screen.editor.title_pattern.move_home(),
-            3 => app.rules_screen.editor.desc.move_home(),
-            _ => {}
-        },
-        KeyCode::End => match app.rules_screen.editor.focused_field {
-            0 => app.rules_screen.editor.app_id_pattern.move_end(),
-            1 => app.rules_screen.editor.title_pattern.move_end(),
-            3 => app.rules_screen.editor.desc.move_end(),
-            _ => {}
-        },
-        KeyCode::Backspace => match (app.rules_screen.editor.focused_field, key.modifiers) {
-            (0, KeyModifiers::CONTROL) => {
-                app.rules_screen.editor.app_id_pattern.remove_word_before();
-                // Ensure compiled caches updated eagerly
-                app.rules_screen.editor.ensure_compiled();
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = app.rules_screen.editor.compiled_title.clone();
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
-                            None
-                        } else {
-                            Some(app.rules_screen.editor.title_pattern.value.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            (1, KeyModifiers::CONTROL) => {
-                app.rules_screen.editor.title_pattern.remove_word_before();
-                // Eagerly update compiled caches for current editor patterns
-                app.rules_screen.editor.ensure_compiled();
-
-                let pat = app.rules_screen.editor.title_pattern.value.clone();
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = if pat.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen.editor.compiled_title.clone()
-                    };
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if pat.is_empty() {
-                            None
-                        } else {
-                            Some(pat.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            (3, KeyModifiers::CONTROL) => {
-                app.rules_screen.editor.desc.remove_word_before();
-            }
-            (0, _) => {
-                app.rules_screen.editor.app_id_pattern.remove_before();
-
-                // Ensure compiled caches updated eagerly
-                app.rules_screen.editor.ensure_compiled();
-
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = app.rules_screen.editor.compiled_title.clone();
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
-                            None
-                        } else {
-                            Some(app.rules_screen.editor.title_pattern.value.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            (1, _) => {
-                app.rules_screen.editor.title_pattern.remove_before();
-                // Eagerly update compiled caches for current editor patterns
-                app.rules_screen.editor.ensure_compiled();
-
-                let pat = app.rules_screen.editor.title_pattern.value.clone();
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = if pat.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen.editor.compiled_title.clone()
-                    };
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if pat.is_empty() {
-                            None
-                        } else {
-                            Some(pat.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            (3, _) => {
-                app.rules_screen.editor.desc.remove_before();
-            }
-            _ => {}
-        },
-        KeyCode::Delete => match app.rules_screen.editor.focused_field {
-            0 => {
-                app.rules_screen.editor.app_id_pattern.remove_at();
-                // Eagerly update compiled caches
-                app.rules_screen.editor.ensure_compiled();
-                let pat = app.rules_screen.editor.app_id_pattern.value.clone();
-
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = if pat.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen.editor.compiled_title.clone()
-                    };
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: pat.clone(),
-                        title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
-                            None
-                        } else {
-                            Some(app.rules_screen.editor.title_pattern.value.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            1 => {
-                app.rules_screen.editor.title_pattern.remove_at();
-                // Eagerly update compiled caches
-                app.rules_screen.editor.ensure_compiled();
-                let pat = app.rules_screen.editor.title_pattern.value.clone();
-
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = if pat.is_empty() {
-                        None
-                    } else {
-                        app.rules_screen.editor.compiled_title.clone()
-                    };
-                    let _ = tx.try_send(crate::tui::app::BgCommand::PreviewRequest {
-                        app_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                        title_pattern: if pat.is_empty() {
-                            None
-                        } else {
-                            Some(pat.clone())
-                        },
-                        compiled_app,
-                        compiled_title,
-                    });
-                }
-            }
-            3 => {
-                app.rules_screen.editor.desc.remove_at();
-            }
-            _ => {}
-        },
         KeyCode::Enter => {
             // If on sink field, open selector
             if app.rules_screen.editor.focused_field == 2 {
@@ -941,7 +602,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             }
 
             // Otherwise, save the rule
-            if app.rules_screen.editor.app_id_pattern.value.is_empty() {
+            if app.rules_screen.editor.app_id_pattern.value().is_empty() {
                 app.set_status("App ID pattern is required".to_string());
                 return;
             }
@@ -961,7 +622,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 .map(|a| a.as_ref())
             {
                 Some(r) => r.clone(),
-                None => match Regex::new(&app.rules_screen.editor.app_id_pattern.value) {
+                None => match Regex::new(app.rules_screen.editor.app_id_pattern.value()) {
                     Ok(r) => r,
                     Err(e) => {
                         app.set_status(format!("Invalid app_id regex: {e}"));
@@ -970,7 +631,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 },
             };
 
-            let title_regex = if app.rules_screen.editor.title_pattern.value.is_empty() {
+            let title_regex = if app.rules_screen.editor.title_pattern.value().is_empty() {
                 None
             } else if let Some(r) = app
                 .rules_screen
@@ -981,7 +642,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             {
                 Some(r.clone())
             } else {
-                match Regex::new(&app.rules_screen.editor.title_pattern.value) {
+                match Regex::new(app.rules_screen.editor.title_pattern.value()) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         app.set_status(format!("Invalid title regex: {e}"));
@@ -994,17 +655,17 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 app_id_regex,
                 title_regex,
                 sink_ref: app.rules_screen.editor.sink_ref.clone(),
-                desc: if app.rules_screen.editor.desc.value.is_empty() {
+                desc: if app.rules_screen.editor.desc.value().is_empty() {
                     None
                 } else {
-                    Some(app.rules_screen.editor.desc.value.clone())
+                    Some(app.rules_screen.editor.desc.value().to_string())
                 },
                 notify: app.rules_screen.editor.notify,
-                app_id_pattern: app.rules_screen.editor.app_id_pattern.value.clone(),
-                title_pattern: if app.rules_screen.editor.title_pattern.value.is_empty() {
+                app_id_pattern: app.rules_screen.editor.app_id_pattern.value().to_string(),
+                title_pattern: if app.rules_screen.editor.title_pattern.value().is_empty() {
                     None
                 } else {
-                    Some(app.rules_screen.editor.title_pattern.value.clone())
+                    Some(app.rules_screen.editor.title_pattern.value().to_string())
                 },
             };
 
@@ -1022,6 +683,67 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.rules_screen.cancel();
         }
-        _ => {}
+        _ => {
+            // Forward other keys to inputs
+            let event = Event::Key(key);
+            let mut changed = false;
+
+            match app.rules_screen.editor.focused_field {
+                0 => {
+                    // app_id
+                    if app.rules_screen.editor.app_id_pattern.input.handle_event(&event).is_some() {
+                        changed = true;
+                    }
+                }
+                1 => {
+                    // title
+                    if app.rules_screen.editor.title_pattern.input.handle_event(&event).is_some() {
+                        changed = true;
+                    }
+                }
+                2 => {
+                    // Sink field - don't type
+                }
+                3 => {
+                    // desc
+                    app.rules_screen.editor.desc.input.handle_event(&event);
+                }
+                4 => {
+                    // notify
+                    if key.code == KeyCode::Char(' ') {
+                        app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
+                            None => Some(true),
+                            Some(true) => Some(false),
+                            Some(false) => None,
+                        };
+                    }
+                }
+                _ => {}
+            }
+
+            // Trigger preview if patterns changed
+            if changed {
+                app.rules_screen.editor.ensure_compiled();
+
+                if let Some(tx) = &app.preview_in_tx {
+                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
+                    let compiled_title = app.rules_screen.editor.compiled_title.clone();
+                    
+                    let app_pattern = app.rules_screen.editor.app_id_pattern.value().to_string();
+                    let title_pattern = if app.rules_screen.editor.title_pattern.value().is_empty() {
+                        None
+                    } else {
+                        Some(app.rules_screen.editor.title_pattern.value().to_string())
+                    };
+
+                    let _ = tx.send((
+                        app_pattern,
+                        title_pattern,
+                        compiled_app,
+                        compiled_title,
+                    ));
+                }
+            }
+        }
     }
 }

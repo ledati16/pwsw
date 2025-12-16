@@ -3,8 +3,8 @@ use crate::ipc::WindowInfo;
 
 #[test]
 fn test_windows_fingerprint_deterministic_and_sensitive() {
-    let a = WindowInfo { app_id: "firefox".into(), title: "Firefox".into(), matched_on: None, tracked: None };
-    let b = WindowInfo { app_id: "mpv".into(), title: "mpv video".into(), matched_on: None, tracked: None };
+    let a = WindowInfo { id: None, app_id: "firefox".into(), title: "Firefox".into(), matched_on: None, tracked: None };
+    let b = WindowInfo { id: None, app_id: "mpv".into(), title: "mpv video".into(), matched_on: None, tracked: None };
 
     // Same order -> equal
     let v1 = vec![a.clone(), b.clone()];

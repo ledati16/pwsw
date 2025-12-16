@@ -13,8 +13,7 @@ use ratatui::{
 use crate::config::SinkConfig;
 
 use crate::tui::editor_state::SimpleEditor;
-use crate::tui::textfield::render_text_field;
-use crate::tui::widgets::{centered_modal, modal_size};
+use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
 /// Sinks screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,10 +340,10 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     frame.render_widget(block, popup_area);
 
     // Name field - use button-like selector
-    let name_display = if screen_state.editor.name.value.is_empty() {
+    let name_display = if screen_state.editor.name.value().is_empty() {
         None
     } else {
-        Some(screen_state.editor.name.value.as_str())
+        Some(screen_state.editor.name.value())
     };
 
     crate::tui::widgets::render_selector_button(
@@ -356,23 +355,21 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     );
 
     // Desc field
-    render_text_field(
+    render_input(
         frame,
         chunks[1],
         "Description:",
-        &screen_state.editor.desc.value,
+        &screen_state.editor.desc.input,
         screen_state.editor.focused_field == 1,
-        Some(screen_state.editor.desc.cursor),
     );
 
     // Icon field
-    render_text_field(
+    render_input(
         frame,
         chunks[2],
         "Icon (optional):",
-        &screen_state.editor.icon.value,
+        &screen_state.editor.icon.input,
         screen_state.editor.focused_field == 2,
-        Some(screen_state.editor.icon.cursor),
     );
 
     // Default checkbox with border-based focus

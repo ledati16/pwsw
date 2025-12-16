@@ -99,6 +99,26 @@ impl State {
         }
     }
 
+    /// Reload configuration at runtime
+    pub fn reload_config(&mut self, new_config: Config) {
+        info!("Reloading configuration...");
+        self.config = new_config;
+
+        // Rebuild sink lookup table
+        self.sink_lookup = self
+            .config
+            .sinks
+            .iter()
+            .map(|s| (s.name.clone(), s.desc.clone()))
+            .collect();
+
+        info!(
+            "Configuration reloaded: {} sinks, {} rules",
+            self.config.sinks.len(),
+            self.config.rules.len()
+        );
+    }
+
     /// Find a rule that matches the given `app_id` and title, returning the rule and its index
     #[must_use]
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
@@ -196,20 +216,20 @@ impl State {
     ///
     /// # Errors
     /// Returns an error if sink activation fails or rule processing encounters issues.
-    pub fn process_event(&mut self, event: WindowEvent) -> Result<()> {
+    pub async fn process_event(&mut self, event: WindowEvent) -> Result<()> {
         match event {
             WindowEvent::Opened { id, app_id, title }
             | WindowEvent::Changed { id, app_id, title } => {
-                self.handle_window_open_or_change(id, &app_id, &title)?;
+                self.handle_window_open_or_change(id, &app_id, &title).await?;
             }
             WindowEvent::Closed { id } => {
-                self.handle_window_close(id)?;
+                self.handle_window_close(id).await?;
             }
         }
         Ok(())
     }
 
-    fn handle_window_open_or_change(&mut self, id: u64, app_id: &str, title: &str) -> Result<()> {
+    async fn handle_window_open_or_change(&mut self, id: u64, app_id: &str, title: &str) -> Result<()> {
         debug!("Window: id={}, app_id='{}', title='{}'", id, app_id, title);
 
         // Track all windows for test-rule command
@@ -258,13 +278,29 @@ impl State {
                     let notify = rule_notify.unwrap_or(self.config.settings.notify_rules);
                     // Use `app_id` as icon (e.g., "steam" shows Steam icon)
                     let app_icon = get_app_icon(app_id);
-                    switch_audio(
-                        &sink_name,
-                        &sink_desc,
-                        Some(&trigger_desc),
-                        Some(&app_icon),
-                        notify,
-                    )?;
+                    // Run blocking PipeWire activation in spawn_blocking to avoid blocking tokio runtime
+                    let sink_to_activate = sink_name.clone();
+                    let desc_clone = sink_desc.clone();
+                    let app_icon_clone = app_icon.clone();
+                    let custom_desc = trigger_desc.clone();
+
+                    let app_icon_str = app_icon_clone.clone();
+                    let join = tokio::task::spawn_blocking(move || {
+                        crate::state::switch_audio_blocking(
+                            &sink_to_activate,
+                            &desc_clone,
+                            Some(&custom_desc),
+                            Some(app_icon_str.as_str()),
+                            notify,
+                        )
+                    });
+
+                    let inner = join
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+                    inner?;
+
+                    // Only update state on success
                     self.update_sink(sink_name);
                 }
             } else {
@@ -286,7 +322,7 @@ impl State {
                 let target = self.determine_target_sink();
                 if self.should_switch_sink(&target) {
                     let context = format!("{} ended", old_window.trigger_desc);
-                    self.switch_to_target(target, &context)?;
+                    self.switch_to_target(target, &context).await?;
                 }
             }
         }
@@ -294,7 +330,7 @@ impl State {
         Ok(())
     }
 
-    fn handle_window_close(&mut self, id: u64) -> Result<()> {
+    async fn handle_window_close(&mut self, id: u64) -> Result<()> {
         // Remove from all_windows tracking
         self.all_windows.remove(&id);
 
@@ -307,7 +343,7 @@ impl State {
             let target = self.determine_target_sink();
             if self.should_switch_sink(&target) {
                 let context = format!("{} closed", closed_window.trigger_desc);
-                self.switch_to_target(target, &context)?;
+                self.switch_to_target(target, &context).await?;
             }
         }
 
@@ -331,25 +367,26 @@ impl State {
 
     /// Get a list of ALL currently open windows (for test-rule command)
     #[must_use]
-    pub fn get_all_windows(&self) -> Vec<(String, String)> {
+    pub fn get_all_windows(&self) -> Vec<(u64, String, String)> {
         self.all_windows
-            .values()
-            .map(|(app_id, title)| (app_id.clone(), title.clone()))
+            .iter()
+            .map(|(id, (app_id, title))| (*id, app_id.clone(), title.clone()))
             .collect()
     }
 
     /// Get tracked windows with sink information (for `list-windows` command)
     #[must_use]
-    pub fn get_tracked_windows_with_sinks(&self) -> Vec<(String, String, String, String)> {
-        // Returns: (`app_id`, title, `sink_name`, `sink_desc`)
+    pub fn get_tracked_windows_with_sinks(&self) -> Vec<(u64, String, String, String, String)> {
+        // Returns: (id, `app_id`, title, `sink_name`, `sink_desc`)
         self.active_windows
-            .values()
-            .map(|w| {
+            .iter()
+            .map(|(id, w)| {
                 let sink_desc = self
                     .sink_lookup
                     .get(&w.sink_name)
                     .map_or_else(|| w.sink_name.clone(), Clone::clone);
                 (
+                    *id,
                     w.app_id.clone(),
                     w.title.clone(),
                     w.sink_name.clone(),
@@ -360,7 +397,7 @@ impl State {
     }
 
     /// Helper to switch to target sink with notification logic for window state changes
-    fn switch_to_target(&mut self, target: String, context: &str) -> Result<()> {
+    async fn switch_to_target(&mut self, target: String, context: &str) -> Result<()> {
         let target_sink = self.config.sinks.iter().find(|s| s.name == target);
         let desc = target_sink.map_or(target.as_str(), |s| s.desc.as_str());
         let icon = target_sink.map(get_sink_icon);
@@ -368,7 +405,25 @@ impl State {
         let is_default = default_sink.name == target;
         let notify = self.config.settings.notify_rules && is_default;
 
-        switch_audio(&target, desc, Some(context), icon.as_deref(), notify)?;
+        // Run blocking activation inside spawn_blocking
+        let target_clone = target.clone();
+        let desc_clone = desc.to_string();
+        let icon_clone = icon.clone();
+        let context_clone = context.to_string();
+
+        let join = tokio::task::spawn_blocking(move || {
+            crate::state::switch_audio_blocking(
+                &target_clone,
+                &desc_clone,
+                Some(&context_clone),
+                icon_clone.as_deref(),
+                notify,
+            )
+        });
+
+        let inner = join.await.map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+        inner?;
+
         self.update_sink(target);
         Ok(())
     }
@@ -378,7 +433,7 @@ impl State {
 ///
 /// # Errors
 /// Returns an error if `PipeWire` sink activation fails.
-pub fn switch_audio(
+pub fn switch_audio_blocking(
     name: &str,
     desc: &str,
     custom_desc: Option<&str>,

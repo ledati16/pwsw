@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use tui_input::Input;
 
 /// Helper to create centered rect for modals
 ///
@@ -65,6 +66,34 @@ pub const fn focus_border_style(focused: bool) -> Style {
         Style::new().fg(Color::Cyan)
     } else {
         Style::new().fg(Color::DarkGray)
+    }
+}
+
+/// Render a text input field with a block and correct scrolling/cursor
+pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
+    let border_style = focus_border_style(focused);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style)
+        .title(title);
+
+    let inner_area = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Compute scrolling
+    let width = inner_area.width.max(1) as usize;
+    let scroll = input.visual_scroll(width);
+
+    // Render input using Paragraph
+    let p = Paragraph::new(input.value()).scroll((0, scroll as u16));
+    frame.render_widget(p, inner_area);
+
+    // Render cursor
+    if focused {
+        frame.set_cursor_position((
+            inner_area.x + ((input.visual_cursor().max(scroll) - scroll) as u16),
+            inner_area.y,
+        ));
     }
 }
 

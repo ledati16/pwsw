@@ -7,10 +7,12 @@ use anyhow::{Context, Result};
 // `Write` import removed — unused in this module
 use crate::tui::app::{AppUpdate, BgCommand};
 use crossterm::cursor::Show;
+use crossterm::event::EventStream;
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
+use futures_util::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -24,16 +26,14 @@ use tokio::sync::mpsc::unbounded_channel;
 
 mod app;
 mod daemon_control;
-mod editor_helpers;
 mod editor_state;
 mod input;
 mod preview;
 mod screens;
-mod textfield;
 mod widgets;
 
 use app::{App, Screen};
-use input::handle_events;
+use input::handle_event;
 use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks};
 use std::sync::Arc as StdArc;
 
@@ -72,14 +72,15 @@ pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
 /// Returns an error if TUI initialization fails or terminal operations fail.
 pub async fn run() -> Result<()> {
     // Install a panic hook to restore terminal on panic (best-effort).
-    // This ensures the terminal is left in a usable state if a panic occurs.
+    // This wraps the existing hook (likely color-eyre from main) to ensure
+    // the terminal is reset before the error report is printed.
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
         let _ = execute!(stdout, LeaveAlternateScreen);
         let _ = execute!(std::io::stdout(), Show);
-        // Delegate to the original hook to preserve normal panic output
+        // Delegate to the original hook (color-eyre) to preserve normal panic output
         original_hook(info);
     }));
 
@@ -372,7 +373,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
-    // Use small tick for rendering and input; background updates arrive via app.bg_update_rx
+    // Use small tick for rendering; background updates arrive via app.bg_update_rx
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
     // Animation timing (time-based spinner)
@@ -380,19 +381,21 @@ async fn run_app<B: ratatui::backend::Backend>(
     let mut last_anim = Instant::now();
     const ANIM_MS: u64 = 120; // spinner frame every 120ms
 
+    // Event stream for async input handling
+    let mut events = EventStream::new();
+
     loop {
         tokio::select! {
             _ = tick.tick() => {
                 // Advance animation if enough time elapsed
                 let now = Instant::now();
                 if now.duration_since(last_anim).as_millis() >= ANIM_MS as u128 {
-                    app.spinner_idx = (app.spinner_idx + 1) % 10;
+                    app.throbber_state.calc_next();
                     last_anim = now;
                     app.dirty = true;
                 }
 
-                // Handle any keystrokes
-                handle_events(app)?;
+                // Note: Input handling is now done in the `events.next()` branch
 
                 // Only redraw when needed (dirty) or when animation advanced
                 if app.dirty {
@@ -403,7 +406,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         terminal.draw(|frame| render_ui(frame, app))?;
                         let elapsed = start.elapsed();
 
-                        // Extra context for slow-frame logs: run-relative ms, screen, preview pending, window count
+                        // Extra context for slow-frame logs
                         if elapsed.as_millis() > 15 {
                             let run_ms = start.duration_since(std::time::Instant::now() - std::time::Duration::from_secs(0)).as_millis();
                             let screen_name = format!("{:?}", app.current_screen);
@@ -431,6 +434,10 @@ async fn run_app<B: ratatui::backend::Backend>(
                     break;
                 }
             }
+            // Handle input events
+            Some(Ok(event)) = events.next() => {
+                handle_event(app, event)?;
+            }
             // Process background updates if any
             maybe_update = async {
                 if let Some(rx) = &mut app.bg_update_rx { rx.recv().await } else { None }
@@ -455,7 +462,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         AppUpdate::PreviewPending { app_pattern, title_pattern } => {
                             // Only mark pending if it matches current editor content
-                            if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
+                            if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
                                 app.dirty = true;
@@ -463,7 +470,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
                             // Only apply preview if patterns match current editor content (avoid race)
-                            if app.rules_screen.editor.app_id_pattern.value == app_pattern && app.rules_screen.editor.title_pattern.value == title_pattern.clone().unwrap_or_default() {
+                            if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store preview in app.preview as a typed struct
                                 app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
                                 app.dirty = true;
@@ -522,7 +529,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             &mut app.rules_screen,
             &app.windows,
             app.preview.as_ref(),
-            app.spinner_idx,
+            &mut app.throbber_state,
         ),
         Screen::Settings => render_settings(
             frame,

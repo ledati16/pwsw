@@ -2,7 +2,7 @@
 name = "pwsw"
 version = "0.3.1"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.74"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/pwsw"
@@ -31,8 +31,6 @@ serde_json = "1"
 
 # Pattern matching for window rules
 regex = "1"
-# Grapheme cluster support for text editors
-unicode-segmentation = "1"
 
 # Error handling with context
 anyhow = "1"
@@ -41,7 +39,7 @@ anyhow = "1"
 notify-rust = "4"
 
 # Terminal styling for CLI output (also used by future TUI)
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
 
 # Structured logging
 tracing = "0.1"
@@ -52,6 +50,15 @@ dirs = "5"
 
 # TUI framework (optional - enabled by default via "tui" feature)
 ratatui = { version = "0.29", optional = true, default-features = false, features = ["crossterm"] }
+tui-input = "0.14.0"
+tui-popup = "0.4.2"
+throbber-widgets-tui = "0.8"
+tui-logger = "0.17.4"
+color-eyre = "0.6.5"
+notify = "6.1.1"
+serde_regex = "1.1.0"
+futures-util = "0.3.31"
+log = "0.4.29"
 
 [profile.release]
 lto = true
