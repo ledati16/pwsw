@@ -138,9 +138,9 @@ Steps:
   - Action: created `match_windows_with_compiled_count` and `build_preview_lines_from_strings` in `src/tui/preview.rs`; added `truncate_desc`, `truncate_node_name`, and `compute_visual_line_counts` in `src/tui/widgets.rs`. Updated `render_live_preview` and `render_sink_selector` to use the helpers. Added unit tests.
   - Verification: unit tests added; `cargo test` passes; `cargo clippy --all-targets -- -W clippy::pedantic` passes for affected areas. Commit: `6efcdfa`.
 
-- [ ] C.1.3 Move items/declarations out of the middle of functions
-  - Action: for `items_after_statements` warnings move `use`/`const`/type aliases to module scope or top of the function before statements; prefer module-level aliases for widely used items (e.g., animation constants, type aliases).
-  - Verification: clippy no longer reports `items_after_statements` for the adjusted functions.
+- [x] C.1.3 Move items/declarations out of the middle of functions
+  - Action: moved `use`/`const`/type alias declarations out of function bodies where Clippy flagged `items_after_statements`; preferred module-level aliases for widely used items (e.g., animation constants, type aliases).
+  - Verification: ran `cargo clippy --all-targets -- -W clippy::pedantic` and verified there are no remaining `items_after_statements` warnings; see `tmp/tui-clippy-baseline.txt` for the prior baseline.
 
 - [x] C.1.4 Consolidate sink selector rendering into a shared widget
   - Action: created `src/tui/widgets.rs` helpers `compute_has_above_below` and `render_scroll_arrows`; replaced duplicated arrow/viewport code in `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs` to use the shared helpers.
