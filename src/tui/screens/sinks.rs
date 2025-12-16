@@ -18,7 +18,7 @@ use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
 /// Sinks screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SinksMode {
+pub(crate) enum SinksMode {
     List,
     AddEdit,
     Delete,
@@ -26,7 +26,7 @@ pub enum SinksMode {
 }
 
 /// Editor state for add/edit modal
-pub struct SinkEditor {
+pub(crate) struct SinkEditor {
     pub name: SimpleEditor,
     pub desc: SimpleEditor,
     pub icon: SimpleEditor,
@@ -69,7 +69,7 @@ impl SinkEditor {
 }
 
 /// Sinks screen state
-pub struct SinksScreen {
+pub(crate) struct SinksScreen {
     pub mode: SinksMode,
     pub selected: usize,
     pub editor: SinkEditor,

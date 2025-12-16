@@ -10,8 +10,8 @@ use crate::config::Config;
 use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
-pub type CompiledRegex = Arc<regex::Regex>;
-pub type PreviewInMsg = (
+pub(crate) type CompiledRegex = Arc<regex::Regex>;
+pub(crate) type PreviewInMsg = (
     String,
     Option<String>,
     Option<CompiledRegex>,
@@ -20,7 +20,7 @@ pub type PreviewInMsg = (
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Screen {
+pub(crate) enum Screen {
     Dashboard,
     Sinks,
     Rules,
@@ -81,7 +81,7 @@ impl Screen {
 
 /// Application state
 /// Messages sent from background worker to UI
-pub enum AppUpdate {
+pub(crate) enum AppUpdate {
     /// Full sink data including active and profile sinks
     SinksData {
         active: Vec<crate::pipewire::ActiveSink>,
@@ -109,7 +109,7 @@ pub enum AppUpdate {
 
 /// Commands sent from UI to background worker
 #[derive(Debug)]
-pub enum BgCommand {
+pub(crate) enum BgCommand {
     DaemonAction(DaemonAction),
     /// Request a live-preview match for given patterns. Optionally include compiled regex caches.
     PreviewRequest {
@@ -121,72 +121,72 @@ pub enum BgCommand {
 }
 
 /// Preview result stored in app state
-pub struct PreviewResult {
-    pub app_pattern: String,
-    pub title_pattern: Option<String>,
-    pub matches: Vec<String>,
-    pub timed_out: bool,
-    pub pending: bool,
+pub(crate) struct PreviewResult {
+    pub(crate) app_pattern: String,
+    pub(crate) title_pattern: Option<String>,
+    pub(crate) matches: Vec<String>,
+    pub(crate) timed_out: bool,
+    pub(crate) pending: bool,
 }
 
 #[allow(clippy::struct_excessive_bools)]
-pub struct App {
+pub(crate) struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
-    pub bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
+    pub(crate) bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
     /// Channel receiver to accept background updates (set by `run()`)
-    pub bg_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppUpdate>>,
+    pub(crate) bg_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppUpdate>>,
     /// Unbounded preview input sender. Input handlers push preview requests here.
-    pub preview_in_tx: Option<tokio::sync::mpsc::UnboundedSender<PreviewInMsg>>,
+    pub(crate) preview_in_tx: Option<tokio::sync::mpsc::UnboundedSender<PreviewInMsg>>,
 
     /// Currently active screen
-    pub current_screen: Screen,
+    pub(crate) current_screen: Screen,
     /// Whether the application should quit
-    pub should_quit: bool,
+    pub(crate) should_quit: bool,
     /// Configuration (loaded at startup, editable in TUI)
-    pub config: Config,
+    pub(crate) config: Config,
     /// Status message to display (errors, confirmations)
-    pub status_message: Option<String>,
+    pub(crate) status_message: Option<String>,
     /// Last preview results from background worker
-    pub preview: Option<PreviewResult>,
+    pub(crate) preview: Option<PreviewResult>,
     /// State for throbber animation
-    pub throbber_state: ThrobberState,
+    pub(crate) throbber_state: ThrobberState,
 
     /// Dashboard screen state
-    pub dashboard_screen: DashboardScreen,
+    pub(crate) dashboard_screen: DashboardScreen,
     /// Settings screen state
-    pub settings_screen: SettingsScreen,
+    pub(crate) settings_screen: SettingsScreen,
     /// Sinks screen state
-    pub sinks_screen: SinksScreen,
+    pub(crate) sinks_screen: SinksScreen,
     /// Rules screen state
-    pub rules_screen: RulesScreen,
+    pub(crate) rules_screen: RulesScreen,
     /// Whether config has unsaved changes
-    pub config_dirty: bool,
+    pub(crate) config_dirty: bool,
     /// Whether to show help overlay
-    pub show_help: bool,
+    pub(crate) show_help: bool,
     /// Scroll state for help overlay
-    pub help_scroll_state: ratatui::widgets::TableState,
+    pub(crate) help_scroll_state: ratatui::widgets::TableState,
     /// Whether user requested quit (waiting for confirmation if `config_dirty`)
-    pub confirm_quit: bool,
+    pub(crate) confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
-    pub daemon_running: bool,
+    pub(crate) daemon_running: bool,
     /// Cached window count (updated by background worker)
-    pub window_count: usize,
+    pub(crate) window_count: usize,
     /// Cached window list for live preview (updated by background worker)
-    pub windows: Vec<crate::ipc::WindowInfo>,
+    pub(crate) windows: Vec<crate::ipc::WindowInfo>,
     /// Cached active sinks snapshot (updated by background worker)
-    pub active_sinks: Vec<String>,
+    pub(crate) active_sinks: Vec<String>,
     /// Cached full active sinks with descriptions
-    pub active_sink_list: Vec<crate::pipewire::ActiveSink>,
+    pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
-    pub profile_sink_list: Vec<crate::pipewire::ProfileSink>,
+    pub(crate) profile_sink_list: Vec<crate::pipewire::ProfileSink>,
 
     /// Whether the UI needs to be redrawn
-    pub dirty: bool,
+    pub(crate) dirty: bool,
 }
 
 /// Daemon control action to execute
 #[derive(Debug, Clone, Copy)]
-pub enum DaemonAction {
+pub(crate) enum DaemonAction {
     Start,
     Stop,
     Restart,

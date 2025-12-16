@@ -11,7 +11,7 @@ use ratatui::{
 use crate::config::Config;
 
 /// Dashboard screen state
-pub struct DashboardScreen {
+pub(crate) struct DashboardScreen {
     pub selected_action: usize, // 0 = start, 1 = stop, 2 = restart
 }
 
@@ -34,7 +34,7 @@ impl DashboardScreen {
 }
 
 /// Render the dashboard screen
-pub fn render_dashboard(
+pub(crate) fn render_dashboard(
     frame: &mut Frame,
     area: Rect,
     config: &Config,

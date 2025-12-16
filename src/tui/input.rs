@@ -13,7 +13,7 @@ use regex::Regex;
 ///
 /// # Errors
 /// Returns an error if internal processing fails (currently infallible).
-pub fn handle_event(app: &mut App, event: &Event) {
+pub(crate) fn handle_event(app: &mut App, event: &Event) {
     if let Event::Key(key_event) = event {
         handle_key_event(app, *key_event);
         app.dirty = true;

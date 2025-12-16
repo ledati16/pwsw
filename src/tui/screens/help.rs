@@ -12,7 +12,7 @@ use crate::tui::app::Screen;
 use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Get the number of rows in the help content for a given screen
-pub fn get_help_row_count(current_screen: Screen) -> usize {
+pub(crate) fn get_help_row_count(current_screen: Screen) -> usize {
     build_help_rows(current_screen).len()
 }
 

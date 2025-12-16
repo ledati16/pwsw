@@ -6,8 +6,8 @@ pub mod rules;
 pub mod settings;
 pub mod sinks;
 
-pub use dashboard::{render_dashboard, DashboardScreen};
-pub use help::render_help;
-pub use rules::{render_rules, RulesScreen};
-pub use settings::{render_settings, SettingsScreen};
-pub use sinks::{render_sinks, SinksScreen};
+pub(crate) use dashboard::{render_dashboard, DashboardScreen};
+pub(crate) use help::render_help;
+pub(crate) use rules::{render_rules, RulesScreen};
+pub(crate) use settings::{render_settings, SettingsScreen};
+pub(crate) use sinks::{render_sinks, SinksScreen};

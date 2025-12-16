@@ -13,7 +13,7 @@ use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingItem {
+pub(crate) enum SettingItem {
     DefaultOnStartup,
     SetSmartToggle,
     NotifyManual,
@@ -63,7 +63,7 @@ impl SettingItem {
 }
 
 /// Settings screen state
-pub struct SettingsScreen {
+pub(crate) struct SettingsScreen {
     /// Currently selected item
     pub selected: usize,
     /// Whether we're editing the log level (dropdown open)
@@ -163,7 +163,7 @@ impl SettingsScreen {
 }
 
 /// Render the settings screen
-pub fn render_settings(
+pub(crate) fn render_settings(
     frame: &mut Frame,
     area: Rect,
     settings: &Settings,
