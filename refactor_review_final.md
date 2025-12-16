@@ -142,9 +142,9 @@ Steps:
   - Action: for `items_after_statements` warnings move `use`/`const`/type aliases to module scope or top of the function before statements; prefer module-level aliases for widely used items (e.g., animation constants, type aliases).
   - Verification: clippy no longer reports `items_after_statements` for the adjusted functions.
 
-- [ ] C.1.4 Consolidate sink selector rendering into a shared widget
-  - Action: create `src/tui/widgets.rs` helpers (if not already present) such as `render_sink_list_widget(...)` and `render_viewport_indicators(...)`; replace duplicated code in `screens/sinks.rs` and `screens/rules.rs` to call the shared helpers.
-  - Verification: visual behavior preserved (unit tests that test arrow calculation pass). Keep changes to rendering glue; run `cargo test`, `cargo clippy` and a quick manual TUI run if possible.
+- [x] C.1.4 Consolidate sink selector rendering into a shared widget
+  - Action: created `src/tui/widgets.rs` helpers `compute_has_above_below` and `render_scroll_arrows`; replaced duplicated arrow/viewport code in `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs` to use the shared helpers.
+  - Verification: `cargo test` passes; `cargo clippy --all-targets -- -W clippy::pedantic` is clean; visual behavior preserved. Commit: `5f6508e`.
 
 - [ ] C.1.5 Remove dead/unneeded code and simplify structs
   - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
