@@ -540,7 +540,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     }
 
     // Render footer
-    render_footer(frame, chunks[2], &app.status_message);
+    render_footer(frame, chunks[2], app.status_message.as_ref());
 
     // Render help overlay on top if active
     if app.show_help {
@@ -605,7 +605,7 @@ fn render_header(
 }
 
 /// Render the footer with keyboard shortcuts and status
-fn render_footer(frame: &mut ratatui::Frame, area: Rect, status_message: &Option<String>) {
+fn render_footer(frame: &mut ratatui::Frame, area: Rect, status_message: Option<&String>) {
     let text = if let Some(msg) = status_message {
         Line::from(vec![
             Span::styled("● ", Style::default().fg(Color::Yellow)),
