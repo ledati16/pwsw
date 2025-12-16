@@ -219,6 +219,8 @@ impl Config {
     ///
     /// # Errors
     /// Returns an error if the config cannot be serialized or written to disk.
+    /// # Panics
+    /// This function panics if the config path has no parent directory (should never happen).
     pub fn save(&self) -> Result<()> {
         let config_file = self.to_config_file();
         let toml_str =

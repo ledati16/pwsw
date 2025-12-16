@@ -221,7 +221,7 @@ pub async fn run() -> Result<()> {
                                 let _ = bg_tx.send(AppUpdate::ActionResult({
                                     let mut s = String::with_capacity(10);
                                     s.push_str("Failed: ");
-                                    s.push_str(&format!("{:#}", e));
+                                    s.push_str(&format!("{e:#}"));
                                     s
                                 }));
                             }
@@ -408,7 +408,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 
                         // Extra context for slow-frame logs
                         if elapsed.as_millis() > 15 {
-                            let run_ms = start.duration_since(std::time::Instant::now() - std::time::Duration::from_secs(0)).as_millis();
+                            let run_ms = elapsed.as_millis();
                             let screen_name = format!("{:?}", app.current_screen);
                             let preview_pending = app.preview.as_ref().map(|p| p.pending).unwrap_or(false);
                             let windows = app.window_count;

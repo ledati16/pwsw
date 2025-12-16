@@ -173,7 +173,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             let inner = join
                 .await
-                .map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+                .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
             inner?;
 
             state.current_sink_name.clone_from(&default.name);
@@ -231,7 +231,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             result = window_events.recv() => {
                 if let Some(event) = result {
                     if let Err(e) = state.process_event(event).await {
-                        error!("Event processing error: {:#}", e);
+                        error!("Event processing error: {e:#}", e = e);
                     }
                 } else {
                     error!("Compositor connection lost (event channel closed)");
@@ -270,7 +270,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         if is_health_check {
                             tracing::debug!("Client disconnected without sending data (likely health check)");
                         } else {
-                            error!("IPC request handling error: {:#}", e);
+                            error!("IPC request handling error: {e:#}", e = e);
                         }
                     }
                 });
@@ -288,9 +288,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         }
                     },
                     Err(e) => {
-                        error!("Failed to reload config: {:#}", e);
+                        error!("Failed to reload config: {e:#}", e = e);
                         if state.config.settings.notify_manual {
-                            let _ = send_notification("Reload Failed", &format!("Config error: {:#}", e), None);
+                            let _ = send_notification("Reload Failed", &format!("Config error: {e:#}"), None);
                         }
                     }
                 }
@@ -421,7 +421,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                             message: format!("Switched to sink: {}", target.desc),
                         },
                         Err(e) => Response::Error {
-                            message: format!("Failed to activate sink '{}': {:#}", target.desc, e),
+                            message: format!("Failed to activate sink '{target_desc}': {e:#}", target_desc = target.desc, e = e),
                         },
                     }
                 }
