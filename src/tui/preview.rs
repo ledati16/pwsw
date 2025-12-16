@@ -131,7 +131,7 @@ mod tests {
     use super::*;
     use crate::ipc::WindowInfo;
     use crate::tui::app::AppUpdate;
-    use std::fmt::Write;
+    // `std::fmt::Write` not needed here; keep tests minimal
     use std::time::Duration;
     use tokio::sync::mpsc as bounded;
     use tokio::sync::mpsc::unbounded_channel;
