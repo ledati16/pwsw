@@ -560,12 +560,12 @@ fn render_live_preview(
                     Style::default().fg(Color::Yellow),
                 )]));
             } else {
-                for m in &res.matches[..res.matches.len().min(5)] {
-                    preview_lines.push(Line::from(vec![
-                        Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                        Span::raw(m.as_str()),
-                    ]));
-                }
+                // Use helper to convert strings -> Lines, preserving the limit of 5 shown items.
+                let lines = crate::tui::preview::build_preview_lines_from_strings(
+                    &res.matches[..res.matches.len().min(5)],
+                );
+                preview_lines.extend(lines);
+
                 if res.matches.len() > 5 {
                     let remaining = res.matches.len() - 5;
                     let mut text = String::with_capacity(12);
@@ -625,37 +625,29 @@ fn render_live_preview(
                 Style::default().fg(Color::Gray),
             )]));
         } else {
-            let mut match_count = 0;
-            let mut shown = 0;
+            // Use helper to perform matching with compiled regex refs and get both the preview strings and total count.
+            let (matches_vec, total) = crate::tui::preview::match_windows_with_compiled_count(
+                Some(app_regex),
+                title_regex_ref,
+                windows,
+                5,
+            );
 
-            for window in &windows[..windows.len().min(10)] {
-                let app_id_match = app_regex.is_match(&window.app_id);
-                let title_match = title_regex_ref.map_or(true, |r| r.is_match(&window.title));
-
-                if app_id_match && title_match {
-                    match_count += 1;
-                    if shown < 5 {
-                        preview_lines.push(Line::from(vec![
-                            Span::styled("  ✓ ", Style::default().fg(Color::Green)),
-                            Span::raw(window.app_id.as_str()),
-                            Span::raw(" | "),
-                            Span::raw(window.title.as_str()),
-                        ]));
-                        shown += 1;
-                    }
-                }
-            }
-
-            if match_count == 0 {
+            if matches_vec.is_empty() {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  No matching windows",
                     Style::default().fg(Color::Yellow),
                 )]));
-            } else if match_count > 5 {
-                preview_lines.push(Line::from(vec![Span::styled(
-                    (match_count - 5).to_string(),
-                    Style::default().fg(Color::Gray),
-                )]));
+            } else {
+                preview_lines.extend(crate::tui::preview::build_preview_lines_from_strings(
+                    &matches_vec,
+                ));
+                if total > 5 {
+                    preview_lines.push(Line::from(vec![Span::styled(
+                        (total - 5).to_string(),
+                        Style::default().fg(Color::Gray),
+                    )]));
+                }
             }
         }
     } else if !screen_state.editor.app_id_pattern.value().is_empty() {
@@ -687,19 +679,29 @@ fn render_sink_selector(
 ) {
     let popup_area = centered_modal(modal_size::DROPDOWN, area);
 
+    // Use truncation helpers to avoid overly long sink descriptions/names
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
+    let content_width = inner.width.max(1);
+
     let items: Vec<ListItem> = sinks
         .iter()
         .map(|sink| {
+            let desc = crate::tui::widgets::truncate_desc(&sink.desc, content_width);
+            let name = crate::tui::widgets::truncate_node_name(&sink.name, content_width);
+
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(&sink.desc, Style::default().fg(Color::White)),
+                Span::styled(desc, Style::default().fg(Color::White)),
             ]);
 
             ListItem::new(vec![
                 line,
                 Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(&sink.name, Style::default().fg(Color::Gray)),
+                    Span::styled(name, Style::default().fg(Color::Gray)),
                 ]),
             ])
         })
@@ -738,14 +740,10 @@ fn render_sink_selector(
         visual_items.push(sink.desc.clone());
     }
 
-    // Compute per-row visual height using inner.width
+    // Compute per-row visual height using helper
     let content_width = inner.width as usize;
-    let mut per_row_lines: Vec<usize> = Vec::with_capacity(visual_items.len());
-    for s in &visual_items {
-        let w = content_width.max(1);
-        let lines = (s.len().saturating_add(w - 1)) / w;
-        per_row_lines.push(lines.max(1));
-    }
+    let per_row_lines =
+        crate::tui::widgets::compute_visual_line_counts(&visual_items, content_width);
 
     let total_visual_lines: usize = per_row_lines.iter().sum();
     let mut visual_pos = 0usize;

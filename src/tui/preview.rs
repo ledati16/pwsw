@@ -2,7 +2,6 @@ use crate::ipc::WindowInfo;
 use std::time::Duration;
 
 use ratatui::text::{Line, Span};
-use ratatui::style::{Style, Color};
 
 /// Match windows against provided regex patterns.
 ///
@@ -127,7 +126,6 @@ pub async fn execute_preview(
     }
 }
 
-
 /// Build ratatui `Line` preview text from string matches
 ///
 /// Returns formatted `Line` values up to `max_results`. This helper is intended to be used by
@@ -138,6 +136,35 @@ pub fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>
         .iter()
         .map(|s| Line::from(vec![Span::raw("  ✓ "), Span::raw(s.clone())]))
         .collect()
+}
+
+/// Match windows using already-compiled regex references.
+///
+/// Returns a tuple `(Vec<String>, usize)` where the `Vec` contains up to `max_results`
+/// formatted "`app_id` | title" strings, and the `usize` is the total number of matches found.
+pub fn match_windows_with_compiled_count(
+    app_re: Option<&regex::Regex>,
+    title_re: Option<&regex::Regex>,
+    windows: &[WindowInfo],
+    max_results: usize,
+) -> (Vec<String>, usize) {
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    for w in windows.iter().take(10) {
+        let app_ok = app_re.map_or(true, |r| r.is_match(&w.app_id));
+        let title_ok = title_re.map_or(true, |r| r.is_match(&w.title));
+        if app_ok && title_ok {
+            total += 1;
+            if out.len() < max_results {
+                let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
+                s.push_str(&w.app_id);
+                s.push_str(" | ");
+                s.push_str(&w.title);
+                out.push(s);
+            }
+        }
+    }
+    (out, total)
 }
 
 // Debouncer & test harness
@@ -375,5 +402,25 @@ mod tests {
         .await;
         assert!(timed_out);
         assert!(matches.is_empty());
+    }
+
+    #[test]
+    fn test_build_preview_lines_from_strings_simple() {
+        let inputs = vec![
+            "firefox | Firefox Browser".to_string(),
+            "mpv | mpv video".to_string(),
+        ];
+        let lines = build_preview_lines_from_strings(&inputs);
+        // We expect two lines with a leading checkmark span and the original string as raw span in second position
+        assert_eq!(lines.len(), 2);
+        // Convert first line to string by concatenating spans for assertion
+        let first = lines[0]
+            .spans
+            .iter()
+            .map(|sp| sp.content.clone())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(first.contains("✓"));
+        assert!(first.contains("firefox | Firefox Browser"));
     }
 }

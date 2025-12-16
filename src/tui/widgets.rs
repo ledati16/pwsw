@@ -187,3 +187,58 @@ pub fn render_selector_button(
     let paragraph = Paragraph::new(Line::from(spans)).block(block);
     frame.render_widget(paragraph, area);
 }
+
+/// Truncate a description string to `max_width` characters, appending `...` when truncated.
+///
+/// This is a visual truncation helper for UI rendering. It operates on character counts
+/// (not grapheme clusters) which is acceptable for ASCII-based sink descriptions used here.
+pub fn truncate_desc(text: &str, max_width: u16) -> String {
+    let max = max_width as usize;
+    if text.len() <= max {
+        text.to_string()
+    } else if max <= 3 {
+        text[..max].to_string()
+    } else {
+        let take = max.saturating_sub(3);
+        format!("{}...", &text[..take])
+    }
+}
+
+/// Truncate a node/sink name similarly to `truncate_desc`.
+pub fn truncate_node_name(text: &str, max_width: u16) -> String {
+    truncate_desc(text, max_width)
+}
+
+/// Compute visual line counts for a list of items given `content_width`.
+///
+/// Returns a vector of per-item visual heights (in rows), accounting for wrapping at `content_width`.
+pub fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usize> {
+    let mut per_row_lines: Vec<usize> = Vec::with_capacity(items.len());
+    for s in items {
+        let w = content_width.max(1);
+        let lines = (s.len().saturating_add(w - 1)) / w;
+        per_row_lines.push(lines.max(1));
+    }
+    per_row_lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_truncate_desc() {
+        assert_eq!(truncate_desc("short", 10), "short");
+        assert_eq!(truncate_desc("this is long", 8), "this ...");
+        assert_eq!(truncate_desc("abc", 3), "abc");
+        assert_eq!(truncate_desc("abcdef", 3), "abc");
+    }
+
+    #[test]
+    fn test_compute_visual_line_counts() {
+        let items = vec!["abcd".to_string(), "efghijkl".to_string()];
+        // width=4 => first -> 1, second -> 2
+        let counts = compute_visual_line_counts(&items, 4);
+        assert_eq!(counts, vec![1usize, 2usize]);
+    }
+}

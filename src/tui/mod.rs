@@ -383,7 +383,7 @@ async fn run_app<B: ratatui::backend::Backend>(
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
     // Animation timing (time-based spinner)
-        use std::time::Instant;
+    use std::time::Instant;
     let mut last_anim = Instant::now();
     const ANIM_MS: u64 = 120; // spinner frame every 120ms
 
