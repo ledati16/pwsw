@@ -11,15 +11,15 @@ pub fn match_windows(
     windows: &[WindowInfo],
     max_results: usize,
 ) -> Result<Vec<String>, String> {
-    let app_re = regex::Regex::new(app_pattern).map_err(|e| format!("app pattern error: {}", e))?;
+    let app_re = regex::Regex::new(app_pattern).map_err(|e| format!("app pattern error: {e}"))?;
     let title_re = if let Some(tp) = title_pattern {
-        Some(regex::Regex::new(tp).map_err(|e| format!("title pattern error: {}", e))?)
+        Some(regex::Regex::new(tp).map_err(|e| format!("title pattern error: {e}"))?)
     } else {
         None
     };
 
     let mut out = Vec::new();
-    for w in windows.iter() {
+    for w in windows {
         if app_re.is_match(&w.app_id) && title_re.as_ref().map_or(true, |r| r.is_match(&w.title)) {
             {
                 let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
@@ -79,7 +79,7 @@ pub async fn execute_preview(
     let blocking_closure = move || {
         if let Some(app_re) = compiled_app_cl.as_ref() {
             // Use provided compiled app regex
-            let title_re_opt = compiled_title_cl.as_ref().map(|r| r.as_ref());
+            let title_re_opt = compiled_title_cl.as_ref().map(AsRef::as_ref);
             // Convert Arc<Regex> to &Regex by deref
             let app_re_ref: &regex::Regex = app_re.as_ref();
 
@@ -92,21 +92,20 @@ pub async fn execute_preview(
 
             // perform matching
             let mut out = Vec::new();
-            for w in windows.iter() {
+            for w in &windows {
                 let title_ok = title_re.as_ref().map_or(true, |r| r.is_match(&w.title));
                 if app_re_ref.is_match(&w.app_id) && title_ok {
-                    {
-                        let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
-                        s.push_str(&w.app_id);
-                        s.push_str(" | ");
-                        s.push_str(&w.title);
-                        out.push(s);
-                    }
+                    let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
+                    s.push_str(&w.app_id);
+                    s.push_str(" | ");
+                    s.push_str(&w.title);
+                    out.push(s);
                     if out.len() >= max_results {
                         break;
                     }
                 }
             }
+
             return Ok(out);
         }
 

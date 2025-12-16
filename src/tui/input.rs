@@ -1,6 +1,5 @@
 //! Input handling for keyboard events
 
-use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 
@@ -14,22 +13,14 @@ use regex::Regex;
 ///
 /// # Errors
 /// Returns an error if internal processing fails (currently infallible).
-pub fn handle_event(app: &mut App, event: Event) -> Result<()> {
-    match event {
-        Event::Key(key_event) => {
-            handle_key_event(app, key_event);
-            app.dirty = true;
-        }
-        Event::Mouse(_) => {
-            // Mouse events are intentionally ignored in the keyboard-first TUI.
-        }
-        Event::Resize(_, _) => {
-            // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
-            app.dirty = true;
-        }
-        _ => {}
+pub fn handle_event(app: &mut App, event: &Event) {
+    if let Event::Key(key_event) = event {
+        handle_key_event(app, *key_event);
+        app.dirty = true;
+    } else if let Event::Resize(_, _) = event {
+        // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
+        app.dirty = true;
     }
-    Ok(())
 }
 
 #[allow(dead_code)]
@@ -233,8 +224,8 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
                 app.set_status("Daemon action requested".to_string());
             } else {
-                // Fallback: queue as pending (old behaviour)
-                app.pending_daemon_action = Some(action);
+                // No background worker available to handle daemon actions; show feedback
+                app.set_status("Daemon action requested (no background worker)".to_string());
             }
         }
         _ => {}
@@ -392,14 +383,23 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         // Active sink selected
                         let sink = &app.active_sink_list[idx];
                         app.sinks_screen.editor.name.set_value(sink.name.clone());
-                        app.sinks_screen.editor.desc.set_value(sink.description.clone());
+                        app.sinks_screen
+                            .editor
+                            .desc
+                            .set_value(sink.description.clone());
                     } else {
                         // Profile sink selected
                         let profile_idx = idx - app.active_sink_list.len();
                         if profile_idx < app.profile_sink_list.len() {
                             let sink = &app.profile_sink_list[profile_idx];
-                            app.sinks_screen.editor.name.set_value(sink.predicted_name.clone());
-                            app.sinks_screen.editor.desc.set_value(sink.description.clone());
+                            app.sinks_screen
+                                .editor
+                                .name
+                                .set_value(sink.predicted_name.clone());
+                            app.sinks_screen
+                                .editor
+                                .desc
+                                .set_value(sink.description.clone());
                         }
                     }
 
@@ -590,10 +590,8 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 /// Handle rule editor input (add/edit modal)
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up => app.rules_screen.editor.prev_field(),
-        KeyCode::Down => app.rules_screen.editor.next_field(),
-        KeyCode::Tab => app.rules_screen.editor.next_field(),
-        KeyCode::BackTab => app.rules_screen.editor.prev_field(),
+        KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
+        KeyCode::Down | KeyCode::Tab => app.rules_screen.editor.next_field(),
         KeyCode::Enter => {
             // If on sink field, open selector
             if app.rules_screen.editor.focused_field == 2 {
@@ -619,7 +617,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 .editor
                 .compiled_app_id
                 .as_ref()
-                .map(|a| a.as_ref())
+                .map(std::convert::AsRef::as_ref)
             {
                 Some(r) => r.clone(),
                 None => match Regex::new(app.rules_screen.editor.app_id_pattern.value()) {
@@ -638,7 +636,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 .editor
                 .compiled_title
                 .as_ref()
-                .map(|a| a.as_ref())
+                .map(std::convert::AsRef::as_ref)
             {
                 Some(r.clone())
             } else {
@@ -691,13 +689,27 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             match app.rules_screen.editor.focused_field {
                 0 => {
                     // app_id
-                    if app.rules_screen.editor.app_id_pattern.input.handle_event(&event).is_some() {
+                    if app
+                        .rules_screen
+                        .editor
+                        .app_id_pattern
+                        .input
+                        .handle_event(&event)
+                        .is_some()
+                    {
                         changed = true;
                     }
                 }
                 1 => {
                     // title
-                    if app.rules_screen.editor.title_pattern.input.handle_event(&event).is_some() {
+                    if app
+                        .rules_screen
+                        .editor
+                        .title_pattern
+                        .input
+                        .handle_event(&event)
+                        .is_some()
+                    {
                         changed = true;
                     }
                 }
@@ -728,20 +740,16 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 if let Some(tx) = &app.preview_in_tx {
                     let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
                     let compiled_title = app.rules_screen.editor.compiled_title.clone();
-                    
+
                     let app_pattern = app.rules_screen.editor.app_id_pattern.value().to_string();
-                    let title_pattern = if app.rules_screen.editor.title_pattern.value().is_empty() {
+                    let title_pattern = if app.rules_screen.editor.title_pattern.value().is_empty()
+                    {
                         None
                     } else {
                         Some(app.rules_screen.editor.title_pattern.value().to_string())
                     };
 
-                    let _ = tx.send((
-                        app_pattern,
-                        title_pattern,
-                        compiled_app,
-                        compiled_title,
-                    ));
+                    let _ = tx.send((app_pattern, title_pattern, compiled_app, compiled_title));
                 }
             }
         }

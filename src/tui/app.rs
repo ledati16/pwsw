@@ -131,7 +131,7 @@ pub struct PreviewResult {
 pub struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
     pub bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
-    /// Channel receiver to accept background updates (set by run())
+    /// Channel receiver to accept background updates (set by `run()`)
     pub bg_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppUpdate>>,
     /// Unbounded preview input sender. Input handlers push preview requests here.
     pub preview_in_tx: Option<tokio::sync::mpsc::UnboundedSender<PreviewInMsg>>,
@@ -163,7 +163,7 @@ pub struct App {
     pub show_help: bool,
     /// Scroll state for help overlay
     pub help_scroll_state: ratatui::widgets::TableState,
-    /// Whether user requested quit (waiting for confirmation if config_dirty)
+    /// Whether user requested quit (waiting for confirmation if `config_dirty`)
     pub confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
     pub daemon_running: bool,
@@ -177,8 +177,7 @@ pub struct App {
     pub active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
     pub profile_sink_list: Vec<crate::pipewire::ProfileSink>,
-    /// Pending daemon action to execute (set by input handler, executed by main loop)
-    pub pending_daemon_action: Option<DaemonAction>,
+
     /// Whether the UI needs to be redrawn
     pub dirty: bool,
 }
@@ -226,74 +225,12 @@ impl App {
             active_sinks: Vec::new(),
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
-            pending_daemon_action: None,
+
             bg_cmd_tx: None,
             bg_update_rx: None,
             preview_in_tx: None,
             dirty: true,
         })
-    }
-
-    /// Execute pending daemon action if any
-    #[allow(dead_code)]
-    pub async fn execute_pending_daemon_action(&mut self) {
-        use crate::tui::daemon_control::DaemonManager;
-
-        if let Some(action) = self.pending_daemon_action.take() {
-            let daemon_manager = DaemonManager::detect();
-            let action_name = match action {
-                DaemonAction::Start => "Start",
-                DaemonAction::Stop => "Stop",
-                DaemonAction::Restart => "Restart",
-            };
-
-            // Show immediate feedback
-            self.set_status(format!(
-                "{}ing daemon via {}...",
-                action_name,
-                daemon_manager.display_name()
-            ));
-
-            // Execute the action
-            let result = match action {
-                DaemonAction::Start => daemon_manager.start().await,
-                DaemonAction::Stop => daemon_manager.stop().await,
-                DaemonAction::Restart => daemon_manager.restart().await,
-            };
-
-            match result {
-                Ok(msg) => self.set_status(msg),
-                Err(e) => self.set_status(format!(
-                    "Failed to {} daemon: {:#}",
-                    action_name.to_lowercase(),
-                    e
-                )),
-            }
-        }
-    }
-
-    /// Update cached daemon state (call before rendering)
-    #[allow(dead_code)]
-    pub async fn update_daemon_state(&mut self) {
-        use crate::tui::daemon_control::DaemonManager;
-
-        let daemon_manager = DaemonManager::detect();
-        self.daemon_running = daemon_manager.is_running().await;
-
-        // Fetch window list if daemon is running
-        if self.daemon_running {
-            if let Ok(crate::ipc::Response::Windows { windows }) =
-                crate::ipc::send_request(crate::ipc::Request::ListWindows).await
-            {
-                self.window_count = windows.len();
-                self.windows = windows;
-                return;
-            }
-        }
-
-        // Daemon not running or request failed
-        self.window_count = 0;
-        self.windows.clear();
     }
 
     /// Navigate to a specific screen

@@ -262,7 +262,10 @@ fn render_list(
     frame.render_stateful_widget(table, area, &mut screen_state.state);
 
     // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     let raw_offset = screen_state.state.offset();
@@ -562,13 +565,14 @@ fn render_sink_selector(
     };
 
     // Sync state
-    screen_state
-        .sink_selector_state
-        .select(Some(visual_index));
+    screen_state.sink_selector_state.select(Some(visual_index));
     frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
 
     // Compute visible viewport height for indicators
-    let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     // Build a vector of displayed strings (headers, spacers, and items) to measure wrapping
@@ -593,7 +597,7 @@ fn render_sink_selector(
     // Compute visual line counts per item using the inner width
     let content_width = inner.width as usize;
     let mut per_row_lines: Vec<usize> = Vec::with_capacity(visual_items.len());
-    for s in visual_items.iter() {
+    for s in &visual_items {
         let w = content_width.max(1);
         let lines = (s.len().saturating_add(w - 1)) / w;
         per_row_lines.push(lines.max(1));
@@ -604,8 +608,11 @@ fn render_sink_selector(
     // Map ListState offset (logical row offset) -> visual line position by summing heights of preceding rows
     let raw_offset = screen_state.sink_selector_state.offset();
     let mut visual_pos = 0usize;
-    for i in 0..raw_offset.min(per_row_lines.len()) {
-        visual_pos += per_row_lines[i];
+    for lines in per_row_lines
+        .iter()
+        .take(raw_offset.min(per_row_lines.len()))
+    {
+        visual_pos += *lines;
     }
 
     let has_above = raw_offset > 0;

@@ -4,9 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph,
-    },
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -98,7 +96,7 @@ impl SettingsScreen {
         let max_len = names.iter().map(|s| s.len()).max().unwrap_or(0);
         let padded_names = names
             .into_iter()
-            .map(|n| format!("{:<width$}", n, width = max_len))
+            .map(|n| format!("{n:<max_len$}"))
             .collect();
 
         Self {
@@ -213,8 +211,7 @@ fn render_settings_list(
             let padded_name = screen_state
                 .padded_names
                 .get(i)
-                .map(|s| s.as_str())
-                .unwrap_or(item.name());
+                .map_or(item.name(), String::as_str);
 
             // Apply color styling to boolean toggles
             let value_span = match item {
@@ -281,7 +278,10 @@ fn render_settings_list(
     frame.render_stateful_widget(list, area, &mut screen_state.state);
 
     // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     let offset = screen_state.state.offset();

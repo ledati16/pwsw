@@ -27,12 +27,12 @@ Priority-rank tasks (Absolutely / Highly / Light / Optional)
 
 Absolutely recommend (Fix immediately, low-risk/high-impact)
 
-- [x] 1) Make sink activation non-blocking and async-safe (src/state.rs:process_event:219, switch_audio at src/state.rs:97)
+- [ ] 1) Make sink activation non-blocking and async-safe (src/state.rs:process_event:219, switch_audio at src/state.rs:97)
    - Make State::process_event async: `pub async fn process_event(&mut self, event: WindowEvent) -> Result<()>`.
    - Update daemon::run to `.await` the call: `if let Some(event) = result { if let Err(e) = state.process_event(event).await { ... } }` (daemon.rs: ~211).
    - Inside State, perform blocking PipeWire work using `tokio::task::spawn_blocking` (or a dedicated blocking worker). Specifically, call PipeWire::activate_sink inside spawn_blocking and await the JoinHandle.
    - Update switch_audio/switch_to_target to await activation result and to only update state.current_sink_name on success.
-   - Tests: convert relevant unit tests to async #[tokio::test], and add a test that simulates a slow activation (using a test-only stub or feature) to verify other events are processed while activation runs.
+   - Tests: convert relevant unit tests to async #[tokio::test], and add a test that simulates a slow activation (using a test-only stub or feature) to verify other events are processed while activation runs. **(Slow activation test is pending)**
    - Files: src/state.rs:process_event (line ~219), src/daemon.rs: where process_event is called (line ~211).
 
 - [x] 2) Add per-device serialization for profile switching (src/pipewire.rs: activate_sink at ~line 499)
@@ -159,6 +159,5 @@ Final notes / risks
 
 Next step (recommendation)
 
-Phase A has been implemented (non-blocking activation, per-device locks, IPC window-id, validate_tools). Next: add a slow-activation test to assert spawn_blocking prevents blocking the tokio runtime, harden stale socket cleanup, filter config watcher + debounce, implement atomic config saves, and run pedantic clippy and TUI fixes.
-
-Do you want me to proceed with the slow-activation test next?
+Phase A has been implemented (non-blocking activation, per-device locks, IPC window-id, validate_tools).
+Next: Focus on robustly adding a slow-activation test to assert spawn_blocking prevents blocking the tokio runtime. This will likely require a refined mocking strategy for PipeWire interactions in tests. Following that: harden stale socket cleanup, filter config watcher + debounce, implement atomic config saves, and run pedantic clippy and TUI fixes.
