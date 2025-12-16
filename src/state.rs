@@ -349,7 +349,7 @@ impl State {
 
             let target = self.determine_target_sink();
             if self.should_switch_sink(&target) {
-                let context = format!("{desc} closed", desc = closed_window.trigger_desc);
+                let context = format!("{} closed", closed_window.trigger_desc);
                 self.switch_to_target(target, &context).await?;
             }
         }

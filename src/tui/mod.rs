@@ -413,7 +413,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         // Extra context for slow-frame logs
                         if elapsed.as_millis() > 15 {
                             let run_ms = elapsed.as_millis();
-                            let screen_name = format!("{current_screen:?}", current_screen = app.current_screen);
+                            let screen_name = format!("{:?}", app.current_screen);
                             let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
                             let windows = app.window_count;
                             eprintln!(
