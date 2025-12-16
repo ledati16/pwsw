@@ -16,17 +16,17 @@ pub(crate) struct DashboardScreen {
 }
 
 impl DashboardScreen {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { selected_action: 0 }
     }
 
-    pub fn select_next(&mut self) {
+    pub(crate) fn select_next(&mut self) {
         if self.selected_action < 2 {
             self.selected_action += 1;
         }
     }
 
-    pub fn select_previous(&mut self) {
+    pub(crate) fn select_previous(&mut self) {
         if self.selected_action > 0 {
             self.selected_action -= 1;
         }
