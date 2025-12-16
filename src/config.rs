@@ -291,16 +291,23 @@ impl Config {
         if let Some(home_dir) = dirs::home_dir() {
             let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
             if config_path == home_cfg {
-                match std::env::var("PWSW_ALLOW_CONFIG_WRITE") {
-                    Ok(val) if val == "1" => {
-                        // explicit allow; proceed
+                // Only enforce the env opt-in when running tests. In normal runtime
+                // (TUI/daemon), allow writing the user's config without requiring
+                // `PWSW_ALLOW_CONFIG_WRITE`.
+                if std::env::var("RUST_TEST_THREADS").is_ok() {
+                    match std::env::var("PWSW_ALLOW_CONFIG_WRITE") {
+                        Ok(val) if val == "1" => {
+                            // explicit allow; proceed
+                        }
+                        _ => {
+                            anyhow::bail!(
+                                "Refusing to write real user config at {} without PWSW_ALLOW_CONFIG_WRITE=1",
+                                config_path.display()
+                            );
+                        }
                     }
-                    _ => {
-                        anyhow::bail!(
-                            "Refusing to write real user config at {} without PWSW_ALLOW_CONFIG_WRITE=1",
-                            config_path.display()
-                        );
-                    }
+                } else {
+                    // Normal runtime: allow write
                 }
             }
         }
