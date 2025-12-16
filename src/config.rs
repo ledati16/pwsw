@@ -9,6 +9,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
@@ -234,8 +235,9 @@ impl Config {
         // Write to a temporary file in the same directory and then atomically rename.
         let mut tmp = tempfile::NamedTempFile::new_in(dir)
             .context("Failed to create temporary file for atomic config save")?;
-        use std::io::Write;
-        tmp.write_all(toml_str.as_bytes())
+        // Write bytes to temporary file
+        tmp.as_file_mut()
+            .write_all(toml_str.as_bytes())
             .context("Failed to write config to temporary file")?;
 
         // Ensure user-only permissions on Unix
@@ -243,12 +245,20 @@ impl Config {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("Failed to set temp file permissions: {}", tmp.path().display()))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to set temp file permissions: {}",
+                        tmp.path().display()
+                    )
+                })?;
         }
 
         // Persist atomically
         tmp.persist(&config_path).with_context(|| {
-            format!("Failed to persist temporary config file to {}", config_path.display())
+            format!(
+                "Failed to persist temporary config file to {}",
+                config_path.display()
+            )
         })?;
 
         // Ensure final permissions as well
@@ -256,13 +266,18 @@ impl Config {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("Failed to set final config permissions: {}", config_path.display()))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to set final config permissions: {}",
+                        config_path.display()
+                    )
+                })?;
         }
 
         Ok(())
     }
 
-    /// Convert runtime Config back to serializable ConfigFile format
+    /// Convert runtime `Config` back to serializable `ConfigFile` format
     fn to_config_file(&self) -> ConfigFile {
         let settings = SettingsFile {
             default_on_startup: self.settings.default_on_startup,
@@ -808,5 +823,79 @@ mod tests {
         let result = config.get_default_sink();
         assert!(result.is_some());
         assert_eq!(result.unwrap().desc, "Default Sink");
+    }
+
+    #[test]
+    fn test_save_writes_file_and_permissions() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        cfg.save().unwrap();
+
+        let path = Config::get_config_path().unwrap();
+        assert!(path.exists());
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("Sink 1"));
+
+        // On Unix, ensure permissions are 0o600
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        // Ensure only config.toml exists in the config dir
+        let config_dir = path.parent().unwrap();
+        let entries: Vec<_> = std::fs::read_dir(config_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
+
+        // Restore env
+        if let Some(val) = prev {
+            std::env::set_var("XDG_CONFIG_HOME", val);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
+    }
+
+    #[test]
+    fn test_save_and_load_roundtrip() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+
+        let cfg = make_config(
+            vec![
+                make_sink("sink1", "Sink 1", true),
+                make_sink("sink2", "Sink 2", false),
+            ],
+            vec![make_rule("firefox", None, "Sink 1")],
+        );
+
+        cfg.save().unwrap();
+
+        let loaded = Config::load().unwrap();
+        assert_eq!(loaded.sinks.len(), 2);
+        assert!(loaded.resolve_sink("Sink 1").is_some());
+        assert_eq!(loaded.rules.len(), 1);
+        assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
+
+        // Restore env
+        if let Some(val) = prev {
+            std::env::set_var("XDG_CONFIG_HOME", val);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
     }
 }

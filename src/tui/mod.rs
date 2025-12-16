@@ -59,7 +59,7 @@ struct PreviewExec {
 pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for w in windows.iter() {
+    for w in windows {
         w.app_id.hash(&mut hasher);
         w.title.hash(&mut hasher);
     }
@@ -410,7 +410,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                         if elapsed.as_millis() > 15 {
                             let run_ms = elapsed.as_millis();
                             let screen_name = format!("{:?}", app.current_screen);
-                            let preview_pending = app.preview.as_ref().map(|p| p.pending).unwrap_or(false);
+                            let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
                             let windows = app.window_count;
                             eprintln!(
                                 "[tui] {} ms [{}] slow frame: {} ms preview_pending={} windows={}",
@@ -436,7 +436,8 @@ async fn run_app<B: ratatui::backend::Backend>(
             }
             // Handle input events
             Some(Ok(event)) = events.next() => {
-                handle_event(app, event)?;
+                // `handle_event` expects a reference to `Event`; it is infallible and returns `()`.
+                handle_event(app, &event);
             }
             // Process background updates if any
             maybe_update = async {

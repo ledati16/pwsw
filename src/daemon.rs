@@ -156,7 +156,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
 
     // Switch to default on startup if configured
-        if state.config.settings.default_on_startup {
+    if state.config.settings.default_on_startup {
         let default = state
             .config
             .get_default_sink()
@@ -347,7 +347,9 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
             let tracked_map: HashMap<u64, (String, String)> = ctx
                 .tracked_with_sinks
                 .iter()
-                .map(|(id, app_id, title, sink_name, sink_desc)| (*id, (sink_name.clone(), sink_desc.clone())))
+                .map(|(id, _app_id, _title, sink_name, sink_desc)| {
+                    (*id, (sink_name.clone(), sink_desc.clone()))
+                })
                 .collect();
 
             // Build WindowInfo for all windows with tracking status using ids from all_windows
@@ -356,10 +358,13 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                 .iter()
                 .map(|(id, app_id, title)| {
                     // Find tracked info by id
-                    let tracked_opt = tracked_map.get(id).map(|(sink_name, sink_desc)| ipc::TrackedInfo {
-                        sink_name: sink_name.clone(),
-                        sink_desc: sink_desc.clone(),
-                    });
+                    let tracked_opt =
+                        tracked_map
+                            .get(id)
+                            .map(|(sink_name, sink_desc)| ipc::TrackedInfo {
+                                sink_name: sink_name.clone(),
+                                sink_desc: sink_desc.clone(),
+                            });
 
                     WindowInfo {
                         id: Some(*id),
@@ -421,7 +426,11 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                             message: format!("Switched to sink: {}", target.desc),
                         },
                         Err(e) => Response::Error {
-                            message: format!("Failed to activate sink '{target_desc}': {e:#}", target_desc = target.desc, e = e),
+                            message: format!(
+                                "Failed to activate sink '{target_desc}': {e:#}",
+                                target_desc = target.desc,
+                                e = e
+                            ),
                         },
                     }
                 }

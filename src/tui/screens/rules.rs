@@ -4,9 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-    },
+    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
     Frame,
 };
 use throbber_widgets_tui::{Throbber, ThrobberState};
@@ -105,29 +103,25 @@ impl RuleEditor {
     /// Ensure compiled regex caches are up-to-date for current editor patterns
     pub fn ensure_compiled(&mut self) {
         // Compile app id pattern if non-empty and store which string it corresponds to
-        if !self.app_id_pattern.value().is_empty() {
-            if self.compiled_app_id_for.as_deref() != Some(self.app_id_pattern.value()) {
-                self.compiled_app_id = Regex::new(self.app_id_pattern.value())
-                    .ok()
-                    .map(std::sync::Arc::new);
-                self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
-            }
-        } else {
+        if self.app_id_pattern.value().is_empty() {
             self.compiled_app_id = None;
             self.compiled_app_id_for = None;
+        } else if self.compiled_app_id_for.as_deref() != Some(self.app_id_pattern.value()) {
+            self.compiled_app_id = Regex::new(self.app_id_pattern.value())
+                .ok()
+                .map(std::sync::Arc::new);
+            self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
         }
 
         // Compile title pattern if non-empty
-        if !self.title_pattern.value().is_empty() {
-            if self.compiled_title_for.as_deref() != Some(self.title_pattern.value()) {
-                self.compiled_title = Regex::new(self.title_pattern.value())
-                    .ok()
-                    .map(std::sync::Arc::new);
-                self.compiled_title_for = Some(self.title_pattern.value().to_string());
-            }
-        } else {
+        if self.title_pattern.value().is_empty() {
             self.compiled_title = None;
             self.compiled_title_for = None;
+        } else if self.compiled_title_for.as_deref() != Some(self.title_pattern.value()) {
+            self.compiled_title = Regex::new(self.title_pattern.value())
+                .ok()
+                .map(std::sync::Arc::new);
+            self.compiled_title_for = Some(self.title_pattern.value().to_string());
         }
     }
 }
@@ -232,7 +226,7 @@ fn render_list(
     let max_desc_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
     let mut sink_display_map: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
-    for s in sinks.iter() {
+    for s in sinks {
         let display = if s.desc.len() >= max_desc_len {
             s.desc.clone()
         } else {
@@ -253,26 +247,21 @@ fn render_list(
             // Resolve sink display name
             let sink_display = sink_display_map
                 .get(&rule.sink_ref)
-                .map(|s| s.as_str())
-                .unwrap_or(rule.sink_ref.as_str());
+                .map_or(rule.sink_ref.as_str(), String::as_str);
 
             // Prepare cells
             let index_cell = Cell::from((i + 1).to_string());
             let app_id_cell = Cell::from(rule.app_id_pattern.as_str());
-            let title_cell = rule
-                .title_pattern
-                .as_ref()
-                .map(|s| Cell::from(s.as_str()))
-                .unwrap_or_else(|| {
-                    Cell::from(Span::styled("*", Style::default().fg(Color::DarkGray)))
-                });
+            let title_cell = rule.title_pattern.as_ref().map_or_else(
+                || Cell::from(Span::styled("*", Style::default().fg(Color::DarkGray))),
+                |s| Cell::from(s.as_str()),
+            );
             let sink_cell =
                 Cell::from(Span::styled(sink_display, Style::default().fg(Color::Cyan)));
             let desc_cell = rule
                 .desc
                 .as_ref()
-                .map(|s| Cell::from(s.as_str()))
-                .unwrap_or_else(|| Cell::from(""));
+                .map_or_else(|| Cell::from(""), |s| Cell::from(s.as_str()));
 
             let row_style = if is_selected {
                 Style::default().bg(Color::DarkGray)
@@ -328,7 +317,10 @@ fn render_list(
     frame.render_stateful_widget(table, area, &mut screen_state.state);
 
     // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     // Determine whether there is content above/below the current viewport
@@ -541,14 +533,18 @@ fn render_live_preview(
                 let throbber = Throbber::default()
                     .label("Computing matches...")
                     .style(Style::default().fg(Color::Yellow))
-                    .throbber_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+                    .throbber_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    );
                 frame.render_stateful_widget(throbber, inner, throbber_state);
                 return;
             }
 
             // Normal results display
             let mut preview_lines = vec![];
-            
+
             if res.timed_out {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  Preview timed out or invalid regex",
@@ -560,7 +556,7 @@ fn render_live_preview(
                     Style::default().fg(Color::Yellow),
                 )]));
             } else {
-                for m in res.matches.iter().take(5) {
+                for m in &res.matches[..res.matches.len().min(5)] {
                     preview_lines.push(Line::from(vec![
                         Span::styled("  ✓ ", Style::default().fg(Color::Green)),
                         Span::raw(m.as_str()),
@@ -568,7 +564,7 @@ fn render_live_preview(
                 }
                 if res.matches.len() > 5 {
                     let remaining = res.matches.len() - 5;
-                    let text = format!("  ...and {} more", remaining);
+                    let text = format!("  ...and {remaining} more");
                     preview_lines.push(Line::from(vec![Span::styled(
                         text,
                         Style::default().fg(Color::DarkGray),
@@ -612,17 +608,22 @@ fn render_live_preview(
         };
 
     // Convert to Option<&Regex> for the matching code below
-    let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(|a| a.as_ref());
-    let title_regex_ref: Option<&Regex> = title_regex.as_ref().map(|a| a.as_ref());
+    let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(std::convert::AsRef::as_ref);
+    let title_regex_ref: Option<&Regex> = title_regex.as_ref().map(std::convert::AsRef::as_ref);
 
     let mut preview_lines = vec![];
 
     if let Some(app_regex) = app_id_regex_ref {
-        if !windows.is_empty() {
+        if windows.is_empty() {
+            preview_lines.push(Line::from(vec![Span::styled(
+                "  (daemon not running)",
+                Style::default().fg(Color::Gray),
+            )]));
+        } else {
             let mut match_count = 0;
             let mut shown = 0;
 
-            for window in windows.iter().take(10) {
+            for window in &windows[..windows.len().min(10)] {
                 let app_id_match = app_regex.is_match(&window.app_id);
                 let title_match = title_regex_ref.map_or(true, |r| r.is_match(&window.title));
 
@@ -651,11 +652,6 @@ fn render_live_preview(
                     Style::default().fg(Color::Gray),
                 )]));
             }
-        } else {
-            preview_lines.push(Line::from(vec![Span::styled(
-                "  (daemon not running)",
-                Style::default().fg(Color::Gray),
-            )]));
         }
     } else if !screen_state.editor.app_id_pattern.value().is_empty() {
         preview_lines.push(Line::from(vec![Span::styled(
@@ -721,23 +717,26 @@ fn render_sink_selector(
     frame.render_stateful_widget(list, popup_area, &mut editor.sink_selector_state);
 
     // Compute visible viewport height for indicators in dropdown
-    let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     let raw_offset = editor.sink_selector_state.offset();
-    let total = sinks.len();
+    let _total = sinks.len();
 
     // Build visual_items to account for wrapping like in the selector rendering
     let mut visual_items: Vec<String> = Vec::new();
     visual_items.push("── Active Sinks ──".to_string());
-    for sink in sinks.iter() {
+    for sink in sinks {
         visual_items.push(format!("  {}", sink.desc));
     }
 
     // Compute per-row visual height using inner.width
     let content_width = inner.width as usize;
     let mut per_row_lines: Vec<usize> = Vec::with_capacity(visual_items.len());
-    for s in visual_items.iter() {
+    for s in &visual_items {
         let w = content_width.max(1);
         let lines = (s.len().saturating_add(w - 1)) / w;
         per_row_lines.push(lines.max(1));
@@ -745,8 +744,11 @@ fn render_sink_selector(
 
     let total_visual_lines: usize = per_row_lines.iter().sum();
     let mut visual_pos = 0usize;
-    for i in 0..raw_offset.min(per_row_lines.len()) {
-        visual_pos += per_row_lines[i];
+    for lines in per_row_lines
+        .iter()
+        .take(raw_offset.min(per_row_lines.len()))
+    {
+        visual_pos += *lines;
     }
 
     let has_above = visual_pos > 0;

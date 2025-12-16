@@ -55,7 +55,7 @@ impl DaemonManager {
                     Ok("Daemon started via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl start failed: {}", stderr);
+                    anyhow::bail!("systemctl start failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
@@ -94,7 +94,7 @@ impl DaemonManager {
                     Ok("Daemon stopped via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl stop failed: {}", stderr);
+                    anyhow::bail!("systemctl stop failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
@@ -125,7 +125,7 @@ impl DaemonManager {
                     Ok("Daemon restarted via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl restart failed: {}", stderr);
+                    anyhow::bail!("systemctl restart failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {

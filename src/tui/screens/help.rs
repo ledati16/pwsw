@@ -4,9 +4,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState,
-    },
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -54,17 +52,24 @@ pub fn render_help(
     frame.render_stateful_widget(table, popup_area, scroll_state);
 
     // Compute visible viewport height and prepare for indicators
-    let inner = popup_area.inner(ratatui::layout::Margin { vertical: 1, horizontal: 0 });
+    let inner = popup_area.inner(ratatui::layout::Margin {
+        vertical: 1,
+        horizontal: 0,
+    });
     let view_height = inner.height as usize;
 
     // Compute visual line counts for help rows so we can detect "has above/below" even with wrapping.
     let content_width = inner.width as usize;
     let left_col = 15usize;
-    let right_col = if content_width > left_col { content_width - left_col } else { 1 };
+    let right_col = if content_width > left_col {
+        content_width - left_col
+    } else {
+        1
+    };
 
     let items = build_help_items(current_screen);
     let mut per_row_lines: Vec<usize> = Vec::with_capacity(items.len());
-    for (key, desc) in items.iter() {
+    for (key, desc) in &items {
         let lines = if key.is_empty() && desc.is_empty() {
             1usize
         } else if key.is_empty() {
@@ -88,8 +93,11 @@ pub fn render_help(
 
     // Map TableState logical row offset -> visual line position by summing heights of preceding rows
     let mut visual_pos = 0usize;
-    for i in 0..raw_row_offset.min(per_row_lines.len()) {
-        visual_pos += per_row_lines[i];
+    for line in per_row_lines
+        .iter()
+        .take(raw_row_offset.min(per_row_lines.len()))
+    {
+        visual_pos += *line;
     }
 
     let has_above = visual_pos > 0;
@@ -126,8 +134,8 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
 
     // Helper to add a section header
     let add_header = |items: &mut Vec<(String, String)>, text: &str| {
-        items.push(("".to_string(), text.to_string()));
-        items.push(("".to_string(), "".to_string())); // Spacer
+        items.push((String::new(), text.to_string()));
+        items.push((String::new(), String::new())); // Spacer
     };
 
     // Helper to add a keybind row
@@ -137,8 +145,8 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
 
     // Helper to add a sub-header
     let add_subheader = |items: &mut Vec<(String, String)>, text: &str| {
-        items.push(("".to_string(), "".to_string())); // Spacer
-        items.push(("".to_string(), text.to_string()));
+        items.push((String::new(), String::new())); // Spacer
+        items.push((String::new(), text.to_string()));
     };
 
     match current_screen {
@@ -173,7 +181,10 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
             add_keybind(&mut items, "Space", "Cycle notify option");
             add_keybind(&mut items, "Enter", "Save / Open sink selector");
             add_keybind(&mut items, "Esc", "Cancel");
-            items.push(("Live Preview".to_string(), "Shows matching windows as you type".to_string()));
+            items.push((
+                "Live Preview".to_string(),
+                "Shows matching windows as you type".to_string(),
+            ));
         }
         Screen::Settings => {
             add_header(&mut items, "Settings Screen");
@@ -187,7 +198,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
     }
 
     // Global shortcuts
-    items.push(("".to_string(), "".to_string()));
+    items.push((String::new(), String::new()));
     add_header(&mut items, "Global Shortcuts");
     add_keybind(&mut items, "q/Ctrl+C", "Quit application");
     add_keybind(&mut items, "Tab", "Next screen");
@@ -202,7 +213,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
 
     // Close instruction
     items.push(("".to_string(), "".to_string()));
-    items.push(("".to_string(), "Press ? or Esc to close help".to_string()));
+    items.push((String::new(), "Press ? or Esc to close help".to_string()));
 
     items
 }
