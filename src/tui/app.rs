@@ -3,14 +3,15 @@
 //! Manages screen navigation, user input, and application state.
 
 use anyhow::Result;
+use throbber_widgets_tui::ThrobberState;
 
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::Config;
 use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
-type CompiledRegex = Arc<regex::Regex>;
-type PreviewInMsg = (
+pub type CompiledRegex = Arc<regex::Regex>;
+pub type PreviewInMsg = (
     String,
     Option<String>,
     Option<CompiledRegex>,
@@ -145,8 +146,8 @@ pub struct App {
     pub status_message: Option<String>,
     /// Last preview results from background worker
     pub preview: Option<PreviewResult>,
-    /// Spinner frame index for small loading animations
-    pub spinner_idx: usize,
+    /// State for throbber animation
+    pub throbber_state: ThrobberState,
 
     /// Dashboard screen state
     pub dashboard_screen: DashboardScreen,
@@ -210,7 +211,7 @@ impl App {
             config,
             status_message: None,
             preview: None,
-            spinner_idx: 0,
+            throbber_state: ThrobberState::default(),
             dashboard_screen,
             settings_screen,
             sinks_screen,

@@ -195,6 +195,7 @@ mod tests {
     #[tokio::test]
     async fn test_debouncer_collapses_rapid_requests() {
         let windows = vec![WindowInfo {
+            id: None,
             app_id: "firefox".into(),
             title: "Firefox Browser".into(),
             matched_on: None,
@@ -257,6 +258,7 @@ mod tests {
         // execute_preview runs match_windows which doesn't sleep; instead, we test timeout by passing a very small timeout.
 
         let windows = vec![WindowInfo {
+            id: None,
             app_id: "a".into(),
             title: "b".into(),
             matched_on: None,
@@ -313,12 +315,14 @@ mod tests {
     async fn test_execute_preview_basic() {
         let windows = vec![
             WindowInfo {
+                id: None,
                 app_id: "firefox".into(),
                 title: "Firefox Browser".into(),
                 matched_on: None,
                 tracked: None,
             },
             WindowInfo {
+                id: None,
                 app_id: "mpv".into(),
                 title: "mpv video".into(),
                 matched_on: None,

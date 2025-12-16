@@ -4,6 +4,7 @@
 //! IPC requests, and switching audio sinks based on configured rules.
 
 use anyhow::{Context, Result};
+use notify::{Event, RecursiveMode, Watcher};
 use std::time::Instant;
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -40,8 +41,10 @@ struct IpcContext {
     uptime_secs: u64,
     current_sink_name: String,
     active_window: Option<String>,
-    tracked_with_sinks: Vec<(String, String, String, String)>,
-    all_windows: Vec<(String, String)>,
+    // tracked: (id, app_id, title, sink_name, sink_desc)
+    tracked_with_sinks: Vec<(u64, String, String, String, String)>,
+    // all windows: (id, app_id, title)
+    all_windows: Vec<(u64, String, String)>,
     config: Config,
     shutdown_tx: broadcast::Sender<()>,
 }
@@ -153,14 +156,26 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
 
     // Switch to default on startup if configured
-    if state.config.settings.default_on_startup {
+        if state.config.settings.default_on_startup {
         let default = state
             .config
             .get_default_sink()
             .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
         if state.current_sink_name != default.name {
             info!("Switching to default sink: {}", default.desc);
-            PipeWire::activate_sink(&default.name)?;
+
+            // Run activation in blocking thread pool to avoid blocking the async runtime
+            let name_clone = default.name.clone();
+            let desc_clone = default.desc.clone();
+            let join = tokio::task::spawn_blocking(move || {
+                crate::state::switch_audio_blocking(&name_clone, &desc_clone, None, None, false)
+            });
+
+            let inner = join
+                .await
+                .map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+            inner?;
+
             state.current_sink_name.clone_from(&default.name);
         }
     }
@@ -172,6 +187,27 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Start IPC server
     let ipc_server = IpcServer::bind().await?;
     info!("IPC server listening on {:?}", ipc_server.socket_path());
+
+    // Setup config file watcher (hot-reload)
+    let config_path = Config::get_config_path()?;
+    let config_dir = config_path.parent().unwrap_or(&config_path);
+    let (config_tx, mut config_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let config_tx_clone = config_tx.clone();
+
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        match res {
+            Ok(event) => {
+                if event.kind.is_modify() || event.kind.is_create() {
+                    let _ = config_tx_clone.blocking_send(());
+                }
+            }
+            Err(e) => error!("Config watch error: {:?}", e),
+        }
+    })?;
+
+    if let Err(e) = watcher.watch(config_dir, RecursiveMode::NonRecursive) {
+        warn!("Failed to watch config directory for hot-reload: {}", e);
+    }
 
     if state.config.settings.notify_manual {
         if let Err(e) =
@@ -188,7 +224,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         tokio::select! {
             result = window_events.recv() => {
                 if let Some(event) = result {
-                    if let Err(e) = state.process_event(event) {
+                    if let Err(e) = state.process_event(event).await {
                         error!("Event processing error: {:#}", e);
                     }
                 } else {
@@ -199,7 +235,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             Some(mut stream) = ipc_server.accept() => {
                 // Handle IPC request - clone what we need for the task
+                // Tracked windows: (id, app_id, title, sink_name, sink_desc)
                 let tracked_with_sinks = state.get_tracked_windows_with_sinks();
+                // All windows: (id, app_id, title)
                 let all_windows = state.get_all_windows();
 
                 let ctx = IpcContext {
@@ -230,6 +268,26 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         }
                     }
                 });
+            }
+
+            _ = config_rx.recv() => {
+                // Debounce happens partly due to select! loop speed, but we should be careful.
+                info!("Config file changed, attempting reload...");
+                match Config::load() {
+                    Ok(new_config) => {
+                        let notify_enabled = state.config.settings.notify_manual;
+                        state.reload_config(new_config);
+                        if notify_enabled {
+                            let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to reload config: {:#}", e);
+                        if state.config.settings.notify_manual {
+                            let _ = send_notification("Reload Failed", &format!("Config error: {:#}", e), None);
+                        }
+                    }
+                }
             }
 
             _ = signal::ctrl_c() => {
@@ -279,35 +337,30 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
         Request::ListWindows => {
             use std::collections::HashMap;
 
-            // Build a map of tracked windows for quick lookup
-            let tracked_map: HashMap<(&str, &str), (&str, &str)> = ctx
+            // Build a map of tracked windows by id for quick lookup
+            let tracked_map: HashMap<u64, (String, String)> = ctx
                 .tracked_with_sinks
                 .iter()
-                .map(|(app_id, title, sink_name, sink_desc)| {
-                    (
-                        (app_id.as_str(), title.as_str()),
-                        (sink_name.as_str(), sink_desc.as_str()),
-                    )
-                })
+                .map(|(id, app_id, title, sink_name, sink_desc)| (*id, (sink_name.clone(), sink_desc.clone())))
                 .collect();
 
-            // Build WindowInfo for all windows with tracking status
+            // Build WindowInfo for all windows with tracking status using ids from all_windows
             let windows = ctx
                 .all_windows
                 .iter()
-                .map(|(app_id, title)| {
-                    let tracked = tracked_map.get(&(app_id.as_str(), title.as_str())).map(
-                        |(sink_name, sink_desc)| ipc::TrackedInfo {
-                            sink_name: (*sink_name).to_string(),
-                            sink_desc: (*sink_desc).to_string(),
-                        },
-                    );
+                .map(|(id, app_id, title)| {
+                    // Find tracked info by id
+                    let tracked_opt = tracked_map.get(id).map(|(sink_name, sink_desc)| ipc::TrackedInfo {
+                        sink_name: sink_name.clone(),
+                        sink_desc: sink_desc.clone(),
+                    });
 
                     WindowInfo {
+                        id: Some(*id),
                         app_id: app_id.clone(),
                         title: title.clone(),
                         matched_on: None,
-                        tracked,
+                        tracked: tracked_opt,
                     }
                 })
                 .collect();
@@ -320,7 +373,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                 let matches = ctx
                     .all_windows
                     .iter()
-                    .filter_map(|(app_id, title)| {
+                    .filter_map(|(id, app_id, title)| {
                         let app_id_match = regex.is_match(app_id);
                         let title_match = regex.is_match(title);
 
@@ -333,6 +386,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
                             };
 
                             Some(WindowInfo {
+                                id: Some(*id),
                                 app_id: app_id.clone(),
                                 title: title.clone(),
                                 matched_on: Some(matched_on.to_string()),

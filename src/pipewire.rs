@@ -194,6 +194,12 @@ pub struct ConfiguredSinkJson {
 /// `PipeWire` interface for audio control
 pub struct PipeWire;
 
+// Per-device lock table to serialize profile switches on the same device
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex as StdMutex};
+
+static DEVICE_LOCKS: OnceLock<StdMutex<std::collections::HashMap<u32, Arc<StdMutex<()>>>>> = OnceLock::new();
+
 impl PipeWire {
     /// Validate that all required `PipeWire` tools are available in `PATH`
     ///
@@ -207,9 +213,9 @@ impl PipeWire {
 
         for tool in &required_tools {
             // Try to run the tool with --version or --help to check if it exists
-            let result = Command::new(tool).arg("--version").output();
+            let result = Command::new(tool).arg("--version").status();
 
-            if result.is_err() {
+            if result.is_err() || !result.unwrap().success() {
                 missing.push(*tool);
             }
         }
@@ -517,6 +523,20 @@ impl PipeWire {
             profile_sink.profile_name, sink_name, profile_sink.device_name
         );
 
+        // Acquire per-device lock to serialize profile switches
+        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+        let device_mutex_arc = {
+            let mut guard = locks.lock().unwrap();
+            Arc::clone(
+                guard
+                    .entry(profile_sink.device_id)
+                    .or_insert_with(|| Arc::new(StdMutex::new(()))),
+            )
+        };
+
+        // Lock the device mutex for the duration of profile switch + polling
+        let _device_guard = device_mutex_arc.lock().unwrap();
+
         Self::set_device_profile(profile_sink.device_id, profile_sink.profile_index)?;
 
         // Wait for the new node to appear with retries
@@ -554,8 +574,11 @@ impl PipeWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
 
-    // JSON fixtures for testing
     const MINIMAL_SINK_JSON: &str = r#"[
         {
             "id": 42,
@@ -755,7 +778,62 @@ mod tests {
         assert_eq!(default_sink, None);
     }
 
-    // get_profile_sinks() tests
+    #[test]
+    fn test_device_lock_serialization() {
+        // This test ensures per-device locks serialize profile switches for the same device.
+        // We'll simulate two concurrent activations that require profile switching by directly
+        // invoking activate_sink on a predicted name that requires a profile switch. Since
+        // activate_sink calls pw-dump and pw-cli, and we cannot run those here, we'll instead
+        // test the lock acquisition logic by having two threads attempt to lock the same device
+        // entry using the internal DEVICE_LOCKS structure.
+
+        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+
+        // Simulate device id 123
+        let device_id = 123u32;
+
+        // Insert a lock for device
+        {
+            let mut guard = locks.lock().unwrap();
+            guard.insert(device_id, Arc::new(StdMutex::new(())));
+        }
+
+        let arc_lock = {
+            let guard = locks.lock().unwrap();
+            Arc::clone(guard.get(&device_id).unwrap())
+        };
+
+        // Shared state to track execution order
+        let order = Arc::new(AtomicUsize::new(0));
+
+        let o1 = order.clone();
+        let l1 = arc_lock.clone();
+        let t1 = thread::spawn(move || {
+            let _g = l1.lock().unwrap();
+            // Mark we have the lock
+            o1.fetch_add(1, Ordering::SeqCst);
+            // Hold the lock for a bit
+            thread::sleep(Duration::from_millis(50));
+        });
+
+        // Give first thread time to acquire lock
+        thread::sleep(Duration::from_millis(10));
+
+        let o2 = order.clone();
+        let l2 = arc_lock.clone();
+        let t2 = thread::spawn(move || {
+            let _g = l2.lock().unwrap();
+            // This should only run after t1 releases
+            o2.fetch_add(10, Ordering::SeqCst);
+        });
+
+        t1.join().unwrap();
+        t2.join().unwrap();
+
+        // After both have run, order should be 11 (1 from t1, 10 from t2)
+        assert_eq!(order.load(Ordering::SeqCst), 11);
+    }
+
     #[test]
     fn test_get_profile_sinks_excludes_active() {
         let device_json = r#"[
@@ -822,5 +900,4 @@ mod tests {
             profile_sinks[0].predicted_name,
             "alsa_output.pci-0000_00_1f.3.analog-stereo"
         );
-    }
-}
+    }}

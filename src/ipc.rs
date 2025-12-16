@@ -74,6 +74,7 @@ pub enum Response {
 /// Window information for IPC responses
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowInfo {
+    pub id: Option<u64>,
     pub app_id: String,
     pub title: String,
     /// For test-rule: which fields matched ("`app_id`", "title", or "both")
@@ -479,6 +480,7 @@ mod tests {
     #[test]
     fn test_response_windows_roundtrip() {
         let window_info = WindowInfo {
+            id: None,
             app_id: "firefox".to_string(),
             title: "Mozilla Firefox".to_string(),
             matched_on: Some("firefox pattern".to_string()),

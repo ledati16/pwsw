@@ -9,11 +9,11 @@ use ratatui::{
     },
     Frame,
 };
+use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::config::{Rule, SinkConfig};
 use crate::tui::editor_state::SimpleEditor;
-use crate::tui::textfield::render_text_field;
-use crate::tui::widgets::{centered_modal, modal_size};
+use crate::tui::widgets::{centered_modal, modal_size, render_input};
 use regex::Regex;
 
 /// Rules screen mode
@@ -105,12 +105,12 @@ impl RuleEditor {
     /// Ensure compiled regex caches are up-to-date for current editor patterns
     pub fn ensure_compiled(&mut self) {
         // Compile app id pattern if non-empty and store which string it corresponds to
-        if !self.app_id_pattern.value.is_empty() {
-            if self.compiled_app_id_for.as_ref() != Some(&self.app_id_pattern.value) {
-                self.compiled_app_id = Regex::new(&self.app_id_pattern.value)
+        if !self.app_id_pattern.value().is_empty() {
+            if self.compiled_app_id_for.as_deref() != Some(self.app_id_pattern.value()) {
+                self.compiled_app_id = Regex::new(self.app_id_pattern.value())
                     .ok()
                     .map(std::sync::Arc::new);
-                self.compiled_app_id_for = Some(self.app_id_pattern.value.clone());
+                self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
             }
         } else {
             self.compiled_app_id = None;
@@ -118,12 +118,12 @@ impl RuleEditor {
         }
 
         // Compile title pattern if non-empty
-        if !self.title_pattern.value.is_empty() {
-            if self.compiled_title_for.as_ref() != Some(&self.title_pattern.value) {
-                self.compiled_title = Regex::new(&self.title_pattern.value)
+        if !self.title_pattern.value().is_empty() {
+            if self.compiled_title_for.as_deref() != Some(self.title_pattern.value()) {
+                self.compiled_title = Regex::new(self.title_pattern.value())
                     .ok()
                     .map(std::sync::Arc::new);
-                self.compiled_title_for = Some(self.title_pattern.value.clone());
+                self.compiled_title_for = Some(self.title_pattern.value().to_string());
             }
         } else {
             self.compiled_title = None;
@@ -202,7 +202,7 @@ pub fn render_rules(
     screen_state: &mut RulesScreen,
     windows: &[crate::ipc::WindowInfo],
     preview: Option<&crate::tui::app::PreviewResult>,
-    spinner_idx: usize,
+    throbber_state: &mut ThrobberState,
 ) {
     match screen_state.mode {
         RulesMode::List => render_list(frame, area, rules, sinks, screen_state),
@@ -213,7 +213,7 @@ pub fn render_rules(
             screen_state,
             windows,
             preview,
-            spinner_idx,
+            throbber_state,
         ),
         RulesMode::Delete => render_delete_confirmation(frame, area, rules, screen_state),
         RulesMode::SelectSink => render_sink_selector(frame, area, sinks, &mut screen_state.editor),
@@ -371,7 +371,7 @@ fn render_editor(
     screen_state: &RulesScreen,
     windows: &[crate::ipc::WindowInfo],
     preview: Option<&crate::tui::app::PreviewResult>,
-    spinner_idx: usize,
+    throbber_state: &mut ThrobberState,
 ) {
     let title = if screen_state.editing_index.is_some() {
         "Edit Rule"
@@ -418,23 +418,21 @@ fn render_editor(
     frame.render_widget(block, popup_area);
 
     // App ID pattern field
-    render_text_field(
+    render_input(
         frame,
         chunks[0],
         "App ID Pattern (regex):",
-        &screen_state.editor.app_id_pattern.value,
+        &screen_state.editor.app_id_pattern.input,
         screen_state.editor.focused_field == 0,
-        Some(screen_state.editor.app_id_pattern.cursor),
     );
 
     // Title pattern field
-    render_text_field(
+    render_input(
         frame,
         chunks[1],
         "Title Pattern (optional regex):",
-        &screen_state.editor.title_pattern.value,
+        &screen_state.editor.title_pattern.input,
         screen_state.editor.focused_field == 1,
-        Some(screen_state.editor.title_pattern.cursor),
     );
 
     // Sink selector button - find sink description if set
@@ -459,13 +457,12 @@ fn render_editor(
     );
 
     // Description field
-    crate::tui::textfield::render_text_field(
+    render_input(
         frame,
         chunks[3],
         "Description (optional):",
-        &screen_state.editor.desc.value,
+        &screen_state.editor.desc.input,
         screen_state.editor.focused_field == 3,
-        Some(screen_state.editor.desc.cursor),
     );
 
     // Notify toggle with border-based focus
@@ -501,7 +498,7 @@ fn render_editor(
         screen_state,
         windows,
         preview,
-        spinner_idx,
+        throbber_state,
     );
 
     // Help text
@@ -525,45 +522,33 @@ fn render_live_preview(
     screen_state: &RulesScreen,
     windows: &[crate::ipc::WindowInfo],
     preview: Option<&crate::tui::app::PreviewResult>,
-    spinner_idx: usize,
+    throbber_state: &mut ThrobberState,
 ) {
-    // If background worker supplied a preview and it matches current editor patterns, render it
-    let mut preview_lines = vec![Line::from(vec![Span::styled(
-        "Live Preview: ",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )])];
-
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
-        if res.app_pattern == screen_state.editor.app_id_pattern.value
+        if res.app_pattern == screen_state.editor.app_id_pattern.value()
             && res.title_pattern.as_deref().unwrap_or("")
-                == screen_state.editor.title_pattern.value.as_str()
+                == screen_state.editor.title_pattern.value()
         {
-            // If background worker marked this preview as pending, show spinner (computing). Otherwise
-            // fall through to normal display (No matches / timed out / results).
+            // If background worker marked this preview as pending, show spinner (computing).
             if res.pending && res.matches.is_empty() && !res.timed_out {
-                // Show spinner instead of static "Computing..."
-                let spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-                // Use app-level spinner index (passed via rules screen state in App) — render frame from spinner_idx
-                // to animate across UI ticks.
-                let spinner_char = spinner_frames[spinner_idx % spinner_frames.len()];
-                preview_lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(spinner_char, Style::default().fg(Color::Yellow)),
-                    Span::styled(" Computing...", Style::default().fg(Color::Yellow)),
-                ]));
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title("Matching Windows");
+                let inner = block.inner(area);
+                frame.render_widget(block, area);
 
-                let preview_widget = Paragraph::new(preview_lines).block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title("Matching Windows"),
-                );
-                frame.render_widget(preview_widget, area);
+                let throbber = Throbber::default()
+                    .label("Computing matches...")
+                    .style(Style::default().fg(Color::Yellow))
+                    .throbber_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+                frame.render_stateful_widget(throbber, inner, throbber_state);
                 return;
             }
 
+            // Normal results display
+            let mut preview_lines = vec![];
+            
             if res.timed_out {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  Preview timed out or invalid regex",
@@ -605,10 +590,10 @@ fn render_live_preview(
     // Ensure compiled regexes correspond to current editor text; compile if needed.
     // Attempt to use cached compiled regex references, or compile temporary ones for this render.
     let app_id_regex: Option<std::sync::Arc<Regex>> =
-        if screen_state.editor.app_id_pattern.value.is_empty() {
+        if screen_state.editor.app_id_pattern.value().is_empty() {
             None
-        } else if screen_state.editor.compiled_app_id_for.as_ref()
-            == Some(&screen_state.editor.app_id_pattern.value)
+        } else if screen_state.editor.compiled_app_id_for.as_deref()
+            == Some(screen_state.editor.app_id_pattern.value())
         {
             screen_state.editor.compiled_app_id.clone()
         } else {
@@ -616,10 +601,10 @@ fn render_live_preview(
         };
 
     let title_regex: Option<std::sync::Arc<Regex>> =
-        if screen_state.editor.title_pattern.value.is_empty() {
+        if screen_state.editor.title_pattern.value().is_empty() {
             None
-        } else if screen_state.editor.compiled_title_for.as_ref()
-            == Some(&screen_state.editor.title_pattern.value)
+        } else if screen_state.editor.compiled_title_for.as_deref()
+            == Some(screen_state.editor.title_pattern.value())
         {
             screen_state.editor.compiled_title.clone()
         } else {
@@ -629,6 +614,8 @@ fn render_live_preview(
     // Convert to Option<&Regex> for the matching code below
     let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(|a| a.as_ref());
     let title_regex_ref: Option<&Regex> = title_regex.as_ref().map(|a| a.as_ref());
+
+    let mut preview_lines = vec![];
 
     if let Some(app_regex) = app_id_regex_ref {
         if !windows.is_empty() {
@@ -670,7 +657,7 @@ fn render_live_preview(
                 Style::default().fg(Color::Gray),
             )]));
         }
-    } else if !screen_state.editor.app_id_pattern.value.is_empty() {
+    } else if !screen_state.editor.app_id_pattern.value().is_empty() {
         preview_lines.push(Line::from(vec![Span::styled(
             "  Invalid regex pattern",
             Style::default().fg(Color::Red),

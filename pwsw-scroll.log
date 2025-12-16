@@ -1,7 +1,24 @@
    Compiling pwsw v0.3.1 (/home/tim/builds/misc/nasw)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.90s
+warning: unused variable: `total`
+   --> src/tui/screens/rules.rs:728:9
+    |
+728 |     let total = sinks.len();
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_total`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `cursor` is never used
+  --> src/tui/editor_state.rs:38:12
+   |
+12 | impl SimpleEditor {
+   | ----------------- method in this implementation
+...
+38 |     pub fn cursor(&self) -> usize {
+   |            ^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `pwsw` (lib) generated 2 warnings (run `cargo fix --lib -p pwsw` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.01s
      Running `target/debug/pwsw tui`
-[tui] 0 ms [Dashboard] slow frame: 17 ms preview_pending=false windows=8
-[tui] 0 ms [Dashboard] slow frame: 18 ms preview_pending=false windows=8
-[tui] 0 ms [Dashboard] slow frame: 19 ms preview_pending=false windows=8
-[tui] 0 ms [Dashboard] slow frame: 20 ms preview_pending=false windows=8
+[tui] 0 ms [Dashboard] slow frame: 17 ms preview_pending=false windows=0
