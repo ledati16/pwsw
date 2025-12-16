@@ -5,7 +5,7 @@ use std::ffi::OsString;
 
 #[cfg(test)]
 /// RAII helper: set `XDG_CONFIG_HOME` to a tempdir for the lifetime of this guard.
-pub struct XdgTemp {
+pub(crate) struct XdgTemp {
     prev: Option<OsString>,
     dir: tempfile::TempDir,
 }

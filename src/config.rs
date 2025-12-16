@@ -285,11 +285,8 @@ impl Config {
                 }
             }
         }
-        let mut tmp = match tmp {
-            Some(t) => t,
-            None => {
-                return Err(anyhow::Error::new(last_err.unwrap()).context("Failed to create temporary file for atomic config save"));
-            }
+        let Some(mut tmp) = tmp else {
+            return Err(anyhow::Error::new(last_err.unwrap()).context("Failed to create temporary file for atomic config save"));
         };
         tmp.as_file_mut()
             .write_all(contents.as_bytes())
