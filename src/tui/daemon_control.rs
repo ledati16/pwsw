@@ -101,7 +101,7 @@ impl DaemonManager {
                 // Send shutdown request via IPC
                 match ipc::send_request(ipc::Request::Shutdown).await {
                     Ok(_) => Ok("Daemon shutdown requested".to_string()),
-                    Err(e) => anyhow::bail!("Failed to send shutdown request: {:#}", e),
+                    Err(e) => anyhow::bail!("Failed to send shutdown request: {e:#}"),
                 }
             }
         }

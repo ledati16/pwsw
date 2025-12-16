@@ -74,7 +74,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     if app.show_help {
         // Fix: handled in specific block
         match key.code {
-            KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+            KeyCode::Esc | KeyCode::Char('?' | 'q') => {
                 app.show_help = false;
             }
             KeyCode::Up => {
@@ -191,7 +191,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
 
         // ?: Toggle help overlay
-        (KeyCode::Char('?'), KeyModifiers::NONE) | (KeyCode::Char('?'), KeyModifiers::SHIFT) => {
+        (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             app.show_help = true;
         }
 

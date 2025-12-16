@@ -297,7 +297,7 @@ impl State {
 
                     let inner = join
                         .await
-                        .map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+.map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
                     inner?;
 
                     // Only update state on success
