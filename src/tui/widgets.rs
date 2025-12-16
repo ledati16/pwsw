@@ -222,6 +222,49 @@ pub fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec
     per_row_lines
 }
 
+/// Compute whether there is content above/below the current viewport
+/// for a list of visual items that may wrap at `content_width`.
+pub fn compute_has_above_below(
+    items: &[String],
+    content_width: usize,
+    offset: usize,
+    view_height: usize,
+) -> (bool, bool) {
+    let per_row_lines = compute_visual_line_counts(items, content_width);
+    let total_visual_lines: usize = per_row_lines.iter().sum();
+    let mut visual_pos = 0usize;
+    for lines in per_row_lines.iter().take(offset.min(per_row_lines.len())) {
+        visual_pos += *lines;
+    }
+    let has_above = visual_pos > 0;
+    let has_below = (visual_pos + view_height) < total_visual_lines;
+    (has_above, has_below)
+}
+
+/// Render small up/down arrows at the right edge of `inner` to indicate scroll.
+pub fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
+    if has_above {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y,
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
+    if has_below {
+        let r = Rect {
+            x: inner.x + inner.width.saturating_sub(2),
+            y: inner.y + inner.height.saturating_sub(1),
+            width: 1,
+            height: 1,
+        };
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
+        frame.render_widget(p, r);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

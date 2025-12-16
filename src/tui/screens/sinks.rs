@@ -5,7 +5,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row, Table, TableState,
     },
     Frame,
 };
@@ -276,29 +276,8 @@ fn render_list(
     let has_above = raw_offset > 0;
     let has_below = raw_offset + view_height < total;
 
-    // Draw top arrow if there's more above
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
+    // Render scroll arrows using helper
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
 /// Render the add/edit modal
@@ -473,31 +452,8 @@ fn render_sink_selector(
     let available_width = popup_area.width.saturating_sub(6); // 2 borders + 2 prefix + 2 margin
     let max_desc_width = available_width.saturating_sub(40); // Reserve space for node name in parens
 
-    // Helper to truncate description (show start with ellipsis at end)
-    let truncate_desc = |text: &str, max_width: u16| -> String {
-        if text.len() > max_width as usize {
-            let mut truncated = text
-                .chars()
-                .take(max_width.saturating_sub(3) as usize)
-                .collect::<String>();
-            truncated.push_str("...");
-            truncated
-        } else {
-            text.to_string()
-        }
-    };
-
-    // Helper to truncate node name (show END with ellipsis at start for distinguishability)
-    let truncate_node_name = |text: &str, max_width: u16| -> String {
-        if text.len() > max_width as usize {
-            let skip = text.len() - (max_width.saturating_sub(3) as usize);
-            let mut truncated = String::from("...");
-            truncated.push_str(&text.chars().skip(skip).collect::<String>());
-            truncated
-        } else {
-            text.to_string()
-        }
-    };
+    // Use shared truncation helpers from `tui::widgets` to avoid duplication
+    // (truncate_desc and truncate_node_name present in src/tui/widgets.rs)
 
     // Build list items from both active and profile sinks
     let mut items: Vec<ListItem> = Vec::new();
@@ -511,8 +467,8 @@ fn render_sink_selector(
     ))));
 
     for sink in active_sinks {
-        let desc_text = truncate_desc(&sink.description, max_desc_width);
-        let name_text = truncate_node_name(&sink.name, 35);
+        let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
+        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
 
         let line = Line::from(vec![
             Span::raw("  "),
@@ -524,7 +480,7 @@ fn render_sink_selector(
         items.push(ListItem::new(line));
     }
 
-    // Profile sinks header (if any)
+    // Profile sinks header (if any) — List items already appended above
     if !profile_sinks.is_empty() {
         items.push(ListItem::new(Line::from("")));
         items.push(ListItem::new(Line::from(Span::styled(
@@ -535,44 +491,21 @@ fn render_sink_selector(
         ))));
 
         for sink in profile_sinks {
-            let desc_text = truncate_desc(&sink.description, max_desc_width);
-            let name_text = truncate_node_name(&sink.predicted_name, 35);
+            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
+            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
 
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(desc_text, Style::default().fg(Color::White)),
+                Span::styled(desc_text.clone(), Style::default().fg(Color::White)),
                 Span::styled(" (", Style::default().fg(Color::DarkGray)),
-                Span::styled(name_text, Style::default().fg(Color::DarkGray)),
+                Span::styled(name_text.clone(), Style::default().fg(Color::DarkGray)),
                 Span::styled(")", Style::default().fg(Color::DarkGray)),
             ]);
             items.push(ListItem::new(line));
         }
     }
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Select Sink ([↑/↓]navigate [Enter]select [Esc]cancel)")
-                .style(Style::default().bg(Color::Black)),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray))
-        .highlight_symbol(""); // Ensure no default symbol
-
-    // Calculate visual index for selection
-    // Active header is at 0. Items start at 1.
-    // If profile sinks exist: Spacer is at active_len+1, Header at active_len+2. Items start at active_len+3.
-    let visual_index = if screen_state.sink_selector_index < active_sinks.len() {
-        screen_state.sink_selector_index + 1
-    } else {
-        screen_state.sink_selector_index + 3
-    };
-
-    // Sync state
-    screen_state.sink_selector_state.select(Some(visual_index));
-    frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
-
-    // Compute visible viewport height for indicators
+    // Compute visual viewport and line counts
     let inner = popup_area.inner(ratatui::layout::Margin {
         vertical: 1,
         horizontal: 0,
@@ -583,8 +516,8 @@ fn render_sink_selector(
     let mut visual_items: Vec<String> = Vec::new();
     visual_items.push("── Active Sinks ──".to_string());
     for sink in active_sinks {
-        let desc_text = truncate_desc(&sink.description, max_desc_width);
-        let name_text = truncate_node_name(&sink.name, 35);
+        let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
+        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
         visual_items.push({
             let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
             let _ = write!(tmp, "  {desc_text} ({name_text})");
@@ -596,8 +529,8 @@ fn render_sink_selector(
         visual_items.push(String::new()); // spacer
         visual_items.push("── Profile Sinks (require switching) ──".to_string());
         for sink in profile_sinks {
-            let desc_text = truncate_desc(&sink.description, max_desc_width);
-            let name_text = truncate_node_name(&sink.predicted_name, 35);
+            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
+            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
             visual_items.push({
                 let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
                 let _ = write!(tmp, "  {desc_text} ({name_text})");
@@ -606,51 +539,18 @@ fn render_sink_selector(
         }
     }
 
-    // Compute visual line counts per item using the inner width
+    // Compute content width and current logical offset
     let content_width = inner.width as usize;
-    let mut per_row_lines: Vec<usize> = Vec::with_capacity(visual_items.len());
-    for s in &visual_items {
-        let w = content_width.max(1);
-        let lines = (s.len().saturating_add(w - 1)) / w;
-        per_row_lines.push(lines.max(1));
-    }
-
-    let total_visual_lines: usize = per_row_lines.iter().sum();
-
-    // Map ListState offset (logical row offset) -> visual line position by summing heights of preceding rows
     let raw_offset = screen_state.sink_selector_state.offset();
-    let mut visual_pos = 0usize;
-    for lines in per_row_lines
-        .iter()
-        .take(raw_offset.min(per_row_lines.len()))
-    {
-        visual_pos += *lines;
-    }
 
-    let has_above = raw_offset > 0;
-    let has_below = (visual_pos + view_height) < total_visual_lines;
+    // Use helper to compute whether content exists above/below (accounts for wrapping)
+    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
+        &visual_items,
+        content_width,
+        raw_offset,
+        view_height,
+    );
 
-    // Draw top arrow if there's more above
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
+    // Render scroll arrows
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }

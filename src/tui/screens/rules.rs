@@ -332,29 +332,9 @@ fn render_list(
     let has_above = raw_offset > 0;
     let has_below = raw_offset + view_height < total;
 
-    // Draw top arrow if there's more above
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
+    // Render scroll arrows using helper
+    let (has_above, has_below) = (has_above, has_below);
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
 /// Render the add/edit modal
@@ -740,46 +720,15 @@ fn render_sink_selector(
         visual_items.push(sink.desc.clone());
     }
 
-    // Compute per-row visual height using helper
+    // Compute content width and logical offset
     let content_width = inner.width as usize;
-    let per_row_lines =
-        crate::tui::widgets::compute_visual_line_counts(&visual_items, content_width);
 
-    let total_visual_lines: usize = per_row_lines.iter().sum();
-    let mut visual_pos = 0usize;
-    for lines in per_row_lines
-        .iter()
-        .take(raw_offset.min(per_row_lines.len()))
-    {
-        visual_pos += *lines;
-    }
+    // Use helper to compute whether content exists above/below (accounts for wrapping)
+    let (has_above, has_below) =
+        crate::tui::widgets::compute_has_above_below(&visual_items, content_width, raw_offset, view_height);
 
-    let has_above = visual_pos > 0;
-    let has_below = (visual_pos + view_height) < total_visual_lines;
-
-    // Draw top arrow if there's more above
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
-        frame.render_widget(p, r);
-    }
+    // Render arrows via helper
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
 /// Render delete confirmation

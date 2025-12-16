@@ -56,6 +56,8 @@ struct IpcContext {
 /// connection fails, or any critical component encounters an error.
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run(config: Config, foreground: bool) -> Result<()> {
+    use std::process::Command;
+    use std::time::Duration;
     // Check if a daemon is already running BEFORE any initialization
     if ipc::is_daemon_running().await {
         let socket_path = ipc::get_socket_path()?;
@@ -70,9 +72,6 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
     // Background mode: spawn detached process and wait for successful startup
     if !foreground {
-        use std::process::Command;
-        use std::time::Duration;
-
         // Get current executable path
         let exe = std::env::current_exe()?;
 
