@@ -116,11 +116,62 @@ Phase B — IPC correctness & config hot-reload (Day 2)
 - [x] Filter config watcher to specific path and debounce properly + tests (1–2h)
 - [x] Implement atomic config writes (1–2h)
 
-Phase C — TUI cleanup and clippy passes (Day 3)
+Phase C — TUI cleanup and clippy passes (Day 3–5)
 
 - [ ] Remove dead TUI code & minor refactors (0.5–1h)
 - [ ] Consolidate sink selector widget and minor TUI refactors (1–3h)
 - [ ] Fix debug timing bug and address remaining clippy pedantic warnings (1–2h)
+
+
+Phase C.1 — Incremental TUI Refactor Plan (sub-phase)
+
+Goal: iteratively remove pedantic clippy warnings and improve maintainability by extracting small, testable helpers and consolidating duplicated widgets, while keeping changes minimal and reversible. Follow the per-step verification (tests + clippy + optional manual UI check) and make one small commit per completed step.
+
+Steps:
+
+- [ ] C.1.1 Identify targets and capture baseline
+  - Action: run and save `cargo clippy --all-targets -- -W clippy::pedantic` output and `rg "clippy::" -n src/tui || true` to list flagged locations; record the exact warnings in the repo (e.g., create a short file `tmp/tui-clippy-baseline.txt`) for future comparison.
+  - Verification: baseline clippy output saved and linked in commit message for the first refactor commit.
+
+- [ ] C.1.2 Extract pure logic from rendering (low-risk, high-value)
+  - Targets: `render_live_preview` in `src/tui/screens/rules.rs` (extract preview-building/matching logic), `render_sink_selector` in `src/tui/screens/sinks.rs` (extract truncation and visual line calculations).
+  - Action: create small helper functions (e.g., `build_preview_lines(...) -> Vec<Line>` and `compute_visual_line_counts(...) -> Vec<usize>`) in the same module or `src/tui/preview.rs`/`src/tui/widgets.rs` as appropriate. Keep APIs private and add unit tests for these helpers.
+  - Verification: unit tests exercising logic added; `cargo test` passes; clippy warnings for these functions drop or move to smaller wrappers.
+
+- [ ] C.1.3 Move items/declarations out of the middle of functions
+  - Action: for `items_after_statements` warnings move `use`/`const`/type aliases to module scope or top of the function before statements; prefer module-level aliases for widely used items (e.g., animation constants, type aliases).
+  - Verification: clippy no longer reports `items_after_statements` for the adjusted functions.
+
+- [ ] C.1.4 Consolidate sink selector rendering into a shared widget
+  - Action: create `src/tui/widgets.rs` helpers (if not already present) such as `render_sink_list_widget(...)` and `render_viewport_indicators(...)`; replace duplicated code in `screens/sinks.rs` and `screens/rules.rs` to call the shared helpers.
+  - Verification: visual behavior preserved (unit tests that test arrow calculation pass). Keep changes to rendering glue; run `cargo test`, `cargo clippy` and a quick manual TUI run if possible.
+
+- [ ] C.1.5 Remove dead/unneeded code and simplify structs
+  - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
+  - Verification: code compiles and tests pass; small commit with a clear message listing removed symbols.
+
+- [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
+  - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.
+  - Verification: clippy output reduced to the project's agreed allowable pedantic warnings (documented in GEMINI.md). All tests pass.
+
+- [ ] C.1.7 Final consolidation and cleanup
+  - Action: Remove temporary `#[allow(...)]` attributes added earlier where the underlying cause has been fixed. Ensure each remaining allow is justified in a code comment (link back to an issue or design note if necessary).
+  - Verification: final `cargo clippy --all-targets -- -W clippy::pedantic` shows only the documented allowable warnings; update `refactor_review_final.md` to mark sub-steps complete.
+
+Per-step commit guidance
+
+- Make one commit per sub-step (C.1.2, C.1.3, etc.). Each commit message should summarize the "why" not only the "what" (e.g., `refactor(tui): extract preview building helper to reduce render size and enable unit tests`). Include the baseline clippy snippet in the first commit message as context.
+- After each commit run: `cargo fmt && cargo test && cargo clippy --all-targets -- -W clippy::pedantic` and record the clippy delta in the commit body if non-trivial.
+
+Safety and rollback
+
+- Keep changes small and reversible. If a refactor risks UI regression, prefer to isolate changes to logic helpers with covered unit tests and leave rendering glue untouched until validated.
+- Do not push until Phase C.1 is fully complete and reviewed. When ready, prepare a PR describing the incremental refactor steps and link to this file.
+
+Markers & progress tracking
+
+- Each sub-step above is a checkbox; mark it as completed (`[x]`) when its unit tests, clippy, and manual verification pass. Add brief notes under each completed item explaining the change and the commit SHA.
+
 
 Phase D — Tests/CI/Docs (Day 3–4)
 
