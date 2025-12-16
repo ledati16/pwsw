@@ -258,6 +258,10 @@ impl Config {
             .parent()
             .expect("Config path must have a parent directory");
 
+        // Ensure the target directory exists (tests may create temp dirs but callers
+        // can race or remove them); create_dir_all is idempotent.
+        fs::create_dir_all(dir).with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
+
         // Write to a temporary file in the same directory and then atomically rename.
         let mut tmp = tempfile::NamedTempFile::new_in(dir)
             .context("Failed to create temporary file for atomic config save")?;
@@ -279,15 +283,22 @@ impl Config {
                 })?;
         }
 
-        // Before persisting, be defensive: if running under test mode, do not write
-        // to the user's real config path. This prevents tests from accidentally
-        // overwriting `~/.config/pwsw/config.toml` when tests run without an isolated
-        // XDG_CONFIG_HOME. We detect test mode via presence of `RUST_TEST_THREADS`.
-        if std::env::var("RUST_TEST_THREADS").is_ok() {
-            if let Some(cfg_dir) = dirs::config_dir() {
-                let real_cfg = cfg_dir.join("pwsw").join("config.toml");
-                if config_path == real_cfg {
-                    anyhow::bail!("Refusing to write real user config during tests: {}", config_path.display());
+        // If the target path is the real user config, require an explicit opt-in
+        // via `PWSW_ALLOW_CONFIG_WRITE=1` to allow writing. This prevents accidental
+        // overwrites during tests or other automated runs.
+        if let Some(cfg_dir) = dirs::config_dir() {
+            let real_cfg = cfg_dir.join("pwsw").join("config.toml");
+            if config_path == real_cfg {
+                match std::env::var("PWSW_ALLOW_CONFIG_WRITE") {
+                    Ok(val) if val == "1" => {
+                        // explicit allow; proceed
+                    }
+                    _ => {
+                        anyhow::bail!(
+                            "Refusing to write real user config at {} without PWSW_ALLOW_CONFIG_WRITE=1",
+                            config_path.display()
+                        );
+                    }
                 }
             }
         }
