@@ -158,7 +158,10 @@ impl Config {
             // modify user files. Cargo sets `RUST_TEST_THREADS` in test processes,
             // so use its presence as a heuristic for test mode.
             if std::env::var("RUST_TEST_THREADS").is_ok() {
-                anyhow::bail!("Config file not found at {} and test mode prevents creating it", config_path.display());
+                anyhow::bail!(
+                    "Config file not found at {} and test mode prevents creating it",
+                    config_path.display()
+                );
             }
 
             info!("Creating default config at {:?}", config_path);
@@ -260,7 +263,8 @@ impl Config {
 
         // Ensure the target directory exists (tests may create temp dirs but callers
         // can race or remove them); create_dir_all is idempotent.
-        fs::create_dir_all(dir).with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
+        fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
 
         // Write to a temporary file in the same directory and then atomically rename.
         let mut tmp = tempfile::NamedTempFile::new_in(dir)
@@ -269,6 +273,31 @@ impl Config {
         tmp.as_file_mut()
             .write_all(path_str.as_bytes())
             .context("Failed to write config to temporary file")?;
+
+        // Flush and sync to ensure data reaches disk before persist
+        tmp.as_file_mut()
+            .flush()
+            .context("Failed to flush temporary config file")?;
+        // Ensure data is flushed and synced to storage before persisting.
+        tmp.as_file_mut()
+            .sync_all()
+            .context("Failed to sync temporary config file")?;
+
+        // Verify the temporary file length matches expected bytes written and prevent
+        // accidental truncation: if tmp is empty but the existing target is non-empty,
+        // refuse to persist.
+        let written_len = tmp
+            .as_file_mut()
+            .metadata()
+            .context("Failed to stat temporary config file")?
+            .len();
+        if written_len == 0 && config_path.exists() {
+            if let Ok(meta) = fs::metadata(config_path) {
+                if meta.is_file() && meta.len() > 0 {
+                    anyhow::bail!("Refusing to overwrite non-empty config with empty data");
+                }
+            }
+        }
 
         // Ensure user-only permissions on Unix
         #[cfg(unix)]
@@ -284,13 +313,53 @@ impl Config {
         }
 
         // If the target path is the real user config, require an explicit opt-in
-        // via `PWSW_ALLOW_CONFIG_WRITE=1` to allow writing. This prevents accidental
-        // overwrites during tests or other automated runs.
-        // Determine the canonical *home-based* config path to avoid treating
-        // an XDG override (e.g., tests setting XDG_CONFIG_HOME) as the real user config.
+        // via `PWSW_ALLOW_CONFIG_WRITE=1` when running tests. Also, before writing
+        // back up the existing config to a timestamped file so accidental overwrites
+        // can be recovered.
         if let Some(home_dir) = dirs::home_dir() {
             let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
             if config_path == home_cfg {
+                // Create a timestamped backup of the existing file if present
+                if config_path.exists() {
+                    if let Ok(metadata) = fs::metadata(config_path) {
+                        if metadata.is_file() {
+                            use std::time::{SystemTime, UNIX_EPOCH};
+                            if let Ok(n) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                                let bak_name = format!("config.toml.bak.{}", n.as_secs());
+                                let bak_path = config_path.parent().unwrap().join(bak_name);
+                                let _ = fs::copy(config_path, &bak_path);
+                                // Best-effort: ignore copy errors but try to continue
+                            }
+                        }
+                    }
+                }
+
+                // Logging: record attempted write details to a safe temp log
+                let _ = (|| -> std::io::Result<()> {
+                    use std::io::Write as _;
+                    let mut f = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/tmp/pwsw-config-write.log")?;
+                    let pid = std::process::id();
+                    let _ = writeln!(
+                        f,
+                        "[{pid}] Attempting to write real config at {}",
+                        config_path.display()
+                    );
+                    let _ = writeln!(
+                        f,
+                        "  RUST_TEST_THREADS={:?}",
+                        std::env::var("RUST_TEST_THREADS").ok()
+                    );
+                    let _ = writeln!(
+                        f,
+                        "  PWSW_ALLOW_CONFIG_WRITE={:?}",
+                        std::env::var("PWSW_ALLOW_CONFIG_WRITE").ok()
+                    );
+                    Ok(())
+                })();
+
                 // Only enforce the env opt-in when running tests. In normal runtime
                 // (TUI/daemon), allow writing the user's config without requiring
                 // `PWSW_ALLOW_CONFIG_WRITE`.
@@ -334,6 +403,12 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    #[cfg(test)]
+    /// Test helper to call the private save path function with raw string
+    pub(crate) fn save_str_for_test(path_str: &str, path: &std::path::Path) -> Result<()> {
+        Self::save_to_path_str(path_str, path)
     }
 
     /// Convert runtime `Config` back to serializable `ConfigFile` format
@@ -889,77 +964,78 @@ mod tests {
 
     #[test]
     fn test_save_writes_file_and_permissions() {
-        use tempfile::tempdir;
+        use crate::test_utils::XdgTemp;
 
-        let dir = tempdir().unwrap();
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", dir.path());
-
-        let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-        let path = Config::get_config_path().unwrap();
-        // Use test-specific save_to to avoid touching global XDG paths
-        cfg.save_to(&path).unwrap();
-
-        assert!(path.exists());
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("Sink 1"));
-
-        // On Unix, ensure permissions are 0o600
-        #[cfg(unix)]
+        let guard = XdgTemp::new();
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
+            let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+            let path = Config::get_config_path().unwrap();
+            // Use test-specific save_to to avoid touching global XDG paths
+            cfg.save_to(&path).unwrap();
 
-        // Ensure only config.toml exists in the config dir
-        let config_dir = path.parent().unwrap();
-        let entries: Vec<_> = std::fs::read_dir(config_dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
-            .collect();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
+            assert!(path.exists());
 
-        // Restore env
-        if let Some(val) = prev {
-            std::env::set_var("XDG_CONFIG_HOME", val);
-        } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert!(contents.contains("Sink 1"));
+
+            // On Unix, ensure permissions are 0o600
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600);
+            }
+
+            // Ensure only config.toml exists in the config dir
+            let config_dir = path.parent().unwrap();
+            let entries: Vec<_> = std::fs::read_dir(config_dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
         }
+        drop(guard);
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        use tempfile::tempdir;
+        use crate::test_utils::XdgTemp;
 
-        let dir = tempdir().unwrap();
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        let guard = XdgTemp::new();
+        {
+            let cfg = make_config(
+                vec![
+                    make_sink("sink1", "Sink 1", true),
+                    make_sink("sink2", "Sink 2", false),
+                ],
+                vec![make_rule("firefox", None, "Sink 1")],
+            );
 
-        let cfg = make_config(
-            vec![
-                make_sink("sink1", "Sink 1", true),
-                make_sink("sink2", "Sink 2", false),
-            ],
-            vec![make_rule("firefox", None, "Sink 1")],
-        );
+            let path = Config::get_config_path().unwrap();
+            cfg.save_to(&path).unwrap();
 
-        let path = Config::get_config_path().unwrap();
-        cfg.save_to(&path).unwrap();
-
-        let loaded = Config::load().unwrap();
-        assert_eq!(loaded.sinks.len(), 2);
-        assert!(loaded.resolve_sink("Sink 1").is_some());
-        assert_eq!(loaded.rules.len(), 1);
-        assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
-
-        // Restore env
-        if let Some(val) = prev {
-            std::env::set_var("XDG_CONFIG_HOME", val);
-        } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
+            let loaded = Config::load_from_path(&path).unwrap();
+            assert_eq!(loaded.sinks.len(), 2);
+            assert!(loaded.resolve_sink("Sink 1").is_some());
+            assert_eq!(loaded.rules.len(), 1);
+            assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
         }
+        drop(guard);
+    }
+
+    #[test]
+    fn test_refuse_empty_overwrite() {
+        use tempfile::tempdir;
+        // Create tempdir and a non-empty file
+        let dir = tempdir().unwrap();
+        let cfg_dir = dir.path().join("pwsw");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        let path = cfg_dir.join("config.toml");
+        std::fs::write(&path, "non-empty").unwrap();
+
+        // Attempt to overwrite with empty content should fail
+        let r = Config::save_str_for_test("", &path);
+        assert!(r.is_err());
     }
 }
