@@ -129,14 +129,14 @@ Goal: iteratively remove pedantic clippy warnings and improve maintainability by
 
 Steps:
 
-- [ ] C.1.1 Identify targets and capture baseline
-  - Action: run and save `cargo clippy --all-targets -- -W clippy::pedantic` output and `rg "clippy::" -n src/tui || true` to list flagged locations; record the exact warnings in the repo (e.g., create a short file `tmp/tui-clippy-baseline.txt`) for future comparison.
-  - Verification: baseline clippy output saved and linked in commit message for the first refactor commit.
+- [x] C.1.1 Identify targets and capture baseline
+  - Action: run and save `cargo clippy --all-targets -- -W clippy::pedantic` output and `rg "clippy::" -n src/tui || true` to list flagged locations; baseline captured in `tmp/tui-clippy-baseline.txt`.
+  - Verification: baseline saved in `tmp/tui-clippy-baseline.txt` (commit `b6e3d32`).
 
-- [ ] C.1.2 Extract pure logic from rendering (low-risk, high-value)
+- [x] C.1.2 Extract pure logic from rendering (low-risk, high-value)
   - Targets: `render_live_preview` in `src/tui/screens/rules.rs` (extract preview-building/matching logic), `render_sink_selector` in `src/tui/screens/sinks.rs` (extract truncation and visual line calculations).
-  - Action: create small helper functions (e.g., `build_preview_lines(...) -> Vec<Line>` and `compute_visual_line_counts(...) -> Vec<usize>`) in the same module or `src/tui/preview.rs`/`src/tui/widgets.rs` as appropriate. Keep APIs private and add unit tests for these helpers.
-  - Verification: unit tests exercising logic added; `cargo test` passes; clippy warnings for these functions drop or move to smaller wrappers.
+  - Action: created `match_windows_with_compiled_count` and `build_preview_lines_from_strings` in `src/tui/preview.rs`; added `truncate_desc`, `truncate_node_name`, and `compute_visual_line_counts` in `src/tui/widgets.rs`. Updated `render_live_preview` and `render_sink_selector` to use the helpers. Added unit tests.
+  - Verification: unit tests added; `cargo test` passes; `cargo clippy --all-targets -- -W clippy::pedantic` passes for affected areas. Commit: `6efcdfa`.
 
 - [ ] C.1.3 Move items/declarations out of the middle of functions
   - Action: for `items_after_statements` warnings move `use`/`const`/type aliases to module scope or top of the function before statements; prefer module-level aliases for widely used items (e.g., animation constants, type aliases).
