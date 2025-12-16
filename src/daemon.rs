@@ -194,11 +194,17 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let (config_tx, mut config_rx) = tokio::sync::mpsc::channel::<()>(1);
     let config_tx_clone = config_tx.clone();
 
+    // Only notify reloads for changes to the exact config file and avoid blocking the
+    // watcher thread by using `try_send` (channel capacity 1 coalesces rapid events).
+    let config_path_clone = config_path.clone();
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         match res {
             Ok(event) => {
-                if event.kind.is_modify() || event.kind.is_create() {
-                    let _ = config_tx_clone.blocking_send(());
+                if (event.kind.is_modify() || event.kind.is_create())
+                    && event.paths.iter().any(|p| p == &config_path_clone)
+                {
+                    // Don't block the watcher thread; if the channel is full, drop the event
+                    let _ = config_tx_clone.try_send(());
                 }
             }
             Err(e) => error!("Config watch error: {:?}", e),

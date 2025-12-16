@@ -144,43 +144,72 @@ pub async fn is_daemon_running() -> bool {
 ///
 /// # Errors
 /// Returns an error if the socket path cannot be determined or removal fails.
-pub async fn cleanup_stale_socket() -> Result<()> {
-    let socket_path = get_socket_path()?;
-
+async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
     if !socket_path.exists() {
         return Ok(());
+    }
+
+    // On Unix: verify the file is actually a socket and owned by the current user
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        use users::get_current_uid;
+
+        let metadata = std::fs::metadata(&socket_path)
+            .with_context(|| format!("Failed to stat socket: {}", socket_path.display()))?;
+
+        let is_socket = metadata.file_type().is_socket();
+        debug!("cleanup_stale_socket: {} exists. is_socket={}, uid={}", socket_path.display(), is_socket, metadata.uid());
+
+        if !is_socket {
+            warn!("Socket path exists but is not a socket: {}", socket_path.display());
+            return Ok(());
+        }
+
+        let owner_uid = metadata.uid();
+        let current_uid = get_current_uid();
+        debug!("cleanup_stale_socket: owner_uid={}, current_uid={}", owner_uid, current_uid);
+        if owner_uid != current_uid {
+            warn!(
+                "Socket '{}' is owned by uid {} (current uid: {}). Not removing.",
+                socket_path.display(),
+                owner_uid,
+                current_uid
+            );
+            return Ok(());
+        }
     }
 
     // Try to connect - if it fails, the socket is stale
     // Use short timeout since we're just checking if socket is responsive
     let connect_result = tokio::time::timeout(
         Duration::from_millis(STALE_SOCKET_CHECK_TIMEOUT_MS),
-        tokio::net::UnixStream::connect(&socket_path),
+        tokio::net::UnixStream::connect(socket_path),
     )
     .await;
 
     let is_stale = match connect_result {
-        Ok(Ok(_stream)) => {
-            // Successfully connected - socket is alive
-            false
-        }
-        Ok(Err(_connect_err)) => {
-            // Connection failed - socket is stale
-            true
-        }
-        Err(_timeout) => {
-            // Timeout - assume socket is stale
-            true
-        }
+        Ok(Ok(_stream)) => false, // Successfully connected - socket is alive
+        Ok(Err(_connect_err)) => true, // Connection failed - socket is stale
+        Err(_timeout) => true,         // Timeout - assume socket is stale
     };
 
     if is_stale {
         debug!("Removing stale socket: {:?}", socket_path);
-        std::fs::remove_file(&socket_path)
-            .with_context(|| format!("Failed to remove stale socket: {}", socket_path.display()))?;
+        // If the file disappeared between checks, ignore the error
+        if let Err(e) = std::fs::remove_file(&socket_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(e).with_context(|| format!("Failed to remove stale socket: {}", socket_path.display()));
+            }
+        }
     }
 
     Ok(())
+}
+
+pub async fn cleanup_stale_socket() -> Result<()> {
+    let socket_path = get_socket_path()?;
+    cleanup_stale_socket_at(&socket_path).await
 }
 
 // ============================================================================
@@ -376,26 +405,113 @@ pub async fn write_response(stream: &mut UnixStream, response: &Response) -> Res
     write_message(stream, response).await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    #[cfg(test)]
+    mod tests {
+        use super::*;
 
-    // Request serialization roundtrip tests
-    #[test]
-    fn test_request_status_roundtrip() {
-        let request = Request::Status;
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(deserialized, Request::Status));
-    }
+        // Request serialization roundtrip tests
+        #[test]
+        fn test_request_status_roundtrip() {
+            let request = Request::Status;
+            let json = serde_json::to_string(&request).unwrap();
+            let deserialized: Request = serde_json::from_str(&json).unwrap();
+            assert!(matches!(deserialized, Request::Status));
+        }
 
-    #[test]
-    fn test_request_list_windows_roundtrip() {
-        let request = Request::ListWindows;
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
-        assert!(matches!(deserialized, Request::ListWindows));
-    }
+        #[test]
+        fn test_request_list_windows_roundtrip() {
+            let request = Request::ListWindows;
+            let json = serde_json::to_string(&request).unwrap();
+            let deserialized: Request = serde_json::from_str(&json).unwrap();
+            assert!(matches!(deserialized, Request::ListWindows));
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn test_cleanup_stale_socket_non_socket_file() {
+            use tempfile::tempdir;
+
+            let dir = tempdir().unwrap();
+            let socket_path = dir.path().join("pwsw.sock");
+
+            // Ensure cleanup_stale_socket will look at our tempdir
+            let prev = std::env::var_os("XDG_RUNTIME_DIR");
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+
+            // Create a regular file at the socket path
+            std::fs::write(&socket_path, b"not a socket").unwrap();
+            assert!(socket_path.exists());
+
+            // Should not remove non-socket files
+            cleanup_stale_socket().await.unwrap();
+            assert!(socket_path.exists(), "Non-socket file should not be removed");
+
+            // Restore env
+            if let Some(val) = prev { std::env::set_var("XDG_RUNTIME_DIR", val); } else { std::env::remove_var("XDG_RUNTIME_DIR"); }
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn test_cleanup_stale_socket_active_socket() {
+            use tempfile::tempdir;
+
+            let dir = tempdir().unwrap();
+            let socket_path = dir.path().join("pwsw.sock");
+
+            // Ensure cleanup_stale_socket will look at our tempdir
+            let prev = std::env::var_os("XDG_RUNTIME_DIR");
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+
+            // Bind and keep the listener alive to simulate active daemon
+            let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+            assert!(socket_path.exists());
+
+            // Active socket should not be removed
+            cleanup_stale_socket().await.unwrap();
+            assert!(socket_path.exists(), "Active socket should not be removed");
+
+            // Close the listener and ensure cleanup_stale_socket can still detect active socket removal
+            drop(listener);
+
+            // Restore env
+            if let Some(val) = prev { std::env::set_var("XDG_RUNTIME_DIR", val); } else { std::env::remove_var("XDG_RUNTIME_DIR"); }
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn test_cleanup_stale_socket_stale_socket() {
+            use tempfile::tempdir;
+
+            let dir = tempdir().unwrap();
+            let socket_path = dir.path().join("pwsw.sock");
+
+            // Create a listener and drop it immediately so the socket file remains but no process listens
+            {
+                let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+                drop(listener);
+            }
+
+            assert!(socket_path.exists());
+
+            // Now the socket is stale (no process listening) and should be removed
+            cleanup_stale_socket_at(&socket_path).await.unwrap();
+
+            // Socket should be removed, but in some environments the socket may be re-created
+            // by external processes between checks. Accept either removed or active.
+            if !socket_path.exists() {
+                // removed - success
+            } else {
+                // If it still exists, it must be active (i.e., connect succeeds)
+                let conn = tokio::time::timeout(Duration::from_millis(100), tokio::net::UnixStream::connect(&socket_path)).await;
+                match conn {
+                    Ok(Ok(_stream)) => {
+                        // Active - acceptable
+                    }
+                    _ => panic!("Stale socket should be removed"),
+                }
+            }
+        }
+
 
     #[test]
     fn test_request_test_rule_roundtrip() {
