@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -106,7 +107,11 @@ pub fn get_socket_path() -> Result<PathBuf> {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
     } else if let Ok(user) = std::env::var("USER") {
         // Fallback to /tmp with username for consistent location
-        Ok(PathBuf::from(format!("/tmp/pwsw-{user}.sock")))
+        Ok(PathBuf::from({
+            let mut s = String::with_capacity(12 + user.len());
+            let _ = write!(s, "/tmp/pwsw-{user}.sock");
+            s
+        }))
     } else {
         // Cannot determine a consistent socket path
         anyhow::bail!(

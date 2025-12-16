@@ -3,7 +3,7 @@ use std::time::Duration;
 
 /// Match windows against provided regex patterns.
 ///
-/// Returns `Ok(Vec<String>)` containing formatted "app_id | title" lines up to `max_results`.
+/// Returns `Ok(Vec<String>)` containing formatted "`app_id` | title" lines up to `max_results`.
 /// Returns `Err(String)` if either regex fails to compile.
 pub fn match_windows(
     app_pattern: &str,
@@ -131,6 +131,7 @@ mod tests {
     use super::*;
     use crate::ipc::WindowInfo;
     use crate::tui::app::AppUpdate;
+    use std::fmt::Write;
     use std::time::Duration;
     use tokio::sync::mpsc as bounded;
     use tokio::sync::mpsc::unbounded_channel;

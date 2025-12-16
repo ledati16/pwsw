@@ -9,6 +9,7 @@ use ratatui::{
     },
     Frame,
 };
+use std::fmt::Write;
 
 use crate::config::SinkConfig;
 
@@ -198,7 +199,9 @@ fn render_list(
             // Description Cell (with icon if present)
             let mut desc_text = sink.desc.clone();
             if let Some(icon) = &sink.icon {
-                desc_text = format!("{} {}", icon, desc_text);
+                let mut tmp = String::with_capacity(icon.len() + 1 + desc_text.len());
+                let _ = write!(tmp, "{icon} {desc_text}");
+                desc_text = tmp;
             }
             let desc_cell = Cell::from(Span::styled(
                 desc_text,
@@ -581,7 +584,11 @@ fn render_sink_selector(
     for sink in active_sinks {
         let desc_text = truncate_desc(&sink.description, max_desc_width);
         let name_text = truncate_node_name(&sink.name, 35);
-        visual_items.push(format!("  {} ({})", desc_text, name_text));
+        visual_items.push({
+            let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
+            let _ = write!(tmp, "  {desc_text} ({name_text})");
+            tmp
+        });
     }
 
     if !profile_sinks.is_empty() {
@@ -590,7 +597,11 @@ fn render_sink_selector(
         for sink in profile_sinks {
             let desc_text = truncate_desc(&sink.description, max_desc_width);
             let name_text = truncate_node_name(&sink.predicted_name, 35);
-            visual_items.push(format!("  {} ({})", desc_text, name_text));
+            visual_items.push({
+                let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
+                let _ = write!(tmp, "  {desc_text} ({name_text})");
+                tmp
+            });
         }
     }
 

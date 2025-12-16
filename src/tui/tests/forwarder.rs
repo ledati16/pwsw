@@ -11,7 +11,7 @@ type PreviewMsg = (
 );
 
 /// Spawn a copy of the preview forwarder used by the TUI.
-/// Returns the preview_in sender and a JoinHandle for the forwarder task.
+/// Returns the `preview_in` sender and a `JoinHandle` for the forwarder task.
 fn spawn_forwarder() -> (
     tokio::sync::mpsc::UnboundedSender<PreviewMsg>,
     tokio::task::JoinHandle<()>,
@@ -85,7 +85,7 @@ async fn forwarder_collapses_rapid_requests_and_forwards_latest_after_drain() {
             assert_eq!(app_pattern, "three");
             assert!(title_pattern.is_none());
         }
-        other => panic!("unexpected command: {:?}", other),
+        other => panic!("unexpected command: {other:?}"),
     }
 
     // cleanup
@@ -126,7 +126,7 @@ async fn forwarder_sends_when_space_appears_quickly() {
             assert_eq!(app_pattern, "alpha");
             assert!(title_pattern.is_none());
         }
-        other => panic!("unexpected command: {:?}", other),
+        other => panic!("unexpected command: {other:?}"),
     }
 
     drop(preview_in_tx);
