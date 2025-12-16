@@ -153,16 +153,28 @@ impl Config {
         let config_path = Self::get_config_path()?;
 
         if !config_path.exists() {
+            // When running tests (`cargo test`) avoid creating a default config
+            // in the user's real XDG config directory, since tests should not
+            // modify user files. Cargo sets `RUST_TEST_THREADS` in test processes,
+            // so use its presence as a heuristic for test mode.
+            if std::env::var("RUST_TEST_THREADS").is_ok() {
+                anyhow::bail!("Config file not found at {} and test mode prevents creating it", config_path.display());
+            }
+
             info!("Creating default config at {:?}", config_path);
             Self::create_default_config(&config_path)?;
         }
 
-        let contents = fs::read_to_string(&config_path)
-            .with_context(|| format!("Failed to read config: {}", config_path.display()))?;
+        Self::load_from_path(&config_path)
+    }
 
+    /// Load configuration from a specific path. Useful for tests to avoid relying on XDG env.
+    pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config: {}", path.display()))?;
         let config_file: ConfigFile = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config: {}", config_path.display()))?;
-
+            .with_context(|| format!("Failed to parse config: {}", path.display()))?;
         Self::from_config_file(config_file)
     }
 
@@ -265,6 +277,19 @@ impl Config {
                         tmp.path().display()
                     )
                 })?;
+        }
+
+        // Before persisting, be defensive: if running under test mode, do not write
+        // to the user's real config path. This prevents tests from accidentally
+        // overwriting `~/.config/pwsw/config.toml` when tests run without an isolated
+        // XDG_CONFIG_HOME. We detect test mode via presence of `RUST_TEST_THREADS`.
+        if std::env::var("RUST_TEST_THREADS").is_ok() {
+            if let Some(cfg_dir) = dirs::config_dir() {
+                let real_cfg = cfg_dir.join("pwsw").join("config.toml");
+                if config_path == real_cfg {
+                    anyhow::bail!("Refusing to write real user config during tests: {}", config_path.display());
+                }
+            }
         }
 
         // Persist atomically
