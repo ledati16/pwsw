@@ -48,9 +48,9 @@ Absolutely recommend (Fix immediately, low-risk/high-impact)
    - Update related CLI output where necessary (commands::list-windows) and add tests that create two windows with same app_id/title but distinct ids and ensure tracked/untacked status is correct.
    - Files: src/ipc.rs WindowInfo (line ~76), src/daemon.rs (handle_ipc_request at ~line 299), src/state.rs (get_all_windows at ~line 52).
 
-- [ ] 4) Harden stale socket cleanup (src/ipc.rs: cleanup_stale_socket, lines ~46–82)
+- [x] 4) Harden stale socket cleanup (src/ipc.rs: cleanup_stale_socket, lines ~46–82)
    - Before removing the socket file, verify it's a socket and owned by the current user: use metadata.file_type().is_socket() (Unix) and metadata.uid() == users::get_current_uid() (std::os::unix::fs::MetadataExt::uid())
-   - If checks fail, warn and do not remove; add a unit test that creates a non-socket file and a socket and asserts behavior.
+   - If checks fail, warn and do not remove; added unit tests that create a non-socket file, an active socket, and a stale socket and assert expected behavior.
    - Files: src/ipc.rs: cleanup_stale_socket (line ~46)..
 
 - [x] 5) Validate PipeWire tool existence robustly (src/pipewire.rs: validate_tools at line ~204)
