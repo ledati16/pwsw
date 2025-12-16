@@ -17,7 +17,7 @@ use std::fmt::Write;
 
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RulesMode {
+pub(crate) enum RulesMode {
     List,
     AddEdit,
     Delete,
@@ -26,7 +26,7 @@ pub enum RulesMode {
 
 /// Editor state for add/edit modal
 #[derive(Debug, Clone)]
-pub struct RuleEditor {
+pub(crate) struct RuleEditor {
     pub app_id_pattern: SimpleEditor,
     pub title_pattern: SimpleEditor,
     pub sink_ref: String,
@@ -128,7 +128,7 @@ impl RuleEditor {
 }
 
 /// Rules screen state
-pub struct RulesScreen {
+pub(crate) struct RulesScreen {
     pub mode: RulesMode,
     pub selected: usize,
     pub editor: RuleEditor,
@@ -189,7 +189,7 @@ impl RulesScreen {
 
 /// Render the rules screen
 #[allow(clippy::too_many_arguments)]
-pub fn render_rules(
+pub(crate) fn render_rules(
     frame: &mut Frame,
     area: Rect,
     rules: &[Rule],

@@ -18,7 +18,7 @@ use tui_input::Input;
 /// * `percent_x` - Width as percentage of screen (0-100)
 /// * `percent_y` - Height as percentage of screen (0-100)
 /// * `r` - The area to center within
-pub fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -53,7 +53,7 @@ pub mod modal_size {
 }
 
 /// Helper to create centered modal with standard size
-pub fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
+pub(crate) fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
     centered_rect(size.0, size.1, r)
 }
 
@@ -61,7 +61,7 @@ pub fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
 ///
 /// Returns cyan border for focused elements, dark gray for unfocused.
 /// This provides consistent visual feedback across all TUI widgets.
-pub const fn focus_border_style(focused: bool) -> Style {
+pub(crate) const fn focus_border_style(focused: bool) -> Style {
     if focused {
         Style::new().fg(Color::Cyan)
     } else {
@@ -70,7 +70,7 @@ pub const fn focus_border_style(focused: bool) -> Style {
 }
 
 /// Render a text input field with a block and correct scrolling/cursor
-pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
+pub(crate) fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
     let border_style = focus_border_style(focused);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -108,7 +108,7 @@ pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, f
 /// # fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> { Line::from("") }
 /// modal_help_line(&[("Tab", "Next"), ("Esc", "Cancel")]);
 /// ```
-pub fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> {
+pub(crate) fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> {
     let mut spans = Vec::new();
     for (i, (key, action)) in items.iter().enumerate() {
         if i > 0 {
@@ -135,7 +135,7 @@ pub fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> 
 /// * `label` - Field label (e.g., "Target Sink")
 /// * `value` - Current value, or None to show "Select..."
 /// * `focused` - Whether this widget is currently focused
-pub fn render_selector_button(
+pub(crate) fn render_selector_button(
     frame: &mut Frame,
     area: Rect,
     label: &str,
@@ -192,7 +192,7 @@ pub fn render_selector_button(
 ///
 /// This is a visual truncation helper for UI rendering. It operates on character counts
 /// (not grapheme clusters) which is acceptable for ASCII-based sink descriptions used here.
-pub fn truncate_desc(text: &str, max_width: u16) -> String {
+pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
     let max = max_width as usize;
     if text.len() <= max {
         text.to_string()
@@ -205,14 +205,14 @@ pub fn truncate_desc(text: &str, max_width: u16) -> String {
 }
 
 /// Truncate a node/sink name similarly to `truncate_desc`.
-pub fn truncate_node_name(text: &str, max_width: u16) -> String {
+pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
     truncate_desc(text, max_width)
 }
 
 /// Compute visual line counts for a list of items given `content_width`.
 ///
 /// Returns a vector of per-item visual heights (in rows), accounting for wrapping at `content_width`.
-pub fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usize> {
+fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usize> {
     let mut per_row_lines: Vec<usize> = Vec::with_capacity(items.len());
     for s in items {
         let w = content_width.max(1);
@@ -224,7 +224,7 @@ pub fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec
 
 /// Compute whether there is content above/below the current viewport
 /// for a list of visual items that may wrap at `content_width`.
-pub fn compute_has_above_below(
+pub(crate) fn compute_has_above_below(
     items: &[String],
     content_width: usize,
     offset: usize,
@@ -242,7 +242,7 @@ pub fn compute_has_above_below(
 }
 
 /// Render small up/down arrows at the right edge of `inner` to indicate scroll.
-pub fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
+pub(crate) fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
     if has_above {
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(2),

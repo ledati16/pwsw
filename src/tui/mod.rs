@@ -67,7 +67,7 @@ struct PreviewExec {
 }
 
 #[must_use]
-pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
+pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     for w in windows {

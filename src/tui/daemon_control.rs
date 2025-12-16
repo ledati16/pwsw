@@ -155,13 +155,4 @@ impl DaemonManager {
             }
         }
     }
-
-    /// Get a display name for this daemon manager
-    #[allow(dead_code)]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            DaemonManager::Systemd => "systemd",
-            DaemonManager::Direct => "direct",
-        }
-    }
 }
