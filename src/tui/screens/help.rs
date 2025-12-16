@@ -212,7 +212,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
     add_keybind(&mut items, "?", "Toggle help");
 
     // Close instruction
-    items.push(("".to_string(), "".to_string()));
+    items.push((String::new(), String::new()));
     items.push((String::new(), "Press ? or Esc to close help".to_string()));
 
     items

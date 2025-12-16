@@ -27,7 +27,7 @@ Priority-rank tasks (Absolutely / Highly / Light / Optional)
 
 Absolutely recommend (Fix immediately, low-risk/high-impact)
 
-- [ ] 1) Make sink activation non-blocking and async-safe (src/state.rs:process_event:219, switch_audio at src/state.rs:97)
+- [x] 1) Make sink activation non-blocking and async-safe (src/state.rs:process_event:219, switch_audio at src/state.rs:97)
    - Make State::process_event async: `pub async fn process_event(&mut self, event: WindowEvent) -> Result<()>`.
    - Update daemon::run to `.await` the call: `if let Some(event) = result { if let Err(e) = state.process_event(event).await { ... } }` (daemon.rs: ~211).
    - Inside State, perform blocking PipeWire work using `tokio::task::spawn_blocking` (or a dedicated blocking worker). Specifically, call PipeWire::activate_sink inside spawn_blocking and await the JoinHandle.
@@ -65,7 +65,7 @@ Highly recommend (Important, next-priority)
    - Added non-blocking `try_send` to avoid blocking the watcher and coalesce rapid events (basic debounce).
    - Tests: Unit test for watcher filter using notify and temporary file operations.
 
-- [ ] 7) Implement atomic config saves (src/config.rs: save at ~line 220)
+- [x] 7) Implement atomic config saves (src/config.rs: save at ~line 220)
    - Write to a temp file in the same directory, set file mode to 0o600 (Unix), then fs::rename to final path (atomic on POSIX). Use tempfile crate or write to path.with_extension("tmp") and rename.
    - Tests: Unit test verifying save() writes correctly and is atomic semantics (ensure not partial file left if write fails).
 
@@ -107,13 +107,13 @@ Phase A — Safety & correctness (Day 1–2)
 
 - [x] Implement non-blocking activation + tests (4–8h)
 - [x] Per-device profile serialization + tests (2–4h)
-- [ ] Harden cleanup_stale_socket + tests (1–2h)
+- [x] Harden cleanup_stale_socket + tests (1–2h)
 - [x] Fix validate_tools (0.5–1h)
 
 Phase B — IPC correctness & config hot-reload (Day 2)
 
 - [x] Add id to WindowInfo, update ListWindows/TestRule response generation + tests (1–3h)
-- [ ] Filter config watcher to specific path and debounce properly + tests (1–2h)
+- [x] Filter config watcher to specific path and debounce properly + tests (1–2h)
 - [x] Implement atomic config writes (1–2h)
 
 Phase C — TUI cleanup and clippy passes (Day 3)

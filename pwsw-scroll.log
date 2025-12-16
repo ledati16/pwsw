@@ -1,36 +1,5 @@
    Compiling pwsw v0.3.1 (/home/tim/builds/misc/nasw)
-warning: unused variable: `app_id`
-   --> src/daemon.rs:344:28
-    |
-344 |                 .map(|(id, app_id, title, sink_name, sink_desc)| (*id, (sink_name.clone(), sink_desc.clone())))
-    |                            ^^^^^^ help: if this is intentional, prefix it with an underscore: `_app_id`
-    |
-    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
-
-warning: unused variable: `title`
-   --> src/daemon.rs:344:36
-    |
-344 |                 .map(|(id, app_id, title, sink_name, sink_desc)| (*id, (sink_name.clone(), sink_desc.clone())))
-    |                                    ^^^^^ help: if this is intentional, prefix it with an underscore: `_title`
-
-warning: unused variable: `total`
-   --> src/tui/screens/rules.rs:728:9
-    |
-728 |     let total = sinks.len();
-    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_total`
-
-warning: method `cursor` is never used
-  --> src/tui/editor_state.rs:38:12
-   |
-12 | impl SimpleEditor {
-   | ----------------- method in this implementation
-...
-38 |     pub fn cursor(&self) -> usize {
-   |            ^^^^^^
-   |
-   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
-
-warning: `pwsw` (lib) generated 4 warnings (run `cargo fix --lib -p pwsw` to apply 3 suggestions)
     Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.03s
      Running `target/debug/pwsw tui`
-[tui] 0 ms [Dashboard] slow frame: 17 ms preview_pending=false windows=0
+[tui] 18 ms [Dashboard] slow frame: 18 ms preview_pending=false windows=0
+[tui] 16 ms [Dashboard] slow frame: 16 ms preview_pending=false windows=5

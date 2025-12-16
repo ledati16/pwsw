@@ -220,7 +220,8 @@ impl State {
         match event {
             WindowEvent::Opened { id, app_id, title }
             | WindowEvent::Changed { id, app_id, title } => {
-                self.handle_window_open_or_change(id, &app_id, &title).await?;
+                self.handle_window_open_or_change(id, &app_id, &title)
+                    .await?;
             }
             WindowEvent::Closed { id } => {
                 self.handle_window_close(id).await?;
@@ -229,7 +230,12 @@ impl State {
         Ok(())
     }
 
-    async fn handle_window_open_or_change(&mut self, id: u64, app_id: &str, title: &str) -> Result<()> {
+    async fn handle_window_open_or_change(
+        &mut self,
+        id: u64,
+        app_id: &str,
+        title: &str,
+    ) -> Result<()> {
         debug!("Window: id={}, app_id='{}', title='{}'", id, app_id, title);
 
         // Track all windows for test-rule command
@@ -297,7 +303,7 @@ impl State {
 
                     let inner = join
                         .await
-.map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
+                        .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
                     inner?;
 
                     // Only update state on success
@@ -421,7 +427,9 @@ impl State {
             )
         });
 
-        let inner = join.await.map_err(|e| anyhow::anyhow!("Join error: {:#}", e))?;
+        let inner = join
+            .await
+            .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
         inner?;
 
         self.update_sink(target);

@@ -33,9 +33,4 @@ impl SimpleEditor {
     pub fn set_value(&mut self, s: String) {
         self.input = Input::new(s);
     }
-
-    /// Get the cursor position (character index)
-    pub fn cursor(&self) -> usize {
-        self.input.visual_cursor()
-    }
 }

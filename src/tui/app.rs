@@ -108,6 +108,7 @@ pub enum AppUpdate {
 }
 
 /// Commands sent from UI to background worker
+#[derive(Debug)]
 pub enum BgCommand {
     DaemonAction(DaemonAction),
     /// Request a live-preview match for given patterns. Optionally include compiled regex caches.
