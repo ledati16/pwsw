@@ -42,6 +42,13 @@ use std::sync::Arc as StdArc;
 
 // Aliases and small struct to keep complex types readable
 type CompiledRegex = StdArc<regex::Regex>;
+// Message payload for preview forwarder (app pattern, title pattern, optional compiled regexes)
+type PreviewInMsg = (
+    String,
+    Option<String>,
+    Option<CompiledRegex>,
+    Option<CompiledRegex>,
+);
 #[derive(Clone)]
 struct PreviewReq {
     app_pattern: String,
@@ -126,23 +133,16 @@ pub async fn run() -> Result<()> {
     // Create an unbounded preview input channel and store sender in App so input handlers
     // can push preview requests quickly without blocking. We'll spawn a forwarder task that
     // collapses rapid preview updates (keeps latest) and forwards them to the bounded `cmd_tx`.
-    type CompiledRegex = std::sync::Arc<regex::Regex>;
-    type PreviewInMsg = (
-        String,
-        Option<String>,
-        Option<CompiledRegex>,
-        Option<CompiledRegex>,
-    );
     let (preview_in_tx, mut preview_in_rx) = unbounded_channel::<PreviewInMsg>();
     app.preview_in_tx = Some(preview_in_tx.clone());
 
     // Forwarder task: collapse rapid preview updates and attempt to flush to `cmd_tx`.
     let forward_cmd = cmd_tx.clone();
     let _preview_forwarder = tokio::spawn(async move {
-        use tokio::time::{sleep, Duration};
         while let Some((app_pattern, title_pattern, compiled_app, compiled_title)) =
             preview_in_rx.recv().await
         {
+            use tokio::time::{sleep, Duration};
             // Try to flush immediately (a few retries). If unable to send, next recv will overwrite the pending request.
             for _ in 0..3 {
                 if forward_cmd
@@ -164,7 +164,7 @@ pub async fn run() -> Result<()> {
 
     // Spawn background worker that polls daemon state and PipeWire every interval
     let bg_handle = tokio::spawn(async move {
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
         // Debounce state for preview requests (capture last request, optional compiled regex caches, and timestamp)
         let mut last_preview_req: Option<PreviewReq> = None;
         let mut last_executed_preview: Option<PreviewExec> = None;
@@ -244,7 +244,7 @@ pub async fn run() -> Result<()> {
                             title_pattern,
                             compiled_app,
                             compiled_title,
-                            ts: Instant::now(),
+                            ts: std::time::Instant::now(),
                         });
                     }
                 }
@@ -329,7 +329,7 @@ pub async fn run() -> Result<()> {
                         let compiled_title_send = exec.compiled_title.clone();
 
                         tokio::spawn(async move {
-                            use std::time::Duration;
+                            // use std::time::Duration; (moved to module imports)
                             let timeout = Duration::from_millis(200);
 
                             let (matches_out, timed_out) = crate::tui::preview::execute_preview(
@@ -374,18 +374,17 @@ pub async fn run() -> Result<()> {
 }
 
 /// Main application loop
-#[allow(clippy::items_after_statements)]
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
-    // Use small tick for rendering; background updates arrive via app.bg_update_rx
+    use std::time::Instant;
+    const ANIM_MS: u64 = 120; // spinner frame every 120ms
+                              // Use small tick for rendering; background updates arrive via app.bg_update_rx
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
     // Animation timing (time-based spinner)
-    use std::time::Instant;
     let mut last_anim = Instant::now();
-    const ANIM_MS: u64 = 120; // spinner frame every 120ms
 
     // Event stream for async input handling
     let mut events = EventStream::new();
