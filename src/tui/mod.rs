@@ -393,7 +393,7 @@ async fn run_app<B: ratatui::backend::Backend>(
             _ = tick.tick() => {
                 // Advance animation if enough time elapsed
                 let now = Instant::now();
-                if now.duration_since(last_anim).as_millis() >= ANIM_MS as u128 {
+                if now.duration_since(last_anim).as_millis() >= u128::from(ANIM_MS) {
                     app.throbber_state.calc_next();
                     last_anim = now;
                     app.dirty = true;
