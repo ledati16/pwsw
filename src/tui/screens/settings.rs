@@ -78,7 +78,7 @@ pub(crate) struct SettingsScreen {
 
 impl SettingsScreen {
     /// Create a new settings screen
-    pub fn new(settings: &Settings) -> Self {
+    pub(crate) fn new(settings: &Settings) -> Self {
         let log_level_index = match settings.log_level.as_str() {
             "error" => 0,
             "warn" => 1,
@@ -108,21 +108,21 @@ impl SettingsScreen {
     }
 
     /// Move selection up
-    pub fn select_previous(&mut self) {
+    pub(crate) fn select_previous(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
         }
     }
 
     /// Move selection down
-    pub fn select_next(&mut self) {
+    pub(crate) fn select_next(&mut self) {
         if self.selected < SettingItem::all().len() - 1 {
             self.selected += 1;
         }
     }
 
     /// Toggle the currently selected boolean setting
-    pub fn toggle_current(&mut self, settings: &mut Settings) -> bool {
+    pub(crate) fn toggle_current(&mut self, settings: &mut Settings) -> bool {
         if self.editing_log_level {
             return false; // Don't toggle while editing log level
         }
@@ -157,7 +157,7 @@ impl SettingsScreen {
     }
 
     /// Get the current selected item
-    pub fn current_item(&self) -> SettingItem {
+    pub(crate) fn current_item(&self) -> SettingItem {
         SettingItem::all()[self.selected]
     }
 }

@@ -45,7 +45,7 @@ pub(crate) struct RuleEditor {
 }
 
 impl RuleEditor {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             app_id_pattern: SimpleEditor::new(),
             title_pattern: SimpleEditor::new(),
@@ -62,7 +62,7 @@ impl RuleEditor {
         }
     }
 
-    pub fn from_rule(rule: &Rule) -> Self {
+    pub(crate) fn from_rule(rule: &Rule) -> Self {
         let compiled_app_id = Regex::new(&rule.app_id_pattern)
             .ok()
             .map(std::sync::Arc::new);
@@ -89,20 +89,20 @@ impl RuleEditor {
         }
     }
 
-    pub fn next_field(&mut self) {
+    pub(crate) fn next_field(&mut self) {
         if self.focused_field < 4 {
             self.focused_field += 1;
         }
     }
 
-    pub fn prev_field(&mut self) {
+    pub(crate) fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
         }
     }
 
     /// Ensure compiled regex caches are up-to-date for current editor patterns
-    pub fn ensure_compiled(&mut self) {
+    pub(crate) fn ensure_compiled(&mut self) {
         // Compile app id pattern if non-empty and store which string it corresponds to
         if self.app_id_pattern.value().is_empty() {
             self.compiled_app_id = None;
@@ -138,7 +138,7 @@ pub(crate) struct RulesScreen {
 }
 
 impl RulesScreen {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             mode: RulesMode::List,
             selected: 0,
@@ -148,25 +148,25 @@ impl RulesScreen {
         }
     }
 
-    pub fn select_previous(&mut self, rule_count: usize) {
+    pub(crate) fn select_previous(&mut self, rule_count: usize) {
         if rule_count > 0 && self.selected > 0 {
             self.selected -= 1;
         }
     }
 
-    pub fn select_next(&mut self, rule_count: usize) {
+    pub(crate) fn select_next(&mut self, rule_count: usize) {
         if rule_count > 0 && self.selected < rule_count - 1 {
             self.selected += 1;
         }
     }
 
-    pub fn start_add(&mut self) {
+    pub(crate) fn start_add(&mut self) {
         self.mode = RulesMode::AddEdit;
         self.editor = RuleEditor::new();
         self.editing_index = None;
     }
 
-    pub fn start_edit(&mut self, rules: &[Rule]) {
+    pub(crate) fn start_edit(&mut self, rules: &[Rule]) {
         if self.selected < rules.len() {
             self.mode = RulesMode::AddEdit;
             self.editor = RuleEditor::from_rule(&rules[self.selected]);
@@ -174,15 +174,15 @@ impl RulesScreen {
         }
     }
 
-    pub fn start_delete(&mut self) {
+    pub(crate) fn start_delete(&mut self) {
         self.mode = RulesMode::Delete;
     }
 
-    pub fn open_sink_selector(&mut self) {
+    pub(crate) fn open_sink_selector(&mut self) {
         self.mode = RulesMode::SelectSink;
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         self.mode = RulesMode::List;
     }
 }
