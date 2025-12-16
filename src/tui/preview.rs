@@ -1,6 +1,9 @@
 use crate::ipc::WindowInfo;
 use std::time::Duration;
 
+use ratatui::text::{Line, Span};
+use ratatui::style::{Style, Color};
+
 /// Match windows against provided regex patterns.
 ///
 /// Returns `Ok(Vec<String>)` containing formatted "`app_id` | title" lines up to `max_results`.
@@ -122,6 +125,19 @@ pub async fn execute_preview(
         Ok(Ok(v)) => (v, false),
         Ok(Err(_)) | Err(_) => (Vec::new(), true), // invalid regex or timed out / join error
     }
+}
+
+
+/// Build ratatui `Line` preview text from string matches
+///
+/// Returns formatted `Line` values up to `max_results`. This helper is intended to be used by
+/// renderers to convert `execute_preview`/`match_windows` output into `ratatui::text::Line` for
+/// direct rendering.
+pub fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>> {
+    matches
+        .iter()
+        .map(|s| Line::from(vec![Span::raw("  ✓ "), Span::raw(s.clone())]))
+        .collect()
 }
 
 // Debouncer & test harness
