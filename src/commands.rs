@@ -16,6 +16,7 @@ use crate::pipewire::{
     ProfileSinkJson,
 };
 use crate::style::PwswStyle;
+use std::fmt::Write;
 
 // ============================================================================
 // Local Commands (no daemon needed)
@@ -106,7 +107,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                 let marker = if sink.is_default { "* " } else { "  " };
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.name))
-                    .map(|s| format!(" [{}]", s.desc))
+                    .map(|s| {
+                        let mut m = String::with_capacity(3 + s.desc.len());
+                        m.push_str(" [");
+                        m.push_str(&s.desc);
+                        m.push(']');
+                        m
+                    })
                     .unwrap_or_default();
                 println!("{}{}{}", marker, sink.name.as_str().bold(), configured);
                 println!("    {}", sink.description.as_str().dim());
@@ -120,7 +127,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             for sink in &profile {
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
-                    .map(|s| format!(" [{}]", s.desc))
+                    .map(|s| {
+                        let mut m = String::with_capacity(3 + s.desc.len());
+                        m.push_str(" [");
+                        m.push_str(&s.desc);
+                        m.push(']');
+                        m
+                    })
                     .unwrap_or_default();
                 println!(
                     "  {} {}{}",
@@ -141,7 +154,9 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             println!("{}", "-".repeat(17));
             for (i, sink) in cfg.sinks.iter().enumerate() {
                 let default_marker = if sink.default {
-                    format!(" [{}]", "DEFAULT".dim())
+                    let mut m = String::with_capacity(3 + "DEFAULT".len());
+                    let _ = write!(m, " [{}]", "DEFAULT".dim());
+                    m
                 } else {
                     String::new()
                 };
@@ -186,7 +201,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
             .sinks
             .iter()
             .enumerate()
-            .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
+            .map(|(i, s)| format!("{index}. '{desc}'", index = i + 1, desc = s.desc))
             .collect();
         anyhow::anyhow!(
             "Unknown sink '{}'. Available: {}",
@@ -309,7 +324,7 @@ fn format_uptime(secs: u64) -> String {
         return format!("{secs}s");
     }
     if secs < SECS_PER_HOUR {
-        return format!("{}m", secs / SECS_PER_MINUTE);
+        return format!("{mins}m", mins = secs / SECS_PER_MINUTE);
     }
     let hours = secs / SECS_PER_HOUR;
     let mins = (secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
@@ -568,7 +583,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                             "app_id".dim(),
                             window.app_id,
                             if matched_on == "app_id" || matched_on == "both" {
-                                format!(" {}", "✓".success())
+                                format!(" {check}", check = "✓".success())
                             } else {
                                 String::new()
                             }
@@ -578,7 +593,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                             "title".dim(),
                             window.title,
                             if matched_on == "title" || matched_on == "both" {
-                                format!(" {}", "✓".success())
+                                format!(" {check}", check = "✓".success())
                             } else {
                                 String::new()
                             }

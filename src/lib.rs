@@ -40,6 +40,7 @@ pub mod built_info {
 /// - `v0.3.1+abc1234` for clean builds
 /// - `v0.3.1+abc1234-dirty` for builds with uncommitted changes
 /// - `v0.3.1` if git info is unavailable
+#[must_use]
 pub fn version_string() -> String {
     let base_version = env!("CARGO_PKG_VERSION");
 

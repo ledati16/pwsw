@@ -2,7 +2,7 @@
 
 use tui_input::Input;
 
-/// SimpleEditor wraps `tui_input::Input` to provide a compatible interface
+/// `SimpleEditor` wraps `tui_input::Input` to provide a compatible interface
 /// for the application state.
 #[derive(Debug, Clone, Default)]
 pub struct SimpleEditor {

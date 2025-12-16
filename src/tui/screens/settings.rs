@@ -97,7 +97,7 @@ impl SettingsScreen {
         let padded_names = names
             .into_iter()
             .map(|n| format!("{n:<max_len$}"))
-            .collect();
+            .collect::<Vec<_>>();
 
         Self {
             selected: 0,

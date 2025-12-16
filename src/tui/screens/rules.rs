@@ -13,6 +13,7 @@ use crate::config::{Rule, SinkConfig};
 use crate::tui::editor_state::SimpleEditor;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 use regex::Regex;
+use std::fmt::Write;
 
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -564,7 +565,8 @@ fn render_live_preview(
                 }
                 if res.matches.len() > 5 {
                     let remaining = res.matches.len() - 5;
-                    let text = format!("  ...and {remaining} more");
+                    let mut text = String::with_capacity(12);
+                    let _ = write!(text, "  ...and {remaining} more");
                     preview_lines.push(Line::from(vec![Span::styled(
                         text,
                         Style::default().fg(Color::DarkGray),
@@ -730,7 +732,7 @@ fn render_sink_selector(
     let mut visual_items: Vec<String> = Vec::new();
     visual_items.push("── Active Sinks ──".to_string());
     for sink in sinks {
-        visual_items.push(format!("  {}", sink.desc));
+        visual_items.push(sink.desc.clone());
     }
 
     // Compute per-row visual height using inner.width

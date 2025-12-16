@@ -85,15 +85,15 @@ pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, f
     let scroll = input.visual_scroll(width);
 
     // Render input using Paragraph
-    let p = Paragraph::new(input.value()).scroll((0, scroll as u16));
+    let scroll_u16 = u16::try_from(scroll).unwrap_or(u16::MAX);
+    let p = Paragraph::new(input.value()).scroll((0, scroll_u16));
     frame.render_widget(p, inner_area);
 
     // Render cursor
     if focused {
-        frame.set_cursor_position((
-            inner_area.x + ((input.visual_cursor().max(scroll) - scroll) as u16),
-            inner_area.y,
-        ));
+        let cursor_offset = input.visual_cursor().max(scroll) - scroll;
+        let cursor_offset_u16 = u16::try_from(cursor_offset).unwrap_or(u16::MAX);
+        frame.set_cursor_position((inner_area.x + cursor_offset_u16, inner_area.y));
     }
 }
 

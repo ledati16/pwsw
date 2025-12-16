@@ -516,7 +516,10 @@ desc = "Steam Big Picture" # Custom name for notifications
         );
         for (i, sink) in self.sinks.iter().enumerate() {
             let marker = if sink.default {
-                format!(" [{}]", "DEFAULT".dim())
+                let mut m = String::from(" [");
+                m.push_str("DEFAULT".dim().to_string().as_str());
+                m.push(']');
+                m
             } else {
                 String::new()
             };

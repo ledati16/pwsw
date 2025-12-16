@@ -327,7 +327,8 @@ impl State {
 
                 let target = self.determine_target_sink();
                 if self.should_switch_sink(&target) {
-                    let context = format!("{} ended", old_window.trigger_desc);
+                    let mut context = old_window.trigger_desc.clone();
+                    context.push_str(" ended");
                     self.switch_to_target(target, &context).await?;
                 }
             }
@@ -348,7 +349,7 @@ impl State {
 
             let target = self.determine_target_sink();
             if self.should_switch_sink(&target) {
-                let context = format!("{} closed", closed_window.trigger_desc);
+                let context = format!("{desc} closed", desc = closed_window.trigger_desc);
                 self.switch_to_target(target, &context).await?;
             }
         }

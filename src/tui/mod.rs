@@ -3,9 +3,8 @@
 //! Provides an interactive terminal interface for managing PWSW configuration,
 //! monitoring daemon status, and controlling sinks.
 
-use anyhow::{Context, Result};
-// `Write` import removed — unused in this module
 use crate::tui::app::{AppUpdate, BgCommand};
+use anyhow::{Context, Result};
 use crossterm::cursor::Show;
 use crossterm::event::EventStream;
 use crossterm::execute;
@@ -21,6 +20,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Tabs},
     Terminal,
 };
+use std::fmt::Write;
 use std::io;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -59,6 +59,7 @@ struct PreviewExec {
     compiled_title: Option<CompiledRegex>,
 }
 
+#[must_use]
 pub fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -224,7 +225,7 @@ pub async fn run() -> Result<()> {
                                 let _ = bg_tx.send(AppUpdate::ActionResult({
                                     let mut s = String::with_capacity(10);
                                     s.push_str("Failed: ");
-                                    s.push_str(&format!("{e:#}"));
+                                    let _ = write!(s, "{e:#}");
                                     s
                                 }));
                             }
@@ -412,16 +413,11 @@ async fn run_app<B: ratatui::backend::Backend>(
                         // Extra context for slow-frame logs
                         if elapsed.as_millis() > 15 {
                             let run_ms = elapsed.as_millis();
-                            let screen_name = format!("{:?}", app.current_screen);
+                            let screen_name = format!("{current_screen:?}", current_screen = app.current_screen);
                             let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
                             let windows = app.window_count;
                             eprintln!(
-                                "[tui] {} ms [{}] slow frame: {} ms preview_pending={} windows={}",
-                                run_ms,
-                                screen_name,
-                                run_ms,
-                                preview_pending,
-                                windows
+                                "[tui] {run_ms} ms [{screen_name}] slow frame: {run_ms} ms preview_pending={preview_pending} windows={windows}"
                             );
                         }
                     }
