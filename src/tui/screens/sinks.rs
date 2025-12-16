@@ -458,6 +458,7 @@ fn render_delete_confirmation(
 }
 
 /// Render sink selector modal for adding sinks
+#[allow(clippy::too_many_lines)]
 fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,

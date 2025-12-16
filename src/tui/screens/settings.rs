@@ -82,7 +82,6 @@ impl SettingsScreen {
         let log_level_index = match settings.log_level.as_str() {
             "error" => 0,
             "warn" => 1,
-            "info" => 2,
             "debug" => 3,
             "trace" => 4,
             _ => 2, // Default to info
@@ -187,6 +186,7 @@ pub fn render_settings(
 }
 
 /// Render the settings list
+#[allow(clippy::too_many_lines)]
 fn render_settings_list(
     frame: &mut Frame,
     area: Rect,

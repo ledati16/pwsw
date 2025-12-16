@@ -216,6 +216,7 @@ pub fn render_rules(
 }
 
 /// Render the rules list
+#[allow(clippy::too_many_lines)]
 fn render_list(
     frame: &mut Frame,
     area: Rect,
@@ -357,6 +358,7 @@ fn render_list(
 }
 
 /// Render the add/edit modal
+#[allow(clippy::too_many_lines)]
 fn render_editor(
     frame: &mut Frame,
     area: Rect,
@@ -509,6 +511,7 @@ fn render_editor(
 }
 
 /// Render live regex preview showing matching windows
+#[allow(clippy::too_many_lines)]
 fn render_live_preview(
     frame: &mut Frame,
     area: Rect,
