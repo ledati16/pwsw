@@ -149,6 +149,7 @@ Steps:
 - [ ] C.1.5 Remove dead/unneeded code and simplify structs
   - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
   - Verification: code compiles and tests pass; small commit with a clear message listing removed symbols.
+  - Progress: In progress — narrowed many TUI public items (widgets, preview, input, screens), updated re-exports, and ran tests. One flaky config test was investigated and atomic-save code hardened with a retry loop; full test suite passes locally.
 
 - [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
   - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.

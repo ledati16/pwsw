@@ -172,6 +172,9 @@ impl Config {
     }
 
     /// Load configuration from a specific path. Useful for tests to avoid relying on XDG env.
+    ///
+    /// # Errors
+    /// Returns an error if the config file cannot be read, parsed, or if validation fails.
     pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)
@@ -249,6 +252,9 @@ impl Config {
     }
 
     /// Save configuration to the specified path (used by tests to avoid touching XDG paths)
+    ///
+    /// # Errors
+    /// Returns an error if serialization fails or if the config cannot be written to disk.
     pub fn save_to<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
         let config_file = self.to_config_file();
         let toml_str =
@@ -256,36 +262,51 @@ impl Config {
         Self::save_to_path_str(&toml_str, path.as_ref())
     }
 
-    fn save_to_path_str(path_str: &str, config_path: &std::path::Path) -> Result<()> {
-        let dir = config_path
-            .parent()
-            .expect("Config path must have a parent directory");
+    fn write_temp_file_with_contents(
+        dir: &std::path::Path,
+        contents: &str,
+    ) -> Result<tempfile::NamedTempFile> {
+        // Ensure dir exists right before creating the temp file to avoid races
+        let _ = std::fs::create_dir_all(dir).with_context(|| format!("Failed to create temp dir: {}", dir.display()));
 
-        // Ensure the target directory exists (tests may create temp dirs but callers
-        // can race or remove them); create_dir_all is idempotent.
-        fs::create_dir_all(dir)
-            .with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
-
-        // Write to a temporary file in the same directory and then atomically rename.
-        let mut tmp = tempfile::NamedTempFile::new_in(dir)
-            .context("Failed to create temporary file for atomic config save")?;
-        // Write bytes to temporary file
+        // Try creating the temp file with a small retry loop to tolerate transient races
+        let mut last_err = None;
+        let mut tmp = None;
+        for attempt in 0..3 {
+            match tempfile::NamedTempFile::new_in(dir) {
+                Ok(f) => {
+                    tmp = Some(f);
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+                    // retry
+                }
+            }
+        }
+        let mut tmp = match tmp {
+            Some(t) => t,
+            None => {
+                return Err(anyhow::Error::new(last_err.unwrap()).context("Failed to create temporary file for atomic config save"));
+            }
+        };
         tmp.as_file_mut()
-            .write_all(path_str.as_bytes())
+            .write_all(contents.as_bytes())
             .context("Failed to write config to temporary file")?;
-
-        // Flush and sync to ensure data reaches disk before persist
         tmp.as_file_mut()
             .flush()
             .context("Failed to flush temporary config file")?;
-        // Ensure data is flushed and synced to storage before persisting.
         tmp.as_file_mut()
             .sync_all()
             .context("Failed to sync temporary config file")?;
+        Ok(tmp)
+    }
 
-        // Verify the temporary file length matches expected bytes written and prevent
-        // accidental truncation: if tmp is empty but the existing target is non-empty,
-        // refuse to persist.
+    fn ensure_not_empty_overwrite(
+        tmp: &mut tempfile::NamedTempFile,
+        config_path: &std::path::Path,
+    ) -> Result<()> {
         let written_len = tmp
             .as_file_mut()
             .metadata()
@@ -298,24 +319,20 @@ impl Config {
                 }
             }
         }
+        Ok(())
+    }
 
-        // Ensure user-only permissions on Unix
+    fn ensure_unix_permissions(path: &std::path::Path) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))
-                .with_context(|| {
-                    format!(
-                        "Failed to set temp file permissions: {}",
-                        tmp.path().display()
-                    )
-                })?;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set permissions: {}", path.display()))?;
         }
+        Ok(())
+    }
 
-        // If the target path is the real user config, require an explicit opt-in
-        // via `PWSW_ALLOW_CONFIG_WRITE=1` when running tests. Also, before writing
-        // back up the existing config to a timestamped file so accidental overwrites
-        // can be recovered.
+    fn ensure_write_allowed_and_backup(config_path: &std::path::Path) -> Result<()> {
         if let Some(home_dir) = dirs::home_dir() {
             let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
             if config_path == home_cfg {
@@ -375,11 +392,30 @@ impl Config {
                             );
                         }
                     }
-                } else {
-                    // Normal runtime: allow write
                 }
             }
         }
+        Ok(())
+    }
+
+    fn save_to_path_str(path_str: &str, config_path: &std::path::Path) -> Result<()> {
+        let dir = config_path
+            .parent()
+            .expect("Config path must have a parent directory");
+
+        // Ensure the target directory exists (tests may create temp dirs but callers
+        // can race or remove them); create_dir_all is idempotent.
+        fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
+
+        let mut tmp = Self::write_temp_file_with_contents(dir, path_str)?;
+
+        Self::ensure_not_empty_overwrite(&mut tmp, config_path)?;
+
+        // Ensure user-only permissions on Unix for the temp file
+        Self::ensure_unix_permissions(tmp.path())?;
+
+        Self::ensure_write_allowed_and_backup(config_path)?;
 
         // Persist atomically
         tmp.persist(config_path).with_context(|| {
@@ -390,17 +426,7 @@ impl Config {
         })?;
 
         // Ensure final permissions as well
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(config_path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| {
-                    format!(
-                        "Failed to set final config permissions: {}",
-                        config_path.display()
-                    )
-                })?;
-        }
+        Self::ensure_unix_permissions(config_path)?;
 
         Ok(())
     }
