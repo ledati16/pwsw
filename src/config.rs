@@ -225,8 +225,37 @@ impl Config {
             toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
 
         let config_path = Self::get_config_path()?;
-        fs::write(&config_path, toml_str)
-            .with_context(|| format!("Failed to write config: {}", config_path.display()))?;
+        let dir = config_path
+            .parent()
+            .expect("Config path must have a parent directory");
+
+        // Write to a temporary file in the same directory and then atomically rename.
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .context("Failed to create temporary file for atomic config save")?;
+        use std::io::Write;
+        tmp.write_all(toml_str.as_bytes())
+            .context("Failed to write config to temporary file")?;
+
+        // Ensure user-only permissions on Unix
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set temp file permissions: {}", tmp.path().display()))?;
+        }
+
+        // Persist atomically
+        tmp.persist(&config_path).with_context(|| {
+            format!("Failed to persist temporary config file to {}", config_path.display())
+        })?;
+
+        // Ensure final permissions as well
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to set final config permissions: {}", config_path.display()))?;
+        }
 
         Ok(())
     }
