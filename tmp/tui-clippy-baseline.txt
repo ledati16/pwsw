@@ -1,2 +1,0 @@
-   Compiling pwsw v0.3.1 (/home/tim/builds/misc/nasw)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.12s
