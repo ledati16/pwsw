@@ -1011,8 +1011,8 @@ mod tests {
         let guard = XdgTemp::new();
         {
             let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-            let path = Config::get_config_path().unwrap();
-            // Use test-specific save_to to avoid touching global XDG paths
+            // Use temp directory path directly to avoid race with parallel tests
+            let path = guard.path().join("pwsw").join("config.toml");
             cfg.save_to(&path).unwrap();
 
             assert!(path.exists());
@@ -1071,7 +1071,8 @@ mod tests {
                 vec![make_rule("firefox", None, "Sink 1")],
             );
 
-            let path = Config::get_config_path().unwrap();
+            // Use temp directory path directly to avoid race with parallel tests
+            let path = guard.path().join("pwsw").join("config.toml");
             cfg.save_to(&path).unwrap();
 
             let loaded = Config::load_from_path(&path).unwrap();
