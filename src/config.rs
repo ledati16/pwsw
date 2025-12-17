@@ -542,7 +542,6 @@ impl Config {
     /// (see `save` and internal helpers). Avoiding directory creation here prevents
     /// test code from accidentally touching the user's real XDG config when it only
     /// needs the path.
-    #[must_use]
     pub fn get_config_path() -> Result<PathBuf> {
         // Compute the XDG config dir path for PWSW but do NOT create it here.
         // Creating the directory had the side-effect of touching the user's
@@ -1047,10 +1046,13 @@ mod tests {
             // calling get_config_path() again does not create any extra dirs.
             let _ = std::fs::remove_file(&path);
             assert!(parent.exists()); // parent should still exist because we saved earlier
-            // Now simulate a fresh environment: remove the parent dir and call get_config_path()
+                                      // Now simulate a fresh environment: remove the parent dir and call get_config_path()
             std::fs::remove_dir_all(parent).unwrap();
             let _ = Config::get_config_path().unwrap();
-            assert!(!parent.exists(), "get_config_path should not create the directory");
+            assert!(
+                !parent.exists(),
+                "get_config_path should not create the directory"
+            );
         }
         drop(guard);
     }
