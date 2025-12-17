@@ -24,7 +24,7 @@ pub(crate) enum SettingItem {
 
 impl SettingItem {
     /// Get all settings in display order
-    pub const fn all() -> &'static [SettingItem] {
+    pub(crate) const fn all() -> &'static [SettingItem] {
         &[
             SettingItem::DefaultOnStartup,
             SettingItem::SetSmartToggle,
@@ -36,7 +36,7 @@ impl SettingItem {
     }
 
     /// Get the display name for this setting
-    pub const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             SettingItem::DefaultOnStartup => "Default on Startup",
             SettingItem::SetSmartToggle => "Smart Toggle",
@@ -48,7 +48,7 @@ impl SettingItem {
     }
 
     /// Get the description for this setting
-    pub const fn description(self) -> &'static str {
+    pub(crate) const fn description(self) -> &'static str {
         match self {
             SettingItem::DefaultOnStartup => "Switch to default sink when daemon starts",
             SettingItem::SetSmartToggle => "set-sink toggles back to default if already active",
