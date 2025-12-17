@@ -68,22 +68,25 @@ Highly recommend (Important, next-priority)
    - Write to a temp file in the same directory, set file mode to 0o600 (Unix), then fs::rename to final path (atomic on POSIX). Use tempfile crate or write to path.with_extension("tmp") and rename.
    - Tests: Unit test verifying save() writes correctly and is atomic semantics (ensure not partial file left if write fails).
 
-- [ ] 8) Fix TUI debug timing bug and clippy pedantic issues (src/tui/mod.rs lines ~392–412)
+- [x] 8) Fix TUI debug timing bug and clippy pedantic issues (src/tui/mod.rs lines ~392–412)
    - Replace incorrect debug timing calc with `elapsed.as_millis()` and remove strange `duration_since` call.
    - Run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all warnings (observe the allowed warnings per CLAUDE.md; prefer fixing warnings rather than expanding allowed list).
+   - Status: ✅ Complete. Fixed in Phase C.1.6 - debug timing uses `elapsed.as_millis()` correctly (line 421). Zero pedantic warnings achieved via C.1 refactor.
 
 Lightly recommend (Polish)
 
-- [ ] 9) Remove dead TUI methods & fields (src/tui/app.rs)
+- [x] 9) Remove dead TUI methods & fields (src/tui/app.rs)
    - Remove execute_pending_daemon_action, update_daemon_state, and pending_daemon_action if they are unused (they are flagged as #[allow(dead_code)] currently). Confirm no dependent code uses them.
    - Tests: Run UI integration tests to ensure no regression.
+   - Status: ✅ Complete. Dead methods removed in C.1.5. Verified no callers exist.
 
-- [ ] 10) Sink selector consolidation & widget improvements (src/tui/screens/sinks.rs and src/tui/screens/rules.rs)
+- [x] 10) Sink selector consolidation & widget improvements (src/tui/screens/sinks.rs and src/tui/screens/rules.rs)
    - Consolidate duplicated logic for render_sink_selector into a shared widget in src/tui/widgets.rs.
    - Replace duplicated arrow/viewport calculations with shared helper.
    - Tests: Visual behavior unchanged (unit tests for arrow calculation exist already—expand where necessary).
+   - Status: ✅ Complete via C.1.4. Created shared helpers `compute_has_above_below` and `render_scroll_arrows` in widgets.rs.
 
-- [ ] 11) Make `throbber_state` private via snapshot-based render refactor (recommended)
+- [x] 11) Make `throbber_state` private via snapshot-based render refactor (recommended)
    - Background: Making `throbber_state` private initially caused borrow conflicts because render path mixed immutable references into `app` with mutable borrows of `throbber_state`. The minimal, low-risk fix is to snapshot the read-only values (clone small strings/flags or create a small struct) before taking mutable borrows.
    - Recommended approach (small, safe steps):
      1. In `render_ui` (src/tui/mod.rs), identify the read-only items passed to `render_rules` (e.g., `&app.config.rules`, `&app.config.sinks`, `&app.windows`, `app.preview.as_ref()` and simple flags like `daemon_running`, `window_count`). Create small local variables that clone or copy only the minimal needed data. For large collections prefer small derived snapshots (e.g., `let windows_fp = app.window_count; let windows = app.windows.clone();` only if necessary).
@@ -91,6 +94,7 @@ Lightly recommend (Polish)
      3. Update the `render_rules` signature only if necessary to accept the lightweight snapshots instead of references into `app`.
      4. Run the test/lint/safety cycle after the small change.
    - This approach avoids interior mutability or large signature changes, keeps commits small, and preserves borrow-checker safety.
+   - Status: ✅ Complete via C.1.5. Made `throbber_state` private, added `throbber_state_mut()` and `borrow_rules_and_throbber()` accessors, implemented snapshot pattern in render_ui.
 
 Optional / Nice-to-have
 
@@ -122,9 +126,15 @@ Phase B — IPC correctness & config hot-reload (Day 2)
 
 Phase C — TUI cleanup and clippy passes (Day 3–5)
 
-- [ ] Remove dead TUI code & minor refactors (0.5–1h)
-- [ ] Consolidate sink selector widget and minor TUI refactors (1–3h)
-- [ ] Fix debug timing bug and address remaining clippy pedantic warnings (1–2h)
+- [x] Remove dead TUI code & minor refactors (0.5–1h)
+- [x] Consolidate sink selector widget and minor TUI refactors (1–3h)
+- [x] Fix debug timing bug and address remaining clippy pedantic warnings (1–2h)
+
+**Phase C Status:** ✅ Complete via Phase C.1 incremental refactor (C.1.1 through C.1.7)
+- Dead code removed and API surface narrowed (C.1.5)
+- Sink selector widget consolidated with shared helpers in widgets.rs (C.1.4)
+- Debug timing fixed and zero pedantic warnings achieved (C.1.6, C.1.7)
+- Bonus: Fixed 2 questionable allows instead of suppressing, reduced total allows 18→16
 
 Phase C.1 — Incremental TUI Refactor Plan (sub-phase)
 
