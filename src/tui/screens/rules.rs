@@ -187,32 +187,31 @@ impl RulesScreen {
     }
 }
 
+/// Context for rendering the rules screen (bundles related parameters)
+pub(crate) struct RulesRenderContext<'a> {
+    pub rules: &'a [Rule],
+    pub sinks: &'a [SinkConfig],
+    pub screen_state: &'a mut RulesScreen,
+    pub windows: &'a [crate::ipc::WindowInfo],
+    pub preview: Option<&'a crate::tui::app::PreviewResult>,
+    pub throbber_state: &'a mut ThrobberState,
+}
+
 /// Render the rules screen
-// Rules screen render - legitimate parameter count for full state and layout areas
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn render_rules(
-    frame: &mut Frame,
-    area: Rect,
-    rules: &[Rule],
-    sinks: &[SinkConfig],
-    screen_state: &mut RulesScreen,
-    windows: &[crate::ipc::WindowInfo],
-    preview: Option<&crate::tui::app::PreviewResult>,
-    throbber_state: &mut ThrobberState,
-) {
-    match screen_state.mode {
-        RulesMode::List => render_list(frame, area, rules, sinks, screen_state),
+pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext) {
+    match ctx.screen_state.mode {
+        RulesMode::List => render_list(frame, area, ctx.rules, ctx.sinks, ctx.screen_state),
         RulesMode::AddEdit => render_editor(
             frame,
             area,
-            sinks,
-            screen_state,
-            windows,
-            preview,
-            throbber_state,
+            ctx.sinks,
+            ctx.screen_state,
+            ctx.windows,
+            ctx.preview,
+            ctx.throbber_state,
         ),
-        RulesMode::Delete => render_delete_confirmation(frame, area, rules, screen_state),
-        RulesMode::SelectSink => render_sink_selector(frame, area, sinks, &mut screen_state.editor),
+        RulesMode::Delete => render_delete_confirmation(frame, area, ctx.rules, ctx.screen_state),
+        RulesMode::SelectSink => render_sink_selector(frame, area, ctx.sinks, &mut ctx.screen_state.editor),
     }
 }
 
