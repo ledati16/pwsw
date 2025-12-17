@@ -655,6 +655,29 @@ Icons are auto-detected from sink descriptions:
 - "analog" → audio-card
 - Override with explicit `icon = "..."` in config
 
+### Environment Variables
+
+**Profile Switch Tuning** (for audio devices with slow initialization):
+
+- `PROFILE_SWITCH_DELAY_MS` - Time to wait between retries when waiting for sink node to appear after profile switch (default: 150ms)
+- `PROFILE_SWITCH_MAX_RETRIES` - Maximum number of retries when polling for new sink node (default: 5)
+
+These parameters are rarely needed but can be adjusted for devices that take longer to initialize after profile switching.
+
+**Example usage:**
+```bash
+# Increase delay for slow device
+PROFILE_SWITCH_DELAY_MS=300 pwsw daemon
+
+# Increase both delay and retries
+PROFILE_SWITCH_DELAY_MS=200 PROFILE_SWITCH_MAX_RETRIES=10 pwsw daemon
+```
+
+**When to adjust:**
+- If you see errors like "sink did not appear after N attempts" during profile switches
+- When switching between analog outputs (headphones/speakers) on the same device
+- Total wait time = delay × retries (default: 150ms × 5 = 750ms)
+
 ## Testing
 
 ### Manual Testing Workflow
