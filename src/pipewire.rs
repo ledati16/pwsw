@@ -18,11 +18,29 @@ use tracing::{debug, info, trace};
 // Constants
 // ============================================================================
 
-/// Time to wait for a new sink node to appear after profile switch
-const PROFILE_SWITCH_DELAY_MS: u64 = 150;
+/// Default time to wait for a new sink node to appear after profile switch (ms)
+/// Override with PROFILE_SWITCH_DELAY_MS env var
+const DEFAULT_PROFILE_SWITCH_DELAY_MS: u64 = 150;
 
-/// Maximum retries when waiting for sink after profile switch
-const PROFILE_SWITCH_MAX_RETRIES: u32 = 5;
+/// Default maximum retries when waiting for sink after profile switch
+/// Override with PROFILE_SWITCH_MAX_RETRIES env var
+const DEFAULT_PROFILE_SWITCH_MAX_RETRIES: u32 = 5;
+
+/// Get profile switch delay from env var or default
+fn profile_switch_delay_ms() -> u64 {
+    std::env::var("PROFILE_SWITCH_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PROFILE_SWITCH_DELAY_MS)
+}
+
+/// Get profile switch max retries from env var or default
+fn profile_switch_max_retries() -> u32 {
+    std::env::var("PROFILE_SWITCH_MAX_RETRIES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_PROFILE_SWITCH_MAX_RETRIES)
+}
 
 // ============================================================================
 // PipeWire JSON Structures (from pw-dump)
@@ -550,9 +568,18 @@ impl PipeWire {
 
         Self::set_device_profile(profile_sink.device_id, profile_sink.profile_index)?;
 
+        // Get env-configurable parameters
+        let delay_ms = profile_switch_delay_ms();
+        let max_retries = profile_switch_max_retries();
+
+        debug!(
+            "Profile switch polling: delay={}ms, max_retries={}",
+            delay_ms, max_retries
+        );
+
         // Wait for the new node to appear with retries
-        for attempt in 1..=PROFILE_SWITCH_MAX_RETRIES {
-            std::thread::sleep(Duration::from_millis(PROFILE_SWITCH_DELAY_MS));
+        for attempt in 1..=max_retries {
+            std::thread::sleep(Duration::from_millis(delay_ms));
 
             let objects = Self::dump()?;
             let active = Self::get_active_sinks(&objects);
@@ -564,16 +591,17 @@ impl PipeWire {
 
             debug!(
                 "Waiting for sink '{}' (attempt {}/{})",
-                sink_name, attempt, PROFILE_SWITCH_MAX_RETRIES
+                sink_name, attempt, max_retries
             );
         }
 
         // Profile switch succeeded but sink node didn't appear - this is an error
         anyhow::bail!(
-            "Profile switched successfully but sink '{sink_name}' did not appear after {PROFILE_SWITCH_MAX_RETRIES} attempts.\n\
+            "Profile switched successfully but sink '{sink_name}' did not appear after {max_retries} attempts.\n\
              \n\
              This may indicate:\n\
-             - The device needs more time to initialize (increase PROFILE_SWITCH_DELAY_MS)\n\
+             - The device needs more time to initialize (set PROFILE_SWITCH_DELAY_MS env var, current: {delay_ms}ms)\n\
+             - Too few retries (set PROFILE_SWITCH_MAX_RETRIES env var, current: {max_retries})\n\
              - The predicted node name '{sink_name}' is incorrect\n\
              - The audio device has a hardware issue\n\
              \n\
