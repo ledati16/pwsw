@@ -28,6 +28,7 @@ mod app;
 mod daemon_control;
 mod editor_state;
 mod input;
+mod log_tailer;
 mod preview;
 mod screens;
 mod widgets;
@@ -178,6 +179,27 @@ pub async fn run() -> Result<()> {
         let mut last_executed_preview: Option<PreviewExec> = None;
         let mut last_windows_fp: Option<u64> = None;
         let debounce_ms = Duration::from_millis(150);
+
+        // Create log tailer and read initial logs
+        let mut log_tailer = match log_tailer::LogTailer::new() {
+            Ok(mut tailer) => {
+                // Read last 100 lines initially
+                if let Err(e) = tailer.read_initial(100) {
+                    tracing::warn!("Failed to read initial daemon logs: {e:#}");
+                }
+                // Send initial logs to UI
+                let initial_logs = tailer.get_lines().to_vec();
+                if !initial_logs.is_empty() {
+                    let _ = bg_tx.send(AppUpdate::DaemonLogs(initial_logs));
+                }
+                Some(tailer)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create log tailer: {e:#}");
+                None
+            }
+        };
+
         loop {
             // Poll daemon state in blocking-friendly way
             let running = crate::tui::daemon_control::DaemonManager::detect()
@@ -362,6 +384,19 @@ pub async fn run() -> Result<()> {
                 }
             }
 
+            // Poll for new daemon log lines
+            if let Some(ref mut tailer) = log_tailer {
+                match tailer.read_new_lines() {
+                    Ok(new_lines) if !new_lines.is_empty() => {
+                        let _ = bg_tx.send(AppUpdate::DaemonLogs(new_lines));
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to read new daemon logs: {e:#}");
+                    }
+                    _ => {}
+                }
+            }
+
             tokio::time::sleep(Duration::from_millis(700)).await;
         }
     });
@@ -489,6 +524,16 @@ async fn run_app<B: ratatui::backend::Backend>(
                                 app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
                             }
                         }
+                        AppUpdate::DaemonLogs(new_lines) => {
+                            // Append new log lines to the buffer
+                            app.daemon_log_lines.extend(new_lines);
+                            // Keep only last 500 lines to avoid unbounded growth
+                            if app.daemon_log_lines.len() > 500 {
+                                let excess = app.daemon_log_lines.len() - 500;
+                                app.daemon_log_lines.drain(0..excess);
+                            }
+                            app.dirty = true;
+                        }
                     }
                 }
             }
@@ -524,6 +569,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             &app.dashboard_screen,
             app.daemon_running,
             app.window_count,
+            &app.daemon_log_lines,
         ),
         Screen::Sinks => render_sinks(
             frame,

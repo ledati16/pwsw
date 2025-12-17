@@ -41,13 +41,15 @@ pub(crate) fn render_dashboard(
     screen_state: &DashboardScreen,
     daemon_running: bool,
     window_count: usize,
+    daemon_logs: &[String],
 ) {
-    // Split screen into sections: Header (Status/Control) and Content (Cards)
+    // Split screen into sections: Header (Status/Control), Cards, and Logs
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(8), // Daemon status + controls
-            Constraint::Min(0),    // Info cards
+            Constraint::Length(10), // Info cards (reduced from Min(0))
+            Constraint::Min(0),    // Daemon logs
         ])
         .split(area);
 
@@ -66,6 +68,9 @@ pub(crate) fn render_dashboard(
 
     // Stats Card
     render_stats_card(frame, card_chunks[1], window_count);
+
+    // Daemon Logs
+    render_log_viewer(frame, chunks[2], daemon_logs, daemon_running);
 }
 
 /// Render daemon status widget with control buttons
@@ -222,6 +227,64 @@ fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .alignment(Alignment::Center);
+
+    frame.render_widget(paragraph, area);
+}
+
+/// Render daemon log viewer
+fn render_log_viewer(
+    frame: &mut Frame,
+    area: Rect,
+    daemon_logs: &[String],
+    daemon_running: bool,
+) {
+    let title = if daemon_running {
+        " Daemon Logs (Live) "
+    } else {
+        " Daemon Logs (Stopped) "
+    };
+
+    let border_color = if daemon_running {
+        Color::Green
+    } else {
+        Color::Gray
+    };
+
+    // Show last N lines that fit in the area
+    let available_height = area.height.saturating_sub(2) as usize; // Account for borders
+    let start_index = daemon_logs.len().saturating_sub(available_height);
+    let visible_logs: Vec<Line> = daemon_logs
+        .iter()
+        .skip(start_index)
+        .map(|line| {
+            // Simple log line styling: dim for timestamps, normal for the rest
+            if line.contains("INFO") {
+                Line::from(Span::styled(line, Style::default().fg(Color::Gray)))
+            } else if line.contains("WARN") {
+                Line::from(Span::styled(line, Style::default().fg(Color::Yellow)))
+            } else if line.contains("ERROR") {
+                Line::from(Span::styled(line, Style::default().fg(Color::Red)))
+            } else {
+                Line::from(Span::raw(line))
+            }
+        })
+        .collect();
+
+    let log_text = if visible_logs.is_empty() {
+        vec![Line::from(Span::styled(
+            "No logs available. Start the daemon to see logs here.",
+            Style::default().fg(Color::Gray),
+        ))]
+    } else {
+        visible_logs
+    };
+
+    let paragraph = Paragraph::new(log_text).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(border_color)),
+    );
 
     frame.render_widget(paragraph, area);
 }
