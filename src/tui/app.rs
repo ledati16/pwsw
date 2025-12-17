@@ -202,6 +202,14 @@ impl App {
     /// Returns an error if config loading fails.
     pub(crate) fn new() -> Result<Self> {
         let config = Config::load()?;
+        Self::with_config(config)
+    }
+
+    /// Create a new application instance with a pre-loaded config
+    ///
+    /// # Errors
+    /// Returns an error if initialization fails.
+    pub(crate) fn with_config(config: Config) -> Result<Self> {
         // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
         let settings_screen = SettingsScreen::new(&config.settings);
