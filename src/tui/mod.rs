@@ -37,7 +37,7 @@ mod tests;
 
 use app::{App, Screen};
 use input::handle_event;
-use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks};
+use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks, RulesRenderContext};
 use std::sync::Arc as StdArc;
 
 // Aliases and small struct to keep complex types readable
@@ -543,12 +543,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             render_rules(
                 frame,
                 chunks[1],
-                &rules_snapshot,
-                &sinks_snapshot,
-                rules_screen_mut,
-                &windows_snapshot,
-                preview_snapshot.as_ref(),
-                throbber_state_mut,
+                &mut RulesRenderContext {
+                    rules: &rules_snapshot,
+                    sinks: &sinks_snapshot,
+                    screen_state: rules_screen_mut,
+                    windows: &windows_snapshot,
+                    preview: preview_snapshot.as_ref(),
+                    throbber_state: throbber_state_mut,
+                },
             );
         }
         Screen::Settings => render_settings(
