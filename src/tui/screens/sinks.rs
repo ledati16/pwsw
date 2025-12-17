@@ -13,7 +13,7 @@ use std::fmt::Write;
 
 use crate::config::SinkConfig;
 
-use crate::tui::editor_state::SimpleEditor;
+use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
 /// Sinks screen mode
@@ -27,9 +27,9 @@ pub(crate) enum SinksMode {
 
 /// Editor state for add/edit modal
 pub(crate) struct SinkEditor {
-    pub name: SimpleEditor,
-    pub desc: SimpleEditor,
-    pub icon: SimpleEditor,
+    pub name: EditorState,
+    pub desc: EditorState,
+    pub icon: EditorState,
     pub default: bool,
     pub focused_field: usize, // 0=name, 1=desc, 2=icon, 3=default
 }
@@ -37,9 +37,9 @@ pub(crate) struct SinkEditor {
 impl SinkEditor {
     pub(crate) fn new() -> Self {
         Self {
-            name: SimpleEditor::new(),
-            desc: SimpleEditor::new(),
-            icon: SimpleEditor::new(),
+            name: EditorState::new(),
+            desc: EditorState::new(),
+            icon: EditorState::new(),
             default: false,
             focused_field: 0,
         }
@@ -47,9 +47,9 @@ impl SinkEditor {
 
     pub(crate) fn from_sink(sink: &SinkConfig) -> Self {
         Self {
-            name: SimpleEditor::from_string(sink.name.clone()),
-            desc: SimpleEditor::from_string(sink.desc.clone()),
-            icon: SimpleEditor::from_string(sink.icon.clone().unwrap_or_default()),
+            name: EditorState::from_string(sink.name.clone()),
+            desc: EditorState::from_string(sink.desc.clone()),
+            icon: EditorState::from_string(sink.icon.clone().unwrap_or_default()),
             default: sink.default,
             focused_field: 0,
         }

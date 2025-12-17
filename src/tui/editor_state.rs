@@ -2,14 +2,14 @@
 
 use tui_input::Input;
 
-/// `SimpleEditor` wraps `tui_input::Input` to provide a compatible interface
+/// `EditorState` wraps `tui_input::Input` to provide a compatible interface
 /// for the application state.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct SimpleEditor {
+pub(crate) struct EditorState {
     pub(crate) input: Input,
 }
 
-impl SimpleEditor {
+impl EditorState {
     /// Create an empty editor with cursor at 0.
     pub(crate) fn new() -> Self {
         Self {
