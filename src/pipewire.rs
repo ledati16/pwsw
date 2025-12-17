@@ -19,11 +19,11 @@ use tracing::{debug, info, trace};
 // ============================================================================
 
 /// Default time to wait for a new sink node to appear after profile switch (ms)
-/// Override with PROFILE_SWITCH_DELAY_MS env var
+/// Override with `PROFILE_SWITCH_DELAY_MS` env var
 const DEFAULT_PROFILE_SWITCH_DELAY_MS: u64 = 150;
 
 /// Default maximum retries when waiting for sink after profile switch
-/// Override with PROFILE_SWITCH_MAX_RETRIES env var
+/// Override with `PROFILE_SWITCH_MAX_RETRIES` env var
 const DEFAULT_PROFILE_SWITCH_MAX_RETRIES: u32 = 5;
 
 /// Get profile switch delay from env var or default
