@@ -417,8 +417,12 @@ async fn run_app<B: ratatui::backend::Backend>(
                             let screen_name = format!("{:?}", app.current_screen);
                             let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
                             let windows = app.window_count;
-                            eprintln!(
-                                "[tui] {run_ms} ms [{screen_name}] slow frame: {run_ms} ms preview_pending={preview_pending} windows={windows}"
+                            tracing::debug!(
+                                run_ms = run_ms as u128,
+                                screen = %screen_name,
+                                preview_pending,
+                                windows,
+                                "slow frame"
                             );
                         }
                     }

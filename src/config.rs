@@ -267,8 +267,8 @@ impl Config {
         contents: &str,
     ) -> Result<tempfile::NamedTempFile> {
         // Ensure dir exists right before creating the temp file to avoid races
-        let _ = std::fs::create_dir_all(dir)
-            .with_context(|| format!("Failed to create temp dir: {}", dir.display()));
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create temp dir: {}", dir.display()))?;
 
         // Try creating the temp file with a small retry loop to tolerate transient races
         let mut last_err = None;
