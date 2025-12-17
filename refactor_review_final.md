@@ -163,9 +163,15 @@ Steps:
    - Verification: after each change ran `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -W clippy::pedantic`, and the sandbox safety script.
    - Next: proceed to C.1.6 (iterate pedantic Clippy fixes and documentation).
 
-- [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
+- [x] C.1.6 Iterate pedantic Clippy fixes and documentation
   - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.
   - Verification: clippy output reduced to the project's agreed allowable pedantic warnings (documented in CLAUDE.md). All tests pass.
+  - Status: ✅ Complete. Zero pedantic warnings achieved.
+    - Fixed trivial `unnecessary_cast` warning in src/tui/mod.rs:421
+    - Added justifying comment for `match_same_arms` allow in src/tui/input.rs:594
+    - Verified all public API functions have `# Errors` and `# Panics` documentation
+    - All 74 tests pass, `scripts/verify_tests_safe.sh` passes
+  - Commit: `8b8021a` (pedantic cleanup - zero warnings)
 
 - [ ] C.1.7 Final consolidation and cleanup
   - Action: Remove temporary `#[allow(...)]` attributes added earlier where the underlying cause has been fixed. Ensure each remaining allow is justified in a code comment (link back to an issue or design note if necessary).
