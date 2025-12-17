@@ -2,14 +2,13 @@ Refactor Review — Final Implementation Plan (with progress checkboxes)
 
 Purpose
 
-This final plan reconciles:
-- The deep-dive findings (refactor_review2.md),
-- The refactor oversight list (refactor_review1.md), and
-- The current repository state (compare to upstream `origin/revamp`) and refactor roadmap (refactor_review_final.md).
+This is the active refactor tracking document for the pwsw project. It prioritizes safety, correctness, and maintainability and includes concrete file-level actions, tests, and commit guidance.
 
-It prioritizes safety, correctness, and maintainability and includes concrete file-level actions, tests, and commit guidance. Follow the "Work Plan & Ordering" section when implementing; make small commits, run the test/lint cycle after each change, and do NOT push until you get explicit approval.
+**Note:** This document consolidates earlier refactor reviews (refactor_review1.md, refactor_review2.md, refactor_review3.md) which have been archived. For comprehensive development guidance, code standards, and best practices, see CLAUDE.md.
 
-Executive summary of additions since refactor_review2
+Follow the "Work Plan & Ordering" section when implementing; make small commits, run the test/lint cycle after each change, and do NOT push until you get explicit approval.
+
+Executive summary of completed work
 
 - Many TUI refactors (async event loop, input, editor improvements, cached regexes) are already implemented (see recent revamp commits). Update tasks to avoid duplicating completed work and to focus on missing/remaining items.
 - The daemon now watches the config directory for hot-reload (src/daemon.rs); this must be hardened to watch only the actual config file (filter events) and to debounce better.
@@ -21,7 +20,7 @@ Status summary (completed so far)
 - [x] Phase A: per-device profile serialization implemented
 - [x] IPC: `WindowInfo.id: Option<u64>` added/used in ListWindows/TestRule
 - [x] PipeWire: validate_tools now checks process exit status
-- [x] GEMINI.md updated and copied to AGENTS.md
+- [x] Documentation consolidated: GEMINI.md, AGENTS.md merged into comprehensive CLAUDE.md
 
 Priority-rank tasks (Absolutely / Highly / Light / Optional)
 
@@ -71,7 +70,7 @@ Highly recommend (Important, next-priority)
 
 - [ ] 8) Fix TUI debug timing bug and clippy pedantic issues (src/tui/mod.rs lines ~392–412)
    - Replace incorrect debug timing calc with `elapsed.as_millis()` and remove strange `duration_since` call.
-   - Run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all warnings (observe the allowed warnings per GEMINI.md; prefer fixing warnings rather than expanding allowed list).
+   - Run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all warnings (observe the allowed warnings per CLAUDE.md; prefer fixing warnings rather than expanding allowed list).
 
 Lightly recommend (Polish)
 
@@ -102,7 +101,7 @@ Optional / Nice-to-have
 
 Cross-cutting considerations & compatibility
 
-- Conformance to project policies (GEMINI.md): Ensure that every public function returning Result has a doc comment with `# Errors`, add `# Panics` where `expect()`/`unwrap()` is present, and fix clippy pedantic warnings before merging.
+- Conformance to project policies (CLAUDE.md): Ensure that every public function returning Result has a doc comment with `# Errors`, add `# Panics` where `expect()`/`unwrap()` is present, and fix clippy pedantic warnings before merging.
 - Tests: Many unit tests in TUI and core components already exist—update tests that depend on changed signatures (process_event) to be async (#[tokio::test]).
 - Atomic writes: Be careful with perms; create files owned by current user and set permissions to 0o600.
 
@@ -166,7 +165,7 @@ Steps:
 
 - [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
   - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.
-  - Verification: clippy output reduced to the project's agreed allowable pedantic warnings (documented in GEMINI.md). All tests pass.
+  - Verification: clippy output reduced to the project's agreed allowable pedantic warnings (documented in CLAUDE.md). All tests pass.
 
 - [ ] C.1.7 Final consolidation and cleanup
   - Action: Remove temporary `#[allow(...)]` attributes added earlier where the underlying cause has been fixed. Ensure each remaining allow is justified in a code comment (link back to an issue or design note if necessary).
@@ -189,7 +188,7 @@ Markers & progress tracking
 Phase D — Tests/CI/Docs (Day 3–4)
 
 - [ ] Add integration tests (1–3h)
-- [x] Update CLAUDE.md/GEMINI.md/refactor_review_final.md to reflect completed items (0.5–1h)
+- [x] Update CLAUDE.md and refactor_review_final.md to reflect completed items (0.5–1h)
 - [ ] Update CI to run pedantic clippy and test suite (0.5–1h)
 
 Commit & PR guidance
@@ -212,7 +211,7 @@ Commit & PR guidance
 Testing checklist
 
 - Unit tests: run `cargo test` and update tests as needed (convert to async where signatures changed).
-- Clippy: run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all but the documented acceptable warnings noted in GEMINI.md.
+- Clippy: run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all but the documented acceptable warnings noted in CLAUDE.md.
 - Manual checks: Start daemon (`cargo run -- daemon --foreground`) and exercise `pwsw list-windows`, `pwsw list-sinks`, `pwsw test-rule`, and TUI (`cargo run -- tui`). Verify config hot-reload and socket cleanup behaviors manually.
 
 Final notes / risks
