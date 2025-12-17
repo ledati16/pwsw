@@ -1,7 +1,0 @@
-   Compiling pwsw v0.3.1 (/home/tim/builds/misc/nasw)
-error: Unrecognized option: 'message-format'
-
-error: could not compile `pwsw` (build script)
-
-Caused by:
-  process didn't exit successfully: `/usr/bin/clippy-driver rustc --crate-name build_script_build --edition=2021 build.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type bin --emit=dep-info,link -C embed-bitcode=no --cfg 'feature="default"' --cfg 'feature="tui"' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values("default", "tui"))' -C metadata=61eec7cc914c9022 -C extra-filename=-dd23c0a8bcedd16a --out-dir /home/tim/builds/misc/nasw/target/debug/build/pwsw-dd23c0a8bcedd16a -C incremental=/home/tim/builds/misc/nasw/target/debug/incremental -L dependency=/home/tim/builds/misc/nasw/target/debug/deps --extern built=/home/tim/builds/misc/nasw/target/debug/deps/libbuilt-3dd2ff0c168fe160.rlib -L native=/usr/lib` (exit status: 1)
