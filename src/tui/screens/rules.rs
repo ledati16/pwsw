@@ -188,6 +188,7 @@ impl RulesScreen {
 }
 
 /// Render the rules screen
+// Rules screen render - legitimate parameter count for full state and layout areas
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_rules(
     frame: &mut Frame,
@@ -216,6 +217,7 @@ pub(crate) fn render_rules(
 }
 
 /// Render the rules list
+// Rules list rendering - complex table with multiple columns and highlighting
 #[allow(clippy::too_many_lines)]
 fn render_list(
     frame: &mut Frame,
@@ -338,6 +340,7 @@ fn render_list(
 }
 
 /// Render the add/edit modal
+// Rule editor modal - complex form with multiple fields and validation
 #[allow(clippy::too_many_lines)]
 fn render_editor(
     frame: &mut Frame,
@@ -491,6 +494,7 @@ fn render_editor(
 }
 
 /// Render live regex preview showing matching windows
+// Live preview rendering - complex async state display with multiple modes
 #[allow(clippy::too_many_lines)]
 fn render_live_preview(
     frame: &mut Frame,

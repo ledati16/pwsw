@@ -81,6 +81,7 @@ pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
 ///
 /// # Errors
 /// Returns an error if TUI initialization fails or terminal operations fail.
+// TUI main event loop - cohesive logic hard to split; constants scoped for clarity
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run() -> Result<()> {
     // Install a panic hook to restore terminal on panic (best-effort).

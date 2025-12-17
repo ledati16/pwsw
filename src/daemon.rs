@@ -54,6 +54,7 @@ struct IpcContext {
 /// # Errors
 /// Returns an error if another daemon is running, initialization fails, compositor
 /// connection fails, or any critical component encounters an error.
+// Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run(config: Config, foreground: bool) -> Result<()> {
     use std::process::Command;
@@ -318,6 +319,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 }
 
 /// Handle a single IPC request from a client
+// IPC request handler - cohesive dispatch logic for all request types
 #[allow(clippy::too_many_lines)]
 async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext) -> Result<()> {
     let request = ipc::read_request(stream).await?;

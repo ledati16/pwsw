@@ -217,6 +217,7 @@ impl Dispatch<wl_output::WlOutput, ()> for WlrToplevelState {
 /// Run the `Wayland` event loop for `wlr-foreign-toplevel-management`
 ///
 /// This function runs in a dedicated thread and dispatches `Wayland` events.
+// Connection must be moved, not borrowed (Wayland protocol requirement)
 #[allow(clippy::needless_pass_by_value)]
 pub fn run_event_loop(conn: Connection, tx: mpsc::UnboundedSender<WindowEvent>) -> Result<()> {
     let (globals, mut event_queue) = registry_queue_init::<WlrToplevelState>(&conn)

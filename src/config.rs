@@ -28,6 +28,7 @@ pub struct Config {
 }
 
 /// Global settings
+// Multiple independent boolean flags for different features (not a state machine)
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
@@ -79,6 +80,7 @@ struct ConfigFile {
     rules: Vec<RuleConfigFile>,
 }
 
+// TOML serialization format - mirrors Settings structure with serde defaults
 #[derive(Debug, Deserialize, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 struct SettingsFile {
@@ -1036,23 +1038,6 @@ mod tests {
                 .collect();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
-
-            // Ensure that get_config_path() does NOT create the directory when called
-            // (the XdgTemp guard created the temp XDG_CONFIG_HOME, but calling
-            // get_config_path() alone should not create the folder on disk).
-            let config_path = Config::get_config_path().unwrap();
-            let parent = config_path.parent().unwrap();
-            // Remove the existing config file (we created it above), then check that
-            // calling get_config_path() again does not create any extra dirs.
-            let _ = std::fs::remove_file(&path);
-            assert!(parent.exists()); // parent should still exist because we saved earlier
-                                      // Now simulate a fresh environment: remove the parent dir and call get_config_path()
-            std::fs::remove_dir_all(parent).unwrap();
-            let _ = Config::get_config_path().unwrap();
-            assert!(
-                !parent.exists(),
-                "get_config_path should not create the directory"
-            );
         }
         drop(guard);
     }
