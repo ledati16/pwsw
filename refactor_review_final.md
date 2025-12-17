@@ -71,7 +71,7 @@ Highly recommend (Important, next-priority)
 
 - [ ] 8) Fix TUI debug timing bug and clippy pedantic issues (src/tui/mod.rs lines ~392–412)
    - Replace incorrect debug timing calc with `elapsed.as_millis()` and remove strange `duration_since` call.
-   - Run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all warnings (observe the 7 acceptable warnings per GEMINI.md; do not introduce new ones).
+   - Run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all warnings (observe the allowed warnings per GEMINI.md; prefer fixing warnings rather than expanding allowed list).
 
 Lightly recommend (Polish)
 
@@ -84,8 +84,14 @@ Lightly recommend (Polish)
    - Replace duplicated arrow/viewport calculations with shared helper.
    - Tests: Visual behavior unchanged (unit tests for arrow calculation exist already—expand where necessary).
 
-- [ ] 11) Consider moving ThrobberState ownership into RulesScreen (src/tui/app.rs: throbber_state present)
-   - Small refactor for encapsulation and easier testing. Low-risk.
+- [ ] 11) Make `throbber_state` private via snapshot-based render refactor (recommended)
+   - Background: Making `throbber_state` private initially caused borrow conflicts because render path mixed immutable references into `app` with mutable borrows of `throbber_state`. The minimal, low-risk fix is to snapshot the read-only values (clone small strings/flags or create a small struct) before taking mutable borrows.
+   - Recommended approach (small, safe steps):
+     1. In `render_ui` (src/tui/mod.rs), identify the read-only items passed to `render_rules` (e.g., `&app.config.rules`, `&app.config.sinks`, `&app.windows`, `app.preview.as_ref()` and simple flags like `daemon_running`, `window_count`). Create small local variables that clone or copy only the minimal needed data. For large collections prefer small derived snapshots (e.g., `let windows_fp = app.window_count; let windows = app.windows.clone();` only if necessary).
+     2. Drop or let those immutable references go out of scope (limit the lifetime by scoping) before calling `app.throbber_state_mut()` to get the mutable borrow.
+     3. Update the `render_rules` signature only if necessary to accept the lightweight snapshots instead of references into `app`.
+     4. Run the test/lint/safety cycle after the small change.
+   - This approach avoids interior mutability or large signature changes, keeps commits small, and preserves borrow-checker safety.
 
 Optional / Nice-to-have
 
@@ -97,7 +103,6 @@ Optional / Nice-to-have
 Cross-cutting considerations & compatibility
 
 - Conformance to project policies (GEMINI.md): Ensure that every public function returning Result has a doc comment with `# Errors`, add `# Panics` where `expect()`/`unwrap()` is present, and fix clippy pedantic warnings before merging.
-- IPC compatibility: Adding `id: Option<u64>` to WindowInfo is backward-compatible (consumers ignoring unknown fields will be fine). Document change in release notes.
 - Tests: Many unit tests in TUI and core components already exist—update tests that depend on changed signatures (process_event) to be async (#[tokio::test]).
 - Atomic writes: Be careful with perms; create files owned by current user and set permissions to 0o600.
 
@@ -122,7 +127,6 @@ Phase C — TUI cleanup and clippy passes (Day 3–5)
 - [ ] Consolidate sink selector widget and minor TUI refactors (1–3h)
 - [ ] Fix debug timing bug and address remaining clippy pedantic warnings (1–2h)
 
-
 Phase C.1 — Incremental TUI Refactor Plan (sub-phase)
 
 Goal: iteratively remove pedantic clippy warnings and improve maintainability by extracting small, testable helpers and consolidating duplicated widgets, while keeping changes minimal and reversible. Follow the per-step verification (tests + clippy + optional manual UI check) and make one small commit per completed step.
@@ -146,10 +150,17 @@ Steps:
   - Action: created `src/tui/widgets.rs` helpers `compute_has_above_below` and `render_scroll_arrows`; replaced duplicated arrow/viewport code in `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs` to use the shared helpers.
   - Verification: `cargo test` passes; `cargo clippy --all-targets -- -W clippy::pedantic` is clean; visual behavior preserved. Commit: `5f6508e`.
 
-- [ ] C.1.5 Remove dead/unneeded code and simplify structs
-  - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
-  - Verification: code compiles and tests pass; small commit with a clear message listing removed symbols.
-  - Progress: In progress — narrowed many TUI public items (widgets, preview, input, screens), updated re-exports, and ran tests. One flaky config test was investigated and atomic-save code hardened with a retry loop; full test suite passes locally.
+- [ ] C.1.5 Remove dead/unneeded code and simplify structs (updated guidance)
+   - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
+   - Progress: In progress — narrowed many TUI public items (widgets, preview, input, screens), updated re-exports, and ran tests. Current concrete progress:
+     - `status_message` made private; added `pub(crate) fn status_message(&self)` accessor.
+     - `preview` made private; added `set_preview`, `clear_preview`, and `preview` accessors and replaced direct assignments with `set_preview` in `src/tui/mod.rs`.
+     - Restored helpful `modal_size` comments in `src/tui/widgets.rs`.
+     - Added `throbber_state` accessors (`throbber_state` / `throbber_state_mut`) and began refactor work; kept `throbber_state` field visibility where necessary to avoid borrow conflicts in render path.
+     - All unit tests pass locally (74 tests).
+     - Ran `cargo clippy --all-targets -- -W clippy::pedantic` (only non-blocking warnings remain).
+     - Ran `scripts/verify_tests_safe.sh` — sandboxed tests passed and did not touch real user config.
+   - Next actions to finish C.1.5: perform a small snapshot-based render refactor (see the dedicated guidance above), then make `throbber_state` private and remove remaining dead methods. Run the verification cycle after each small change.
 
 - [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
   - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.
@@ -162,7 +173,7 @@ Steps:
 Per-step commit guidance
 
 - Make one commit per sub-step (C.1.2, C.1.3, etc.). Each commit message should summarize the "why" not only the "what" (e.g., `refactor(tui): extract preview building helper to reduce render size and enable unit tests`). Include the baseline clippy snippet in the first commit message as context.
-- After each commit run: `cargo fmt && cargo test && cargo clippy --all-targets -- -W clippy::pedantic` and record the clippy delta in the commit body if non-trivial.
+- After each commit run the verification cycle: `cargo fmt && cargo test && cargo clippy --all-targets -- -W clippy::pedantic && bash scripts/verify_tests_safe.sh`. Record clippy deltas in the commit body when relevant.
 
 Safety and rollback
 
@@ -172,7 +183,6 @@ Safety and rollback
 Markers & progress tracking
 
 - Each sub-step above is a checkbox; mark it as completed (`[x]`) when its unit tests, clippy, and manual verification pass. Add brief notes under each completed item explaining the change and the commit SHA.
-
 
 Phase D — Tests/CI/Docs (Day 3–4)
 
@@ -194,13 +204,13 @@ Commit & PR guidance
   - refactor(tui): remove dead methods and unused fields
   - feat(tui): consolidate sink selector widget
   - chore: clippy pedantic fixes and test updates
-- Run before committing: cargo fmt; cargo test; cargo clippy --all-targets -- -W clippy::pedantic
+- Run before committing: cargo fmt; cargo test; cargo clippy --all-targets -- -W clippy::pedantic; bash scripts/verify_tests_safe.sh
 - DO NOT push to remote until you receive explicit approval. When ready to open a PR, update refactor_review_final.md to mark completed checkboxes and include a short PR description referencing this review file.
 
 Testing checklist
 
 - Unit tests: run `cargo test` and update tests as needed (convert to async where signatures changed).
-- Clippy: run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all but the 7 acceptable warnings noted in GEMINI.md.
+- Clippy: run `cargo clippy --all-targets -- -W clippy::pedantic` and fix all but the documented acceptable warnings noted in GEMINI.md.
 - Manual checks: Start daemon (`cargo run -- daemon --foreground`) and exercise `pwsw list-windows`, `pwsw list-sinks`, `pwsw test-rule`, and TUI (`cargo run -- tui`). Verify config hot-reload and socket cleanup behaviors manually.
 
 Final notes / risks
@@ -212,4 +222,4 @@ Final notes / risks
 Next step (recommendation)
 
 Phase A has been implemented (non-blocking activation, per-device locks, IPC window-id, validate_tools).
-Next: Focus on robustly adding a slow-activation test to assert spawn_blocking prevents blocking the tokio runtime. This will likely require a refined mocking strategy for PipeWire interactions in tests. Following that: harden stale socket cleanup, filter config watcher + debounce, implement atomic config saves, and run pedantic clippy and TUI fixes.
+Next: Implement the snapshot-based small render refactor to allow making `throbber_state` private (see guidance above). After that, finish removing dead TUI code, complete clippy fixes, then update CI to enforce pedantic clippy and the safety script.

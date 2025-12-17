@@ -121,6 +121,7 @@ pub(crate) enum BgCommand {
 }
 
 /// Preview result stored in app state
+#[derive(Clone)]
 pub(crate) struct PreviewResult {
     pub(crate) app_pattern: String,
     pub(crate) title_pattern: Option<String>,
@@ -145,12 +146,11 @@ pub(crate) struct App {
     /// Configuration (loaded at startup, editable in TUI)
     pub(crate) config: Config,
     /// Status message to display (errors, confirmations)
-    pub(crate) status_message: Option<String>,
+    status_message: Option<String>,
     /// Last preview results from background worker
     pub(crate) preview: Option<PreviewResult>,
     /// State for throbber animation
     pub(crate) throbber_state: ThrobberState,
-
     /// Dashboard screen state
     pub(crate) dashboard_screen: DashboardScreen,
     /// Settings screen state
@@ -173,6 +173,8 @@ pub(crate) struct App {
     pub(crate) window_count: usize,
     /// Cached window list for live preview (updated by background worker)
     pub(crate) windows: Vec<crate::ipc::WindowInfo>,
+    /// Whether a daemon action (start/stop/restart) is pending
+    pub(crate) daemon_action_pending: bool,
     /// Cached active sinks snapshot (updated by background worker)
     pub(crate) active_sinks: Vec<String>,
     /// Cached full active sinks with descriptions
@@ -227,6 +229,7 @@ impl App {
             active_sinks: Vec::new(),
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
+            daemon_action_pending: false,
 
             bg_cmd_tx: None,
             bg_update_rx: None,
@@ -263,6 +266,37 @@ impl App {
     pub(crate) fn clear_status(&mut self) {
         self.status_message = None;
         self.dirty = true;
+    }
+
+    /// Read-only accessor for status message
+    pub(crate) fn status_message(&self) -> Option<&String> {
+        self.status_message.as_ref()
+    }
+
+    /// Set preview result
+    pub(crate) fn set_preview(&mut self, pr: PreviewResult) {
+        self.preview = Some(pr);
+        self.dirty = true;
+    }
+
+    /// Clear preview
+    pub(crate) fn clear_preview(&mut self) {
+        self.preview = None;
+        self.dirty = true;
+    }
+
+    /// Read-only accessor for preview
+    pub(crate) fn preview(&self) -> Option<&PreviewResult> {
+        self.preview.as_ref()
+    }
+
+    /// Accessors for throbber_state so we can make the field private
+    pub(crate) fn throbber_state(&self) -> &ThrobberState {
+        &self.throbber_state
+    }
+
+    pub(crate) fn throbber_state_mut(&mut self) -> &mut ThrobberState {
+        &mut self.throbber_state
     }
 
     /// Request application quit

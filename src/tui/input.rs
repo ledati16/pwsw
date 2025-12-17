@@ -223,6 +223,7 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
             };
             if let Some(tx) = &app.bg_cmd_tx {
                 let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
+                app.daemon_action_pending = true;
                 app.set_status("Daemon action requested".to_string());
             } else {
                 // No background worker available to handle daemon actions; show feedback

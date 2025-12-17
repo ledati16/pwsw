@@ -459,22 +459,22 @@ async fn run_app<B: ratatui::backend::Backend>(
                         }
                         AppUpdate::ActionResult(msg) => {
                             app.set_status(msg);
+                            // Clear daemon action pending flag when an action completes
+                            app.daemon_action_pending = false;
                             // set_status sets dirty already
                         }
                         AppUpdate::PreviewPending { app_pattern, title_pattern } => {
                             // Only mark pending if it matches current editor content
                             if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
-                                app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
-                                app.dirty = true;
+                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
                             }
                         }
                         AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
                             // Only apply preview if patterns match current editor content (avoid race)
                             if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store preview in app.preview as a typed struct
-                                app.preview = Some(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
-                                app.dirty = true;
+                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
                             }
                         }
                     }
@@ -522,16 +522,32 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             &app.active_sink_list,
             &app.profile_sink_list,
         ),
-        Screen::Rules => render_rules(
-            frame,
-            chunks[1],
-            &app.config.rules,
-            &app.config.sinks,
-            &mut app.rules_screen,
-            &app.windows,
-            app.preview.as_ref(),
-            &mut app.throbber_state,
-        ),
+        Screen::Rules => {
+            // Snapshot read-only items so we can take mutable borrows later (throbber, screen state)
+            // This avoids overlapping borrows when calling `render_rules` which needs both
+            // `&mut app.rules_screen` and a mutable throbber state reference.
+            let rules_snapshot = app.config.rules.clone();
+            let sinks_snapshot = app.config.sinks.clone();
+            let windows_snapshot = app.windows.clone();
+            let preview_snapshot = app.preview.clone();
+
+            // Take mutable references to disjoint fields up-front to satisfy the borrow checker
+            let rules_screen_mut: &mut crate::tui::screens::rules::RulesScreen =
+                &mut app.rules_screen;
+            let throbber_state_mut: &mut throbber_widgets_tui::ThrobberState =
+                &mut app.throbber_state;
+
+            render_rules(
+                frame,
+                chunks[1],
+                &rules_snapshot,
+                &sinks_snapshot,
+                rules_screen_mut,
+                &windows_snapshot,
+                preview_snapshot.as_ref(),
+                throbber_state_mut,
+            );
+        }
         Screen::Settings => render_settings(
             frame,
             chunks[1],
@@ -540,8 +556,16 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         ),
     }
 
-    // Render footer
-    render_footer(frame, chunks[2], app.status_message.as_ref());
+    // Render footer (include daemon action pending flag and throbber state)
+    // Clone the status message first to avoid an immutable borrow overlapping the mutable throbber borrow.
+    let status_clone = app.status_message().cloned();
+    render_footer(
+        frame,
+        chunks[2],
+        status_clone.as_ref(),
+        app.daemon_action_pending,
+        &mut app.throbber_state,
+    );
 
     // Render help overlay on top if active
     if app.show_help {
@@ -606,30 +630,62 @@ fn render_header(
 }
 
 /// Render the footer with keyboard shortcuts and status
-fn render_footer(frame: &mut ratatui::Frame, area: Rect, status_message: Option<&String>) {
-    let text = if let Some(msg) = status_message {
-        Line::from(vec![
-            Span::styled("● ", Style::default().fg(Color::Yellow)),
-            Span::styled(msg, Style::default().fg(Color::White)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::raw("[q] Quit  "),
-            Span::styled("[?]", Style::default().fg(Color::Cyan)),
-            Span::raw(" Help  [Tab] Next  "),
-            Span::styled("[d]", Style::default().fg(Color::Cyan)),
-            Span::raw("ashboard  "),
-            Span::styled("[s]", Style::default().fg(Color::Cyan)),
-            Span::raw("inks  "),
-            Span::styled("[r]", Style::default().fg(Color::Cyan)),
-            Span::raw("ules  Se"),
-            Span::styled("[t]", Style::default().fg(Color::Cyan)),
-            Span::raw("tings  "),
-            Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
-            Span::raw(" Save"),
-        ])
-    };
+fn render_footer(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    status_message: Option<&String>,
+    daemon_action_pending: bool,
+    throbber_state: &mut throbber_widgets_tui::ThrobberState,
+) {
+    use throbber_widgets_tui::Throbber;
 
-    let footer = Paragraph::new(text);
-    frame.render_widget(footer, area);
+    // When a daemon action is pending, render a small throbber on the left and the
+    // status message to the right. Otherwise render the normal footer text.
+    if daemon_action_pending {
+        // Split area into throbber (3 chars) and text
+        let chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(3), Constraint::Min(0)])
+            .split(area);
+
+        let throb = Throbber::default().style(Style::default().fg(Color::Yellow));
+        frame.render_stateful_widget(throb, chunks[0], throbber_state);
+
+        let text = if let Some(msg) = status_message {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(msg, Style::default().fg(Color::White)),
+            ])
+        } else {
+            Line::from(vec![Span::raw("Daemon action in progress...")])
+        };
+        let footer = Paragraph::new(text);
+        frame.render_widget(footer, chunks[1]);
+    } else {
+        let text = if let Some(msg) = status_message {
+            Line::from(vec![
+                Span::styled("● ", Style::default().fg(Color::Yellow)),
+                Span::styled(msg, Style::default().fg(Color::White)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::raw("[q] Quit  "),
+                Span::styled("[?]", Style::default().fg(Color::Cyan)),
+                Span::raw(" Help  [Tab] Next  "),
+                Span::styled("[d]", Style::default().fg(Color::Cyan)),
+                Span::raw("ashboard  "),
+                Span::styled("[s]", Style::default().fg(Color::Cyan)),
+                Span::raw("inks  "),
+                Span::styled("[r]", Style::default().fg(Color::Cyan)),
+                Span::raw("ules  Se"),
+                Span::styled("[t]", Style::default().fg(Color::Cyan)),
+                Span::raw("tings  "),
+                Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
+                Span::raw(" Save"),
+            ])
+        };
+
+        let footer = Paragraph::new(text);
+        frame.render_widget(footer, area);
+    }
 }
