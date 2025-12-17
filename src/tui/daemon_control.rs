@@ -7,7 +7,7 @@ use crate::ipc;
 
 /// Strategy for controlling the daemon
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonManager {
+pub(crate) enum DaemonManager {
     /// Use systemd user service (systemctl --user)
     Systemd,
     /// Direct execution (spawn pwsw daemon process)

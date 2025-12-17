@@ -41,15 +41,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 /// Standard modal sizes (width%, height%)
 pub mod modal_size {
     /// Small modals - confirmations (50%x40%)
-    pub const SMALL: (u16, u16) = (50, 40);
-    /// Medium modals - simple editors like sinks (70%x65%)
-    pub const MEDIUM: (u16, u16) = (70, 65);
-    /// Large modals - complex editors with preview (80%x85%)
-    pub const LARGE: (u16, u16) = (80, 85);
-    /// Dropdown/selector modals (40%x50%)
-    pub const DROPDOWN: (u16, u16) = (40, 50);
-    /// Help overlay (65%x75%)
-    pub const HELP: (u16, u16) = (65, 75);
+    pub(crate) const SMALL: (u16, u16) = (50, 40);
+    pub(crate) const MEDIUM: (u16, u16) = (70, 65);
+    pub(crate) const LARGE: (u16, u16) = (80, 85);
+    pub(crate) const DROPDOWN: (u16, u16) = (40, 50);
+    pub(crate) const HELP: (u16, u16) = (65, 75);
 }
 
 /// Helper to create centered modal with standard size
