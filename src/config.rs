@@ -267,7 +267,8 @@ impl Config {
         contents: &str,
     ) -> Result<tempfile::NamedTempFile> {
         // Ensure dir exists right before creating the temp file to avoid races
-        let _ = std::fs::create_dir_all(dir).with_context(|| format!("Failed to create temp dir: {}", dir.display()));
+        let _ = std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create temp dir: {}", dir.display()));
 
         // Try creating the temp file with a small retry loop to tolerate transient races
         let mut last_err = None;
@@ -286,7 +287,8 @@ impl Config {
             }
         }
         let Some(mut tmp) = tmp else {
-            return Err(anyhow::Error::new(last_err.unwrap()).context("Failed to create temporary file for atomic config save"));
+            return Err(anyhow::Error::new(last_err.unwrap())
+                .context("Failed to create temporary file for atomic config save"));
         };
         tmp.as_file_mut()
             .write_all(contents.as_bytes())
@@ -533,12 +535,24 @@ impl Config {
     ///
     /// # Errors
     /// Returns an error if the config directory cannot be determined or created.
+    /// Get the configured XDG config path for PWSW without creating directories.
+    ///
+    /// This function intentionally does not create the directory on disk. Callers
+    /// that intend to write the config should create the parent directory first
+    /// (see `save` and internal helpers). Avoiding directory creation here prevents
+    /// test code from accidentally touching the user's real XDG config when it only
+    /// needs the path.
+    #[must_use]
     pub fn get_config_path() -> Result<PathBuf> {
+        // Compute the XDG config dir path for PWSW but do NOT create it here.
+        // Creating the directory had the side-effect of touching the user's
+        // real XDG config during tests when helper code only needed the path.
+        // Directory creation is performed where needed (e.g., on save), so
+        // returning the path without creating the directory avoids escaping test
+        // sandboxes.
         let config_dir = dirs::config_dir()
             .context("Could not determine config directory")?
             .join("pwsw");
-        fs::create_dir_all(&config_dir)
-            .with_context(|| format!("Failed to create config dir: {}", config_dir.display()))?;
         Ok(config_dir.join("config.toml"))
     }
 
@@ -608,6 +622,12 @@ desc = "Steam Big Picture" # Custom name for notifications
 # app_id = "^mpv$"
 # sink = 2
 "#;
+        // Ensure parent directory exists (tests may set a temp XDG_CONFIG_HOME)
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config dir: {}", parent.display()))?;
+        }
+
         fs::write(path, default_config)
             .with_context(|| format!("Failed to write config: {}", path.display()))?;
 
@@ -1017,6 +1037,20 @@ mod tests {
                 .collect();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
+
+            // Ensure that get_config_path() does NOT create the directory when called
+            // (the XdgTemp guard created the temp XDG_CONFIG_HOME, but calling
+            // get_config_path() alone should not create the folder on disk).
+            let config_path = Config::get_config_path().unwrap();
+            let parent = config_path.parent().unwrap();
+            // Remove the existing config file (we created it above), then check that
+            // calling get_config_path() again does not create any extra dirs.
+            let _ = std::fs::remove_file(&path);
+            assert!(parent.exists()); // parent should still exist because we saved earlier
+            // Now simulate a fresh environment: remove the parent dir and call get_config_path()
+            std::fs::remove_dir_all(parent).unwrap();
+            let _ = Config::get_config_path().unwrap();
+            assert!(!parent.exists(), "get_config_path should not create the directory");
         }
         drop(guard);
     }

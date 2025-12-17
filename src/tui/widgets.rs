@@ -66,7 +66,13 @@ pub(crate) const fn focus_border_style(focused: bool) -> Style {
 }
 
 /// Render a text input field with a block and correct scrolling/cursor
-pub(crate) fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
+pub(crate) fn render_input(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    input: &Input,
+    focused: bool,
+) {
     let border_style = focus_border_style(focused);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -238,7 +244,12 @@ pub(crate) fn compute_has_above_below(
 }
 
 /// Render small up/down arrows at the right edge of `inner` to indicate scroll.
-pub(crate) fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
+pub(crate) fn render_scroll_arrows(
+    frame: &mut Frame,
+    inner: Rect,
+    has_above: bool,
+    has_below: bool,
+) {
     if has_above {
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(2),
