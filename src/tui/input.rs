@@ -591,6 +591,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle rule editor input (add/edit modal)
+// Match arms handle conceptually different field types despite similar-looking actions
 #[allow(clippy::too_many_lines, clippy::match_same_arms)]
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
