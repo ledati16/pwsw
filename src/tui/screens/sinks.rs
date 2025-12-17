@@ -35,7 +35,7 @@ pub(crate) struct SinkEditor {
 }
 
 impl SinkEditor {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             name: SimpleEditor::new(),
             desc: SimpleEditor::new(),
@@ -45,7 +45,7 @@ impl SinkEditor {
         }
     }
 
-    pub fn from_sink(sink: &SinkConfig) -> Self {
+    pub(crate) fn from_sink(sink: &SinkConfig) -> Self {
         Self {
             name: SimpleEditor::from_string(sink.name.clone()),
             desc: SimpleEditor::from_string(sink.desc.clone()),
@@ -55,13 +55,13 @@ impl SinkEditor {
         }
     }
 
-    pub fn next_field(&mut self) {
+    pub(crate) fn next_field(&mut self) {
         if self.focused_field < 3 {
             self.focused_field += 1;
         }
     }
 
-    pub fn prev_field(&mut self) {
+    pub(crate) fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
         }
@@ -86,7 +86,7 @@ pub(crate) struct SinksScreen {
 
 impl SinksScreen {
     /// Update cached padded descriptions for the list. Call when `sinks` changed.
-    pub fn update_display_descs(&mut self, sinks: &[SinkConfig]) {
+    pub(crate) fn update_display_descs(&mut self, sinks: &[SinkConfig]) {
         // Compute max desc length and produce left-aligned padded strings
         let max_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
         self.display_descs = sinks
@@ -102,7 +102,7 @@ impl SinksScreen {
             })
             .collect();
     }
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             mode: SinksMode::List,
             selected: 0,
@@ -115,25 +115,25 @@ impl SinksScreen {
         }
     }
 
-    pub fn select_previous(&mut self, sink_count: usize) {
+    pub(crate) fn select_previous(&mut self, sink_count: usize) {
         if sink_count > 0 && self.selected > 0 {
             self.selected -= 1;
         }
     }
 
-    pub fn select_next(&mut self, sink_count: usize) {
+    pub(crate) fn select_next(&mut self, sink_count: usize) {
         if sink_count > 0 && self.selected < sink_count - 1 {
             self.selected += 1;
         }
     }
 
-    pub fn start_add(&mut self) {
+    pub(crate) fn start_add(&mut self) {
         self.mode = SinksMode::AddEdit;
         self.editor = SinkEditor::new();
         self.editing_index = None;
     }
 
-    pub fn start_edit(&mut self, sinks: &[SinkConfig]) {
+    pub(crate) fn start_edit(&mut self, sinks: &[SinkConfig]) {
         if self.selected < sinks.len() {
             self.mode = SinksMode::AddEdit;
             self.editor = SinkEditor::from_sink(&sinks[self.selected]);
@@ -141,17 +141,17 @@ impl SinksScreen {
         }
     }
 
-    pub fn start_delete(&mut self) {
+    pub(crate) fn start_delete(&mut self) {
         self.mode = SinksMode::Delete;
     }
 
-    pub fn cancel(&mut self) {
+    pub(crate) fn cancel(&mut self) {
         self.mode = SinksMode::List;
     }
 }
 
 /// Render the sinks screen
-pub fn render_sinks(
+pub(crate) fn render_sinks(
     frame: &mut Frame,
     area: Rect,
     sinks: &[SinkConfig],
