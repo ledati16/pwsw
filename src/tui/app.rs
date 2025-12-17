@@ -150,7 +150,7 @@ pub(crate) struct App {
     /// Last preview results from background worker
     pub(crate) preview: Option<PreviewResult>,
     /// State for throbber animation
-    pub(crate) throbber_state: ThrobberState,
+    throbber_state: ThrobberState,
     /// Dashboard screen state
     pub(crate) dashboard_screen: DashboardScreen,
     /// Settings screen state
@@ -273,12 +273,21 @@ impl App {
         self.status_message.as_ref()
     }
 
+    /// Mutable accessor for `throbber_state` (keeps field private)
+    pub(crate) fn throbber_state_mut(&mut self) -> &mut ThrobberState {
+        &mut self.throbber_state
+    }
+
+    /// Borrow mutable references to rules screen and throbber together
+    pub(crate) fn borrow_rules_and_throbber(&mut self) -> (&mut RulesScreen, &mut ThrobberState) {
+        (&mut self.rules_screen, &mut self.throbber_state)
+    }
+
     /// Set preview result
     pub(crate) fn set_preview(&mut self, pr: PreviewResult) {
         self.preview = Some(pr);
         self.dirty = true;
     }
-
 
     /// Request application quit
     pub(crate) fn quit(&mut self) {

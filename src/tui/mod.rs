@@ -395,7 +395,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                 // Advance animation if enough time elapsed
                 let now = Instant::now();
                 if now.duration_since(last_anim).as_millis() >= u128::from(ANIM_MS) {
-                    app.throbber_state.calc_next();
+                    app.throbber_state_mut().calc_next();
                     last_anim = now;
                     app.dirty = true;
                 }
@@ -531,11 +531,9 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             let windows_snapshot = app.windows.clone();
             let preview_snapshot = app.preview.clone();
 
-            // Take mutable references to disjoint fields up-front to satisfy the borrow checker
-            let rules_screen_mut: &mut crate::tui::screens::rules::RulesScreen =
-                &mut app.rules_screen;
-            let throbber_state_mut: &mut throbber_widgets_tui::ThrobberState =
-                &mut app.throbber_state;
+            // Borrow rules screen and throbber together using App helper so we get
+            // two mutable references from a single &mut self borrow, avoiding double-borrows.
+            let (rules_screen_mut, throbber_state_mut) = app.borrow_rules_and_throbber();
 
             render_rules(
                 frame,
@@ -564,7 +562,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         chunks[2],
         status_clone.as_ref(),
         app.daemon_action_pending,
-        &mut app.throbber_state,
+        app.throbber_state_mut(),
     );
 
     // Render help overlay on top if active
