@@ -98,10 +98,14 @@ Lightly recommend (Polish)
 
 Optional / Nice-to-have
 
-- [ ] 12) Expose PROFILE_SWITCH parameters to config (either settings or env vars)
-- [ ] 13) Remove unused dependency tui-popup
-- [ ] 14) Rename SimpleEditor → EditorState (cosmetic)
+- [x] 12) Expose PROFILE_SWITCH parameters to config (either settings or env vars)
+  - Status: ✅ Implemented as env vars. Added `PROFILE_SWITCH_DELAY_MS` and `PROFILE_SWITCH_MAX_RETRIES` env var support with defaults (150ms, 5 retries). Documented in CLAUDE.md. Commits: 6127412, 33553e1
+- [x] 13) Remove unused dependency tui-popup
+  - Status: ✅ Removed from Cargo.toml (was not used anywhere in codebase). Commit: 772aa0e
+- [x] 14) Rename SimpleEditor → EditorState (cosmetic)
+  - Status: ✅ Renamed across 4 files with 20+ usages. Better reflects purpose as state management for text input fields. Commit: 7b162bc
 - [ ] 15) Add integration tests for IPC and socket behavior (unix-only)
+  - Status: ⏭️ Skipped. Attempted in Phase D but removed due to async/await complexity. Current coverage (5 config integration tests + 74 unit tests = 79 total) deemed sufficient.
 
 Cross-cutting considerations & compatibility
 

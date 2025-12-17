@@ -37,7 +37,9 @@ mod tests;
 
 use app::{App, Screen};
 use input::handle_event;
-use screens::{render_dashboard, render_help, render_rules, render_settings, render_sinks, RulesRenderContext};
+use screens::{
+    render_dashboard, render_help, render_rules, render_settings, render_sinks, RulesRenderContext,
+};
 use std::sync::Arc as StdArc;
 
 // Aliases and small struct to keep complex types readable

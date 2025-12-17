@@ -73,9 +73,7 @@ impl RuleEditor {
 
         Self {
             app_id_pattern: EditorState::from_string(rule.app_id_pattern.clone()),
-            title_pattern: EditorState::from_string(
-                rule.title_pattern.clone().unwrap_or_default(),
-            ),
+            title_pattern: EditorState::from_string(rule.title_pattern.clone().unwrap_or_default()),
             sink_ref: rule.sink_ref.clone(),
             desc: EditorState::from_string(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
@@ -211,7 +209,9 @@ pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderC
             ctx.throbber_state,
         ),
         RulesMode::Delete => render_delete_confirmation(frame, area, ctx.rules, ctx.screen_state),
-        RulesMode::SelectSink => render_sink_selector(frame, area, ctx.sinks, &mut ctx.screen_state.editor),
+        RulesMode::SelectSink => {
+            render_sink_selector(frame, area, ctx.sinks, &mut ctx.screen_state.editor);
+        }
     }
 }
 

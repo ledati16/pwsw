@@ -80,10 +80,7 @@ notify = false
     assert_eq!(loaded.rules[0].title_pattern, None);
     assert_eq!(loaded.rules[0].sink_ref, "Built-in Audio");
     assert_eq!(loaded.rules[1].app_id_pattern, "mpv");
-    assert_eq!(
-        loaded.rules[1].title_pattern,
-        Some(".*Music.*".to_string())
-    );
+    assert_eq!(loaded.rules[1].title_pattern, Some(".*Music.*".to_string()));
     assert_eq!(loaded.rules[1].notify, Some(false));
 }
 
@@ -157,11 +154,15 @@ default = true
         use std::os::unix::fs::PermissionsExt;
         let metadata = fs::metadata(&config_path).expect("Failed to read metadata");
         let mode = metadata.permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "Config file should have 0o600 permissions after save");
+        assert_eq!(
+            mode, 0o600,
+            "Config file should have 0o600 permissions after save"
+        );
     }
 
     // Verify config is still valid
-    let loaded = pwsw::config::Config::load_from_path(&config_path).expect("Failed to load after save");
+    let loaded =
+        pwsw::config::Config::load_from_path(&config_path).expect("Failed to load after save");
     assert_eq!(loaded.sinks.len(), 1);
     assert_eq!(loaded.sinks[0].desc, "Test Sink");
 }
