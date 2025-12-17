@@ -418,7 +418,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                             let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
                             let windows = app.window_count;
                             tracing::debug!(
-                                run_ms = run_ms as u128,
+                                run_ms,
                                 screen = %screen_name,
                                 preview_pending,
                                 windows,
