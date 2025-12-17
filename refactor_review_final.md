@@ -150,17 +150,19 @@ Steps:
   - Action: created `src/tui/widgets.rs` helpers `compute_has_above_below` and `render_scroll_arrows`; replaced duplicated arrow/viewport code in `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs` to use the shared helpers.
   - Verification: `cargo test` passes; `cargo clippy --all-targets -- -W clippy::pedantic` is clean; visual behavior preserved. Commit: `5f6508e`.
 
-- [ ] C.1.5 Remove dead/unneeded code and simplify structs (updated guidance)
+- [x] C.1.5 Remove dead/unneeded code and simplify structs (updated guidance)
    - Action: remove or consolidate flagged dead code (e.g., unused methods/fields in `src/tui/app.rs`) after confirming no callers exist (use `rg`/`git grep` to verify). Replace `#[allow(dead_code)]` with actual removal where safe.
-   - Progress: In progress — narrowed many TUI public items (widgets, preview, input, screens), updated re-exports, and ran tests. Current concrete progress:
+   - Progress: Completed — narrowed and removed many TUI public items and made `throbber_state` private. Concrete progress:
      - `status_message` made private; added `pub(crate) fn status_message(&self)` accessor.
-     - `preview` made private; added `set_preview`, `clear_preview`, and `preview` accessors and replaced direct assignments with `set_preview` in `src/tui/mod.rs`.
-     - Restored helpful `modal_size` comments in `src/tui/widgets.rs`.
-     - Added `throbber_state` accessors (`throbber_state` / `throbber_state_mut`) and began refactor work; kept `throbber_state` field visibility where necessary to avoid borrow conflicts in render path.
+     - `preview` made private; added `set_preview` and `clear_preview` accessors and replaced direct assignments with `set_preview` in `src/tui/mod.rs`.
+     - Consolidated sink selector helpers and restored helpful `modal_size` comments in `src/tui/widgets.rs`.
+     - `throbber_state` is now private and access is via `throbber_state_mut` and `borrow_rules_and_throbber`; render code updated to snapshot read-only data and obtain mutable borrows safely.
      - All unit tests pass locally (74 tests).
-     - Ran `cargo clippy --all-targets -- -W clippy::pedantic` (only non-blocking warnings remain).
-     - Ran `scripts/verify_tests_safe.sh` — sandboxed tests passed and did not touch real user config.
-   - Next actions to finish C.1.5: perform a small snapshot-based render refactor (see the dedicated guidance above), then make `throbber_state` private and remove remaining dead methods. Run the verification cycle after each small change.
+     - Ran `cargo clippy --all-targets -- -W clippy::pedantic` and addressed pedantic warnings for the touched areas.
+     - Ran `scripts/verify_tests_safe.sh` — sandboxed verification passed and did not touch real user config.
+   - Commits: `03b8a43` (make throbber_state private, accessors, get_config_path change), `c60e433` (fix slow-frame logging and temp dir creation).
+   - Verification: after each change ran `cargo fmt`, `cargo test`, `cargo clippy --all-targets -- -W clippy::pedantic`, and the sandbox safety script.
+   - Next: proceed to C.1.6 (iterate pedantic Clippy fixes and documentation).
 
 - [ ] C.1.6 Iterate pedantic Clippy fixes and documentation
   - Action: Re-run `cargo clippy --all-targets -- -W clippy::pedantic` after the above steps. For remaining warnings, prefer refactor or micro-fixes (merge match arms, remove unnecessary clones, add small helper functions) rather than adding new `#[allow(...)]` attributes. Update public API docs for `# Errors` and `# Panics` where needed.
