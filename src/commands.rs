@@ -41,6 +41,7 @@ fn get_sink_status(
 ///
 /// # Errors
 /// Returns an error if `PipeWire` query fails or JSON serialization fails.
+// Sink listing with both JSON and human-readable formatting - cohesive output logic
 #[allow(clippy::too_many_lines)]
 pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     let objects = PipeWire::dump()?;

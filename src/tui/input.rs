@@ -39,6 +39,7 @@ fn is_modal_active(app: &App) -> bool {
 }
 
 /// Handle keyboard input
+// Input dispatch across all screens - cohesive routing logic
 #[allow(clippy::too_many_lines)]
 fn handle_key_event(app: &mut App, key: KeyEvent) {
     // Always-global keybindings (work even in modals)
@@ -284,6 +285,7 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle sinks screen input
+// Sinks screen input handling - modal and list modes with many keybindings
 #[allow(clippy::too_many_lines)]
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
     match app.sinks_screen.mode {
