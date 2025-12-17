@@ -17,7 +17,7 @@ pub(crate) fn get_help_row_count(current_screen: Screen) -> usize {
 }
 
 /// Render help overlay on top of the current screen
-pub fn render_help(
+pub(crate) fn render_help(
     frame: &mut Frame,
     area: Rect,
     current_screen: Screen,

@@ -29,7 +29,7 @@ pub(crate) enum Screen {
 
 impl Screen {
     /// Get all available screens in display order
-    pub fn all() -> &'static [Screen] {
+    pub(crate) fn all() -> &'static [Screen] {
         &[
             Screen::Dashboard,
             Screen::Sinks,
@@ -39,7 +39,7 @@ impl Screen {
     }
 
     /// Get the display name for this screen
-    pub const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Screen::Dashboard => "Dashboard",
             Screen::Sinks => "Sinks",
@@ -49,7 +49,7 @@ impl Screen {
     }
 
     /// Get the keyboard shortcut key for this screen
-    pub const fn key(self) -> char {
+    pub(crate) const fn key(self) -> char {
         match self {
             Screen::Dashboard => 'd',
             Screen::Sinks => 's',
@@ -59,7 +59,7 @@ impl Screen {
     }
 
     /// Get the next screen in the cycle
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Screen::Dashboard => Screen::Sinks,
             Screen::Sinks => Screen::Rules,
@@ -69,7 +69,7 @@ impl Screen {
     }
 
     /// Get the previous screen in the cycle
-    pub fn prev(self) -> Self {
+    pub(crate) fn prev(self) -> Self {
         match self {
             Screen::Dashboard => Screen::Settings,
             Screen::Sinks => Screen::Dashboard,
@@ -197,7 +197,7 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if config loading fails.
-    pub fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let config = Config::load()?;
         // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
@@ -236,43 +236,43 @@ impl App {
     }
 
     /// Navigate to a specific screen
-    pub fn goto_screen(&mut self, screen: Screen) {
+    pub(crate) fn goto_screen(&mut self, screen: Screen) {
         self.current_screen = screen;
         self.clear_status();
     }
 
     /// Navigate to the next screen
-    pub fn next_screen(&mut self) {
+    pub(crate) fn next_screen(&mut self) {
         self.current_screen = self.current_screen.next();
         self.clear_status();
     }
 
     /// Navigate to the previous screen
-    pub fn prev_screen(&mut self) {
+    pub(crate) fn prev_screen(&mut self) {
         self.current_screen = self.current_screen.prev();
         self.clear_status();
     }
 
     /// Set a status message to display to the user
-    pub fn set_status(&mut self, message: String) {
+    pub(crate) fn set_status(&mut self, message: String) {
         self.status_message = Some(message);
         self.dirty = true;
     }
 
     /// Clear the current status message
-    pub fn clear_status(&mut self) {
+    pub(crate) fn clear_status(&mut self) {
         self.status_message = None;
         self.dirty = true;
     }
 
     /// Request application quit
-    pub fn quit(&mut self) {
+    pub(crate) fn quit(&mut self) {
         self.should_quit = true;
         self.dirty = true;
     }
 
     /// Request quit (with unsaved changes check)
-    pub fn request_quit(&mut self) {
+    pub(crate) fn request_quit(&mut self) {
         if self.config_dirty {
             self.confirm_quit = true;
             self.set_status("Unsaved changes! Press 'q' again to quit, Esc to cancel".to_string());
@@ -283,20 +283,20 @@ impl App {
     }
 
     /// Confirm quit (when user presses 'q' again)
-    pub fn confirm_quit_action(&mut self) {
+    pub(crate) fn confirm_quit_action(&mut self) {
         self.should_quit = true;
         self.dirty = true;
     }
 
     /// Cancel quit confirmation
-    pub fn cancel_quit(&mut self) {
+    pub(crate) fn cancel_quit(&mut self) {
         self.confirm_quit = false;
         self.clear_status();
         self.dirty = true;
     }
 
     /// Mark config as modified
-    pub fn mark_dirty(&mut self) {
+    pub(crate) fn mark_dirty(&mut self) {
         self.config_dirty = true;
         self.dirty = true;
     }
@@ -305,7 +305,7 @@ impl App {
     ///
     /// # Errors
     /// Returns an error if config save fails.
-    pub fn save_config(&mut self) -> Result<()> {
+    pub(crate) fn save_config(&mut self) -> Result<()> {
         self.config.save()?;
         self.config_dirty = false;
         self.set_status("Configuration saved successfully".to_string());
