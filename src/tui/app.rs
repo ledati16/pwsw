@@ -279,25 +279,6 @@ impl App {
         self.dirty = true;
     }
 
-    /// Clear preview
-    pub(crate) fn clear_preview(&mut self) {
-        self.preview = None;
-        self.dirty = true;
-    }
-
-    /// Read-only accessor for preview
-    pub(crate) fn preview(&self) -> Option<&PreviewResult> {
-        self.preview.as_ref()
-    }
-
-    /// Accessors for throbber_state so we can make the field private
-    pub(crate) fn throbber_state(&self) -> &ThrobberState {
-        &self.throbber_state
-    }
-
-    pub(crate) fn throbber_state_mut(&mut self) -> &mut ThrobberState {
-        &mut self.throbber_state
-    }
 
     /// Request application quit
     pub(crate) fn quit(&mut self) {
