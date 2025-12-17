@@ -17,7 +17,7 @@ fn sinks_editor_input_wiring() {
     app.sinks_screen.start_add();
     // Start with empty
     app.sinks_screen.editor.name =
-        crate::tui::editor_state::SimpleEditor::from_string(String::new());
+        crate::tui::editor_state::EditorState::from_string(String::new());
     app.sinks_screen.editor.focused_field = 0;
 
     // Type 'a'
@@ -37,7 +37,7 @@ fn rules_editor_input_wiring() {
     app.current_screen = crate::tui::app::Screen::Rules;
     app.rules_screen.start_add();
     app.rules_screen.editor.app_id_pattern =
-        crate::tui::editor_state::SimpleEditor::from_string("foo".to_string());
+        crate::tui::editor_state::EditorState::from_string("foo".to_string());
     app.rules_screen.editor.focused_field = 0;
 
     // Type 'd'

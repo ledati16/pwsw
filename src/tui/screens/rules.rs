@@ -10,7 +10,7 @@ use ratatui::{
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::config::{Rule, SinkConfig};
-use crate::tui::editor_state::SimpleEditor;
+use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 use regex::Regex;
 use std::fmt::Write;
@@ -27,10 +27,10 @@ pub(crate) enum RulesMode {
 /// Editor state for add/edit modal
 #[derive(Debug, Clone)]
 pub(crate) struct RuleEditor {
-    pub app_id_pattern: SimpleEditor,
-    pub title_pattern: SimpleEditor,
+    pub app_id_pattern: EditorState,
+    pub title_pattern: EditorState,
     pub sink_ref: String,
-    pub desc: SimpleEditor,
+    pub desc: EditorState,
     pub notify: Option<bool>,
     pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
     pub sink_dropdown_index: usize,
@@ -47,10 +47,10 @@ pub(crate) struct RuleEditor {
 impl RuleEditor {
     pub(crate) fn new() -> Self {
         Self {
-            app_id_pattern: SimpleEditor::new(),
-            title_pattern: SimpleEditor::new(),
+            app_id_pattern: EditorState::new(),
+            title_pattern: EditorState::new(),
             sink_ref: String::new(),
-            desc: SimpleEditor::new(),
+            desc: EditorState::new(),
             notify: None,
             focused_field: 0,
             sink_dropdown_index: 0,
@@ -72,12 +72,12 @@ impl RuleEditor {
         };
 
         Self {
-            app_id_pattern: SimpleEditor::from_string(rule.app_id_pattern.clone()),
-            title_pattern: SimpleEditor::from_string(
+            app_id_pattern: EditorState::from_string(rule.app_id_pattern.clone()),
+            title_pattern: EditorState::from_string(
                 rule.title_pattern.clone().unwrap_or_default(),
             ),
             sink_ref: rule.sink_ref.clone(),
-            desc: SimpleEditor::from_string(rule.desc.clone().unwrap_or_default()),
+            desc: EditorState::from_string(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             focused_field: 0,
             sink_dropdown_index: 0,
