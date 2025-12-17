@@ -86,6 +86,11 @@ pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
 // TUI main event loop - cohesive logic hard to split; constants scoped for clarity
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run() -> Result<()> {
+    // Load config BEFORE entering alternate screen to ensure any first-run messages
+    // (e.g., "Created default config", "Next steps...") appear normally on the terminal
+    // rather than leaking into the TUI display
+    let config = crate::config::Config::load()?;
+
     // Install a panic hook to restore terminal on panic (best-effort).
     // This wraps the existing hook (likely color-eyre from main) to ensure
     // the terminal is reset before the error report is printed.
@@ -107,8 +112,8 @@ pub async fn run() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
-    // Create app state
-    let mut app = App::new()?;
+    // Create app state (pass pre-loaded config)
+    let mut app = App::with_config(config)?;
 
     // Terminal guard to ensure we restore terminal state on panic/return
     struct TerminalGuard;
