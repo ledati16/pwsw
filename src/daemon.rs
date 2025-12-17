@@ -5,6 +5,7 @@
 
 use anyhow::{Context, Result};
 use notify::{Event, RecursiveMode, Watcher};
+use std::path::PathBuf;
 use std::time::Instant;
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -17,6 +18,23 @@ use crate::notification::send_notification;
 use crate::pipewire::PipeWire;
 use crate::state::State;
 use crate::style::PwswStyle;
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+/// Get the daemon log file path
+///
+/// Returns `~/.local/share/pwsw/daemon.log`
+///
+/// # Errors
+/// Returns an error if the local data directory cannot be determined.
+pub fn get_log_file_path() -> Result<PathBuf> {
+    let log_dir = dirs::data_local_dir()
+        .context("Failed to get local data directory")?
+        .join("pwsw");
+    Ok(log_dir.join("daemon.log"))
+}
 
 // ============================================================================
 // Constants
@@ -72,14 +90,15 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     }
 
     // Background mode: spawn detached process and wait for successful startup
-    if !foreground {
-        // Get current executable path
+    if !foreground && std::env::var("PWSW_DAEMON_CHILD").is_err() {
+        // We're the initial process - spawn a background child
         let exe = std::env::current_exe()?;
 
-        // Spawn detached daemon process with --foreground flag
+        // Spawn detached daemon process WITHOUT --foreground so it logs to file
+        // Pass environment variable to prevent child from spawning another process
         let mut child = Command::new(&exe)
             .arg("daemon")
-            .arg("--foreground")
+            .env("PWSW_DAEMON_CHILD", "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -135,13 +154,41 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Validate required PipeWire tools are available
     PipeWire::validate_tools().context("PipeWire tools validation failed")?;
 
-    // Initialize logging with config log_level (foreground mode only)
+    // Initialize logging with config log_level
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
+    // At this point, we're either:
+    // - Running with --foreground flag (user debugging)
+    // - Running as spawned background child (foreground=false, PWSW_DAEMON_CHILD set)
     let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
     });
 
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    if foreground {
+        // User ran with --foreground for debugging: log to stderr
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    } else {
+        // Background daemon (spawned child): log to file for TUI integration and debugging
+        let log_path = get_log_file_path()?;
+        let log_dir = log_path
+            .parent()
+            .context("Log file path has no parent directory")?;
+
+        std::fs::create_dir_all(log_dir)
+            .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
+
+        let file_appender = tracing_appender::rolling::daily(log_dir, "daemon.log");
+        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(non_blocking)
+            .with_ansi(false) // No ANSI colors in log file
+            .init();
+
+        // Store guard to prevent it from being dropped (would close log file)
+        // SAFETY: Guard must live for entire daemon lifetime
+        std::mem::forget(_guard);
+    }
 
     info!("Starting PWSW daemon {}", crate::version_string());
     info!(

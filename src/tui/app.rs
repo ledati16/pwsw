@@ -105,6 +105,8 @@ pub(crate) enum AppUpdate {
         matches: Vec<String>,
         timed_out: bool,
     },
+    /// New daemon log lines
+    DaemonLogs(Vec<String>),
 }
 
 /// Commands sent from UI to background worker
@@ -182,6 +184,8 @@ pub(crate) struct App {
     pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
     pub(crate) profile_sink_list: Vec<crate::pipewire::ProfileSink>,
+    /// Daemon log lines (tailed from log file)
+    pub(crate) daemon_log_lines: Vec<String>,
 
     /// Whether the UI needs to be redrawn
     pub(crate) dirty: bool,
@@ -239,6 +243,7 @@ impl App {
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
             daemon_action_pending: false,
+            daemon_log_lines: Vec::new(),
 
             bg_cmd_tx: None,
             bg_update_rx: None,

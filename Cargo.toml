@@ -44,6 +44,7 @@ crossterm = { version = "0.28", features = ["event-stream"] }
 # Structured logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 # XDG config directory
 dirs = "5"
