@@ -51,7 +51,6 @@ dirs = "5"
 # TUI framework (optional - enabled by default via "tui" feature)
 ratatui = { version = "0.29", optional = true, default-features = false, features = ["crossterm"] }
 tui-input = "0.14.0"
-tui-popup = "0.4.2"
 throbber-widgets-tui = "0.8"
 tui-logger = "0.17.4"
 color-eyre = "0.6.5"
