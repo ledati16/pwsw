@@ -267,6 +267,8 @@ Line::from(vec![
 - Keep `Tab/Shift-Tab` - alternative cycling method (not redundant with numbers)
 - Keep `Ctrl+S` Save - essential global action
 
+**Note:** Phase 6 will add `[↑↓] Navigate` as a new universal hint since up/down navigation works across all screens.
+
 **Optional enhancement:**
 Add conditional text for config state (when not showing status message):
 - If `config_dirty == true`: Show "Ctrl+S Save*" with yellow asterisk
@@ -316,8 +318,22 @@ add_keybind(&mut items, "4", "Go to Settings");
 - Line 319-323 (compact layout version)
 - Any other references to screen navigation keys
 
+#### 4.2: Add Dashboard-specific keybindings
+**File:** `src/tui/screens/help.rs`
+
+**Add to Dashboard section:**
+```rust
+// Dashboard-specific keys (Phase 9 will add these)
+add_keybind(&mut items, "w", "Toggle Logs/Windows view");
+add_keybind(&mut items, "←/→", "Navigate daemon actions");
+add_keybind(&mut items, "PgUp/PgDn", "Scroll current view");
+```
+
+**Note:** These keybindings are introduced in Phase 9 but should be documented in help from the start for completeness.
+
 **Checklist:**
-- [ ] Update help documentation for all screen navigation keys
+- [ ] Update help documentation for all screen navigation keys (1-4)
+- [ ] Add Dashboard-specific keybindings (w, ←/→, PgUp/PgDn)
 - [ ] Verify help modal shows correct keys (1-4 not d/s/r/t)
 - [ ] Test help screen in both wide and narrow terminal modes
 
@@ -359,9 +375,11 @@ simulate_key_event(&mut app, ke);
 
 ---
 
-## Verification Checklist
+## Verification Checklist (Phases 1-5)
 
-Before considering this plan complete, verify:
+**Note:** This checklist covers only the basic navigation changes (Phases 1-5). Each subsequent phase (6-9) has its own detailed checklist within that phase section.
+
+Before moving to Phase 6, verify:
 
 **Functionality:**
 - [ ] All number keys (1-4) switch to correct screens
@@ -413,17 +431,19 @@ Before considering this plan complete, verify:
 fn render_context_bar(
     frame: &mut ratatui::Frame,
     area: Rect,
-    current_screen: Screen,
-    mode: &ScreenMode, // Enum representing current mode (List, Edit, Delete, etc.)
+    app: &App, // Full app access for view-aware contexts (e.g., Dashboard)
 ) {
     use ratatui::text::{Line, Span};
     use ratatui::style::{Style, Color};
 
-    let keybinds = match (current_screen, mode) {
-        (Screen::Dashboard, _) => vec![
-            ("[↑↓]", "Select"),
-            ("[Enter]", "Execute"),
-        ],
+    let keybinds = match (app.current_screen, app.get_mode()) {
+        (Screen::Dashboard, ScreenMode::DashboardList) => {
+            // Note: Phase 9 will replace this with view-aware keybindings
+            vec![
+                ("[↑↓]", "Select"),
+                ("[Enter]", "Execute"),
+            ]
+        },
         (Screen::Sinks, ScreenMode::List) => vec![
             ("[a]", "Add"),
             ("[e]", "Edit"),
@@ -505,7 +525,7 @@ let chunks = Layout::default()
 **Add after line 619 (after screen rendering):**
 ```rust
 // Render context bar (below content, above footer)
-render_context_bar(frame, chunks[2], app.current_screen, &app.get_mode());
+render_context_bar(frame, chunks[2], app);
 
 // Render footer
 let status_clone = app.status_message().cloned();
@@ -518,7 +538,7 @@ render_footer(
 );
 ```
 
-**Note:** Need to add `get_mode()` helper to `App` that returns current mode for each screen.
+**Note:** Phase 8 will add `get_mode()` helper to `App` that returns current mode for each screen.
 
 #### 6.4: Update global footer to remove redundant navigation
 **File:** `src/tui/mod.rs:733-747`
@@ -761,15 +781,1301 @@ add_keybind(&mut items, "Shift+↑/↓", "Move rule priority");
 
 ---
 
+### Phase 8: Standardize Modal Keybinding Display
+
+**Goal:** Bring consistency to how modals show keybindings, remove keybinds from titles, and leverage context bar for modal-specific hints.
+
+**Current Issues:**
+
+1. **Inconsistent keybind display:**
+   - Sink selector: `"Select Node (↑/↓, Enter to confirm, Esc to cancel)"` - keybinds in title
+   - Rule sink selector: `"Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)"` - keybinds in title
+   - Delete confirmations: "Press Enter to confirm, Esc to cancel" in content text
+   - Edit modals: Inline help shown only when space allows (can be hidden on small terminals)
+
+2. **Undocumented text editing features:**
+   - `tui-input` provides powerful keybindings users might not know about:
+     - `Home`/`Ctrl+A` - Jump to start of line
+     - `End`/`Ctrl+E` - Jump to end of line
+     - `Ctrl+U` - Clear line before cursor
+     - `Ctrl+K` - Clear line after cursor
+     - `Ctrl+W` - Delete word before cursor
+   - These are never mentioned in the TUI
+
+3. **Space-dependent help text:**
+   - Lines 388-400 in `sinks.rs`: Help only shows if `show_help && chunks.len() > 4`
+   - Lines 487-499 in `rules.rs`: Help only shows if `show_help && chunks.len() > 6`
+   - Users on small terminals don't see keybinding hints
+
+**Files to modify:**
+- `src/tui/mod.rs` - Update `render_context_bar()` to handle modal modes
+- `src/tui/screens/sinks.rs` - Clean up modal titles, remove inline help
+- `src/tui/screens/rules.rs` - Clean up modal titles, remove inline help
+- `src/tui/screens/help.rs` - Document text editing shortcuts
+- `src/tui/app.rs` - Add `get_mode()` helper that includes modal states
+
+**Changes:**
+
+#### 8.1: Extend context bar to show modal-specific keybindings
+**File:** `src/tui/mod.rs` (in `render_context_bar` function)
+
+**Add modal mode detection:**
+```rust
+fn render_context_bar(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    current_screen: Screen,
+    mode: &ScreenMode, // Updated to include modal states
+) {
+    let keybinds = match (current_screen, mode) {
+        // ... existing List modes ...
+
+        // Modal modes for Sinks
+        (Screen::Sinks, ScreenMode::SinkEditor) => vec![
+            ("[↑↓/Tab]", "Next/Prev"),
+            ("[Enter]", "Save/Select"),
+            ("[Space]", "Toggle"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Sinks, ScreenMode::SinkSelector) => vec![
+            ("[↑↓]", "Navigate"),
+            ("[Enter]", "Confirm"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Sinks, ScreenMode::DeleteConfirm) => vec![
+            ("[Enter]", "Confirm Delete"),
+            ("[Esc]", "Cancel"),
+        ],
+
+        // Modal modes for Rules
+        (Screen::Rules, ScreenMode::RuleEditor) => vec![
+            ("[↑↓/Tab]", "Next/Prev"),
+            ("[Enter]", "Save/Select"),
+            ("[Space]", "Toggle"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Rules, ScreenMode::SinkSelector) => vec![
+            ("[↑↓]", "Navigate"),
+            ("[Enter]", "Confirm"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Rules, ScreenMode::DeleteConfirm) => vec![
+            ("[Enter]", "Confirm Delete"),
+            ("[Esc]", "Cancel"),
+        ],
+
+        _ => vec![],
+    };
+
+    // ... rest of rendering logic ...
+}
+```
+
+**Rationale:** Context bar now shows modal-specific keybindings when a modal is open, providing consistent placement regardless of terminal size.
+
+#### 8.2: Clean up sink selector modal titles
+**File:** `src/tui/screens/sinks.rs:561`
+
+**Current:**
+```rust
+.title("Select Node (↑/↓, Enter to confirm, Esc to cancel)")
+```
+
+**New:**
+```rust
+.title("Select Node")
+```
+
+**Rationale:** Keybindings now shown in context bar, title should be clean and descriptive.
+
+#### 8.3: Clean up rule sink selector modal title
+**File:** `src/tui/screens/rules.rs:704`
+
+**Current:**
+```rust
+.title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
+```
+
+**New:**
+```rust
+.title("Select Target Sink")
+```
+
+#### 8.4: Remove inline help from sink editor
+**File:** `src/tui/screens/sinks.rs:388-400`
+
+**Current:**
+```rust
+// Help text (only if space allows)
+if show_help && chunks.len() > 4 {
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Esc", "Cancel"),
+    ]);
+
+    let help_widget = Paragraph::new(vec![Line::from(""), help_line])
+        .style(Style::default().fg(colors::UI_SECONDARY));
+    frame.render_widget(help_widget, chunks[4]);
+}
+```
+
+**New:**
+Remove this entire block (context bar now shows this).
+
+**Also update layout constraints:**
+```rust
+// Before (5 chunks including help):
+let constraints = if show_help {
+    vec![
+        Constraint::Length(3), // Name
+        Constraint::Length(3), // Desc
+        Constraint::Length(3), // Icon
+        Constraint::Length(3), // Default
+        Constraint::Min(2),    // Help
+    ]
+} else { ... }
+
+// After (4 chunks, no help):
+let constraints = vec![
+    Constraint::Length(3), // Name
+    Constraint::Length(3), // Desc
+    Constraint::Length(3), // Icon
+    Constraint::Length(3), // Default
+];
+```
+
+#### 8.5: Remove inline help from rule editor
+**File:** `src/tui/screens/rules.rs:487-499`
+
+**Current:**
+```rust
+// Help text
+if show_help && chunks.len() > 6 {
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Space", "Toggle"),
+        ("Esc", "Cancel"),
+    ]);
+    let help_widget =
+        Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
+    frame.render_widget(help_widget, chunks[6]);
+}
+```
+
+**New:**
+Remove this entire block.
+
+**Also simplify layout logic** (remove `show_help` branching since it's no longer needed).
+
+#### 8.6: Remove keybind instructions from delete confirmation content
+**File:** `src/tui/screens/sinks.rs:435-437`
+
+**Current:**
+```rust
+Line::from(vec![Span::styled(
+    "Press Enter to confirm, Esc to cancel",
+    Style::default().fg(colors::UI_WARNING),
+)]),
+```
+
+**New:**
+Remove this line entirely - context bar now shows "Enter: Confirm Delete, Esc: Cancel".
+
+**File:** `src/tui/screens/rules.rs` (similar delete confirmation)
+
+Apply the same change to rule delete confirmation.
+
+#### 8.7: Add text editing shortcuts to help screen
+**File:** `src/tui/screens/help.rs`
+
+**Add new section for text input fields:**
+```rust
+// In the help rendering function, add a new section:
+
+items.push(Line::from(vec![
+    Span::styled("Text Input Fields", Style::default()
+        .fg(colors::UI_HEADER)
+        .add_modifier(Modifier::BOLD)),
+]));
+items.push(Line::from(""));
+
+add_keybind(&mut items, "Arrows", "Move cursor");
+add_keybind(&mut items, "Home / Ctrl+A", "Jump to start");
+add_keybind(&mut items, "End / Ctrl+E", "Jump to end");
+add_keybind(&mut items, "Ctrl+U", "Clear before cursor");
+add_keybind(&mut items, "Ctrl+K", "Clear after cursor");
+add_keybind(&mut items, "Ctrl+W", "Delete word before cursor");
+add_keybind(&mut items, "Backspace", "Delete character before cursor");
+add_keybind(&mut items, "Delete", "Delete character at cursor");
+```
+
+**Rationale:** Users should know about these powerful editing shortcuts provided by `tui-input`.
+
+#### 8.8: Update App::get_mode() to include modal states
+**File:** `src/tui/app.rs`
+
+**Add enum for unified mode:**
+```rust
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScreenMode {
+    // List modes
+    DashboardList,
+    SinksList,
+    RulesList,
+    SettingsList,
+
+    // Sink modal modes
+    SinkEditor,
+    SinkSelector,
+    SinkDeleteConfirm,
+
+    // Rule modal modes
+    RuleEditor,
+    RuleSinkSelector,
+    RuleDeleteConfirm,
+}
+
+impl App {
+    pub(crate) fn get_mode(&self) -> ScreenMode {
+        match self.current_screen {
+            Screen::Dashboard => ScreenMode::DashboardList,
+            Screen::Sinks => match self.sinks_screen.mode {
+                SinksMode::List => ScreenMode::SinksList,
+                SinksMode::AddEdit => ScreenMode::SinkEditor,
+                SinksMode::SelectSink => ScreenMode::SinkSelector,
+                SinksMode::Delete => ScreenMode::SinkDeleteConfirm,
+            },
+            Screen::Rules => match self.rules_screen.mode {
+                RulesMode::List => ScreenMode::RulesList,
+                RulesMode::AddEdit => ScreenMode::RuleEditor,
+                RulesMode::SelectSink => ScreenMode::RuleSinkSelector,
+                RulesMode::Delete => ScreenMode::RuleDeleteConfirm,
+            },
+            Screen::Settings => ScreenMode::SettingsList,
+        }
+    }
+}
+```
+
+**Rationale:** Unified mode enum makes context bar logic cleaner and easier to maintain.
+
+#### 8.9: Optional - Add hint for advanced text editing in modal
+**File:** `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs`
+
+**Optional enhancement:** Add a subtle hint at the bottom of text input modals:
+```rust
+// In modal rendering, add above context bar area:
+let hint = Line::from(vec![
+    Span::styled("Tip: ", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::styled("Ctrl+A/E", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::raw(" to jump, "),
+    Span::styled("Ctrl+U/K", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::raw(" to clear"),
+]).alignment(Alignment::Right);
+```
+
+**Rationale:** Gentle reminder of power-user shortcuts without cluttering the UI.
+
+**Alternative:** Skip this and rely on help screen (`?`) to document these shortcuts.
+
+**Checklist:**
+- [ ] Extend `render_context_bar()` to handle modal modes
+- [ ] Add `ScreenMode` enum and `App::get_mode()` implementation
+- [ ] Clean up sink selector modal title (remove keybinds)
+- [ ] Clean up rule sink selector modal title (remove keybinds)
+- [ ] Remove inline help from sink editor
+- [ ] Remove inline help from rule editor
+- [ ] Update sink editor layout (remove help chunk)
+- [ ] Update rule editor layout (remove help chunk)
+- [ ] Remove keybind text from delete confirmation modals
+- [ ] Add text editing shortcuts section to help screen
+- [ ] Test context bar appears correctly for all modal modes
+- [ ] Test modals on small terminals (no help text overflow)
+- [ ] Verify all modal keybindings work as documented
+- [ ] Run clippy and tests
+
+**Benefits:**
+- ✅ Consistent keybinding display across all modals
+- ✅ No lost information on small terminals
+- ✅ Clean, descriptive modal titles
+- ✅ Users discover powerful text editing shortcuts
+- ✅ Aligns with overall plan's context bar approach
+- ✅ Reduces code duplication (no inline help rendering)
+
+---
+
+### Phase 9A: Dashboard Layout Restructure
+
+**Goal:** Reorganize dashboard top section to be more compact and informative, preparing for the toggle view system in Phase 9B.
+
+**Dependencies:** Phase 6 (context bars), Phase 8 (ScreenMode)
+
+**Current Layout Issues (Phase 9A Addresses):**
+
+1. **Daemon section too wide:** Takes full width (100%) but only uses ~40% effectively
+2. **Sink card too sparse:** Shows only icon + name, wastes vertical space
+3. **Stats card underutilized:** Shows only window count, no detail
+
+**Phase 9A Solution:** Restructure top section into compact two-column layout with enhanced information.
+
+**Phase 9B Solution:** Add toggle-based view system to eliminate keybinding conflicts (see Phase 9B).
+
+**Files to modify:**
+- `src/tui/screens/dashboard.rs` - Restructure top section layout
+- `src/tui/app.rs` - Add uptime/PID tracking, recent switches history
+- `src/tui/input.rs` - Add Left/Right arrow handlers for daemon action navigation
+
+**Proposed Layout (Phase 9A - Top Section Only):**
+
+```
+┌──────────────────────────┬─────────────────────────────────┐
+│  Daemon Control          │                                 │
+│  Status: ● RUNNING       │                                 │
+│  Uptime: 2h 34m          │         Active Sink             │
+│  PID: 12345              │                                 │
+│  [▶ Start ] Stop Restart │    🎧 Headphones                │
+│  Height: 6 lines         │                                 │
+├──────────────────────────┤                                 │
+│  Window Summary          │    Recent Switches:             │
+│  Matched: 3/12 windows   │    10:30 → Headphones (rule)    │
+│  (details in Phase 9B)   │    10:25 → Speakers (manual)    │
+│  Height: 4 lines         │    Height: 8 lines              │
+└──────────────────────────┴─────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Daemon Logs (Live) - [↑↓] scroll [PgUp/PgDn] page       │
+│  10:30:15 INFO Rule matched: app_id=firefox → Headphones  │
+│  Height: Remaining space (Min 0, expands)                 │
+│  Note: Phase 9B will add toggle to Window Tracking view   │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Key Benefits:**
+- ✅ **Compact daemon section** - Shows uptime/PID, horizontal action buttons
+- ✅ **Enhanced sink display** - Recent switch history provides context
+- ✅ **Window summary** - Quick glance at match statistics
+- ✅ **Horizontal navigation** - Left/Right arrows for daemon actions
+- ✅ **Prepares for Phase 9B** - Layout ready for toggle view system
+
+**Changes:**
+
+#### 9A.1: Update main layout structure
+**File:** `src/tui/screens/dashboard.rs:94-127`
+
+**Current:**
+```rust
+let chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(8),  // Daemon status + controls
+        Constraint::Length(10), // Info cards
+        Constraint::Min(0),     // Daemon logs
+    ])
+    .split(area);
+```
+
+**New:**
+```rust
+let chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(10), // Top section (daemon + sink + summary)
+        Constraint::Min(0),     // Bottom section (logs - Phase 9B will add toggle)
+    ])
+    .split(area);
+
+// Split top section horizontally (left: daemon+summary, right: sink+history)
+let top_chunks = Layout::default()
+    .direction(Direction::Horizontal)
+    .constraints([
+        Constraint::Percentage(50), // Left column
+        Constraint::Percentage(50), // Right column
+    ])
+    .split(chunks[0]);
+
+// Split left column vertically (daemon above, summary below)
+let left_chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(6),  // Daemon control
+        Constraint::Length(4),  // Window summary
+    ])
+    .split(top_chunks[0]);
+
+// Render sections
+render_daemon_section(frame, left_chunks[0], screen_state, daemon_running, uptime, pid);
+render_window_summary(frame, left_chunks[1], window_count, matched_count);
+render_sink_card(frame, top_chunks[1], config, recent_switches);
+
+// Bottom section renders logs (Phase 9B will add toggle to windows)
+render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
+```
+
+**Rationale:** Restructure top section into compact two-column layout. Bottom section keeps logs only for now (Phase 9B adds toggle).
+
+#### 9A.2: Redesign daemon section (compact)
+**File:** `src/tui/screens/dashboard.rs:130-206`
+
+**Current:** Horizontal split (40% status, 60% actions)
+
+**New:** Vertical layout, all info above actions
+```rust
+fn render_daemon_section(
+    frame: &mut Frame,
+    area: Rect,
+    screen_state: &DashboardScreen,
+    daemon_running: bool,
+    uptime: Option<Duration>, // New parameter
+    pid: Option<u32>,          // New parameter
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Daemon ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let (status_text, status_color, status_icon) = if daemon_running {
+        ("RUNNING", colors::UI_SUCCESS, "●")
+    } else {
+        ("STOPPED", colors::UI_ERROR, "○")
+    };
+
+    // Build status lines
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(status_icon, Style::default().fg(status_color)),
+            Span::raw(" "),
+            Span::styled(
+                status_text,
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    // Add uptime if running
+    if let Some(up) = uptime {
+        let uptime_str = format_duration(up); // Helper function
+        lines.push(Line::from(vec![
+            Span::styled("Uptime: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(uptime_str, Style::default().fg(colors::UI_TEXT)),
+        ]));
+    }
+
+    // Add PID if running
+    if let Some(p) = pid {
+        lines.push(Line::from(vec![
+            Span::styled("PID: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(p.to_string(), Style::default().fg(colors::UI_TEXT)),
+        ]));
+    }
+
+    // Action buttons (compact, horizontal layout)
+    // Future: Add Enable/Disable for systemd unit management
+    let actions = ["Start", "Stop", "Restart"];
+    let mut action_spans = Vec::new();
+    for (i, action) in actions.iter().enumerate() {
+        let is_selected = i == screen_state.selected_action;
+        let style = if is_selected {
+            Style::default()
+                .fg(colors::UI_SELECTED)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors::UI_SELECTED_BG)
+        } else {
+            Style::default().fg(colors::UI_TEXT)
+        };
+
+        if i > 0 {
+            action_spans.push(Span::raw(" "));
+        }
+
+        let prefix = if is_selected { "[▶ " } else { "[  " };
+        let suffix = "]";
+        action_spans.push(Span::styled(prefix, style));
+        action_spans.push(Span::styled(*action, style));
+        action_spans.push(Span::styled(suffix, style));
+    }
+
+    // Future: Add spacing + Enable/Disable buttons
+    // action_spans.push(Span::raw("   ")); // Visual separator
+    // Add Enable/Disable with same pattern
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(action_spans));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+```
+
+**Helper function to add:**
+```rust
+/// Format duration as human-readable string (e.g., "2h 34m")
+fn format_duration(d: Duration) -> String {
+    let total_secs = d.as_secs();
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else if mins > 0 {
+        format!("{mins}m")
+    } else {
+        format!("{total_secs}s")
+    }
+}
+```
+
+#### 9A.3: Add window summary section (left bottom)
+**File:** `src/tui/screens/dashboard.rs` (new function)
+
+**New compact summary card:**
+```rust
+/// Render window summary card (shows count)
+fn render_window_summary(
+    frame: &mut Frame,
+    area: Rect,
+    window_count: usize,
+    matched_count: usize,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Windows ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Total: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                window_count.to_string(),
+                Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                matched_count.to_string(),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+```
+
+**Rationale:** Simple summary shows window statistics. Phase 9B will add toggle hint.
+
+#### 9A.4: Enhance sink section with switch history
+**File:** `src/tui/screens/dashboard.rs:208-253`
+
+**Current:** Shows only current sink icon + description
+
+**New:** Add recent switch history
+```rust
+fn render_sink_card(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    recent_switches: &[(String, String, String)], // New param: (timestamp, sink_desc, reason)
+) {
+    let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
+
+    let (sink_desc, sink_icon) = current_sink_name
+        .as_ref()
+        .and_then(|name| {
+            config.sinks.iter().find(|s| &s.name == name).map(|s| {
+                (
+                    s.desc.clone(),
+                    s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+                )
+            })
+        })
+        .unwrap_or(("Unknown".to_string(), "?".to_string()));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" "),
+            Span::styled(
+                sink_desc,
+                Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // Add recent switches (max 3)
+    if !recent_switches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Recent Switches:",
+            Style::default().fg(colors::UI_SECONDARY),
+        )));
+
+        for (time, sink, reason) in recent_switches.iter().take(3) {
+            lines.push(Line::from(vec![
+                Span::styled(time, Style::default().fg(colors::UI_SECONDARY)),
+                Span::raw(" → "),
+                Span::styled(sink, Style::default().fg(colors::UI_TEXT)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("({reason})"),
+                    Style::default().fg(colors::UI_SECONDARY),
+                ),
+            ]));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Active Sink ")
+                .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
+        );
+
+    frame.render_widget(paragraph, area);
+}
+```
+
+**Note:** Recent switches data structure needs to be added to `App` state (see 9A.6).
+
+#### 9A.5: Add Left/Right navigation for daemon actions
+**File:** `src/tui/input.rs` (in `handle_dashboard_input` function)
+
+**Add horizontal navigation:**
+```rust
+fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Left/Right for horizontal daemon action navigation
+        KeyCode::Left => {
+            app.dashboard_screen.select_previous();
+        }
+        KeyCode::Right => {
+            app.dashboard_screen.select_next();
+        }
+
+        // Enter to execute selected daemon action
+        KeyCode::Enter => {
+            // Execute action based on selected_action index
+            // ... existing implementation ...
+        }
+
+        _ => {}
+    }
+}
+```
+
+**Rationale:** Horizontal arrow keys for horizontal button layout. Phase 9B will add view-aware scrolling.
+
+**Note:** When Enable/Disable are added in the future, `select_next()` will need to handle 5 actions instead of 3.
+
+#### 9A.6: Update context bar for dashboard
+**File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
+
+**Update dashboard keybinds:**
+```rust
+(Screen::Dashboard, ScreenMode::DashboardList) => {
+    vec![
+        ("[←→]", "Select Action"),
+        ("[Enter]", "Execute"),
+    ]
+},
+```
+
+**Rationale:** Shows horizontal navigation and execution. Phase 9B will add view-aware scrolling hints.
+
+#### 9A.7: Data requirements for Phase 9A features
+
+**Uptime and PID tracking:**
+- Add to `App` state: `daemon_start_time: Option<Instant>`
+- Calculate uptime: `Instant::now() - daemon_start_time`
+- Get PID from IPC status response (may need to enhance IPC protocol)
+
+**Recent switches history:**
+- Add to `App` state: `recent_switches: VecDeque<SwitchEvent>` (max 10 entries)
+- `SwitchEvent { timestamp: String, sink_desc: String, reason: String }`
+- Update on sink changes (manual or rule-based)
+
+**Matched windows count:**
+- Already available via IPC `list-windows` response
+- Filter windows where `current_rule_desc.is_some()`
+- Count for summary display
+
+**Checklist:**
+- [ ] Update main layout to hybrid design (left: daemon+summary, right: sink+history, bottom: logs)
+- [ ] Redesign daemon section (compact, vertical, 6 lines)
+- [ ] Add uptime and PID display to daemon section
+- [ ] Add format_duration helper function
+- [ ] Add horizontal action button layout with spacing for future Enable/Disable
+- [ ] Create render_window_summary function (shows counts)
+- [ ] Enhance sink section with recent switches history
+- [ ] Add recent_switches state to App
+- [ ] Add daemon_start_time to App state
+- [ ] Add Left/Right arrow keybindings for action selection
+- [ ] Update context bar for dashboard (←→ and Enter)
+- [ ] Test layout on small terminals (minimum width/height)
+- [ ] Test Left/Right navigation through action buttons
+- [ ] Verify daemon controls still work (start/stop/restart)
+- [ ] Run clippy and tests
+
+---
+
+### Phase 9B: Toggle View System
+
+**Goal:** Add toggle-based view switching between Logs and Windows to eliminate keybinding conflicts and maximize space for both views.
+
+**Dependencies:** Phase 9A (layout restructure must be complete)
+
+**Problem Solved:**
+- Up/Down and PageUp/PageDown would be confusing with two scrollable sections
+- Users wouldn't know which section they're scrolling
+
+**Solution:**
+- Only ONE scrollable section active at a time
+- Press 'w' to toggle between Logs view and Windows view
+- Clear visual feedback shows which view is active
+- Context bar updates dynamically based on current view
+
+**Files to modify:**
+- `src/tui/screens/dashboard.rs` - Add toggle logic, window tracking section
+- `src/tui/app.rs` - Add `DashboardView` enum and window scroll state
+- `src/tui/input.rs` - Add 'w' toggle and view-aware scrolling
+- `src/tui/mod.rs` - Update context bar to be view-aware
+
+**Changes:**
+
+#### 9B.1: Add DashboardView enum and toggle state
+**File:** `src/tui/screens/dashboard.rs`
+
+**Add enum:**
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardView {
+    Logs,
+    Windows,
+}
+```
+
+**Update DashboardScreen:**
+```rust
+pub(crate) struct DashboardScreen {
+    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize,    // Lines scrolled back from the end
+    pub window_scroll_offset: usize, // Window list scroll offset (NEW)
+    pub current_view: DashboardView, // Toggle between Logs and Windows (NEW)
+}
+
+impl DashboardScreen {
+    pub(crate) fn new() -> Self {
+        Self {
+            selected_action: 0,
+            log_scroll_offset: 0,
+            window_scroll_offset: 0,
+            current_view: DashboardView::Logs, // Default to logs
+        }
+    }
+
+    /// Toggle between logs and windows view
+    pub(crate) fn toggle_view(&mut self) {
+        self.current_view = match self.current_view {
+            DashboardView::Logs => DashboardView::Windows,
+            DashboardView::Windows => DashboardView::Logs,
+        };
+    }
+
+    // Add window scroll methods
+    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
+        self.window_scroll_offset = (self.window_scroll_offset + page_size)
+            .min(total_windows.saturating_sub(page_size));
+    }
+
+    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
+        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
+    }
+
+    pub(crate) fn scroll_windows_to_top(&mut self) {
+        self.window_scroll_offset = 0;
+    }
+}
+```
+
+#### 9B.2: Update layout to conditionally render logs OR windows
+**File:** `src/tui/screens/dashboard.rs:94-127` (modify Phase 9A.1 bottom section)
+
+**Update bottom section logic:**
+```rust
+// Bottom section renders logs OR windows based on current_view
+match screen_state.current_view {
+    DashboardView::Logs => {
+        render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
+    }
+    DashboardView::Windows => {
+        render_window_tracking(frame, chunks[1], windows, matched_windows, screen_state.window_scroll_offset);
+    }
+}
+```
+
+**Rationale:** Toggle between full-width logs or full-width windows based on user selection.
+
+#### 9B.3: Create window tracking section
+**File:** `src/tui/screens/dashboard.rs` (new function)
+
+**New comprehensive window display:**
+```rust
+/// Render window tracking section (full width bottom section when view is Windows)
+fn render_window_tracking(
+    frame: &mut Frame,
+    area: Rect,
+    windows: &[crate::ipc::WindowInfo],
+    matched_windows: &[(u64, String)], // (window_id, rule_name)
+    scroll_offset: usize,
+) {
+    let title = " Window Tracking - [w] to toggle back to Logs ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(colors::UI_HIGHLIGHT));
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    let available_height = inner.height as usize;
+
+    // Count matched vs total
+    let matched_count = matched_windows.len();
+    let total_count = windows.len();
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{matched_count}/{total_count} windows"),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // Build window list with matched windows first
+    let mut window_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_matched)
+
+    // Add matched windows
+    for (win_id, rule_name) in matched_windows {
+        if let Some(win) = windows.iter().find(|w| w.id == *win_id) {
+            window_lines.push((
+                Line::from(vec![
+                    Span::styled("● ", Style::default().fg(colors::UI_SUCCESS)),
+                    Span::styled(
+                        truncate(&win.app_id, 15),
+                        Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" → "),
+                    Span::styled(rule_name, Style::default().fg(colors::UI_HIGHLIGHT)),
+                ]),
+                true,
+            ));
+
+            // Optional: Show truncated title on second line
+            if !win.title.is_empty() {
+                window_lines.push((
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            truncate(&win.title, 30),
+                            Style::default().fg(colors::UI_SECONDARY),
+                        ),
+                    ]),
+                    true,
+                ));
+            }
+        }
+    }
+
+    // Add unmatched windows
+    for win in windows {
+        if !matched_windows.iter().any(|(id, _)| *id == win.id) {
+            window_lines.push((
+                Line::from(vec![
+                    Span::styled("○ ", Style::default().fg(colors::UI_SECONDARY)),
+                    Span::styled(
+                        truncate(&win.app_id, 15),
+                        Style::default().fg(colors::UI_SECONDARY),
+                    ),
+                    Span::raw(" (no match)"),
+                ]),
+                false,
+            ));
+        }
+    }
+
+    // Calculate visible range based on scroll offset
+    let total_lines = window_lines.len();
+    let visible_count = available_height.saturating_sub(2); // Reserve space for header
+    let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
+    let end_idx = (start_idx + visible_count).min(total_lines);
+
+    // Add visible window lines
+    for (line, _) in window_lines.iter().skip(start_idx).take(end_idx - start_idx) {
+        lines.push(line.clone());
+    }
+
+    // Add scroll indicator if needed
+    if total_lines > visible_count {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  [{}/{}] ", start_idx + 1, total_lines),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+            Span::styled(
+                "PgUp/PgDn to scroll",
+                Style::default().fg(colors::UI_SECONDARY).italic(),
+            ),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Truncate string with ellipsis if too long
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+```
+
+#### 9B.4: Update log viewer title to show toggle hint
+**File:** `src/tui/screens/dashboard.rs:427-486`
+
+**Current title logic:**
+```rust
+let title = if scroll_offset > 0 {
+    if daemon_running {
+        format!(" Daemon Logs (Live) - ↑{scroll_offset} ")
+    } else {
+        format!(" Daemon Logs (Stopped) - ↑{scroll_offset} ")
+    }
+} else if daemon_running {
+    " Daemon Logs (Live) ".to_string()
+} else {
+    " Daemon Logs (Stopped) ".to_string()
+};
+```
+
+**New title logic:**
+```rust
+let title = if scroll_offset > 0 {
+    if daemon_running {
+        format!(" Daemon Logs (Live) - ↑{scroll_offset} - [w] to toggle to Windows ")
+    } else {
+        format!(" Daemon Logs (Stopped) - ↑{scroll_offset} - [w] to toggle to Windows ")
+    }
+} else if daemon_running {
+    " Daemon Logs (Live) - [w] to toggle to Windows ".to_string()
+} else {
+    " Daemon Logs (Stopped) - [w] to toggle to Windows ".to_string()
+};
+```
+
+**Rationale:** Consistent toggle hint reminds users they can switch to window view.
+
+#### 9B.5: Update window summary to show toggle hint
+**File:** `src/tui/screens/dashboard.rs` (modify 9A.3 function)
+
+**Update render_window_summary to accept and display current view:**
+```rust
+fn render_window_summary(
+    frame: &mut Frame,
+    area: Rect,
+    window_count: usize,
+    matched_count: usize,
+    current_view: DashboardView, // NEW parameter
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Windows ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{matched_count}/{window_count}"),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                match current_view {
+                    DashboardView::Logs => "Press [w] to view details",
+                    DashboardView::Windows => "Viewing below (press [w] for logs)",
+                },
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+```
+
+**Rationale:** Dynamic hint shows user how to toggle and what the current state is.
+
+#### 9B.6: Add 'w' toggle keybinding
+**File:** `src/tui/input.rs` (in `handle_dashboard_input` function, modify Phase 9A.5)
+
+**Add toggle to existing navigation:**
+```rust
+fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Toggle between Logs and Windows view (NEW)
+        KeyCode::Char('w') if key.modifiers == KeyModifiers::NONE => {
+            app.dashboard_screen.toggle_view();
+        }
+
+        // Left/Right for horizontal daemon action navigation (from Phase 9A)
+        KeyCode::Left => {
+            app.dashboard_screen.select_previous();
+        }
+        KeyCode::Right => {
+            app.dashboard_screen.select_next();
+        }
+
+        // Up/Down for scrolling (context-aware based on current view)
+        KeyCode::Up => {
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    let total = app.daemon_logs.len();
+                    let visible = 20; // Calculate from visible area
+                    app.dashboard_screen.scroll_logs_up(total, visible);
+                }
+                DashboardView::Windows => {
+                    // Single-line scroll not implemented for windows (use PageUp/Down)
+                }
+            }
+        }
+        KeyCode::Down => {
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    app.dashboard_screen.scroll_logs_down();
+                }
+                DashboardView::Windows => {
+                    // Single-line scroll not implemented for windows (use PageUp/Down)
+                }
+            }
+        }
+
+        // Page Up/Down for scrolling (context-aware based on current view)
+        KeyCode::PageUp => {
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    let total = app.daemon_logs.len();
+                    let page_size = 10; // Calculate from visible area
+                    app.dashboard_screen.scroll_logs_page_up(total, page_size);
+                }
+                DashboardView::Windows => {
+                    let page_size = 5;
+                    let total = app.all_windows.len();
+                    app.dashboard_screen.scroll_windows_page_up(page_size, total);
+                }
+            }
+        }
+        KeyCode::PageDown => {
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    let page_size = 10;
+                    app.dashboard_screen.scroll_logs_page_down(page_size);
+                }
+                DashboardView::Windows => {
+                    let page_size = 5;
+                    app.dashboard_screen.scroll_windows_page_down(page_size);
+                }
+            }
+        }
+        KeyCode::Home => {
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    app.dashboard_screen.scroll_logs_to_bottom(); // Reset to latest
+                }
+                DashboardView::Windows => {
+                    app.dashboard_screen.scroll_windows_to_top();
+                }
+            }
+        }
+
+        // Enter to execute selected daemon action
+        KeyCode::Enter => {
+            // Execute action based on selected_action index
+            // ... existing implementation ...
+        }
+
+        _ => {}
+    }
+}
+```
+
+**Rationale:**
+- 'w' toggles between views (mnemonic: **W**indows)
+- Provides immediate visual feedback (summary and title update)
+
+#### 9B.7: Add view-aware scrolling keybindings
+**File:** `src/tui/input.rs` (continue `handle_dashboard_input` function from 9B.6)
+
+**Add view-aware scrolling (already shown in 9B.6 code above):**
+
+The Up/Down, PageUp/PageDown, and Home keys are handled with match on `current_view`:
+- **Logs view:** Up/Down and PageUp/PageDown scroll the log viewer
+- **Windows view:** Only PageUp/PageDown scroll (Up/Down reserved for future item selection)
+
+**Rationale:**
+- Scrolling behavior adapts to which view is active
+- No keybinding confusion - only ONE scrollable section at a time
+- Up/Down work only in Logs view (Windows view uses PageUp/PageDown only)
+
+**Note:** When Enable/Disable are added in the future, `select_next()` will need to handle 5 actions instead of 3.
+
+#### 9B.8: Update context bar to be view-aware
+**File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
+
+**Update dashboard keybinds to be view-aware:**
+```rust
+// Context bar should show different hints based on current view
+impl App {
+    fn get_dashboard_context_keybinds(&self) -> Vec<(&str, &str)> {
+        let mut keybinds = vec![
+            ("[←→]", "Select Action"),
+            ("[Enter]", "Execute"),
+        ];
+
+        // Add view-specific scrolling hints
+        match self.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                keybinds.push(("[↑↓/PgUp/PgDn]", "Scroll Logs"));
+                keybinds.push(("[w]", "View Windows"));
+            }
+            DashboardView::Windows => {
+                keybinds.push(("[PgUp/PgDn]", "Scroll Windows"));
+                keybinds.push(("[w]", "View Logs"));
+            }
+        }
+
+        keybinds
+    }
+}
+
+// Then in render_context_bar:
+(Screen::Dashboard, ScreenMode::DashboardList) => {
+    app.get_dashboard_context_keybinds()
+}
+```
+
+**Rationale:**
+- Context bar dynamically updates based on which view is active
+- Shows 'w' toggle key with current context ("View Windows" vs "View Logs")
+- Scroll hints reflect what the keys will actually do in the current view
+- Clear visual feedback about current mode
+
+#### 9B.9: Data requirements for Phase 9B features
+
+**Matched windows data:**
+- Already available via IPC `list-windows` response
+- Filter windows where `current_rule_desc.is_some()`
+- Pair with rule name for display in window tracking section
+- Create list of `(window_id, rule_name)` tuples for matched windows
+
+**Window scroll state:**
+- Already added in 9B.1 (`window_scroll_offset: usize`)
+- Tracks scroll position when viewing Windows view
+- Independent from log scroll offset
+
+**Checklist:**
+- [ ] Add DashboardView enum (Logs, Windows) to dashboard.rs
+- [ ] Add view toggle state to DashboardScreen struct
+- [ ] Add window scroll state to DashboardScreen struct
+- [ ] Add toggle_view() method to DashboardScreen
+- [ ] Add scroll methods for windows (page_up, page_down, to_top)
+- [ ] Update Phase 9A.1 layout to conditionally render logs OR windows
+- [ ] Create render_window_tracking function (full width bottom section)
+- [ ] Add truncate helper for long strings
+- [ ] Update log viewer title to show toggle hint "[w] to toggle to Windows"
+- [ ] Update window tracking title to show "[w] to toggle back to Logs"
+- [ ] Update window summary to show toggle hint and current view
+- [ ] Add 'w' key handler to toggle between views
+- [ ] Add view-aware Up/Down keybindings (logs only)
+- [ ] Add view-aware PageUp/PageDown keybindings (both views)
+- [ ] Add view-aware Home keybinding (both views)
+- [ ] Add get_dashboard_context_keybinds() method to App
+- [ ] Update context bar to call get_dashboard_context_keybinds()
+- [ ] Test toggle between logs and windows view
+- [ ] Test scrolling in logs view
+- [ ] Test scrolling in windows view
+- [ ] Test with zero windows, zero matched windows
+- [ ] Verify no keybinding confusion (only one scrollable section at a time)
+- [ ] Run clippy and tests
+
+**Benefits:**
+- ✅ **No keybinding confusion** - Only one scrollable section at a time
+- ✅ **Window tracking gets maximum space** - Full width when in Windows view
+- ✅ **Logs get maximum space** - Full width when in Logs view
+- ✅ **Clear visual feedback** - Title bar shows current view and toggle hint
+- ✅ **Context bar updates dynamically** - Shows relevant keybindings for current view
+- ✅ **Can show detailed info per window** - No cramping in full-width layout
+- ✅ **Scrolling handles large lists gracefully** - PageUp/PageDown support
+- ✅ **Daemon/sink sections stay compact** - Top section remains scannable
+- ✅ **Recent switches provide useful context** - See switch history at a glance
+- ✅ **Matched vs unmatched windows clearly distinguished** - Visual indicators (● vs ○)
+- ✅ **Uptime/PID adds useful monitoring info** - See daemon health at a glance
+- ✅ **Simple toggle mechanism** - Just press 'w' to switch views
+
+**Edge cases to handle:**
+- Empty window list (show "No windows tracked" message in Windows view)
+- No matched windows (show count as "0/N windows")
+- Daemon not running (hide uptime/PID, disable controls appropriately)
+- Very long app_id or title (truncate with ellipsis)
+- Terminal too narrow (minimum width ~80 cols recommended)
+- Action selection wraps at boundaries (left on first = last, right on last = first)
+- Toggle while scrolled (preserve scroll offset when switching views)
+- Empty logs (show "No logs available" message in Logs view)
+
+**Future Extensions (Not in Phase 9):**
+- **Enable/Disable systemd unit actions:**
+  - Add two more buttons: `[  Enable]  [  Disable]`
+  - Visual spacing (3 spaces) between Start/Stop/Restart and Enable/Disable groups
+  - Update `selected_action` range to 0-4 (5 actions total)
+  - These would call `systemctl --user enable/disable pwsw.service`
+  - Only show if systemd unit is detected/installed
+
+- **Arrow key navigation in Windows view:**
+  - Use Up/Down arrows to select individual windows (not just scroll)
+  - Show selected window with highlight
+  - Press Enter to copy window info or perform action
+  - This would replace PageUp/PageDown in Windows view with more granular control
+
+---
+
 ## Future Enhancements (Out of Scope)
 
 These are not part of this plan but could be considered later:
 
-1. **Logs Screen:** Add `[5] Logs` for daemon log viewer (currently only in Dashboard)
-2. **Stats Screen:** Add `[6] Stats` for PipeWire statistics/performance monitoring
-3. **Vim-style navigation:** Add `h`/`l` for prev/next screen (power users)
-4. **Color customization:** Allow users to configure tab bar colors in settings
-5. **Tab bar icons:** Add optional icons/symbols before screen names (e.g., 📊 Dashboard)
+1. **Stats Screen:** Add `[5] Stats` for PipeWire statistics/performance monitoring
+2. **Vim-style navigation:** Add `h`/`l` for prev/next screen (power users)
+3. **Color customization:** Allow users to configure tab bar colors in settings
+4. **Tab bar icons:** Add optional icons/symbols before screen names (e.g., 📊 Dashboard)
+5. **Modal-specific hints:** Add subtle inline hints for text editing shortcuts in modals (see Phase 8.9)
+6. **Dashboard window detail modal:** Press Enter on a window to see full details in a modal
 
 ---
 
