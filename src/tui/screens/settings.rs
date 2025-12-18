@@ -269,11 +269,7 @@ fn render_settings_list(
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Settings ([↑/↓]select [Space]/[Enter]toggle)"),
-    );
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Settings "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -377,7 +373,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Select Log Level (↑/↓, Enter to confirm, Esc to cancel)")
+            .title("Select Log Level")
             .style(Style::default().bg(ratatui::style::Color::Black)),
     );
 

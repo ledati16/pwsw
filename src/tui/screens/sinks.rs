@@ -263,11 +263,7 @@ fn render_list(
             )
             .bottom_margin(1),
     )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Sinks ([a]dd [e]dit [x]delete [Space]toggle [Ctrl+S]save) "),
-    );
+    .block(Block::default().borders(Borders::ALL).title(" Sinks "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -300,30 +296,15 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Create modal in center
     let popup_area = centered_modal(modal_size::MEDIUM, area);
 
-    // Dynamic layout: hide help if height is too small
-    let show_help = area.height > 20;
-
-    let constraints = if show_help {
-        vec![
-            Constraint::Length(3), // Name field
-            Constraint::Length(3), // Desc field
-            Constraint::Length(3), // Icon field
-            Constraint::Length(3), // Default checkbox
-            Constraint::Min(0),    // Help text
-        ]
-    } else {
-        vec![
-            Constraint::Length(3), // Name field
-            Constraint::Length(3), // Desc field
-            Constraint::Length(3), // Icon field
-            Constraint::Length(3), // Default checkbox
-        ]
-    };
-
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .margin(2)
-        .constraints(constraints)
+        .constraints([
+            Constraint::Length(3), // Name field
+            Constraint::Length(3), // Desc field
+            Constraint::Length(3), // Icon field
+            Constraint::Length(3), // Default checkbox
+        ])
         .split(popup_area);
 
     // Background block
@@ -384,20 +365,6 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 
     let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
     frame.render_widget(checkbox, chunks[3]);
-
-    // Help text (only if space allows)
-    if show_help && chunks.len() > 4 {
-        let help_line = crate::tui::widgets::modal_help_line(&[
-            ("Tab", "Next"),
-            ("Shift+Tab", "Prev"),
-            ("Enter", "Save/Select"),
-            ("Esc", "Cancel"),
-        ]);
-
-        let help_widget = Paragraph::new(vec![Line::from(""), help_line])
-            .style(Style::default().fg(colors::UI_SECONDARY));
-        frame.render_widget(help_widget, chunks[4]);
-    }
 }
 
 /// Render delete confirmation modal
@@ -431,11 +398,6 @@ fn render_delete_confirmation(
             Span::raw("Node Name: "),
             Span::styled(&sink.name, Style::default().fg(colors::UI_SECONDARY)),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Press Enter to confirm, Esc to cancel",
-            Style::default().fg(colors::UI_WARNING),
-        )]),
     ];
 
     let block = Block::default()
@@ -558,7 +520,7 @@ fn render_sink_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Select Node (↑/↓, Enter to confirm, Esc to cancel)")
+                .title("Select Node")
                 .style(Style::default().bg(ratatui::style::Color::Black)),
         )
         .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))

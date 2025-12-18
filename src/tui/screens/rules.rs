@@ -314,11 +314,7 @@ fn render_list(
         )
         .bottom_margin(1),
     )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Rules ([a]dd [e]dit [x]delete [↑/↓]priority [Ctrl+S]save) "),
-    );
+    .block(Block::default().borders(Borders::ALL).title(" Rules "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -363,34 +359,17 @@ fn render_editor(
 
     let popup_area = centered_modal(modal_size::LARGE, area);
 
-    // Dynamic layout: hide help if height is too small
-    let show_help = area.height > 25;
-
-    let constraints = if show_help {
-        vec![
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(2)
+        .constraints([
             Constraint::Length(3), // App ID pattern
             Constraint::Length(3), // Title pattern
             Constraint::Length(3), // Sink selector
             Constraint::Length(3), // Description
             Constraint::Length(3), // Notify toggle
             Constraint::Min(6),    // Live preview
-            Constraint::Length(1), // Help text
-        ]
-    } else {
-        vec![
-            Constraint::Length(3), // App ID pattern
-            Constraint::Length(3), // Title pattern
-            Constraint::Length(3), // Sink selector
-            Constraint::Length(3), // Description
-            Constraint::Length(3), // Notify toggle
-            Constraint::Min(3),    // Live preview (reduced min height)
-        ]
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints(constraints)
+        ])
         .split(popup_area);
 
     let block = Block::default()
@@ -503,20 +482,6 @@ fn render_editor(
         preview,
         throbber_state,
     );
-
-    // Help text
-    if show_help && chunks.len() > 6 {
-        let help_line = crate::tui::widgets::modal_help_line(&[
-            ("Tab", "Next"),
-            ("Shift+Tab", "Prev"),
-            ("Enter", "Save/Select"),
-            ("Space", "Toggle"),
-            ("Esc", "Cancel"),
-        ]);
-        let help_widget =
-            Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
-        frame.render_widget(help_widget, chunks[6]);
-    }
 }
 
 /// Render live regex preview showing matching windows
@@ -721,7 +686,7 @@ fn render_sink_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
+                .title("Select Target Sink")
                 .style(Style::default().bg(ratatui::style::Color::Black)),
         )
         .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))
@@ -806,11 +771,6 @@ fn render_delete_confirmation(
             Span::raw("Sink: "),
             Span::styled(&rule.sink_ref, Style::default().fg(colors::UI_WARNING)),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Press Enter to confirm, Esc to cancel",
-            Style::default().fg(colors::UI_WARNING),
-        )]),
     ];
 
     let block = Block::default()
