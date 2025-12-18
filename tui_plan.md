@@ -45,7 +45,76 @@
 
 ---
 
+## Color System Baseline (Already Completed)
+
+**Status:** ✅ Implemented and merged
+
+Before starting Phase 1, note that a comprehensive color enhancement system has already been implemented. All new code in this plan must use these semantic color constants.
+
+### Completed Color Work
+
+1. **New Semantic Color Constants** (`src/style.rs`):
+   - `UI_FOCUS` (Magenta) - Focused input fields and active tab
+   - `UI_VALID` (Green) - Valid input states
+   - `UI_INVALID` (Red) - Invalid input states
+   - `UI_MATCHED` (Green) - Items matching rules
+   - `UI_UNMATCHED` (Dark Gray) - Items not matching rules
+
+2. **Validation-Aware Input Rendering** (`src/tui/widgets.rs`):
+   - `ValidationState` enum for input field states
+   - `render_validated_input()` function with tri-state border colors
+   - Focus border uses magenta, validation shows green/red when unfocused
+
+3. **Tab Bar Enhancement** (`src/tui/mod.rs`):
+   - Active tab now uses **magenta** (`UI_FOCUS`) instead of cyan
+   - Inactive tabs use gray (`UI_SECONDARY`)
+
+4. **TUI Log Highlighting** (`src/tui/screens/dashboard.rs`):
+   - Daemon lifecycle events highlighted in logs viewer
+   - "Starting PWSW daemon" and "Monitoring window events" - bold green
+   - "Loaded", "sinks,", "rules" - cyan highlights
+   - "Shutting down", "Config file changed" - yellow warnings
+
+### Color Constant Reference Table
+
+**IMPORTANT:** Always use semantic constants from `colors` module, never hardcoded `Color::` values.
+
+| Constant | Color | Use Case | Example |
+|----------|-------|----------|---------|
+| `UI_FOCUS` | Magenta | Focused elements, active selections | Active tab, focused input border, selected button |
+| `UI_HIGHLIGHT` | Cyan | Important UI elements, key hints | Key shortcuts in context bar, sink names |
+| `UI_SUCCESS` | Green | Success states, positive actions | Running daemon status, valid operations |
+| `UI_ERROR` | Red | Error states, failures | Stopped daemon, failed validation, errors |
+| `UI_WARNING` | Yellow | Warnings, caution states | Config reload, shutdown messages, warnings |
+| `UI_SECONDARY` | Gray | Less important text, labels | Dimmed text, helper labels, placeholders |
+| `UI_TEXT` | White | Normal text content | Standard body text, descriptions |
+| `UI_STAT` | Yellow | Statistics, counts | Numbers, metrics, tallies |
+| `UI_SELECTED` | Cyan | Selected items in lists | List item selection (use with `UI_SELECTED_BG`) |
+| `UI_SELECTED_BG` | Dark Gray | Background for selections | Selected item background |
+| `UI_VALID` | Green | Valid input state | Green border after successful validation |
+| `UI_INVALID` | Red | Invalid input state | Red border for validation errors |
+| `UI_MATCHED` | Green | Items matching rules/filters | Windows that match configured rules |
+| `UI_UNMATCHED` | Dark Gray | Items not matching | Windows without matching rules (dimmed) |
+
+**Color Accessibility:**
+- Always pair state colors with visual indicators (icons: ●/○, ✓/✗)
+- Don't rely solely on color to convey state (supports color vision deficiency)
+- Use bold/dim modifiers to reinforce semantic meaning
+
+---
+
 ## Implementation Phases
+
+### Phase 0: Prerequisites Checklist
+
+**Before starting Phase 1, verify:**
+- [ ] Understand semantic color system (see table above)
+- [ ] Never use `Color::Cyan`, `Color::Green`, etc. - always use `colors::` constants
+- [ ] Read CLAUDE.md sections on terminal styling, performance patterns, and snapshot pattern
+- [ ] Understand blocking vs async (never call PipeWire in render functions)
+- [ ] Know when to use `spawn_blocking` for I/O operations
+
+---
 
 ### Phase 1: Update Screen Keybindings
 
@@ -206,7 +275,8 @@ Use ratatui's `Title::from()` with `Alignment::Right` for help indicator
 **Recommended:** Option B (cleaner separation of concerns)
 
 **Implementation notes:**
-- Help indicator should be cyan/styled to match `?` key prominence
+- Help indicator should use `colors::UI_FOCUS` (magenta) to make it prominent and match active tab styling
+- Alternative: Use `colors::UI_HIGHLIGHT` (cyan) if you prefer consistency with key hints
 - Should always be visible (not dependent on `show_help` state)
 - Acts as visual reminder that `?` opens help
 
@@ -253,9 +323,9 @@ Line::from(vec![
 ```rust
 Line::from(vec![
     Span::raw("[q] Quit  "),
-    Span::styled("[Tab/Shift-Tab]", Style::default().fg(Color::Cyan)),
+    Span::styled("[Tab/Shift-Tab]", Style::default().fg(colors::UI_HIGHLIGHT)),
     Span::raw(" Cycle  "),
-    Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
+    Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
     Span::raw(" Save"),
 ])
 ```
@@ -422,6 +492,24 @@ Before moving to Phase 6, verify:
 
 **Changes:**
 
+**⚠️ IMPORTANT: Implementation Order**
+
+Phase 6 code examples use `ScreenMode` enum and `get_mode()` helper from Phase 8. You have two options:
+
+**Option A - Implement Phase 8 First (Recommended):**
+- Complete Phase 8 (sections 8.1 and 8.8) before Phase 6 to have `ScreenMode` enum and `get_mode()` available
+- Then implement Phase 6 using the code as written below
+- This avoids temporary code and gives you the clean final state immediately
+
+**Option B - Phase 6 Initial Implementation:**
+- Initial Phase 6: Use direct mode field access instead of `get_mode()`
+  - Example: `(Screen::Sinks, app.sinks_screen.mode)` instead of `(Screen::Dashboard, ScreenMode::DashboardList)`
+  - Match on tuples like: `(app.current_screen, app.sinks_screen.mode)`
+- Phase 8: Refactor to use unified `ScreenMode` enum and `get_mode()` helper
+- This approach works but requires refactoring later
+
+**This plan shows Option A code (cleaner final state).**
+
 #### 6.1: Add context bar rendering function
 **File:** `src/tui/mod.rs`
 
@@ -434,7 +522,8 @@ fn render_context_bar(
     app: &App, // Full app access for view-aware contexts (e.g., Dashboard)
 ) {
     use ratatui::text::{Line, Span};
-    use ratatui::style::{Style, Color};
+    use ratatui::style::Style;
+    use crate::style::colors;
 
     let keybinds = match (app.current_screen, app.get_mode()) {
         (Screen::Dashboard, ScreenMode::DashboardList) => {
@@ -480,7 +569,7 @@ fn render_context_bar(
         if i > 0 {
             spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled(*key, Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled(*key, Style::default().fg(colors::UI_HIGHLIGHT)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*desc));
     }
@@ -490,6 +579,8 @@ fn render_context_bar(
     frame.render_widget(paragraph, area);
 }
 ```
+
+**Note:** Phase 8 will add `get_mode()` helper to `App` and create the `ScreenMode` enum.
 
 #### 6.2: Update layout to include context bar
 **File:** `src/tui/mod.rs:555-562`
@@ -547,9 +638,9 @@ render_footer(
 ```rust
 Line::from(vec![
     Span::raw("[q] Quit  "),
-    Span::styled("[Tab/Shift-Tab]", Style::default().fg(Color::Cyan)),
+    Span::styled("[Tab/Shift-Tab]", Style::default().fg(colors::UI_HIGHLIGHT)),
     Span::raw(" Cycle  "),
-    Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
+    Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
     Span::raw(" Save"),
 ])
 ```
@@ -558,11 +649,11 @@ Line::from(vec![
 ```rust
 Line::from(vec![
     Span::raw("[q] Quit  "),
-    Span::styled("[↑↓]", Style::default().fg(Color::Cyan)),
+    Span::styled("[↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
     Span::raw(" Navigate  "),
-    Span::styled("[Tab/Shift-Tab]", Style::default().fg(Color::Cyan)),
+    Span::styled("[Tab/Shift-Tab]", Style::default().fg(colors::UI_HIGHLIGHT)),
     Span::raw(" Cycle  "),
-    Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
+    Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
     Span::raw(" Save"),
 ])
 ```
@@ -837,7 +928,7 @@ fn render_context_bar(
             ("[Space]", "Toggle"),
             ("[Esc]", "Cancel"),
         ],
-        (Screen::Sinks, ScreenMode::SinkSelector) => vec![
+        (Screen::Sinks, ScreenMode::SinkNodeSelector) => vec![
             ("[↑↓]", "Navigate"),
             ("[Enter]", "Confirm"),
             ("[Esc]", "Cancel"),
@@ -1030,12 +1121,12 @@ pub(crate) enum ScreenMode {
 
     // Sink modal modes
     SinkEditor,
-    SinkSelector,
+    SinkNodeSelector,      // Selecting PipeWire node for sink
     SinkDeleteConfirm,
 
     // Rule modal modes
     RuleEditor,
-    RuleSinkSelector,
+    RuleSinkSelector,      // Selecting target sink for rule
     RuleDeleteConfirm,
 }
 
@@ -1046,7 +1137,7 @@ impl App {
             Screen::Sinks => match self.sinks_screen.mode {
                 SinksMode::List => ScreenMode::SinksList,
                 SinksMode::AddEdit => ScreenMode::SinkEditor,
-                SinksMode::SelectSink => ScreenMode::SinkSelector,
+                SinksMode::SelectSink => ScreenMode::SinkNodeSelector,
                 SinksMode::Delete => ScreenMode::SinkDeleteConfirm,
             },
             Screen::Rules => match self.rules_screen.mode {
@@ -1113,6 +1204,12 @@ let hint = Line::from(vec![
 **Goal:** Reorganize dashboard top section to be more compact and informative, preparing for the toggle view system in Phase 9B.
 
 **Dependencies:** Phase 6 (context bars), Phase 8 (ScreenMode)
+
+**Imports needed for Phase 9A:**
+```rust
+use std::time::{Duration, Instant};
+use std::collections::VecDeque;
+```
 
 **Current Layout Issues (Phase 9A Addresses):**
 
@@ -1208,7 +1305,7 @@ let left_chunks = Layout::default()
 // Render sections
 render_daemon_section(frame, left_chunks[0], screen_state, daemon_running, uptime, pid);
 render_window_summary(frame, left_chunks[1], window_count, matched_count);
-render_sink_card(frame, top_chunks[1], config, recent_switches);
+render_sink_card(frame, top_chunks[1], current_sink_desc, current_sink_icon, recent_switches);
 
 // Bottom section renders logs (Phase 9B will add toggle to windows)
 render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
@@ -1312,8 +1409,17 @@ fn render_daemon_section(
 ```
 
 **Helper function to add:**
+
+Location: Add to `src/tui/screens/dashboard.rs` as a private module-level function.
+
 ```rust
 /// Format duration as human-readable string (e.g., "2h 34m")
+///
+/// # Examples
+/// ```
+/// let d = Duration::from_secs(9000);
+/// assert_eq!(format_duration(d), "2h 30m");
+/// ```
 fn format_duration(d: Duration) -> String {
     let total_secs = d.as_secs();
     let hours = total_secs / 3600;
@@ -1378,33 +1484,26 @@ fn render_window_summary(
 **Current:** Shows only current sink icon + description
 
 **New:** Add recent switch history
+
+**⚠️ CRITICAL PERFORMANCE NOTE:**
+**NEVER call `PipeWire::get_default_sink_name()` in a render function!** This blocks the entire TUI on every frame.
+Instead, cache the current sink info in `App` state and pass it as a parameter.
+
 ```rust
 fn render_sink_card(
     frame: &mut Frame,
     area: Rect,
-    config: &Config,
-    recent_switches: &[(String, String, String)], // New param: (timestamp, sink_desc, reason)
+    current_sink_desc: &str,              // ✅ Pre-computed from App state
+    current_sink_icon: &str,              // ✅ Pre-computed from App state
+    recent_switches: &[(String, String, String)], // (timestamp, sink_desc, reason)
 ) {
-    let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
-
-    let (sink_desc, sink_icon) = current_sink_name
-        .as_ref()
-        .and_then(|name| {
-            config.sinks.iter().find(|s| &s.name == name).map(|s| {
-                (
-                    s.desc.clone(),
-                    s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
-                )
-            })
-        })
-        .unwrap_or(("Unknown".to_string(), "?".to_string()));
-
+    // No PipeWire calls here! Just render the cached data.
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::styled(current_sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" "),
             Span::styled(
-                sink_desc,
+                current_sink_desc,
                 Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
             ),
         ]),
@@ -1493,37 +1592,80 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
 
 #### 9A.7: Data requirements for Phase 9A features
 
+**⚠️ CRITICAL: Performance and Caching Strategy**
+
+All dashboard data must be cached in `App` state and updated periodically via background polling. **NEVER** call blocking I/O (PipeWire, IPC) from render functions.
+
+**Recommended polling strategy:**
+- Poll IPC status every 1-2 seconds via `tokio::time::interval`
+- Update cached state in `App` from poll results
+- Render functions only read from cached state (no I/O)
+
+**Current sink tracking:**
+- Add to `App` state: `current_sink_name: Option<String>`
+- Add to `App` state: `current_sink_desc: String` (cached from config lookup)
+- Add to `App` state: `current_sink_icon: String` (cached from config lookup)
+- Update via periodic IPC poll (call `get_default_sink_name()` in background task, NOT in render)
+- When sink changes, look up desc/icon from config and cache them
+- Default values: `("Unknown", "?")` if sink not found
+
+**Error handling for IPC polling:**
+- If IPC call fails, keep last known good state (don't reset to "Unknown")
+- Log error to TUI status message: "Warning: Failed to update daemon status"
+- Retry on next polling interval (exponential backoff optional but not required)
+- Only reset to "Unknown" / hide data if daemon truly stopped:
+  - Check if socket file exists (`/run/user/$UID/pwsw.sock`)
+  - If socket doesn't exist, daemon is stopped - reset all cached state
+  - If socket exists but IPC fails, it's a transient error - keep cached data
+- Set `daemon_running = false` only when socket doesn't exist
+
 **Uptime and PID tracking:**
 - Add to `App` state: `daemon_start_time: Option<Instant>`
-- Calculate uptime: `Instant::now() - daemon_start_time`
+- Add to `App` state: `daemon_pid: Option<u32>`
+- Calculate uptime: `Instant::now().duration_since(daemon_start_time)`
 - Get PID from IPC status response (may need to enhance IPC protocol)
+- Update via periodic IPC poll
 
 **Recent switches history:**
 - Add to `App` state: `recent_switches: VecDeque<SwitchEvent>` (max 10 entries)
 - `SwitchEvent { timestamp: String, sink_desc: String, reason: String }`
 - Update on sink changes (manual or rule-based)
+- Push to front, pop from back when exceeding max size
+- Format timestamp as `HH:MM` for display
 
 **Matched windows count:**
 - Already available via IPC `list-windows` response
 - Filter windows where `current_rule_desc.is_some()`
 - Count for summary display
+- Update via periodic IPC poll
 
 **Checklist:**
 - [ ] Update main layout to hybrid design (left: daemon+summary, right: sink+history, bottom: logs)
 - [ ] Redesign daemon section (compact, vertical, 6 lines)
 - [ ] Add uptime and PID display to daemon section
-- [ ] Add format_duration helper function
+- [ ] Add format_duration helper function (with doc comments and examples)
 - [ ] Add horizontal action button layout with spacing for future Enable/Disable
 - [ ] Create render_window_summary function (shows counts)
 - [ ] Enhance sink section with recent switches history
-- [ ] Add recent_switches state to App
-- [ ] Add daemon_start_time to App state
+- [ ] Add current_sink_name/desc/icon cache to App state
+- [ ] Add recent_switches state to App (VecDeque with max 10)
+- [ ] Add daemon_start_time and daemon_pid to App state
+- [ ] Implement periodic IPC polling (1-2 second interval) to update cached state
 - [ ] Add Left/Right arrow keybindings for action selection
 - [ ] Update context bar for dashboard (←→ and Enter)
-- [ ] Test layout on small terminals (minimum width/height)
-- [ ] Test Left/Right navigation through action buttons
+- [ ] **Performance test:** Verify NO blocking calls in render functions
+- [ ] **Performance test:** Verify dashboard renders smoothly (no lag spikes)
+- [ ] Test layout on small terminals (minimum width/height ~80x24)
+- [ ] Test Left/Right navigation wraps correctly at boundaries
 - [ ] Verify daemon controls still work (start/stop/restart)
-- [ ] Run clippy and tests
+- [ ] Test with daemon stopped (uptime/PID should hide gracefully)
+- [ ] Test with no recent switches (should show cleanly)
+- [ ] Test with unknown sink (should show "Unknown" / "?")
+- [ ] Run `cargo clippy --all-targets -- -W clippy::pedantic`
+- [ ] Run `cargo test`
+- [ ] Run `bash scripts/verify_tests_safe.sh`
+- [ ] **Documentation:** Add `# Errors` and `# Panics` sections to all new public functions
+- [ ] **Documentation:** Document all helper functions with examples
 
 ---
 
@@ -1665,12 +1807,12 @@ fn render_window_tracking(
     // Build window list with matched windows first
     let mut window_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_matched)
 
-    // Add matched windows
+    // Add matched windows (use UI_MATCHED color - perfect use case!)
     for (win_id, rule_name) in matched_windows {
         if let Some(win) = windows.iter().find(|w| w.id == *win_id) {
             window_lines.push((
                 Line::from(vec![
-                    Span::styled("● ", Style::default().fg(colors::UI_SUCCESS)),
+                    Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),  // ✅ Green for matched
                     Span::styled(
                         truncate(&win.app_id, 15),
                         Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
@@ -1697,15 +1839,15 @@ fn render_window_tracking(
         }
     }
 
-    // Add unmatched windows
+    // Add unmatched windows (use UI_UNMATCHED color - perfect use case!)
     for win in windows {
         if !matched_windows.iter().any(|(id, _)| *id == win.id) {
             window_lines.push((
                 Line::from(vec![
-                    Span::styled("○ ", Style::default().fg(colors::UI_SECONDARY)),
+                    Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),  // ✅ Dark gray for unmatched
                     Span::styled(
                         truncate(&win.app_id, 15),
-                        Style::default().fg(colors::UI_SECONDARY),
+                        Style::default().fg(colors::UI_UNMATCHED),  // ✅ Dim the text too
                     ),
                     Span::raw(" (no match)"),
                 ]),
@@ -1744,7 +1886,15 @@ fn render_window_tracking(
     frame.render_widget(paragraph, inner);
 }
 
-/// Truncate string with ellipsis if too long
+/// Truncate string with ellipsis if exceeds max length
+///
+/// Location: Add to `src/tui/screens/dashboard.rs` as a private helper function.
+///
+/// # Examples
+/// ```
+/// assert_eq!(truncate("hello", 10), "hello");
+/// assert_eq!(truncate("hello world", 8), "hello w…");
+/// ```
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
