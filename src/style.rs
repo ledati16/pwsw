@@ -315,4 +315,19 @@ pub mod colors {
 
     /// Color for normal UI text (white)
     pub const UI_TEXT: Color = Color::White;
+
+    /// Color for focused input fields (magenta, use with bold for borders)
+    pub const UI_FOCUS: Color = Color::Magenta;
+
+    /// Color for valid input/state (green, lighter than success)
+    pub const UI_VALID: Color = Color::Green;
+
+    /// Color for invalid input/state (red, for validation feedback)
+    pub const UI_INVALID: Color = Color::Red;
+
+    /// Color for matched/active items (green, for items that match rules)
+    pub const UI_MATCHED: Color = Color::Green;
+
+    /// Color for unmatched/inactive items (dark gray, dimmed)
+    pub const UI_UNMATCHED: Color = Color::DarkGray;
 }

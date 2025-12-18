@@ -3,6 +3,7 @@
 //! Provides an interactive terminal interface for managing PWSW configuration,
 //! monitoring daemon status, and controlling sinks.
 
+use crate::style::colors;
 use crate::tui::app::{AppUpdate, BgCommand};
 use anyhow::{Context, Result};
 use crossterm::cursor::Show;
@@ -15,7 +16,7 @@ use futures_util::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Tabs},
     Terminal,
@@ -670,7 +671,7 @@ fn render_header(
             Span::styled(
                 "[unsaved]",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
         ])
@@ -681,10 +682,10 @@ fn render_header(
     let tabs = Tabs::new(titles)
         .block(Block::default().borders(Borders::ALL).title(title_line))
         .select(selected)
-        .style(Style::default().fg(Color::White))
+        .style(Style::default().fg(colors::UI_SECONDARY))
         .highlight_style(
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_FOCUS)
                 .add_modifier(Modifier::BOLD),
         );
 
@@ -710,13 +711,13 @@ fn render_footer(
             .constraints([Constraint::Length(3), Constraint::Min(0)])
             .split(area);
 
-        let throb = Throbber::default().style(Style::default().fg(Color::Yellow));
+        let throb = Throbber::default().style(Style::default().fg(colors::UI_WARNING));
         frame.render_stateful_widget(throb, chunks[0], throbber_state);
 
         let text = if let Some(msg) = status_message {
             Line::from(vec![
                 Span::raw(" "),
-                Span::styled(msg, Style::default().fg(Color::White)),
+                Span::styled(msg, Style::default().fg(colors::UI_TEXT)),
             ])
         } else {
             Line::from(vec![Span::raw("Daemon action in progress...")])
@@ -726,23 +727,23 @@ fn render_footer(
     } else {
         let text = if let Some(msg) = status_message {
             Line::from(vec![
-                Span::styled("● ", Style::default().fg(Color::Yellow)),
-                Span::styled(msg, Style::default().fg(Color::White)),
+                Span::styled("● ", Style::default().fg(colors::UI_WARNING)),
+                Span::styled(msg, Style::default().fg(colors::UI_TEXT)),
             ])
         } else {
             Line::from(vec![
                 Span::raw("[q] Quit  "),
-                Span::styled("[?]", Style::default().fg(Color::Cyan)),
+                Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::raw(" Help  [Tab] Next  "),
-                Span::styled("[d]", Style::default().fg(Color::Cyan)),
+                Span::styled("[d]", Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::raw("ashboard  "),
-                Span::styled("[s]", Style::default().fg(Color::Cyan)),
+                Span::styled("[s]", Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::raw("inks  "),
-                Span::styled("[r]", Style::default().fg(Color::Cyan)),
+                Span::styled("[r]", Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::raw("ules  Se"),
-                Span::styled("[t]", Style::default().fg(Color::Cyan)),
+                Span::styled("[t]", Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::raw("tings  "),
-                Span::styled("Ctrl+S", Style::default().fg(Color::Green)),
+                Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
                 Span::raw(" Save"),
             ])
         };

@@ -12,7 +12,7 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 use crate::config::{Rule, SinkConfig};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
-use crate::tui::widgets::{centered_modal, modal_size, render_input};
+use crate::tui::widgets::{centered_modal, modal_size, render_input, render_validated_input, ValidationState};
 use regex::Regex;
 use std::fmt::Write;
 
@@ -397,22 +397,40 @@ fn render_editor(
         .style(Style::default().bg(ratatui::style::Color::Black));
     frame.render_widget(block, popup_area);
 
-    // App ID pattern field
-    render_input(
+    // App ID pattern field with real-time validation
+    let app_id_validation = if screen_state.editor.app_id_pattern.value().is_empty() {
+        ValidationState::Neutral
+    } else if screen_state.editor.compiled_app_id.is_some() {
+        ValidationState::Valid
+    } else {
+        ValidationState::Invalid
+    };
+
+    render_validated_input(
         frame,
         chunks[0],
         "App ID Pattern (regex):",
         &screen_state.editor.app_id_pattern.input,
         screen_state.editor.focused_field == 0,
+        app_id_validation,
     );
 
-    // Title pattern field
-    render_input(
+    // Title pattern field with real-time validation
+    let title_validation = if screen_state.editor.title_pattern.value().is_empty() {
+        ValidationState::Neutral // Empty is OK for title (optional)
+    } else if screen_state.editor.compiled_title.is_some() {
+        ValidationState::Valid
+    } else {
+        ValidationState::Invalid
+    };
+
+    render_validated_input(
         frame,
         chunks[1],
         "Title Pattern (optional regex):",
         &screen_state.editor.title_pattern.input,
         screen_state.editor.focused_field == 1,
+        title_validation,
     );
 
     // Sink selector button - find sink description if set
