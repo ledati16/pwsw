@@ -422,17 +422,28 @@ pub async fn run() -> Result<()> {
 }
 
 /// Main application loop
+#[allow(clippy::too_many_lines)] // Event loop logic is cohesive, hard to split meaningfully
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
 ) -> Result<()> {
     use std::time::Instant;
-    const ANIM_MS: u64 = 120; // spinner frame every 120ms
-                              // Use small tick for rendering; background updates arrive via app.bg_update_rx
-    let mut tick = tokio::time::interval(std::time::Duration::from_millis(80));
 
-    // Animation timing (time-based spinner)
+    // Frame rate constants
+    const TARGET_FPS: u64 = 60;
+    const MIN_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;  // 16ms (actual: ~62.5 FPS)
+    const ANIM_MS: u64 = 120; // spinner frame every 120ms
+
+    // Timing state
+    let mut last_frame = Instant::now();
     let mut last_anim = Instant::now();
+
+    // Ensure initial render happens
+    app.dirty = true;
+
+    // Tick provides 60 FPS baseline for animations and frame rate limiting
+    // Rendering happens after every select! iteration if dirty and enough time elapsed
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(MIN_FRAME_TIME_MS));
 
     // Event stream for async input handling
     let mut events = EventStream::new();
@@ -447,44 +458,7 @@ async fn run_app<B: ratatui::backend::Backend>(
                     last_anim = now;
                     app.dirty = true;
                 }
-
-                // Note: Input handling is now done in the `events.next()` branch
-
-                // Only redraw when needed (dirty) or when animation advanced
-                if app.dirty {
-                    #[cfg(debug_assertions)]
-                    {
-                        use std::time::Instant as Ti;
-                        let start = Ti::now();
-                        terminal.draw(|frame| render_ui(frame, app))?;
-                        let elapsed = start.elapsed();
-
-                        // Extra context for slow-frame logs
-                        if elapsed.as_millis() > 15 {
-                            let run_ms = elapsed.as_millis();
-                            let screen_name = format!("{:?}", app.current_screen);
-                            let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
-                            let windows = app.window_count;
-                            tracing::debug!(
-                                run_ms,
-                                screen = %screen_name,
-                                preview_pending,
-                                windows,
-                                "slow frame"
-                            );
-                        }
-                    }
-                    #[cfg(not(debug_assertions))]
-                    {
-                        terminal.draw(|frame| render_ui(frame, app))?;
-                    }
-                    app.dirty = false;
-                }
-
-                // Check if we should quit
-                if app.should_quit {
-                    break;
-                }
+                // Note: Rendering happens at end of loop, not here
             }
             // Handle input events
             Some(Ok(event)) = events.next() => {
@@ -542,6 +516,51 @@ async fn run_app<B: ratatui::backend::Backend>(
                     }
                 }
             }
+        }
+
+        // Common render path: Execute after every select! branch
+        // This ensures immediate visual feedback for all state changes
+        if app.dirty {
+            let now = Instant::now();
+            let elapsed_since_last_frame = now.duration_since(last_frame);
+
+            // Frame rate limiter: Only render if enough time has passed
+            if elapsed_since_last_frame.as_millis() >= u128::from(MIN_FRAME_TIME_MS) {
+                #[cfg(debug_assertions)]
+                {
+                    let start = Instant::now();
+                    terminal.draw(|frame| render_ui(frame, app))?;
+                    let render_time = start.elapsed();
+
+                    // Log slow frames (threshold increased since we're targeting 60 FPS)
+                    if render_time.as_millis() > u128::from(MIN_FRAME_TIME_MS) {
+                        let run_ms = render_time.as_millis();
+                        let screen_name = format!("{:?}", app.current_screen);
+                        let preview_pending = app.preview.as_ref().is_some_and(|p| p.pending);
+                        let windows = app.window_count;
+                        tracing::debug!(
+                            run_ms,
+                            screen = %screen_name,
+                            preview_pending,
+                            windows,
+                            "slow frame (exceeds 16ms target)"
+                        );
+                    }
+                }
+                #[cfg(not(debug_assertions))]
+                {
+                    terminal.draw(|frame| render_ui(frame, app))?;
+                }
+
+                app.dirty = false;
+                last_frame = now;
+            }
+            // If frame rate limited, dirty flag stays true so we render next tick
+        }
+
+        // Check if we should quit (moved out of tick branch)
+        if app.should_quit {
+            break;
         }
     }
 
