@@ -200,20 +200,9 @@ pub(crate) enum DaemonAction {
 }
 
 impl App {
-    /// Create a new application instance
-    ///
-    /// # Errors
-    /// Returns an error if config loading fails.
-    pub(crate) fn new() -> Result<Self> {
-        let config = Config::load()?;
-        Self::with_config(config)
-    }
-
     /// Create a new application instance with a pre-loaded config
-    ///
-    /// # Errors
-    /// Returns an error if initialization fails.
-    pub(crate) fn with_config(config: Config) -> Result<Self> {
+    #[must_use]
+    pub(crate) fn with_config(config: Config) -> Self {
         // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
         let settings_screen = SettingsScreen::new(&config.settings);
@@ -221,7 +210,7 @@ impl App {
         let rules_screen = RulesScreen::new();
         // Initialize sinks display cache from loaded config
         sinks_screen.update_display_descs(&config.sinks);
-        Ok(Self {
+        Self {
             current_screen: Screen::Dashboard,
             should_quit: false,
             config,
@@ -249,7 +238,7 @@ impl App {
             bg_update_rx: None,
             preview_in_tx: None,
             dirty: true,
-        })
+        }
     }
 
     /// Navigate to a specific screen

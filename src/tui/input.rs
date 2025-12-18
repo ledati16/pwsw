@@ -207,14 +207,45 @@ fn handle_screen_specific_input(app: &mut App, key: KeyEvent) {
 
 /// Handle dashboard screen input
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
-    match key.code {
-        KeyCode::Up => {
+    use crossterm::event::KeyModifiers;
+
+    match (key.code, key.modifiers) {
+        // Up/Down without modifiers: select actions
+        (KeyCode::Up, KeyModifiers::NONE) => {
             app.dashboard_screen.select_previous();
         }
-        KeyCode::Down => {
+        (KeyCode::Down, KeyModifiers::NONE) => {
             app.dashboard_screen.select_next();
         }
-        KeyCode::Enter => {
+
+        // Shift+Up/Shift+Down: scroll logs line by line
+        (KeyCode::Up, KeyModifiers::SHIFT) => {
+            let total = app.daemon_log_lines.len();
+            let visible = 20; // Rough estimate, will be recalculated in scroll method
+            app.dashboard_screen.scroll_logs_up(total, visible);
+        }
+        (KeyCode::Down, KeyModifiers::SHIFT) => {
+            app.dashboard_screen.scroll_logs_down();
+        }
+
+        // PageUp/PageDown: scroll logs by page
+        (KeyCode::PageUp, _) => {
+            let total = app.daemon_log_lines.len();
+            let visible = 20; // Rough estimate
+            app.dashboard_screen.scroll_logs_page_up(total, visible);
+        }
+        (KeyCode::PageDown, _) => {
+            let visible = 20; // Rough estimate
+            app.dashboard_screen.scroll_logs_page_down(visible);
+        }
+
+        // End: jump to latest logs
+        (KeyCode::End, _) => {
+            app.dashboard_screen.scroll_logs_to_bottom();
+        }
+
+        // Enter: execute selected daemon action
+        (KeyCode::Enter, KeyModifiers::NONE) => {
             // Send the daemon action to the background worker if available
             let action = match app.dashboard_screen.selected_action {
                 0 => DaemonAction::Start,
@@ -231,6 +262,7 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 app.set_status("Daemon action requested (no background worker)".to_string());
             }
         }
+
         _ => {}
     }
 }

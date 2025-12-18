@@ -9,15 +9,35 @@ use ratatui::{
 };
 
 use crate::config::Config;
+use crate::style::colors;
+
+/// Patterns to highlight in log messages (keyword, color, bold)
+const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
+    // Important events (bold)
+    ("Rule matched:", colors::LOG_EVENT, true),
+    ("Switching:", colors::LOG_EVENT, true),
+    ("Window opened:", colors::LOG_EVENT, true),
+    ("Window closed:", colors::LOG_EVENT_CLOSE, true),
+    ("Tracked window closed:", colors::LOG_EVENT_CLOSE, true),
+    ("Set default sink:", colors::LOG_EVENT, true),
+    // Field labels (not bold, just markers)
+    ("app_id=", colors::LOG_KEYWORD, false),
+    ("title=", colors::LOG_KEYWORD, false),
+    ("id=", colors::LOG_KEYWORD, false),
+];
 
 /// Dashboard screen state
 pub(crate) struct DashboardScreen {
     pub selected_action: usize, // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
 }
 
 impl DashboardScreen {
     pub(crate) fn new() -> Self {
-        Self { selected_action: 0 }
+        Self {
+            selected_action: 0,
+            log_scroll_offset: 0,
+        }
     }
 
     pub(crate) fn select_next(&mut self) {
@@ -30,6 +50,33 @@ impl DashboardScreen {
         if self.selected_action > 0 {
             self.selected_action -= 1;
         }
+    }
+
+    /// Scroll logs up (show older logs)
+    pub(crate) fn scroll_logs_up(&mut self, total_lines: usize, visible_lines: usize) {
+        let max_offset = total_lines.saturating_sub(visible_lines);
+        self.log_scroll_offset = (self.log_scroll_offset + 1).min(max_offset);
+    }
+
+    /// Scroll logs down (show newer logs)
+    pub(crate) fn scroll_logs_down(&mut self) {
+        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(1);
+    }
+
+    /// Scroll logs up by page
+    pub(crate) fn scroll_logs_page_up(&mut self, total_lines: usize, visible_lines: usize) {
+        let max_offset = total_lines.saturating_sub(visible_lines);
+        self.log_scroll_offset = (self.log_scroll_offset + visible_lines).min(max_offset);
+    }
+
+    /// Scroll logs down by page
+    pub(crate) fn scroll_logs_page_down(&mut self, visible_lines: usize) {
+        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(visible_lines);
+    }
+
+    /// Reset scroll to show latest logs
+    pub(crate) fn scroll_logs_to_bottom(&mut self) {
+        self.log_scroll_offset = 0;
     }
 }
 
@@ -70,7 +117,13 @@ pub(crate) fn render_dashboard(
     render_stats_card(frame, card_chunks[1], window_count);
 
     // Daemon Logs
-    render_log_viewer(frame, chunks[2], daemon_logs, daemon_running);
+    render_log_viewer(
+        frame,
+        chunks[2],
+        daemon_logs,
+        daemon_running,
+        screen_state.log_scroll_offset,
+    );
 }
 
 /// Render daemon status widget with control buttons
@@ -94,16 +147,16 @@ fn render_daemon_section(
 
     // Left: Status Indicator
     let (status_text, status_color, status_icon) = if daemon_running {
-        ("RUNNING", Color::Green, "●")
+        ("RUNNING", colors::UI_SUCCESS, "●")
     } else {
-        ("STOPPED", Color::Red, "○")
+        ("STOPPED", colors::UI_ERROR, "○")
     };
 
     let status_content = vec![
         Line::from(""),
         Line::from(vec![Span::styled(
             "Daemon Status",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         )]),
         Line::from(vec![
             Span::styled(status_icon, Style::default().fg(status_color)),
@@ -129,16 +182,16 @@ fn render_daemon_section(
             let is_selected = i == screen_state.selected_action;
             let style = if is_selected {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(colors::UI_SELECTED)
                     .add_modifier(Modifier::BOLD)
-                    .bg(Color::DarkGray)
+                    .bg(colors::UI_SELECTED_BG)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(colors::UI_TEXT)
             };
 
             let prefix = if is_selected { " ▶ " } else { "   " };
             ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(prefix, Style::default().fg(colors::UI_HIGHLIGHT)),
                 Span::styled(*action, style),
             ]))
         })
@@ -171,19 +224,19 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
     let text = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled(sink_name, Style::default().fg(Color::Cyan)),
+            Span::styled(sink_name, Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" "),
             Span::styled(
                 sink_desc,
                 Style::default()
-                    .fg(Color::White)
+                    .fg(colors::UI_TEXT)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
         Line::from(Span::styled(
             "Active Audio Output",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         )),
     ];
 
@@ -192,7 +245,7 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Active Sink ")
-                .border_style(Style::default().fg(Color::Cyan)),
+                .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
         )
         .alignment(Alignment::Center);
 
@@ -207,7 +260,7 @@ fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
             Span::styled(
                 window_count.to_string(),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(colors::UI_STAT)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" windows"),
@@ -215,7 +268,7 @@ fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
         Line::from(""),
         Line::from(Span::styled(
             "Currently Tracked",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         )),
     ];
 
@@ -224,11 +277,143 @@ fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Statistics ")
-                .border_style(Style::default().fg(Color::Yellow)),
+                .border_style(Style::default().fg(colors::UI_STAT)),
         )
         .alignment(Alignment::Center);
 
     frame.render_widget(paragraph, area);
+}
+
+/// Highlight patterns in log message (`app_id`, `title`, `Rule matched`, etc.)
+fn highlight_message(message: &str) -> Vec<Span<'_>> {
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+
+    // Track positions of all pattern matches
+    let mut matches: Vec<(usize, usize, Color, bool)> = Vec::new();
+
+    for (pattern, color, bold) in HIGHLIGHT_PATTERNS {
+        let mut start = 0;
+        while let Some(pos) = message[start..].find(pattern) {
+            let abs_pos = start + pos;
+            let end = abs_pos + pattern.len();
+            matches.push((abs_pos, end, *color, *bold));
+            start = end;
+        }
+    }
+
+    // Sort matches by position, then by length (longer first for same position)
+    matches.sort_by(|(start_a, end_a, _, _), (start_b, end_b, _, _)| {
+        start_a.cmp(start_b).then_with(|| (end_b - start_b).cmp(&(end_a - start_a)))
+    });
+
+    // Remove overlapping matches (keep first/longer match)
+    let mut filtered_matches: Vec<(usize, usize, Color, bool)> = Vec::new();
+    for (start, end, color, bold) in matches {
+        // Check if this match overlaps with any already filtered match
+        let overlaps = filtered_matches
+            .iter()
+            .any(|(f_start, f_end, _, _)| start < *f_end && end > *f_start);
+        if !overlaps {
+            filtered_matches.push((start, end, color, bold));
+        }
+    }
+
+    // Build spans with highlighted patterns
+    for (start, end, color, bold) in filtered_matches {
+        // Add text before this match
+        if last_end < start {
+            spans.push(Span::styled(
+                &message[last_end..start],
+                Style::default().fg(colors::LOG_MESSAGE),
+            ));
+        }
+
+        // Add highlighted match
+        let style = if bold {
+            Style::default().fg(color).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(color)
+        };
+        spans.push(Span::styled(&message[start..end], style));
+        last_end = end;
+    }
+
+    // Add remaining text
+    if last_end < message.len() {
+        spans.push(Span::styled(
+            &message[last_end..],
+            Style::default().fg(colors::LOG_MESSAGE),
+        ));
+    }
+
+    // If no matches, return whole message
+    if spans.is_empty() {
+        spans.push(Span::styled(message, Style::default().fg(colors::LOG_MESSAGE)));
+    }
+
+    spans
+}
+
+/// Parse and style a log line with colored components
+fn style_log_line(line: &str) -> Line<'_> {
+    // Try to parse log format: "TIMESTAMP LEVEL message"
+    // Example: "2025-12-17T10:00:00.123456Z  INFO message here"
+
+    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+
+    if parts.len() < 3 {
+        // Malformed line, return as-is
+        return Line::from(Span::raw(line));
+    }
+
+    let full_timestamp = parts[0];
+    let level = parts[1].trim();
+    let message = parts[2];
+
+    // Extract time-only from ISO 8601 timestamp (HH:MM:SS)
+    // Format: "2025-12-17T10:00:00.123456Z" -> "10:00:00"
+    let timestamp = if let Some(time_start) = full_timestamp.find('T') {
+        let time_part = &full_timestamp[time_start + 1..];
+        // Take up to the first '.' (milliseconds) or 8 chars (HH:MM:SS)
+        if let Some(dot_pos) = time_part.find('.') {
+            &time_part[..dot_pos.min(8)]
+        } else {
+            &time_part[..8.min(time_part.len())]
+        }
+    } else {
+        // Fallback: use full timestamp if parsing fails
+        full_timestamp
+    };
+
+    // Determine colors based on log level
+    let (level_color, level_bold) = match level {
+        "TRACE" => (colors::LOG_LEVEL_TRACE, false),
+        "DEBUG" => (colors::LOG_LEVEL_DEBUG, false),
+        "INFO" => (colors::LOG_LEVEL_INFO, false),
+        "WARN" => (colors::LOG_LEVEL_WARN, true),
+        "ERROR" => (colors::LOG_LEVEL_ERROR, true),
+        _ => (colors::LOG_MESSAGE, false),
+    };
+
+    let level_style = if level_bold {
+        Style::default().fg(level_color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(level_color)
+    };
+
+    // Build styled line with colored components
+    let mut line_spans = vec![
+        Span::styled(timestamp, Style::default().fg(colors::LOG_TIMESTAMP)),
+        Span::raw(" "),
+        Span::styled(level, level_style),
+        Span::raw(" "),
+    ];
+
+    // Add highlighted message spans
+    line_spans.extend(highlight_message(message));
+
+    Line::from(line_spans)
 }
 
 /// Render daemon log viewer
@@ -237,43 +422,47 @@ fn render_log_viewer(
     area: Rect,
     daemon_logs: &[String],
     daemon_running: bool,
+    scroll_offset: usize,
 ) {
-    let title = if daemon_running {
-        " Daemon Logs (Live) "
+    let available_height = area.height.saturating_sub(2) as usize; // Account for borders
+    let total_lines = daemon_logs.len();
+
+    // Calculate which lines to show based on scroll offset
+    // scroll_offset=0 means showing latest logs (bottom)
+    // scroll_offset>0 means scrolled back in history
+    let end_index = total_lines.saturating_sub(scroll_offset);
+    let start_index = end_index.saturating_sub(available_height);
+
+    // Build title with scroll indicator
+    let title = if scroll_offset > 0 {
+        if daemon_running {
+            format!(" Daemon Logs (Live) - ↑{scroll_offset} ")
+        } else {
+            format!(" Daemon Logs (Stopped) - ↑{scroll_offset} ")
+        }
+    } else if daemon_running {
+        " Daemon Logs (Live) ".to_string()
     } else {
-        " Daemon Logs (Stopped) "
+        " Daemon Logs (Stopped) ".to_string()
     };
 
     let border_color = if daemon_running {
-        Color::Green
+        colors::UI_BORDER_ACTIVE
     } else {
-        Color::Gray
+        colors::UI_BORDER_INACTIVE
     };
 
-    // Show last N lines that fit in the area
-    let available_height = area.height.saturating_sub(2) as usize; // Account for borders
-    let start_index = daemon_logs.len().saturating_sub(available_height);
     let visible_logs: Vec<Line> = daemon_logs
         .iter()
         .skip(start_index)
-        .map(|line| {
-            // Simple log line styling: dim for timestamps, normal for the rest
-            if line.contains("INFO") {
-                Line::from(Span::styled(line, Style::default().fg(Color::Gray)))
-            } else if line.contains("WARN") {
-                Line::from(Span::styled(line, Style::default().fg(Color::Yellow)))
-            } else if line.contains("ERROR") {
-                Line::from(Span::styled(line, Style::default().fg(Color::Red)))
-            } else {
-                Line::from(Span::raw(line))
-            }
-        })
+        .take(end_index - start_index)
+        .map(|line| style_log_line(line))
         .collect();
 
     let log_text = if visible_logs.is_empty() {
         vec![Line::from(Span::styled(
             "No logs available. Start the daemon to see logs here.",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         ))]
     } else {
         visible_logs

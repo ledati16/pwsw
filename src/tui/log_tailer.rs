@@ -3,9 +3,11 @@
 //! Reads and tails the daemon log file located at `~/.local/share/pwsw/daemon.log`
 
 use anyhow::{Context, Result};
+use notify::{Event, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
+use std::sync::mpsc;
 
 /// Maximum number of log lines to keep in memory
 const MAX_LOG_LINES: usize = 1000;
@@ -15,19 +17,40 @@ pub(crate) struct LogTailer {
     log_path: PathBuf,
     lines: Vec<String>,
     last_position: u64,
+    _watcher: notify::RecommendedWatcher,
+    event_rx: mpsc::Receiver<notify::Result<Event>>,
 }
 
 impl LogTailer {
-    /// Create a new log tailer
+    /// Create a new log tailer with file watching
     ///
     /// # Errors
-    /// Returns an error if the log file path cannot be determined
+    /// Returns an error if the log file path cannot be determined or watcher creation fails
     pub fn new() -> Result<Self> {
         let log_path = crate::daemon::get_log_file_path()?;
+
+        // Create file watcher for log file
+        let (tx, rx) = mpsc::channel();
+        let mut watcher = notify::recommended_watcher(tx)
+            .context("Failed to create file watcher")?;
+
+        // Watch the parent directory (file may not exist yet)
+        let watch_dir = log_path.parent()
+            .context("Log file has no parent directory")?;
+
+        // Create directory if it doesn't exist
+        std::fs::create_dir_all(watch_dir)
+            .with_context(|| format!("Failed to create log directory: {}", watch_dir.display()))?;
+
+        watcher.watch(watch_dir, RecursiveMode::NonRecursive)
+            .with_context(|| format!("Failed to watch log directory: {}", watch_dir.display()))?;
+
         Ok(Self {
             log_path,
             lines: Vec::new(),
             last_position: 0,
+            _watcher: watcher,
+            event_rx: rx,
         })
     }
 
@@ -105,16 +128,25 @@ impl LogTailer {
         &self.lines
     }
 
-    /// Get the log file path
+    /// Check if log file has been modified (non-blocking)
+    ///
+    /// Drains all pending file watch events and returns true if the log file was modified.
     #[must_use]
-    pub fn log_path(&self) -> &PathBuf {
-        &self.log_path
-    }
+    pub fn has_file_changed(&mut self) -> bool {
+        let mut changed = false;
+        let log_file_name = self.log_path.file_name();
 
-    /// Check if the log file exists
-    #[must_use]
-    pub fn log_exists(&self) -> bool {
-        self.log_path.exists()
+        // Drain all pending events (non-blocking)
+        while let Ok(event_result) = self.event_rx.try_recv() {
+            if let Ok(event) = event_result {
+                // Check if this event is for our log file
+                if event.paths.iter().any(|p| p.file_name() == log_file_name) {
+                    changed = true;
+                }
+            }
+        }
+
+        changed
     }
 }
 
@@ -122,6 +154,20 @@ impl LogTailer {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Create a test-only `LogTailer` without file watching
+    fn create_test_tailer(log_path: PathBuf) -> LogTailer {
+        let (tx, rx) = mpsc::channel();
+        // Create a dummy watcher that won't be used in tests
+        let watcher = notify::recommended_watcher(tx).unwrap();
+        LogTailer {
+            log_path,
+            lines: Vec::new(),
+            last_position: 0,
+            _watcher: watcher,
+            event_rx: rx,
+        }
+    }
 
     #[test]
     fn test_log_tailer_reads_initial_logs() {
@@ -135,11 +181,7 @@ mod tests {
 
         // Create tailer with this specific path
         let log_path = temp_file.path().to_path_buf();
-        let mut tailer = LogTailer {
-            log_path,
-            lines: Vec::new(),
-            last_position: 0,
-        };
+        let mut tailer = create_test_tailer(log_path);
 
         // Read initial logs
         tailer.read_initial(100).unwrap();
@@ -161,11 +203,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         let log_path = temp_file.path().to_path_buf();
-        let mut tailer = LogTailer {
-            log_path: log_path.clone(),
-            lines: Vec::new(),
-            last_position: 0,
-        };
+        let mut tailer = create_test_tailer(log_path);
 
         // Read initial content
         tailer.read_initial(100).unwrap();
