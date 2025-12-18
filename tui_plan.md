@@ -1088,6 +1088,550 @@ let hint = Line::from(vec![
 
 ---
 
+### Phase 9: Dashboard Layout Redesign
+
+**Goal:** Reorganize dashboard to maximize information density, giving window tracking the space it needs while keeping daemon/sink sections compact.
+
+**Current Layout Issues:**
+
+1. **Daemon section too wide:** Takes full width (100%) but only uses ~40% effectively
+2. **Sink card too sparse:** Shows only icon + name, wastes vertical space
+3. **Stats card underutilized:** Shows only window count, could show much more detail
+4. **No scrolling:** Can't show all windows if list is long
+
+**Files to modify:**
+- `src/tui/screens/dashboard.rs` - Complete layout restructure
+- `src/tui/app.rs` - Add window scroll state to `DashboardScreen`
+- `src/tui/input.rs` - Add Page Up/Down handlers for dashboard
+
+**Proposed Layout:**
+
+```
+┌──────────────────────────┬─────────────────────────────────┐
+│  Daemon Control          │                                 │
+│  Status: ● RUNNING       │                                 │
+│  Uptime: 2h 34m          │                                 │
+│  PID: 12345              │                                 │
+│  [▶ Start ] Stop Restart │    Window Tracking              │
+│  Height: 6 lines         │    (Scrollable w/ PgUp/PgDn)    │
+├──────────────────────────┤                                 │
+│  Active Sink             │    Matched: 3/12 windows        │
+│  🎧 Headphones           │                                 │
+│  Recent Switches:        │    ● firefox → Headphones       │
+│  10:30 → Headphones (rule)│    ● mpv → Speakers            │
+│  10:25 → Speakers (manual)│    ○ discord (no match)        │
+│  Height: 8 lines         │                                 │
+└──────────────────────────┴─────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│  Daemon Logs (Live) - [↑↓] scroll [PgUp/PgDn] page       │
+│  10:30:15 INFO Rule matched: app_id=firefox → Headphones  │
+│  Height: Remaining space (Min 0, expands)                 │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Changes:**
+
+#### 9.1: Update main layout structure
+**File:** `src/tui/screens/dashboard.rs:94-127`
+
+**Current:**
+```rust
+let chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(8),  // Daemon status + controls
+        Constraint::Length(10), // Info cards
+        Constraint::Min(0),     // Daemon logs
+    ])
+    .split(area);
+```
+
+**New:**
+```rust
+let chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(14), // Top section (daemon + sink + windows)
+        Constraint::Min(0),     // Daemon logs (expands)
+    ])
+    .split(area);
+
+// Split top section horizontally (left: daemon+sink, right: windows)
+let top_chunks = Layout::default()
+    .direction(Direction::Horizontal)
+    .constraints([
+        Constraint::Percentage(50), // Left column
+        Constraint::Percentage(50), // Right column (windows)
+    ])
+    .split(chunks[0]);
+
+// Split left column vertically (daemon above, sink below)
+let left_chunks = Layout::default()
+    .direction(Direction::Vertical)
+    .constraints([
+        Constraint::Length(6),  // Daemon control
+        Constraint::Length(8),  // Active sink + history
+    ])
+    .split(top_chunks[0]);
+```
+
+**Rationale:** Hybrid layout gives window tracking maximum vertical space while keeping daemon/sink compact.
+
+#### 9.2: Redesign daemon section (compact)
+**File:** `src/tui/screens/dashboard.rs:130-206`
+
+**Current:** Horizontal split (40% status, 60% actions)
+
+**New:** Vertical layout, all info above actions
+```rust
+fn render_daemon_section(
+    frame: &mut Frame,
+    area: Rect,
+    screen_state: &DashboardScreen,
+    daemon_running: bool,
+    uptime: Option<Duration>, // New parameter
+    pid: Option<u32>,          // New parameter
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Daemon ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let (status_text, status_color, status_icon) = if daemon_running {
+        ("RUNNING", colors::UI_SUCCESS, "●")
+    } else {
+        ("STOPPED", colors::UI_ERROR, "○")
+    };
+
+    // Build status lines
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(status_icon, Style::default().fg(status_color)),
+            Span::raw(" "),
+            Span::styled(
+                status_text,
+                Style::default().fg(status_color).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    // Add uptime if running
+    if let Some(up) = uptime {
+        let uptime_str = format_duration(up); // Helper function
+        lines.push(Line::from(vec![
+            Span::styled("Uptime: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(uptime_str, Style::default().fg(colors::UI_TEXT)),
+        ]));
+    }
+
+    // Add PID if running
+    if let Some(p) = pid {
+        lines.push(Line::from(vec![
+            Span::styled("PID: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(p.to_string(), Style::default().fg(colors::UI_TEXT)),
+        ]));
+    }
+
+    // Action buttons (compact, one line)
+    let actions = ["Start", "Stop", "Restart"];
+    let mut action_spans = Vec::new();
+    for (i, action) in actions.iter().enumerate() {
+        let is_selected = i == screen_state.selected_action;
+        let style = if is_selected {
+            Style::default()
+                .fg(colors::UI_SELECTED)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors::UI_SELECTED_BG)
+        } else {
+            Style::default().fg(colors::UI_TEXT)
+        };
+
+        if i > 0 {
+            action_spans.push(Span::raw(" "));
+        }
+
+        let prefix = if is_selected { "[▶ " } else { "[  " };
+        let suffix = "]";
+        action_spans.push(Span::styled(prefix, style));
+        action_spans.push(Span::styled(*action, style));
+        action_spans.push(Span::styled(suffix, style));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(action_spans));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+```
+
+**Helper function to add:**
+```rust
+/// Format duration as human-readable string (e.g., "2h 34m")
+fn format_duration(d: Duration) -> String {
+    let total_secs = d.as_secs();
+    let hours = total_secs / 3600;
+    let mins = (total_secs % 3600) / 60;
+
+    if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else if mins > 0 {
+        format!("{mins}m")
+    } else {
+        format!("{total_secs}s")
+    }
+}
+```
+
+#### 9.3: Enhance sink section with switch history
+**File:** `src/tui/screens/dashboard.rs:208-253`
+
+**Current:** Shows only current sink icon + description
+
+**New:** Add recent switch history
+```rust
+fn render_sink_card(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    recent_switches: &[(String, String, String)], // New param: (timestamp, sink_desc, reason)
+) {
+    let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
+
+    let (sink_desc, sink_icon) = current_sink_name
+        .as_ref()
+        .and_then(|name| {
+            config.sinks.iter().find(|s| &s.name == name).map(|s| {
+                (
+                    s.desc.clone(),
+                    s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+                )
+            })
+        })
+        .unwrap_or(("Unknown".to_string(), "?".to_string()));
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" "),
+            Span::styled(
+                sink_desc,
+                Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // Add recent switches (max 3)
+    if !recent_switches.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Recent Switches:",
+            Style::default().fg(colors::UI_SECONDARY),
+        )));
+
+        for (time, sink, reason) in recent_switches.iter().take(3) {
+            lines.push(Line::from(vec![
+                Span::styled(time, Style::default().fg(colors::UI_SECONDARY)),
+                Span::raw(" → "),
+                Span::styled(sink, Style::default().fg(colors::UI_TEXT)),
+                Span::raw(" "),
+                Span::styled(
+                    format!("({reason})"),
+                    Style::default().fg(colors::UI_SECONDARY),
+                ),
+            ]));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Active Sink ")
+                .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
+        );
+
+    frame.render_widget(paragraph, area);
+}
+```
+
+**Note:** Recent switches data structure needs to be added to `App` state (TBD).
+
+#### 9.4: Create new window tracking section
+**File:** `src/tui/screens/dashboard.rs` (new function)
+
+**New comprehensive window display:**
+```rust
+/// Render window tracking section (right side, full height)
+fn render_window_tracking(
+    frame: &mut Frame,
+    area: Rect,
+    windows: &[crate::ipc::WindowInfo],
+    matched_windows: &[(u64, String)], // (window_id, rule_name)
+    scroll_offset: usize,
+    screen_state: &DashboardScreen,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Window Tracking ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    let available_height = inner.height as usize;
+
+    // Count matched vs total
+    let matched_count = matched_windows.len();
+    let total_count = windows.len();
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{matched_count}/{total_count} windows"),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // Build window list with matched windows first
+    let mut window_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_matched)
+
+    // Add matched windows
+    for (win_id, rule_name) in matched_windows {
+        if let Some(win) = windows.iter().find(|w| w.id == *win_id) {
+            window_lines.push((
+                Line::from(vec![
+                    Span::styled("● ", Style::default().fg(colors::UI_SUCCESS)),
+                    Span::styled(
+                        truncate(&win.app_id, 15),
+                        Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(" → "),
+                    Span::styled(rule_name, Style::default().fg(colors::UI_HIGHLIGHT)),
+                ]),
+                true,
+            ));
+
+            // Optional: Show truncated title on second line
+            if !win.title.is_empty() {
+                window_lines.push((
+                    Line::from(vec![
+                        Span::raw("  "),
+                        Span::styled(
+                            truncate(&win.title, 30),
+                            Style::default().fg(colors::UI_SECONDARY),
+                        ),
+                    ]),
+                    true,
+                ));
+            }
+        }
+    }
+
+    // Add unmatched windows
+    for win in windows {
+        if !matched_windows.iter().any(|(id, _)| *id == win.id) {
+            window_lines.push((
+                Line::from(vec![
+                    Span::styled("○ ", Style::default().fg(colors::UI_SECONDARY)),
+                    Span::styled(
+                        truncate(&win.app_id, 15),
+                        Style::default().fg(colors::UI_SECONDARY),
+                    ),
+                    Span::raw(" (no match)"),
+                ]),
+                false,
+            ));
+        }
+    }
+
+    // Calculate visible range based on scroll offset
+    let total_lines = window_lines.len();
+    let visible_count = available_height.saturating_sub(2); // Reserve space for header
+    let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
+    let end_idx = (start_idx + visible_count).min(total_lines);
+
+    // Add visible window lines
+    for (line, _) in window_lines.iter().skip(start_idx).take(end_idx - start_idx) {
+        lines.push(line.clone());
+    }
+
+    // Add scroll indicator if needed
+    if total_lines > visible_count {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  [{}/{}] ", start_idx + 1, total_lines),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+            Span::styled(
+                "PgUp/PgDn to scroll",
+                Style::default().fg(colors::UI_SECONDARY).italic(),
+            ),
+        ]));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Truncate string with ellipsis if too long
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+```
+
+#### 9.5: Add window scroll state to DashboardScreen
+**File:** `src/tui/screens/dashboard.rs:29-33`
+
+**Current:**
+```rust
+pub(crate) struct DashboardScreen {
+    pub selected_action: usize,   // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize, // Lines scrolled back from the end
+}
+```
+
+**New:**
+```rust
+pub(crate) struct DashboardScreen {
+    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize,    // Lines scrolled back from the end
+    pub window_scroll_offset: usize, // Windows list scroll offset
+}
+```
+
+**Add scroll methods:**
+```rust
+impl DashboardScreen {
+    pub(crate) fn new() -> Self {
+        Self {
+            selected_action: 0,
+            log_scroll_offset: 0,
+            window_scroll_offset: 0,
+        }
+    }
+
+    // ... existing methods ...
+
+    /// Scroll windows up (page up)
+    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
+        self.window_scroll_offset = (self.window_scroll_offset + page_size)
+            .min(total_windows.saturating_sub(page_size));
+    }
+
+    /// Scroll windows down (page down)
+    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
+        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
+    }
+
+    /// Reset window scroll to top
+    pub(crate) fn scroll_windows_to_top(&mut self) {
+        self.window_scroll_offset = 0;
+    }
+}
+```
+
+#### 9.6: Add Page Up/Down keybindings for dashboard
+**File:** `src/tui/input.rs` (in `handle_dashboard_input` function)
+
+**Add after existing arrow key handlers:**
+```rust
+fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // ... existing Up/Down for action selection ...
+
+        KeyCode::PageUp => {
+            let page_size = 5; // Or calculate from visible area
+            let total = app.all_windows.len();
+            app.dashboard_screen.scroll_windows_page_up(page_size, total);
+        }
+        KeyCode::PageDown => {
+            let page_size = 5;
+            app.dashboard_screen.scroll_windows_page_down(page_size);
+        }
+        KeyCode::Home => {
+            app.dashboard_screen.scroll_windows_to_top();
+        }
+
+        // ... existing Enter handler for executing actions ...
+    }
+}
+```
+
+#### 9.7: Update context bar for dashboard
+**File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
+
+**Add dashboard keybinds:**
+```rust
+(Screen::Dashboard, ScreenMode::DashboardList) => vec![
+    ("[↑↓]", "Select"),
+    ("[Enter]", "Execute"),
+    ("[PgUp/PgDn]", "Scroll Windows"),
+],
+```
+
+#### 9.8: Data requirements for new features
+
+**Uptime and PID tracking:**
+- Add to `App` state: `daemon_start_time: Option<Instant>`
+- Calculate uptime: `Instant::now() - daemon_start_time`
+- Get PID from IPC status response (may need to enhance IPC protocol)
+
+**Recent switches history:**
+- Add to `App` state: `recent_switches: VecDeque<SwitchEvent>` (max 10 entries)
+- `SwitchEvent { timestamp: String, sink_desc: String, reason: String }`
+- Update on sink changes (manual or rule-based)
+
+**Matched windows data:**
+- Already available via IPC `list-windows` response
+- Filter windows where `current_rule_desc.is_some()`
+- Pair with rule name for display
+
+**Checklist:**
+- [ ] Update main layout to hybrid two-column design
+- [ ] Redesign daemon section (compact, vertical)
+- [ ] Add uptime and PID display to daemon section
+- [ ] Add format_duration helper function
+- [ ] Enhance sink section with recent switches history
+- [ ] Add recent_switches state to App
+- [ ] Create render_window_tracking function
+- [ ] Add window scroll state to DashboardScreen
+- [ ] Add scroll methods (page_up, page_down, to_top)
+- [ ] Add PageUp/PageDown/Home keybindings
+- [ ] Update context bar for dashboard
+- [ ] Add truncate helper for long strings
+- [ ] Test layout on small terminals (minimum width/height)
+- [ ] Test window scrolling with many windows
+- [ ] Test with zero windows, zero matched windows
+- [ ] Verify daemon controls still work (start/stop/restart)
+- [ ] Run clippy and tests
+
+**Benefits:**
+- ✅ Window tracking gets maximum space (full right column)
+- ✅ Can show detailed info per window without cramping
+- ✅ Scrolling handles large window lists gracefully
+- ✅ Daemon/sink sections stay compact and scannable
+- ✅ Recent switches provide useful context
+- ✅ Matched vs unmatched windows clearly distinguished
+- ✅ Uptime/PID adds useful monitoring info
+
+**Edge cases to handle:**
+- Empty window list (show "No windows tracked" message)
+- No matched windows (show count as "0/N windows")
+- Daemon not running (hide uptime/PID, disable controls appropriately)
+- Very long app_id or title (truncate with ellipsis)
+- Terminal too narrow (minimum width ~80 cols recommended)
+
+---
+
 ## Future Enhancements (Out of Scope)
 
 These are not part of this plan but could be considered later:
@@ -1098,6 +1642,7 @@ These are not part of this plan but could be considered later:
 4. **Color customization:** Allow users to configure tab bar colors in settings
 5. **Tab bar icons:** Add optional icons/symbols before screen names (e.g., 📊 Dashboard)
 6. **Modal-specific hints:** Add subtle inline hints for text editing shortcuts in modals (see Phase 8.9)
+7. **Dashboard window focus:** Arrow keys to select/highlight specific windows in the tracking section
 
 ---
 
