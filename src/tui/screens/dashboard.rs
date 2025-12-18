@@ -20,6 +20,18 @@ const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
     ("Window closed:", colors::LOG_EVENT_CLOSE, true),
     ("Tracked window closed:", colors::LOG_EVENT_CLOSE, true),
     ("Set default sink:", colors::LOG_EVENT, true),
+    // Daemon lifecycle events
+    ("Starting PWSW daemon", colors::LOG_EVENT, true),
+    ("Monitoring window events", colors::LOG_EVENT, true),
+    ("Compositor event thread started", colors::UI_SUCCESS, false),
+    ("IPC server listening on", colors::UI_SUCCESS, false),
+    ("Loaded", colors::UI_SUCCESS, false),
+    ("sinks,", colors::UI_HIGHLIGHT, false),
+    ("rules", colors::UI_HIGHLIGHT, false),
+    // Shutdown and warnings
+    ("Shutting down", colors::UI_WARNING, false),
+    ("Shutdown requested", colors::UI_WARNING, false),
+    ("Config file changed", colors::UI_WARNING, false),
     // Field labels (not bold, just markers)
     ("app_id=", colors::LOG_KEYWORD, false),
     ("title=", colors::LOG_KEYWORD, false),
