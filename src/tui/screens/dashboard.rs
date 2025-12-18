@@ -28,7 +28,7 @@ const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
 
 /// Dashboard screen state
 pub(crate) struct DashboardScreen {
-    pub selected_action: usize, // 0 = start, 1 = stop, 2 = restart
+    pub selected_action: usize,   // 0 = start, 1 = stop, 2 = restart
     pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
 }
 
@@ -94,9 +94,9 @@ pub(crate) fn render_dashboard(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8), // Daemon status + controls
+            Constraint::Length(8),  // Daemon status + controls
             Constraint::Length(10), // Info cards (reduced from Min(0))
-            Constraint::Min(0),    // Daemon logs
+            Constraint::Min(0),     // Daemon logs
         ])
         .split(area);
 
@@ -304,7 +304,9 @@ fn highlight_message(message: &str) -> Vec<Span<'_>> {
 
     // Sort matches by position, then by length (longer first for same position)
     matches.sort_by(|(start_a, end_a, _, _), (start_b, end_b, _, _)| {
-        start_a.cmp(start_b).then_with(|| (end_b - start_b).cmp(&(end_a - start_a)))
+        start_a
+            .cmp(start_b)
+            .then_with(|| (end_b - start_b).cmp(&(end_a - start_a)))
     });
 
     // Remove overlapping matches (keep first/longer match)
@@ -349,7 +351,10 @@ fn highlight_message(message: &str) -> Vec<Span<'_>> {
 
     // If no matches, return whole message
     if spans.is_empty() {
-        spans.push(Span::styled(message, Style::default().fg(colors::LOG_MESSAGE)));
+        spans.push(Span::styled(
+            message,
+            Style::default().fg(colors::LOG_MESSAGE),
+        ));
     }
 
     spans
@@ -397,7 +402,9 @@ fn style_log_line(line: &str) -> Line<'_> {
     };
 
     let level_style = if level_bold {
-        Style::default().fg(level_color).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(level_color)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(level_color)
     };

@@ -31,18 +31,20 @@ impl LogTailer {
 
         // Create file watcher for log file
         let (tx, rx) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(tx)
-            .context("Failed to create file watcher")?;
+        let mut watcher =
+            notify::recommended_watcher(tx).context("Failed to create file watcher")?;
 
         // Watch the parent directory (file may not exist yet)
-        let watch_dir = log_path.parent()
+        let watch_dir = log_path
+            .parent()
             .context("Log file has no parent directory")?;
 
         // Create directory if it doesn't exist
         std::fs::create_dir_all(watch_dir)
             .with_context(|| format!("Failed to create log directory: {}", watch_dir.display()))?;
 
-        watcher.watch(watch_dir, RecursiveMode::NonRecursive)
+        watcher
+            .watch(watch_dir, RecursiveMode::NonRecursive)
             .with_context(|| format!("Failed to watch log directory: {}", watch_dir.display()))?;
 
         Ok(Self {

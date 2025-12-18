@@ -260,8 +260,10 @@ fn render_list(
                 || Cell::from(Span::styled("*", Style::default().fg(colors::UI_SECONDARY))),
                 |s| Cell::from(s.as_str()),
             );
-            let sink_cell =
-                Cell::from(Span::styled(sink_display, Style::default().fg(colors::UI_HIGHLIGHT)));
+            let sink_cell = Cell::from(Span::styled(
+                sink_display,
+                Style::default().fg(colors::UI_HIGHLIGHT),
+            ));
             let desc_cell = rule
                 .desc
                 .as_ref()
@@ -455,7 +457,10 @@ fn render_editor(
             notify_spans.push(Span::raw("Notify (disabled)"));
         }
         None => {
-            notify_spans.push(Span::styled("○ ", Style::default().fg(colors::UI_SECONDARY)));
+            notify_spans.push(Span::styled(
+                "○ ",
+                Style::default().fg(colors::UI_SECONDARY),
+            ));
             notify_spans.push(Span::raw("Notify (use global setting)"));
         }
     }
@@ -488,7 +493,8 @@ fn render_editor(
             ("Space", "Toggle"),
             ("Esc", "Cancel"),
         ]);
-        let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
+        let help_widget =
+            Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
         frame.render_widget(help_widget, chunks[6]);
     }
 }
@@ -766,7 +772,9 @@ fn render_delete_confirmation(
         Line::from(""),
         Line::from(vec![Span::styled(
             "Are you sure you want to delete this rule?",
-            Style::default().fg(colors::UI_ERROR).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(colors::UI_ERROR)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![

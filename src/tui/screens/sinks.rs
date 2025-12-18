@@ -191,7 +191,10 @@ fn render_list(
 
             // Status Cell
             let status_cell = if is_active {
-                Cell::from(Span::styled("● Active", Style::default().fg(colors::UI_SUCCESS)))
+                Cell::from(Span::styled(
+                    "● Active",
+                    Style::default().fg(colors::UI_SUCCESS),
+                ))
             } else {
                 Cell::from(Span::styled("○", Style::default().fg(colors::UI_SECONDARY)))
             };
@@ -215,11 +218,17 @@ fn render_list(
             ));
 
             // Name Cell (Technical ID)
-            let name_cell = Cell::from(Span::styled(&sink.name, Style::default().fg(colors::UI_SECONDARY)));
+            let name_cell = Cell::from(Span::styled(
+                &sink.name,
+                Style::default().fg(colors::UI_SECONDARY),
+            ));
 
             // Flags Cell
             let flags_cell = if sink.default {
-                Cell::from(Span::styled("DEFAULT", Style::default().fg(colors::UI_WARNING)))
+                Cell::from(Span::styled(
+                    "DEFAULT",
+                    Style::default().fg(colors::UI_WARNING),
+                ))
             } else {
                 Cell::from("")
             };
@@ -385,8 +394,8 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
             ("Esc", "Cancel"),
         ]);
 
-        let help_widget =
-            Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(colors::UI_SECONDARY));
+        let help_widget = Paragraph::new(vec![Line::from(""), help_line])
+            .style(Style::default().fg(colors::UI_SECONDARY));
         frame.render_widget(help_widget, chunks[4]);
     }
 }
@@ -409,7 +418,9 @@ fn render_delete_confirmation(
         Line::from(""),
         Line::from(vec![Span::styled(
             "Are you sure you want to delete this sink?",
-            Style::default().fg(colors::UI_ERROR).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(colors::UI_ERROR)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
