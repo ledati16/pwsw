@@ -267,6 +267,8 @@ Line::from(vec![
 - Keep `Tab/Shift-Tab` - alternative cycling method (not redundant with numbers)
 - Keep `Ctrl+S` Save - essential global action
 
+**Note:** Phase 6 will add `[↑↓] Navigate` as a new universal hint since up/down navigation works across all screens.
+
 **Optional enhancement:**
 Add conditional text for config state (when not showing status message):
 - If `config_dirty == true`: Show "Ctrl+S Save*" with yellow asterisk
@@ -316,8 +318,22 @@ add_keybind(&mut items, "4", "Go to Settings");
 - Line 319-323 (compact layout version)
 - Any other references to screen navigation keys
 
+#### 4.2: Add Dashboard-specific keybindings
+**File:** `src/tui/screens/help.rs`
+
+**Add to Dashboard section:**
+```rust
+// Dashboard-specific keys (Phase 9 will add these)
+add_keybind(&mut items, "w", "Toggle Logs/Windows view");
+add_keybind(&mut items, "←/→", "Navigate daemon actions");
+add_keybind(&mut items, "PgUp/PgDn", "Scroll current view");
+```
+
+**Note:** These keybindings are introduced in Phase 9 but should be documented in help from the start for completeness.
+
 **Checklist:**
-- [ ] Update help documentation for all screen navigation keys
+- [ ] Update help documentation for all screen navigation keys (1-4)
+- [ ] Add Dashboard-specific keybindings (w, ←/→, PgUp/PgDn)
 - [ ] Verify help modal shows correct keys (1-4 not d/s/r/t)
 - [ ] Test help screen in both wide and narrow terminal modes
 
@@ -359,9 +375,11 @@ simulate_key_event(&mut app, ke);
 
 ---
 
-## Verification Checklist
+## Verification Checklist (Phases 1-5)
 
-Before considering this plan complete, verify:
+**Note:** This checklist covers only the basic navigation changes (Phases 1-5). Each subsequent phase (6-9) has its own detailed checklist within that phase section.
+
+Before moving to Phase 6, verify:
 
 **Functionality:**
 - [ ] All number keys (1-4) switch to correct screens
@@ -413,17 +431,19 @@ Before considering this plan complete, verify:
 fn render_context_bar(
     frame: &mut ratatui::Frame,
     area: Rect,
-    current_screen: Screen,
-    mode: &ScreenMode, // Enum representing current mode (List, Edit, Delete, etc.)
+    app: &App, // Full app access for view-aware contexts (e.g., Dashboard)
 ) {
     use ratatui::text::{Line, Span};
     use ratatui::style::{Style, Color};
 
-    let keybinds = match (current_screen, mode) {
-        (Screen::Dashboard, _) => vec![
-            ("[↑↓]", "Select"),
-            ("[Enter]", "Execute"),
-        ],
+    let keybinds = match (app.current_screen, app.get_mode()) {
+        (Screen::Dashboard, ScreenMode::DashboardList) => {
+            // Note: Phase 9 will replace this with view-aware keybindings
+            vec![
+                ("[↑↓]", "Select"),
+                ("[Enter]", "Execute"),
+            ]
+        },
         (Screen::Sinks, ScreenMode::List) => vec![
             ("[a]", "Add"),
             ("[e]", "Edit"),
@@ -505,7 +525,7 @@ let chunks = Layout::default()
 **Add after line 619 (after screen rendering):**
 ```rust
 // Render context bar (below content, above footer)
-render_context_bar(frame, chunks[2], app.current_screen, &app.get_mode());
+render_context_bar(frame, chunks[2], app);
 
 // Render footer
 let status_clone = app.status_message().cloned();
@@ -518,7 +538,7 @@ render_footer(
 );
 ```
 
-**Note:** Need to add `get_mode()` helper to `App` that returns current mode for each screen.
+**Note:** Phase 8 will add `get_mode()` helper to `App` that returns current mode for each screen.
 
 #### 6.4: Update global footer to remove redundant navigation
 **File:** `src/tui/mod.rs:733-747`
@@ -1088,50 +1108,28 @@ let hint = Line::from(vec![
 
 ---
 
-### Phase 9: Dashboard Layout Redesign
+### Phase 9A: Dashboard Layout Restructure
 
-**Goal:** Reorganize dashboard to maximize information density, giving window tracking the space it needs while keeping daemon/sink sections compact. Use toggle-based view switching to avoid keybinding confusion.
+**Goal:** Reorganize dashboard top section to be more compact and informative, preparing for the toggle view system in Phase 9B.
 
-**Current Layout Issues:**
+**Dependencies:** Phase 6 (context bars), Phase 8 (ScreenMode)
+
+**Current Layout Issues (Phase 9A Addresses):**
 
 1. **Daemon section too wide:** Takes full width (100%) but only uses ~40% effectively
 2. **Sink card too sparse:** Shows only icon + name, wastes vertical space
-3. **Stats card underutilized:** Shows only window count, could show much more detail
-4. **No scrolling:** Can't show all windows if list is long
-5. **Keybinding conflict:** Both logs and windows would use Up/Down and PageUp/PageDown for scrolling, causing confusion
+3. **Stats card underutilized:** Shows only window count, no detail
 
-**Solution:** Make logs and windows mutually exclusive toggle views. Only ONE scrollable section is active at a time.
+**Phase 9A Solution:** Restructure top section into compact two-column layout with enhanced information.
+
+**Phase 9B Solution:** Add toggle-based view system to eliminate keybinding conflicts (see Phase 9B).
 
 **Files to modify:**
-- `src/tui/screens/dashboard.rs` - Complete layout restructure with toggle views
-- `src/tui/app.rs` - Add view toggle state and window scroll state to `DashboardScreen`
-- `src/tui/input.rs` - Add view toggle ('w') and Page Up/Down handlers for dashboard
+- `src/tui/screens/dashboard.rs` - Restructure top section layout
+- `src/tui/app.rs` - Add uptime/PID tracking, recent switches history
+- `src/tui/input.rs` - Add Left/Right arrow handlers for daemon action navigation
 
-**Proposed Layout (Default: Logs View):**
-
-```
-┌──────────────────────────┬─────────────────────────────────┐
-│  Daemon Control          │                                 │
-│  Status: ● RUNNING       │                                 │
-│  Uptime: 2h 34m          │                                 │
-│  PID: 12345              │         Active Sink             │
-│  [▶ Start ] Stop Restart │                                 │
-│  Height: 6 lines         │    🎧 Headphones                │
-├──────────────────────────┤                                 │
-│  Window Summary          │    Recent Switches:             │
-│  Matched: 3/12 windows   │    10:30 → Headphones (rule)    │
-│  Press [w] to view       │    10:25 → Speakers (manual)    │
-│  Height: 4 lines         │    Height: 8 lines              │
-└──────────────────────────┴─────────────────────────────────┘
-┌───────────────────────────────────────────────────────────┐
-│  Daemon Logs (Live) - [↑↓] scroll [PgUp/PgDn] page       │
-│  10:30:15 INFO Rule matched: app_id=firefox → Headphones  │
-│  Height: Remaining space (Min 0, expands)                 │
-│  Note: Press [w] to toggle to Window Tracking view        │
-└───────────────────────────────────────────────────────────┘
-```
-
-**Alternative Layout (When 'w' pressed: Windows View):**
+**Proposed Layout (Phase 9A - Top Section Only):**
 
 ```
 ┌──────────────────────────┬─────────────────────────────────┐
@@ -1144,99 +1142,27 @@ let hint = Line::from(vec![
 ├──────────────────────────┤                                 │
 │  Window Summary          │    Recent Switches:             │
 │  Matched: 3/12 windows   │    10:30 → Headphones (rule)    │
-│  Press [w] to view logs  │    10:25 → Speakers (manual)    │
+│  (details in Phase 9B)   │    10:25 → Speakers (manual)    │
 │  Height: 4 lines         │    Height: 8 lines              │
 └──────────────────────────┴─────────────────────────────────┘
 ┌───────────────────────────────────────────────────────────┐
-│  Window Tracking - [↑↓] scroll [PgUp/PgDn] page          │
-│  ● firefox → Headphones                                   │
-│    "Mozilla Firefox"                                      │
-│  ● mpv → Speakers                                         │
-│    "video.mp4"                                            │
-│  ○ discord (no match)                                     │
+│  Daemon Logs (Live) - [↑↓] scroll [PgUp/PgDn] page       │
+│  10:30:15 INFO Rule matched: app_id=firefox → Headphones  │
 │  Height: Remaining space (Min 0, expands)                 │
-│  Note: Press [w] to toggle back to Logs view              │
+│  Note: Phase 9B will add toggle to Window Tracking view   │
 └───────────────────────────────────────────────────────────┘
 ```
 
 **Key Benefits:**
-- ✅ **No keybinding confusion:** Only ONE scrollable section active at a time
-- ✅ **Clear visual feedback:** User always knows which view is active
-- ✅ **More space for logs:** Full width when in logs view (not cramped in column)
-- ✅ **More space for windows:** Full width when in windows view
-- ✅ **Simple toggle:** Press 'w' to switch between views
-- ✅ **Defaults to logs:** More commonly used, more obvious purpose
+- ✅ **Compact daemon section** - Shows uptime/PID, horizontal action buttons
+- ✅ **Enhanced sink display** - Recent switch history provides context
+- ✅ **Window summary** - Quick glance at match statistics
+- ✅ **Horizontal navigation** - Left/Right arrows for daemon actions
+- ✅ **Prepares for Phase 9B** - Layout ready for toggle view system
 
 **Changes:**
 
-#### 9.1: Add view toggle state to DashboardScreen
-**File:** `src/tui/screens/dashboard.rs:29-33`
-
-**Current:**
-```rust
-pub(crate) struct DashboardScreen {
-    pub selected_action: usize,   // 0 = start, 1 = stop, 2 = restart
-    pub log_scroll_offset: usize, // Lines scrolled back from the end
-}
-```
-
-**New:**
-```rust
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DashboardView {
-    Logs,
-    Windows,
-}
-
-pub(crate) struct DashboardScreen {
-    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
-    pub log_scroll_offset: usize,    // Lines scrolled back from the end
-    pub window_scroll_offset: usize, // Window list scroll offset
-    pub current_view: DashboardView, // Toggle between Logs and Windows
-}
-```
-
-**Add methods:**
-```rust
-impl DashboardScreen {
-    pub(crate) fn new() -> Self {
-        Self {
-            selected_action: 0,
-            log_scroll_offset: 0,
-            window_scroll_offset: 0,
-            current_view: DashboardView::Logs, // Default to logs
-        }
-    }
-
-    /// Toggle between logs and windows view
-    pub(crate) fn toggle_view(&mut self) {
-        self.current_view = match self.current_view {
-            DashboardView::Logs => DashboardView::Windows,
-            DashboardView::Windows => DashboardView::Logs,
-        };
-    }
-
-    // ... existing methods for action selection and log scrolling ...
-
-    /// Scroll windows up (page up)
-    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
-        self.window_scroll_offset = (self.window_scroll_offset + page_size)
-            .min(total_windows.saturating_sub(page_size));
-    }
-
-    /// Scroll windows down (page down)
-    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
-        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
-    }
-
-    /// Reset window scroll to top
-    pub(crate) fn scroll_windows_to_top(&mut self) {
-        self.window_scroll_offset = 0;
-    }
-}
-```
-
-#### 9.2: Update main layout structure
+#### 9A.1: Update main layout structure
 **File:** `src/tui/screens/dashboard.rs:94-127`
 
 **Current:**
@@ -1257,7 +1183,7 @@ let chunks = Layout::default()
     .direction(Direction::Vertical)
     .constraints([
         Constraint::Length(10), // Top section (daemon + sink + summary)
-        Constraint::Min(0),     // Bottom section (logs OR windows, depending on view)
+        Constraint::Min(0),     // Bottom section (logs - Phase 9B will add toggle)
     ])
     .split(area);
 
@@ -1279,20 +1205,18 @@ let left_chunks = Layout::default()
     ])
     .split(top_chunks[0]);
 
-// Bottom section renders either logs or windows based on current_view
-match screen_state.current_view {
-    DashboardView::Logs => {
-        render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
-    }
-    DashboardView::Windows => {
-        render_window_tracking(frame, chunks[1], windows, matched_windows, screen_state.window_scroll_offset);
-    }
-}
+// Render sections
+render_daemon_section(frame, left_chunks[0], screen_state, daemon_running, uptime, pid);
+render_window_summary(frame, left_chunks[1], window_count, matched_count);
+render_sink_card(frame, top_chunks[1], config, recent_switches);
+
+// Bottom section renders logs (Phase 9B will add toggle to windows)
+render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
 ```
 
-**Rationale:** Top section stays consistent, bottom section toggles between logs and windows based on `current_view`.
+**Rationale:** Restructure top section into compact two-column layout. Bottom section keeps logs only for now (Phase 9B adds toggle).
 
-#### 9.3: Redesign daemon section (compact)
+#### 9A.2: Redesign daemon section (compact)
 **File:** `src/tui/screens/dashboard.rs:130-206`
 
 **Current:** Horizontal split (40% status, 60% actions)
@@ -1405,18 +1329,17 @@ fn format_duration(d: Duration) -> String {
 }
 ```
 
-#### 9.4: Add window summary section (left bottom)
+#### 9A.3: Add window summary section (left bottom)
 **File:** `src/tui/screens/dashboard.rs` (new function)
 
 **New compact summary card:**
 ```rust
-/// Render window summary card (shows count and toggle hint)
+/// Render window summary card (shows count)
 fn render_window_summary(
     frame: &mut Frame,
     area: Rect,
     window_count: usize,
     matched_count: usize,
-    current_view: DashboardView,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1427,19 +1350,17 @@ fn render_window_summary(
 
     let lines = vec![
         Line::from(vec![
-            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled("Total: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                format!("{matched_count}/{window_count}"),
-                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+                window_count.to_string(),
+                Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                match current_view {
-                    DashboardView::Logs => "Press [w] to view details",
-                    DashboardView::Windows => "Viewing below (press [w] for logs)",
-                },
-                Style::default().fg(colors::UI_SECONDARY),
+                matched_count.to_string(),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
             ),
         ]),
     ];
@@ -1449,9 +1370,9 @@ fn render_window_summary(
 }
 ```
 
-**Rationale:** Compact summary shows window stats and provides visual hint about the 'w' toggle.
+**Rationale:** Simple summary shows window statistics. Phase 9B will add toggle hint.
 
-#### 9.5: Enhance sink section with switch history
+#### 9A.4: Enhance sink section with switch history
 **File:** `src/tui/screens/dashboard.rs:208-253`
 
 **Current:** Shows only current sink icon + description
@@ -1523,9 +1444,187 @@ fn render_sink_card(
 }
 ```
 
-**Note:** Recent switches data structure needs to be added to `App` state (TBD).
+**Note:** Recent switches data structure needs to be added to `App` state (see 9A.6).
 
-#### 9.6: Create new window tracking section (full width when toggled)
+#### 9A.5: Add Left/Right navigation for daemon actions
+**File:** `src/tui/input.rs` (in `handle_dashboard_input` function)
+
+**Add horizontal navigation:**
+```rust
+fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
+    match key.code {
+        // Left/Right for horizontal daemon action navigation
+        KeyCode::Left => {
+            app.dashboard_screen.select_previous();
+        }
+        KeyCode::Right => {
+            app.dashboard_screen.select_next();
+        }
+
+        // Enter to execute selected daemon action
+        KeyCode::Enter => {
+            // Execute action based on selected_action index
+            // ... existing implementation ...
+        }
+
+        _ => {}
+    }
+}
+```
+
+**Rationale:** Horizontal arrow keys for horizontal button layout. Phase 9B will add view-aware scrolling.
+
+**Note:** When Enable/Disable are added in the future, `select_next()` will need to handle 5 actions instead of 3.
+
+#### 9A.6: Update context bar for dashboard
+**File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
+
+**Update dashboard keybinds:**
+```rust
+(Screen::Dashboard, ScreenMode::DashboardList) => {
+    vec![
+        ("[←→]", "Select Action"),
+        ("[Enter]", "Execute"),
+    ]
+},
+```
+
+**Rationale:** Shows horizontal navigation and execution. Phase 9B will add view-aware scrolling hints.
+
+#### 9A.7: Data requirements for Phase 9A features
+
+**Uptime and PID tracking:**
+- Add to `App` state: `daemon_start_time: Option<Instant>`
+- Calculate uptime: `Instant::now() - daemon_start_time`
+- Get PID from IPC status response (may need to enhance IPC protocol)
+
+**Recent switches history:**
+- Add to `App` state: `recent_switches: VecDeque<SwitchEvent>` (max 10 entries)
+- `SwitchEvent { timestamp: String, sink_desc: String, reason: String }`
+- Update on sink changes (manual or rule-based)
+
+**Matched windows count:**
+- Already available via IPC `list-windows` response
+- Filter windows where `current_rule_desc.is_some()`
+- Count for summary display
+
+**Checklist:**
+- [ ] Update main layout to hybrid design (left: daemon+summary, right: sink+history, bottom: logs)
+- [ ] Redesign daemon section (compact, vertical, 6 lines)
+- [ ] Add uptime and PID display to daemon section
+- [ ] Add format_duration helper function
+- [ ] Add horizontal action button layout with spacing for future Enable/Disable
+- [ ] Create render_window_summary function (shows counts)
+- [ ] Enhance sink section with recent switches history
+- [ ] Add recent_switches state to App
+- [ ] Add daemon_start_time to App state
+- [ ] Add Left/Right arrow keybindings for action selection
+- [ ] Update context bar for dashboard (←→ and Enter)
+- [ ] Test layout on small terminals (minimum width/height)
+- [ ] Test Left/Right navigation through action buttons
+- [ ] Verify daemon controls still work (start/stop/restart)
+- [ ] Run clippy and tests
+
+---
+
+### Phase 9B: Toggle View System
+
+**Goal:** Add toggle-based view switching between Logs and Windows to eliminate keybinding conflicts and maximize space for both views.
+
+**Dependencies:** Phase 9A (layout restructure must be complete)
+
+**Problem Solved:**
+- Up/Down and PageUp/PageDown would be confusing with two scrollable sections
+- Users wouldn't know which section they're scrolling
+
+**Solution:**
+- Only ONE scrollable section active at a time
+- Press 'w' to toggle between Logs view and Windows view
+- Clear visual feedback shows which view is active
+- Context bar updates dynamically based on current view
+
+**Files to modify:**
+- `src/tui/screens/dashboard.rs` - Add toggle logic, window tracking section
+- `src/tui/app.rs` - Add `DashboardView` enum and window scroll state
+- `src/tui/input.rs` - Add 'w' toggle and view-aware scrolling
+- `src/tui/mod.rs` - Update context bar to be view-aware
+
+**Changes:**
+
+#### 9B.1: Add DashboardView enum and toggle state
+**File:** `src/tui/screens/dashboard.rs`
+
+**Add enum:**
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardView {
+    Logs,
+    Windows,
+}
+```
+
+**Update DashboardScreen:**
+```rust
+pub(crate) struct DashboardScreen {
+    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize,    // Lines scrolled back from the end
+    pub window_scroll_offset: usize, // Window list scroll offset (NEW)
+    pub current_view: DashboardView, // Toggle between Logs and Windows (NEW)
+}
+
+impl DashboardScreen {
+    pub(crate) fn new() -> Self {
+        Self {
+            selected_action: 0,
+            log_scroll_offset: 0,
+            window_scroll_offset: 0,
+            current_view: DashboardView::Logs, // Default to logs
+        }
+    }
+
+    /// Toggle between logs and windows view
+    pub(crate) fn toggle_view(&mut self) {
+        self.current_view = match self.current_view {
+            DashboardView::Logs => DashboardView::Windows,
+            DashboardView::Windows => DashboardView::Logs,
+        };
+    }
+
+    // Add window scroll methods
+    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
+        self.window_scroll_offset = (self.window_scroll_offset + page_size)
+            .min(total_windows.saturating_sub(page_size));
+    }
+
+    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
+        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
+    }
+
+    pub(crate) fn scroll_windows_to_top(&mut self) {
+        self.window_scroll_offset = 0;
+    }
+}
+```
+
+#### 9B.2: Update layout to conditionally render logs OR windows
+**File:** `src/tui/screens/dashboard.rs:94-127` (modify Phase 9A.1 bottom section)
+
+**Update bottom section logic:**
+```rust
+// Bottom section renders logs OR windows based on current_view
+match screen_state.current_view {
+    DashboardView::Logs => {
+        render_log_viewer(frame, chunks[1], daemon_logs, daemon_running, screen_state.log_scroll_offset);
+    }
+    DashboardView::Windows => {
+        render_window_tracking(frame, chunks[1], windows, matched_windows, screen_state.window_scroll_offset);
+    }
+}
+```
+
+**Rationale:** Toggle between full-width logs or full-width windows based on user selection.
+
+#### 9B.3: Create window tracking section
 **File:** `src/tui/screens/dashboard.rs` (new function)
 
 **New comprehensive window display:**
@@ -1655,7 +1754,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 ```
 
-#### 9.7: Update log viewer title to show toggle hint
+#### 9B.4: Update log viewer title to show toggle hint
 **File:** `src/tui/screens/dashboard.rs:427-486`
 
 **Current title logic:**
@@ -1690,19 +1789,64 @@ let title = if scroll_offset > 0 {
 
 **Rationale:** Consistent toggle hint reminds users they can switch to window view.
 
-#### 9.8: Add navigation keybindings for dashboard
-**File:** `src/tui/input.rs` (in `handle_dashboard_input` function)
+#### 9B.5: Update window summary to show toggle hint
+**File:** `src/tui/screens/dashboard.rs` (modify 9A.3 function)
 
-**Add toggle, horizontal navigation, and view-aware scrolling:**
+**Update render_window_summary to accept and display current view:**
+```rust
+fn render_window_summary(
+    frame: &mut Frame,
+    area: Rect,
+    window_count: usize,
+    matched_count: usize,
+    current_view: DashboardView, // NEW parameter
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Windows ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{matched_count}/{window_count}"),
+                Style::default().fg(colors::UI_STAT).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                match current_view {
+                    DashboardView::Logs => "Press [w] to view details",
+                    DashboardView::Windows => "Viewing below (press [w] for logs)",
+                },
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]),
+    ];
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+```
+
+**Rationale:** Dynamic hint shows user how to toggle and what the current state is.
+
+#### 9B.6: Add 'w' toggle keybinding
+**File:** `src/tui/input.rs` (in `handle_dashboard_input` function, modify Phase 9A.5)
+
+**Add toggle to existing navigation:**
 ```rust
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
     match key.code {
-        // Toggle between Logs and Windows view
+        // Toggle between Logs and Windows view (NEW)
         KeyCode::Char('w') if key.modifiers == KeyModifiers::NONE => {
             app.dashboard_screen.toggle_view();
         }
 
-        // Left/Right for horizontal daemon action navigation
+        // Left/Right for horizontal daemon action navigation (from Phase 9A)
         KeyCode::Left => {
             app.dashboard_screen.select_previous();
         }
@@ -1785,13 +1929,25 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
 
 **Rationale:**
 - 'w' toggles between views (mnemonic: **W**indows)
-- Left/Right navigate daemon actions (horizontal layout)
-- Up/Down/PageUp/PageDown work on whichever view is currently active
+- Provides immediate visual feedback (summary and title update)
+
+#### 9B.7: Add view-aware scrolling keybindings
+**File:** `src/tui/input.rs` (continue `handle_dashboard_input` function from 9B.6)
+
+**Add view-aware scrolling (already shown in 9B.6 code above):**
+
+The Up/Down, PageUp/PageDown, and Home keys are handled with match on `current_view`:
+- **Logs view:** Up/Down and PageUp/PageDown scroll the log viewer
+- **Windows view:** Only PageUp/PageDown scroll (Up/Down reserved for future item selection)
+
+**Rationale:**
+- Scrolling behavior adapts to which view is active
 - No keybinding confusion - only ONE scrollable section at a time
+- Up/Down work only in Logs view (Windows view uses PageUp/PageDown only)
 
 **Note:** When Enable/Disable are added in the future, `select_next()` will need to handle 5 actions instead of 3.
 
-#### 9.9: Update context bar for dashboard
+#### 9B.8: Update context bar to be view-aware
 **File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
 
 **Update dashboard keybinds to be view-aware:**
@@ -1832,22 +1988,18 @@ impl App {
 - Scroll hints reflect what the keys will actually do in the current view
 - Clear visual feedback about current mode
 
-#### 9.10: Data requirements for new features
-
-**Uptime and PID tracking:**
-- Add to `App` state: `daemon_start_time: Option<Instant>`
-- Calculate uptime: `Instant::now() - daemon_start_time`
-- Get PID from IPC status response (may need to enhance IPC protocol)
-
-**Recent switches history:**
-- Add to `App` state: `recent_switches: VecDeque<SwitchEvent>` (max 10 entries)
-- `SwitchEvent { timestamp: String, sink_desc: String, reason: String }`
-- Update on sink changes (manual or rule-based)
+#### 9B.9: Data requirements for Phase 9B features
 
 **Matched windows data:**
 - Already available via IPC `list-windows` response
 - Filter windows where `current_rule_desc.is_some()`
-- Pair with rule name for display
+- Pair with rule name for display in window tracking section
+- Create list of `(window_id, rule_name)` tuples for matched windows
+
+**Window scroll state:**
+- Already added in 9B.1 (`window_scroll_offset: usize`)
+- Tracks scroll position when viewing Windows view
+- Independent from log scroll offset
 
 **Checklist:**
 - [ ] Add DashboardView enum (Logs, Windows) to dashboard.rs
@@ -1855,32 +2007,22 @@ impl App {
 - [ ] Add window scroll state to DashboardScreen struct
 - [ ] Add toggle_view() method to DashboardScreen
 - [ ] Add scroll methods for windows (page_up, page_down, to_top)
-- [ ] Update main layout to hybrid design (left: daemon+summary, right: sink+history, bottom: logs OR windows)
-- [ ] Redesign daemon section (compact, vertical, 6 lines)
-- [ ] Add uptime and PID display to daemon section
-- [ ] Add format_duration helper function
-- [ ] Add horizontal action button layout with spacing for future Enable/Disable
-- [ ] Create render_window_summary function (shows count and toggle hint)
-- [ ] Enhance sink section with recent switches history
-- [ ] Add recent_switches state to App
+- [ ] Update Phase 9A.1 layout to conditionally render logs OR windows
 - [ ] Create render_window_tracking function (full width bottom section)
+- [ ] Add truncate helper for long strings
 - [ ] Update log viewer title to show toggle hint "[w] to toggle to Windows"
 - [ ] Update window tracking title to show "[w] to toggle back to Logs"
+- [ ] Update window summary to show toggle hint and current view
 - [ ] Add 'w' key handler to toggle between views
-- [ ] Add Left/Right arrow keybindings for action selection
 - [ ] Add view-aware Up/Down keybindings (logs only)
 - [ ] Add view-aware PageUp/PageDown keybindings (both views)
 - [ ] Add view-aware Home keybinding (both views)
-- [ ] Update context bar to be view-aware (show current view and toggle hint)
 - [ ] Add get_dashboard_context_keybinds() method to App
-- [ ] Add truncate helper for long strings
+- [ ] Update context bar to call get_dashboard_context_keybinds()
 - [ ] Test toggle between logs and windows view
-- [ ] Test layout on small terminals (minimum width/height)
 - [ ] Test scrolling in logs view
 - [ ] Test scrolling in windows view
 - [ ] Test with zero windows, zero matched windows
-- [ ] Test Left/Right navigation through action buttons
-- [ ] Verify daemon controls still work (start/stop/restart)
 - [ ] Verify no keybinding confusion (only one scrollable section at a time)
 - [ ] Run clippy and tests
 
