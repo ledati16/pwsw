@@ -761,6 +761,333 @@ add_keybind(&mut items, "Shift+↑/↓", "Move rule priority");
 
 ---
 
+### Phase 8: Standardize Modal Keybinding Display
+
+**Goal:** Bring consistency to how modals show keybindings, remove keybinds from titles, and leverage context bar for modal-specific hints.
+
+**Current Issues:**
+
+1. **Inconsistent keybind display:**
+   - Sink selector: `"Select Node (↑/↓, Enter to confirm, Esc to cancel)"` - keybinds in title
+   - Rule sink selector: `"Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)"` - keybinds in title
+   - Delete confirmations: "Press Enter to confirm, Esc to cancel" in content text
+   - Edit modals: Inline help shown only when space allows (can be hidden on small terminals)
+
+2. **Undocumented text editing features:**
+   - `tui-input` provides powerful keybindings users might not know about:
+     - `Home`/`Ctrl+A` - Jump to start of line
+     - `End`/`Ctrl+E` - Jump to end of line
+     - `Ctrl+U` - Clear line before cursor
+     - `Ctrl+K` - Clear line after cursor
+     - `Ctrl+W` - Delete word before cursor
+   - These are never mentioned in the TUI
+
+3. **Space-dependent help text:**
+   - Lines 388-400 in `sinks.rs`: Help only shows if `show_help && chunks.len() > 4`
+   - Lines 487-499 in `rules.rs`: Help only shows if `show_help && chunks.len() > 6`
+   - Users on small terminals don't see keybinding hints
+
+**Files to modify:**
+- `src/tui/mod.rs` - Update `render_context_bar()` to handle modal modes
+- `src/tui/screens/sinks.rs` - Clean up modal titles, remove inline help
+- `src/tui/screens/rules.rs` - Clean up modal titles, remove inline help
+- `src/tui/screens/help.rs` - Document text editing shortcuts
+- `src/tui/app.rs` - Add `get_mode()` helper that includes modal states
+
+**Changes:**
+
+#### 8.1: Extend context bar to show modal-specific keybindings
+**File:** `src/tui/mod.rs` (in `render_context_bar` function)
+
+**Add modal mode detection:**
+```rust
+fn render_context_bar(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    current_screen: Screen,
+    mode: &ScreenMode, // Updated to include modal states
+) {
+    let keybinds = match (current_screen, mode) {
+        // ... existing List modes ...
+
+        // Modal modes for Sinks
+        (Screen::Sinks, ScreenMode::SinkEditor) => vec![
+            ("[↑↓/Tab]", "Next/Prev"),
+            ("[Enter]", "Save/Select"),
+            ("[Space]", "Toggle"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Sinks, ScreenMode::SinkSelector) => vec![
+            ("[↑↓]", "Navigate"),
+            ("[Enter]", "Confirm"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Sinks, ScreenMode::DeleteConfirm) => vec![
+            ("[Enter]", "Confirm Delete"),
+            ("[Esc]", "Cancel"),
+        ],
+
+        // Modal modes for Rules
+        (Screen::Rules, ScreenMode::RuleEditor) => vec![
+            ("[↑↓/Tab]", "Next/Prev"),
+            ("[Enter]", "Save/Select"),
+            ("[Space]", "Toggle"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Rules, ScreenMode::SinkSelector) => vec![
+            ("[↑↓]", "Navigate"),
+            ("[Enter]", "Confirm"),
+            ("[Esc]", "Cancel"),
+        ],
+        (Screen::Rules, ScreenMode::DeleteConfirm) => vec![
+            ("[Enter]", "Confirm Delete"),
+            ("[Esc]", "Cancel"),
+        ],
+
+        _ => vec![],
+    };
+
+    // ... rest of rendering logic ...
+}
+```
+
+**Rationale:** Context bar now shows modal-specific keybindings when a modal is open, providing consistent placement regardless of terminal size.
+
+#### 8.2: Clean up sink selector modal titles
+**File:** `src/tui/screens/sinks.rs:561`
+
+**Current:**
+```rust
+.title("Select Node (↑/↓, Enter to confirm, Esc to cancel)")
+```
+
+**New:**
+```rust
+.title("Select Node")
+```
+
+**Rationale:** Keybindings now shown in context bar, title should be clean and descriptive.
+
+#### 8.3: Clean up rule sink selector modal title
+**File:** `src/tui/screens/rules.rs:704`
+
+**Current:**
+```rust
+.title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
+```
+
+**New:**
+```rust
+.title("Select Target Sink")
+```
+
+#### 8.4: Remove inline help from sink editor
+**File:** `src/tui/screens/sinks.rs:388-400`
+
+**Current:**
+```rust
+// Help text (only if space allows)
+if show_help && chunks.len() > 4 {
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Esc", "Cancel"),
+    ]);
+
+    let help_widget = Paragraph::new(vec![Line::from(""), help_line])
+        .style(Style::default().fg(colors::UI_SECONDARY));
+    frame.render_widget(help_widget, chunks[4]);
+}
+```
+
+**New:**
+Remove this entire block (context bar now shows this).
+
+**Also update layout constraints:**
+```rust
+// Before (5 chunks including help):
+let constraints = if show_help {
+    vec![
+        Constraint::Length(3), // Name
+        Constraint::Length(3), // Desc
+        Constraint::Length(3), // Icon
+        Constraint::Length(3), // Default
+        Constraint::Min(2),    // Help
+    ]
+} else { ... }
+
+// After (4 chunks, no help):
+let constraints = vec![
+    Constraint::Length(3), // Name
+    Constraint::Length(3), // Desc
+    Constraint::Length(3), // Icon
+    Constraint::Length(3), // Default
+];
+```
+
+#### 8.5: Remove inline help from rule editor
+**File:** `src/tui/screens/rules.rs:487-499`
+
+**Current:**
+```rust
+// Help text
+if show_help && chunks.len() > 6 {
+    let help_line = crate::tui::widgets::modal_help_line(&[
+        ("Tab", "Next"),
+        ("Shift+Tab", "Prev"),
+        ("Enter", "Save/Select"),
+        ("Space", "Toggle"),
+        ("Esc", "Cancel"),
+    ]);
+    let help_widget =
+        Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
+    frame.render_widget(help_widget, chunks[6]);
+}
+```
+
+**New:**
+Remove this entire block.
+
+**Also simplify layout logic** (remove `show_help` branching since it's no longer needed).
+
+#### 8.6: Remove keybind instructions from delete confirmation content
+**File:** `src/tui/screens/sinks.rs:435-437`
+
+**Current:**
+```rust
+Line::from(vec![Span::styled(
+    "Press Enter to confirm, Esc to cancel",
+    Style::default().fg(colors::UI_WARNING),
+)]),
+```
+
+**New:**
+Remove this line entirely - context bar now shows "Enter: Confirm Delete, Esc: Cancel".
+
+**File:** `src/tui/screens/rules.rs` (similar delete confirmation)
+
+Apply the same change to rule delete confirmation.
+
+#### 8.7: Add text editing shortcuts to help screen
+**File:** `src/tui/screens/help.rs`
+
+**Add new section for text input fields:**
+```rust
+// In the help rendering function, add a new section:
+
+items.push(Line::from(vec![
+    Span::styled("Text Input Fields", Style::default()
+        .fg(colors::UI_HEADER)
+        .add_modifier(Modifier::BOLD)),
+]));
+items.push(Line::from(""));
+
+add_keybind(&mut items, "Arrows", "Move cursor");
+add_keybind(&mut items, "Home / Ctrl+A", "Jump to start");
+add_keybind(&mut items, "End / Ctrl+E", "Jump to end");
+add_keybind(&mut items, "Ctrl+U", "Clear before cursor");
+add_keybind(&mut items, "Ctrl+K", "Clear after cursor");
+add_keybind(&mut items, "Ctrl+W", "Delete word before cursor");
+add_keybind(&mut items, "Backspace", "Delete character before cursor");
+add_keybind(&mut items, "Delete", "Delete character at cursor");
+```
+
+**Rationale:** Users should know about these powerful editing shortcuts provided by `tui-input`.
+
+#### 8.8: Update App::get_mode() to include modal states
+**File:** `src/tui/app.rs`
+
+**Add enum for unified mode:**
+```rust
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ScreenMode {
+    // List modes
+    DashboardList,
+    SinksList,
+    RulesList,
+    SettingsList,
+
+    // Sink modal modes
+    SinkEditor,
+    SinkSelector,
+    SinkDeleteConfirm,
+
+    // Rule modal modes
+    RuleEditor,
+    RuleSinkSelector,
+    RuleDeleteConfirm,
+}
+
+impl App {
+    pub(crate) fn get_mode(&self) -> ScreenMode {
+        match self.current_screen {
+            Screen::Dashboard => ScreenMode::DashboardList,
+            Screen::Sinks => match self.sinks_screen.mode {
+                SinksMode::List => ScreenMode::SinksList,
+                SinksMode::AddEdit => ScreenMode::SinkEditor,
+                SinksMode::SelectSink => ScreenMode::SinkSelector,
+                SinksMode::Delete => ScreenMode::SinkDeleteConfirm,
+            },
+            Screen::Rules => match self.rules_screen.mode {
+                RulesMode::List => ScreenMode::RulesList,
+                RulesMode::AddEdit => ScreenMode::RuleEditor,
+                RulesMode::SelectSink => ScreenMode::RuleSinkSelector,
+                RulesMode::Delete => ScreenMode::RuleDeleteConfirm,
+            },
+            Screen::Settings => ScreenMode::SettingsList,
+        }
+    }
+}
+```
+
+**Rationale:** Unified mode enum makes context bar logic cleaner and easier to maintain.
+
+#### 8.9: Optional - Add hint for advanced text editing in modal
+**File:** `src/tui/screens/sinks.rs` and `src/tui/screens/rules.rs`
+
+**Optional enhancement:** Add a subtle hint at the bottom of text input modals:
+```rust
+// In modal rendering, add above context bar area:
+let hint = Line::from(vec![
+    Span::styled("Tip: ", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::styled("Ctrl+A/E", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::raw(" to jump, "),
+    Span::styled("Ctrl+U/K", Style::default().fg(colors::UI_SECONDARY).italic()),
+    Span::raw(" to clear"),
+]).alignment(Alignment::Right);
+```
+
+**Rationale:** Gentle reminder of power-user shortcuts without cluttering the UI.
+
+**Alternative:** Skip this and rely on help screen (`?`) to document these shortcuts.
+
+**Checklist:**
+- [ ] Extend `render_context_bar()` to handle modal modes
+- [ ] Add `ScreenMode` enum and `App::get_mode()` implementation
+- [ ] Clean up sink selector modal title (remove keybinds)
+- [ ] Clean up rule sink selector modal title (remove keybinds)
+- [ ] Remove inline help from sink editor
+- [ ] Remove inline help from rule editor
+- [ ] Update sink editor layout (remove help chunk)
+- [ ] Update rule editor layout (remove help chunk)
+- [ ] Remove keybind text from delete confirmation modals
+- [ ] Add text editing shortcuts section to help screen
+- [ ] Test context bar appears correctly for all modal modes
+- [ ] Test modals on small terminals (no help text overflow)
+- [ ] Verify all modal keybindings work as documented
+- [ ] Run clippy and tests
+
+**Benefits:**
+- ✅ Consistent keybinding display across all modals
+- ✅ No lost information on small terminals
+- ✅ Clean, descriptive modal titles
+- ✅ Users discover powerful text editing shortcuts
+- ✅ Aligns with overall plan's context bar approach
+- ✅ Reduces code duplication (no inline help rendering)
+
+---
+
 ## Future Enhancements (Out of Scope)
 
 These are not part of this plan but could be considered later:
@@ -770,6 +1097,7 @@ These are not part of this plan but could be considered later:
 3. **Vim-style navigation:** Add `h`/`l` for prev/next screen (power users)
 4. **Color customization:** Allow users to configure tab bar colors in settings
 5. **Tab bar icons:** Add optional icons/symbols before screen names (e.g., 📊 Dashboard)
+6. **Modal-specific hints:** Add subtle inline hints for text editing shortcuts in modals (see Phase 8.9)
 
 ---
 
