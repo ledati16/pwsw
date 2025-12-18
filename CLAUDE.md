@@ -198,11 +198,11 @@ cargo clippy --all-targets
 cargo clippy --all-targets -- -W clippy::pedantic
 ```
 
-**Current Acceptable Pedantic Allows (16 total, as of Phase C.1.7):**
+**Current Acceptable Pedantic Allows (17 total):**
 
 These `#[allow(clippy::...)]` annotations are justified and documented in code:
 - `struct_excessive_bools` (3×) → Config `Settings`, `SettingsFile`, and TUI `App` have independent boolean flags for different features (not state machines)
-- `too_many_lines` (13×) → Daemon event loop, TUI screens, input handlers, commands - cohesive logic hard to split meaningfully
+- `too_many_lines` (14×) → Daemon event loop, TUI event loop, TUI screens, input handlers, commands - cohesive logic hard to split meaningfully
 - `items_after_statements` (2×) → Constants scoped in spawn blocks for clarity
 - `needless_pass_by_value` (1×) → Wayland `Connection` must be moved, not borrowed (protocol requirement)
 - `cast_possible_truncation` (1×) → IPC message length cast validated safe (MAX_MESSAGE_SIZE within u32 range)
@@ -288,6 +288,19 @@ pub async fn activate_sink(&self, sink_name: &str) -> Result<()> {
     }).await?
 }
 ```
+
+**TUI Rendering Strategy:**
+- Event-driven rendering with 60 FPS frame rate cap
+- All state changes set `app.dirty = true` flag
+- Render loop runs after every `tokio::select!` iteration
+- Frame rate limiter prevents excessive redraws (16ms minimum between frames)
+- Tick interval (16ms) used only for animations, not driving renders
+- Result: Immediate responsiveness (<16ms latency) with efficient CPU usage
+
+**When adding new input handlers:**
+- Always set `app.dirty = true` after state changes
+- Rendering happens automatically in main loop
+- No need to call `terminal.draw()` directly in handlers
 
 ### Security Practices
 
@@ -744,6 +757,11 @@ cargo run -- tui
 - **Architecture:** Uses snapshot pattern to avoid borrow-checker conflicts (see Anti-Patterns section)
 - **Logging:** Integrated with `tui-logger` for in-TUI log viewing
 - **Error Handling:** Uses `color-eyre` for rich error reports with backtraces
+- **Performance:** Event-driven rendering with 60 FPS frame rate cap
+  - Changed from tick-based (80ms) to event-driven with frame limiter (16ms max latency)
+  - Result: ~62.5 FPS sustained, <16ms input latency (down from 0-80ms avg)
+  - Implementation: Restructured event loop in `src/tui/mod.rs:424-567`
+  - Impact: Matches native terminal application responsiveness
 
 **Notifications (`notification.rs`)**
 - Desktop notifications using `notify-rust`

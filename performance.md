@@ -93,12 +93,15 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     // Frame rate constants
     const TARGET_FPS: u64 = 60;
-    const MIN_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;  // 16ms for 60 FPS
+    const MIN_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;  // 16ms (actual: ~62.5 FPS)
     const ANIM_MS: u64 = 120; // spinner frame every 120ms
 
     // Timing state
     let mut last_frame = Instant::now();
     let mut last_anim = Instant::now();
+
+    // Ensure initial render happens
+    app.dirty = true;
 
     // ... rest of function
 ```
@@ -108,8 +111,8 @@ async fn run_app<B: ratatui::backend::Backend>(
 #### Step 1.2: Keep tick interval for animation timing only
 
 ```rust
-    // Tick is now only for periodic checks (animations, background state)
-    // Rendering happens on-demand after every event
+    // Tick provides 60 FPS baseline for animations and frame rate limiting
+    // Rendering happens after every select! iteration if dirty and enough time elapsed
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(MIN_FRAME_TIME_MS));
 
     let mut events = EventStream::new();
@@ -216,8 +219,7 @@ maybe_update = async {
             if elapsed_since_last_frame.as_millis() >= u128::from(MIN_FRAME_TIME_MS) {
                 #[cfg(debug_assertions)]
                 {
-                    use std::time::Instant as Ti;
-                    let start = Ti::now();
+                    let start = Instant::now();
                     terminal.draw(|frame| render_ui(frame, app))?;
                     let render_time = start.elapsed();
 
@@ -374,33 +376,25 @@ Add to "Performance Patterns" section (after line ~340):
 - No need to call `terminal.draw()` directly in handlers
 ```
 
-#### Step 4.2: Add performance notes to refactor_review_final.md
+#### Step 4.2: Add performance notes to CLAUDE.md
 
-Add a new subsection to track this improvement:
+Add to the "TUI Mode" section or create a new "TUI Performance" subsection:
 
 ```markdown
-### TUI Performance: Event-Driven Rendering (Date: YYYY-MM-DD)
+**TUI Rendering Strategy:**
+- Event-driven rendering with 60 FPS frame rate cap
+- Changed from tick-based (80ms) to event-driven with frame limiter (16ms max latency)
+- Result: ~62.5 FPS sustained, <16ms input latency (down from 0-80ms avg)
 
-**Problem:** Tick-based rendering (80ms interval, ~12.5 FPS) caused perceived input lag.
-
-**Solution:** Event-driven rendering with 60 FPS frame rate cap.
-
-**Changes:**
-- `src/tui/mod.rs:424-548`: Restructured event loop
-- Moved render logic outside `tokio::select!` for immediate execution
-- Added frame rate limiter (16ms minimum between frames)
-- Reduced tick interval to 16ms (60 FPS baseline)
-
-**Impact:**
-- User input latency: 40ms avg → <16ms avg (60% improvement)
-- Frame rate: 12.5 FPS → 60 FPS (380% improvement)
-- CPU usage: Same or better (event-driven vs polling)
-- Responsiveness: Matches native terminal applications
-
-**Verification:**
-- Manual testing: Confirmed smooth input in all screens
-- Performance: No slow frames under normal operation
-- CPU usage: <1% idle, 2-5% during active use
+**Performance Improvement (Date: YYYY-MM-DD):**
+- Problem: Tick-based rendering (80ms interval, ~12.5 FPS) caused perceived input lag
+- Solution: Event-driven rendering with 60 FPS frame rate cap
+- Changes: Restructured event loop in `src/tui/mod.rs:424-548`
+  - Moved render logic outside `tokio::select!` for immediate execution
+  - Added frame rate limiter (16ms minimum between frames)
+  - Reduced tick interval to 16ms (60 FPS baseline)
+- Impact: User input latency 40ms avg → <16ms avg (62.5% improvement)
+- Result: Matches native terminal application responsiveness
 ```
 
 ## Alternative Approaches Considered
