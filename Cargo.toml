@@ -77,4 +77,7 @@ built = { version = "0.7", features = ["git2"] }
 
 [dev-dependencies]
 tempfile = "3"
+pretty_assertions = "1"
+rstest = "0.22"
+test-case = "3"
 
