@@ -4,6 +4,7 @@
 //! IPC requests, and switching audio sinks based on configured rules.
 
 use anyhow::{Context, Result};
+use crossterm::style::Stylize;
 use notify::{Event, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -190,11 +191,14 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         std::mem::forget(guard);
     }
 
-    info!("Starting PWSW daemon {}", crate::version_string());
+    info!(
+        "{}",
+        format!("Starting PWSW daemon {}", crate::version_string()).log_event()
+    );
     info!(
         "Loaded {} sinks, {} rules",
-        config.sinks.len(),
-        config.rules.len()
+        config.sinks.len().to_string().technical(),
+        config.rules.len().to_string().technical()
     );
 
     let start_time = Instant::now();
@@ -210,7 +214,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .get_default_sink()
             .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
         if state.current_sink_name != default.name {
-            info!("Switching to default sink: {}", default.desc);
+            info!("Switching to default sink: {}", default.desc.as_str().bold());
 
             // Run activation in blocking thread pool to avoid blocking the async runtime
             let name_clone = default.name.clone();
@@ -230,11 +234,14 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
     // Spawn compositor event thread
     let mut window_events = compositor::spawn_compositor_thread()?;
-    info!("Compositor event thread started");
+    info!("{}", "Compositor event thread started".success());
 
     // Start IPC server
     let ipc_server = IpcServer::bind().await?;
-    info!("IPC server listening on {:?}", ipc_server.socket_path());
+    info!(
+        "IPC server listening on {}",
+        format!("{:?}", ipc_server.socket_path()).technical()
+    );
 
     // Setup config file watcher (hot-reload)
     let config_path = Config::get_config_path()?;
@@ -271,7 +278,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         }
     }
 
-    info!("Monitoring window events...");
+    info!("{}", "Monitoring window events...".log_event());
 
     // Main event loop
     loop {
@@ -325,7 +332,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             _ = config_rx.recv() => {
                 // Debounce happens partly due to select! loop speed, but we should be careful.
-                info!("Config file changed, attempting reload...");
+                info!("{}", "Config file changed, attempting reload...".warning());
                 match Config::load() {
                     Ok(new_config) => {
                         let notify_enabled = state.config.settings.notify_manual;
@@ -344,7 +351,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             }
 
             _ = signal::ctrl_c() => {
-                info!("Shutting down (Ctrl-C)");
+                info!("{}", "Shutting down (Ctrl-C)".warning());
                 if state.config.settings.notify_manual {
                     let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
@@ -352,7 +359,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             }
 
             _ = shutdown_rx.recv() => {
-                info!("Shutting down (IPC request)");
+                info!("{}", "Shutting down (IPC request)".warning());
                 if state.config.settings.notify_manual {
                     let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }
@@ -501,7 +508,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
         }
 
         Request::Shutdown => {
-            info!("Shutdown requested via IPC");
+            info!("{}", "Shutdown requested via IPC".warning());
             // Send response before shutting down
             ipc::write_response(
                 stream,
