@@ -44,7 +44,7 @@ pub(crate) fn render_help(
     .block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Help (↑/↓ to scroll)")
+            .title(" Help ")
             .style(
                 Style::default()
                     .bg(ratatui::style::Color::Black)

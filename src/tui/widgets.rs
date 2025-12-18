@@ -138,39 +138,6 @@ pub(crate) fn render_input(
     render_validated_input(frame, area, title, input, focused, ValidationState::Neutral);
 }
 
-/// Build modal help line with consistent formatting
-///
-/// Creates a help line with `[key] action | [key] action` format.
-/// Uses static strings to avoid allocations in render path.
-///
-/// # Example
-/// ```no_run
-/// # use ratatui::text::Line;
-/// # fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> { Line::from("") }
-/// modal_help_line(&[("Tab", "Next"), ("Esc", "Cancel")]);
-/// ```
-pub(crate) fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (i, (key, action)) in items.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(
-                " | ",
-                Style::default().fg(colors::UI_SECONDARY),
-            ));
-        }
-        // Build "[key]" using three spans to avoid format!
-        spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
-        spans.push(Span::styled(
-            *key,
-            Style::default().fg(colors::UI_HIGHLIGHT),
-        ));
-        spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
-        spans.push(Span::raw(" "));
-        spans.push(Span::raw(*action));
-    }
-    Line::from(spans)
-}
-
 /// Render a button-like selector widget
 ///
 /// Creates a bordered widget that looks clickable with clear selection state.
