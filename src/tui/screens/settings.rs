@@ -2,13 +2,14 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
 use crate::config::Settings;
+use crate::style::colors;
 use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Selected setting item
@@ -203,10 +204,10 @@ fn render_settings_list(
 
             let style = if is_selected {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(colors::UI_SELECTED)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(colors::UI_TEXT)
             };
 
             let padded_name = screen_state
@@ -219,37 +220,37 @@ fn render_settings_list(
                 SettingItem::LogLevel => Span::styled(value_text, style),
                 SettingItem::DefaultOnStartup => {
                     if settings.default_on_startup {
-                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
-                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                     }
                 }
                 SettingItem::SetSmartToggle => {
                     if settings.set_smart_toggle {
-                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
-                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                     }
                 }
                 SettingItem::NotifyManual => {
                     if settings.notify_manual {
-                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
-                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                     }
                 }
                 SettingItem::NotifyRules => {
                     if settings.notify_rules {
-                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
-                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                     }
                 }
                 SettingItem::MatchByIndex => {
                     if settings.match_by_index {
-                        Span::styled("✓ enabled", Style::default().fg(Color::Green))
+                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
-                        Span::styled("✗ disabled", Style::default().fg(Color::Red))
+                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                     }
                 }
             };
@@ -257,7 +258,7 @@ fn render_settings_list(
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(colors::UI_HIGHLIGHT),
                 ),
                 Span::styled(padded_name, style),
                 Span::raw("  "),
@@ -298,7 +299,7 @@ fn render_settings_list(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
 
@@ -310,7 +311,7 @@ fn render_settings_list(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
 
@@ -355,16 +356,16 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
             let is_selected = i == screen_state.log_level_index;
             let style = if is_selected {
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(colors::UI_SELECTED)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(colors::UI_TEXT)
             };
 
             let line = Line::from(vec![
                 Span::styled(
                     if is_selected { "> " } else { "  " },
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(colors::UI_HIGHLIGHT),
                 ),
                 Span::styled(*level, style),
             ]);
@@ -377,7 +378,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
         Block::default()
             .borders(Borders::ALL)
             .title("Select Log Level (↑/↓, Enter to confirm, Esc to cancel)")
-            .style(Style::default().bg(Color::Black)),
+            .style(Style::default().bg(ratatui::style::Color::Black)),
     );
 
     frame.render_widget(list, popup_area);
@@ -392,7 +393,7 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScre
         Line::from(""),
         Line::from(vec![Span::styled(
             description,
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         )]),
     ];
 

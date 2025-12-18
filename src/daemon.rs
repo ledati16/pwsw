@@ -177,7 +177,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
 
         let file_appender = tracing_appender::rolling::never(log_dir, "daemon.log");
-        let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
         tracing_subscriber::fmt()
             .with_env_filter(filter)
@@ -187,7 +187,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
         // Store guard to prevent it from being dropped (would close log file)
         // SAFETY: Guard must live for entire daemon lifetime
-        std::mem::forget(_guard);
+        std::mem::forget(guard);
     }
 
     info!("Starting PWSW daemon {}", crate::version_string());
@@ -315,9 +315,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                                     .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::UnexpectedEof)
                             });
 
-                        if is_health_check {
-                            tracing::debug!("Client disconnected without sending data (likely health check)");
-                        } else {
+                        if !is_health_check {
+                            // Don't log health checks (TUI polls every 700ms)
                             error!("IPC request handling error: {e:#}", e = e);
                         }
                     }

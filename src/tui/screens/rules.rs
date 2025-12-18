@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
     Frame,
@@ -10,6 +10,7 @@ use ratatui::{
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::config::{Rule, SinkConfig};
+use crate::style::colors;
 use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 use regex::Regex;
@@ -256,18 +257,18 @@ fn render_list(
             let index_cell = Cell::from((i + 1).to_string());
             let app_id_cell = Cell::from(rule.app_id_pattern.as_str());
             let title_cell = rule.title_pattern.as_ref().map_or_else(
-                || Cell::from(Span::styled("*", Style::default().fg(Color::DarkGray))),
+                || Cell::from(Span::styled("*", Style::default().fg(colors::UI_SECONDARY))),
                 |s| Cell::from(s.as_str()),
             );
             let sink_cell =
-                Cell::from(Span::styled(sink_display, Style::default().fg(Color::Cyan)));
+                Cell::from(Span::styled(sink_display, Style::default().fg(colors::UI_HIGHLIGHT)));
             let desc_cell = rule
                 .desc
                 .as_ref()
                 .map_or_else(|| Cell::from(""), |s| Cell::from(s.as_str()));
 
             let row_style = if is_selected {
-                Style::default().bg(Color::DarkGray)
+                Style::default().bg(colors::UI_SELECTED_BG)
             } else {
                 Style::default()
             };
@@ -304,7 +305,7 @@ fn render_list(
         ])
         .style(
             Style::default()
-                .fg(Color::Yellow)
+                .fg(colors::UI_WARNING)
                 .add_modifier(Modifier::BOLD),
         )
         .bottom_margin(1),
@@ -391,7 +392,7 @@ fn render_editor(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(ratatui::style::Color::Black));
     frame.render_widget(block, popup_area);
 
     // App ID pattern field
@@ -446,15 +447,15 @@ fn render_editor(
     let mut notify_spans = Vec::new();
     match screen_state.editor.notify {
         Some(true) => {
-            notify_spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+            notify_spans.push(Span::styled("✓ ", Style::default().fg(colors::UI_SUCCESS)));
             notify_spans.push(Span::raw("Notify (enabled)"));
         }
         Some(false) => {
-            notify_spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+            notify_spans.push(Span::styled("✗ ", Style::default().fg(colors::UI_ERROR)));
             notify_spans.push(Span::raw("Notify (disabled)"));
         }
         None => {
-            notify_spans.push(Span::styled("○ ", Style::default().fg(Color::Gray)));
+            notify_spans.push(Span::styled("○ ", Style::default().fg(colors::UI_SECONDARY)));
             notify_spans.push(Span::raw("Notify (use global setting)"));
         }
     }
@@ -487,7 +488,7 @@ fn render_editor(
             ("Space", "Toggle"),
             ("Esc", "Cancel"),
         ]);
-        let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(Color::Gray));
+        let help_widget = Paragraph::new(vec![help_line]).style(Style::default().fg(colors::UI_SECONDARY));
         frame.render_widget(help_widget, chunks[6]);
     }
 }
@@ -519,10 +520,10 @@ fn render_live_preview(
 
                 let throbber = Throbber::default()
                     .label("Computing matches...")
-                    .style(Style::default().fg(Color::Yellow))
+                    .style(Style::default().fg(colors::UI_WARNING))
                     .throbber_style(
                         Style::default()
-                            .fg(Color::Yellow)
+                            .fg(colors::UI_WARNING)
                             .add_modifier(Modifier::BOLD),
                     );
                 frame.render_stateful_widget(throbber, inner, throbber_state);
@@ -535,12 +536,12 @@ fn render_live_preview(
             if res.timed_out {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  Preview timed out or invalid regex",
-                    Style::default().fg(Color::Red),
+                    Style::default().fg(colors::UI_ERROR),
                 )]));
             } else if res.matches.is_empty() {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  No matching windows",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(colors::UI_WARNING),
                 )]));
             } else {
                 // Use helper to convert strings -> Lines, preserving the limit of 5 shown items.
@@ -555,7 +556,7 @@ fn render_live_preview(
                     let _ = write!(text, "  ...and {remaining} more");
                     preview_lines.push(Line::from(vec![Span::styled(
                         text,
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(colors::UI_SECONDARY),
                     )]));
                 }
             }
@@ -605,7 +606,7 @@ fn render_live_preview(
         if windows.is_empty() {
             preview_lines.push(Line::from(vec![Span::styled(
                 "  (daemon not running)",
-                Style::default().fg(Color::Gray),
+                Style::default().fg(colors::UI_SECONDARY),
             )]));
         } else {
             // Use helper to perform matching with compiled regex refs and get both the preview strings and total count.
@@ -619,7 +620,7 @@ fn render_live_preview(
             if matches_vec.is_empty() {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  No matching windows",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(colors::UI_WARNING),
                 )]));
             } else {
                 preview_lines.extend(crate::tui::preview::build_preview_lines_from_strings(
@@ -628,7 +629,7 @@ fn render_live_preview(
                 if total > 5 {
                     preview_lines.push(Line::from(vec![Span::styled(
                         (total - 5).to_string(),
-                        Style::default().fg(Color::Gray),
+                        Style::default().fg(colors::UI_SECONDARY),
                     )]));
                 }
             }
@@ -636,12 +637,12 @@ fn render_live_preview(
     } else if !screen_state.editor.app_id_pattern.value().is_empty() {
         preview_lines.push(Line::from(vec![Span::styled(
             "  Invalid regex pattern",
-            Style::default().fg(Color::Red),
+            Style::default().fg(colors::UI_ERROR),
         )]));
     } else {
         preview_lines.push(Line::from(vec![Span::styled(
             "  Enter app_id pattern to see preview",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(colors::UI_SECONDARY),
         )]));
     }
 
@@ -677,14 +678,14 @@ fn render_sink_selector(
 
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(desc, Style::default().fg(Color::White)),
+                Span::styled(desc, Style::default().fg(colors::UI_TEXT)),
             ]);
 
             ListItem::new(vec![
                 line,
                 Line::from(vec![
                     Span::raw("    "),
-                    Span::styled(name, Style::default().fg(Color::Gray)),
+                    Span::styled(name, Style::default().fg(colors::UI_SECONDARY)),
                 ]),
             ])
         })
@@ -695,9 +696,9 @@ fn render_sink_selector(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Select Target Sink (↑/↓, Enter to confirm, Esc to cancel)")
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(ratatui::style::Color::Black)),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))
         .highlight_symbol(""); // Ensure no default symbol
 
     // Sync state
@@ -755,7 +756,7 @@ fn render_delete_confirmation(
     let title_line = if let Some(ref title) = rule.title_pattern {
         Line::from(vec![
             Span::raw("Title: "),
-            Span::styled(title.as_str(), Style::default().fg(Color::White)),
+            Span::styled(title.as_str(), Style::default().fg(colors::UI_TEXT)),
         ])
     } else {
         Line::from("Title: (any)")
@@ -765,29 +766,29 @@ fn render_delete_confirmation(
         Line::from(""),
         Line::from(vec![Span::styled(
             "Are you sure you want to delete this rule?",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(colors::UI_ERROR).add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("App ID: "),
-            Span::styled(&rule.app_id_pattern, Style::default().fg(Color::White)),
+            Span::styled(&rule.app_id_pattern, Style::default().fg(colors::UI_TEXT)),
         ]),
         title_line,
         Line::from(vec![
             Span::raw("Sink: "),
-            Span::styled(&rule.sink_ref, Style::default().fg(Color::Yellow)),
+            Span::styled(&rule.sink_ref, Style::default().fg(colors::UI_WARNING)),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Press Enter to confirm, Esc to cancel",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(colors::UI_WARNING),
         )]),
     ];
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Delete Rule")
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(ratatui::style::Color::Black));
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);

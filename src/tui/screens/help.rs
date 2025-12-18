@@ -2,12 +2,13 @@
 
 use ratatui::{
     layout::{Constraint, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 
+use crate::style::colors;
 use crate::tui::app::Screen;
 use crate::tui::widgets::{centered_modal, modal_size};
 
@@ -44,7 +45,11 @@ pub(crate) fn render_help(
         Block::default()
             .borders(Borders::ALL)
             .title("Help (↑/↓ to scroll)")
-            .style(Style::default().bg(Color::Black).fg(Color::White)),
+            .style(
+                Style::default()
+                    .bg(ratatui::style::Color::Black)
+                    .fg(colors::UI_TEXT),
+            ),
     );
 
     // No selection enforced - we control offset manually for view scrolling
@@ -111,7 +116,7 @@ pub(crate) fn render_help(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
 
@@ -123,7 +128,7 @@ pub(crate) fn render_help(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
 }
@@ -229,7 +234,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         rows.push(Row::new(vec![Cell::from(Span::styled(
             text.to_string(),
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ))]));
         rows.push(Row::new(vec![Cell::from("")])); // Spacer
@@ -240,7 +245,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         rows.push(Row::new(vec![
             Cell::from(Span::styled(
                 key.to_string(),
-                Style::default().fg(Color::Green),
+                Style::default().fg(colors::UI_SUCCESS),
             )),
             Cell::from(Span::raw(desc.to_string())),
         ]));
@@ -251,7 +256,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         rows.push(Row::new(vec![Cell::from("")])); // Spacer
         rows.push(Row::new(vec![Cell::from(Span::styled(
             text.to_string(),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(colors::UI_WARNING),
         ))]));
     };
 
@@ -291,7 +296,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
             rows.push(Row::new(vec![
                 Cell::from(Span::styled(
                     "Live Preview",
-                    Style::default().fg(Color::Green),
+                    Style::default().fg(colors::UI_SUCCESS),
                 )),
                 Cell::from("Shows matching windows as you type"),
             ]));
@@ -324,21 +329,21 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
     // Close instruction
     rows.push(Row::new(vec![Cell::from("")]));
     rows.push(Row::new(vec![Cell::from(Line::from(vec![
-        Span::styled("Press ", Style::default().fg(Color::Gray)),
+        Span::styled("Press ", Style::default().fg(colors::UI_SECONDARY)),
         Span::styled(
             "?",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" or ", Style::default().fg(Color::Gray)),
+        Span::styled(" or ", Style::default().fg(colors::UI_SECONDARY)),
         Span::styled(
             "Esc",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(" to close help", Style::default().fg(Color::Gray)),
+        Span::styled(" to close help", Style::default().fg(colors::UI_SECONDARY)),
     ]))]));
 
     rows

@@ -114,7 +114,7 @@ pub async fn run() -> Result<()> {
     let mut terminal = Terminal::new(backend).context("Failed to create terminal")?;
 
     // Create app state (pass pre-loaded config)
-    let mut app = App::with_config(config)?;
+    let mut app = App::with_config(config);
 
     // Terminal guard to ensure we restore terminal state on panic/return
     struct TerminalGuard;
@@ -384,20 +384,24 @@ pub async fn run() -> Result<()> {
                 }
             }
 
-            // Poll for new daemon log lines
+            // Check for new daemon log lines (event-driven via file watcher)
             if let Some(ref mut tailer) = log_tailer {
-                match tailer.read_new_lines() {
-                    Ok(new_lines) if !new_lines.is_empty() => {
-                        let _ = bg_tx.send(AppUpdate::DaemonLogs(new_lines));
+                // Only read if file has changed (non-blocking check)
+                if tailer.has_file_changed() {
+                    match tailer.read_new_lines() {
+                        Ok(new_lines) if !new_lines.is_empty() => {
+                            let _ = bg_tx.send(AppUpdate::DaemonLogs(new_lines));
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to read new daemon logs: {e:#}");
+                        }
+                        _ => {}
                     }
-                    Err(e) => {
-                        tracing::warn!("Failed to read new daemon logs: {e:#}");
-                    }
-                    _ => {}
                 }
             }
 
-            tokio::time::sleep(Duration::from_millis(700)).await;
+            // Reduced polling frequency (was 700ms) - log reading is now event-driven
+            tokio::time::sleep(Duration::from_millis(2500)).await;
         }
     });
 

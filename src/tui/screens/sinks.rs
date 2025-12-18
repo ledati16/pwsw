@@ -2,7 +2,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
         Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row, Table, TableState,
@@ -12,7 +12,7 @@ use ratatui::{
 use std::fmt::Write;
 
 use crate::config::SinkConfig;
-
+use crate::style::colors;
 use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
@@ -191,9 +191,9 @@ fn render_list(
 
             // Status Cell
             let status_cell = if is_active {
-                Cell::from(Span::styled("● Active", Style::default().fg(Color::Green)))
+                Cell::from(Span::styled("● Active", Style::default().fg(colors::UI_SUCCESS)))
             } else {
-                Cell::from(Span::styled("○", Style::default().fg(Color::DarkGray)))
+                Cell::from(Span::styled("○", Style::default().fg(colors::UI_SECONDARY)))
             };
 
             // Description Cell (with icon if present)
@@ -207,25 +207,25 @@ fn render_list(
                 desc_text,
                 if is_selected {
                     Style::default()
-                        .fg(Color::Cyan)
+                        .fg(colors::UI_SELECTED)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(colors::UI_TEXT)
                 },
             ));
 
             // Name Cell (Technical ID)
-            let name_cell = Cell::from(Span::styled(&sink.name, Style::default().fg(Color::Gray)));
+            let name_cell = Cell::from(Span::styled(&sink.name, Style::default().fg(colors::UI_SECONDARY)));
 
             // Flags Cell
             let flags_cell = if sink.default {
-                Cell::from(Span::styled("DEFAULT", Style::default().fg(Color::Yellow)))
+                Cell::from(Span::styled("DEFAULT", Style::default().fg(colors::UI_WARNING)))
             } else {
                 Cell::from("")
             };
 
             let row_style = if is_selected {
-                Style::default().bg(Color::DarkGray)
+                Style::default().bg(colors::UI_SELECTED_BG)
             } else {
                 Style::default()
             };
@@ -249,7 +249,7 @@ fn render_list(
         Row::new(vec!["Status", "Description", "Node Name", "Flags"])
             .style(
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
             )
             .bottom_margin(1),
@@ -321,7 +321,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(ratatui::style::Color::Black));
     frame.render_widget(block, popup_area);
 
     // Name field - use button-like selector
@@ -360,10 +360,10 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Default checkbox with border-based focus
     let mut checkbox_spans = Vec::new();
     if screen_state.editor.default {
-        checkbox_spans.push(Span::styled("✓ ", Style::default().fg(Color::Green)));
+        checkbox_spans.push(Span::styled("✓ ", Style::default().fg(colors::UI_SUCCESS)));
         checkbox_spans.push(Span::raw("Default Sink"));
     } else {
-        checkbox_spans.push(Span::styled("✗ ", Style::default().fg(Color::Red)));
+        checkbox_spans.push(Span::styled("✗ ", Style::default().fg(colors::UI_ERROR)));
         checkbox_spans.push(Span::raw("Default Sink"));
     }
 
@@ -386,7 +386,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         ]);
 
         let help_widget =
-            Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(Color::Gray));
+            Paragraph::new(vec![Line::from(""), help_line]).style(Style::default().fg(colors::UI_SECONDARY));
         frame.render_widget(help_widget, chunks[4]);
     }
 }
@@ -409,28 +409,28 @@ fn render_delete_confirmation(
         Line::from(""),
         Line::from(vec![Span::styled(
             "Are you sure you want to delete this sink?",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(colors::UI_ERROR).add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
             Span::raw("Description: "),
-            Span::styled(&sink.desc, Style::default().fg(Color::White)),
+            Span::styled(&sink.desc, Style::default().fg(colors::UI_TEXT)),
         ]),
         Line::from(vec![
             Span::raw("Node Name: "),
-            Span::styled(&sink.name, Style::default().fg(Color::Gray)),
+            Span::styled(&sink.name, Style::default().fg(colors::UI_SECONDARY)),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Press Enter to confirm, Esc to cancel",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(colors::UI_WARNING),
         )]),
     ];
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Delete Sink")
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(ratatui::style::Color::Black));
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);
@@ -463,7 +463,7 @@ fn render_sink_selector(
     items.push(ListItem::new(Line::from(Span::styled(
         "── Active Sinks ──",
         Style::default()
-            .fg(Color::Cyan)
+            .fg(colors::UI_HIGHLIGHT)
             .add_modifier(Modifier::BOLD),
     ))));
 
@@ -473,10 +473,10 @@ fn render_sink_selector(
 
         let line = Line::from(vec![
             Span::raw("  "),
-            Span::styled(desc_text, Style::default().fg(Color::White)),
-            Span::styled(" (", Style::default().fg(Color::DarkGray)),
-            Span::styled(name_text, Style::default().fg(Color::DarkGray)),
-            Span::styled(")", Style::default().fg(Color::DarkGray)),
+            Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
+            Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(name_text, Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
         ]);
         items.push(ListItem::new(line));
     }
@@ -487,7 +487,7 @@ fn render_sink_selector(
         items.push(ListItem::new(Line::from(Span::styled(
             "── Profile Sinks (require switching) ──",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(colors::UI_WARNING)
                 .add_modifier(Modifier::BOLD),
         ))));
 
@@ -497,10 +497,10 @@ fn render_sink_selector(
 
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(desc_text.clone(), Style::default().fg(Color::White)),
-                Span::styled(" (", Style::default().fg(Color::DarkGray)),
-                Span::styled(name_text.clone(), Style::default().fg(Color::DarkGray)),
-                Span::styled(")", Style::default().fg(Color::DarkGray)),
+                Span::styled(desc_text.clone(), Style::default().fg(colors::UI_TEXT)),
+                Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(name_text.clone(), Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
             items.push(ListItem::new(line));
         }
@@ -548,9 +548,9 @@ fn render_sink_selector(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Select Node (↑/↓, Enter to confirm, Esc to cancel)")
-                .style(Style::default().bg(Color::Black)),
+                .style(Style::default().bg(ratatui::style::Color::Black)),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray))
+        .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))
         .highlight_symbol("");
 
     // Map our logical selector index (skipping headers) to the list item index

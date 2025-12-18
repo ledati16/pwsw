@@ -2,9 +2,10 @@ use crate::tui::input::simulate_key_event;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn make_app_sinks() -> crate::tui::app::App {
-    // Ensure tests use a temporary XDG_CONFIG_HOME so App::new doesn't touch the real config
+    // Ensure tests use a temporary XDG_CONFIG_HOME so config loading doesn't touch the real config
     let guard = crate::test_utils::XdgTemp::new();
-    let mut app = crate::tui::app::App::new().expect("App::new failed");
+    let config = crate::config::Config::load().expect("Config::load failed");
+    let mut app = crate::tui::app::App::with_config(config);
     app.current_screen = crate::tui::app::Screen::Sinks;
     // drop guard so caller's environment is restored after app created
     drop(guard);
@@ -33,7 +34,9 @@ fn sinks_editor_input_wiring() {
 
 #[test]
 fn rules_editor_input_wiring() {
-    let mut app = crate::tui::app::App::new().expect("App::new failed");
+    let _guard = crate::test_utils::XdgTemp::new();
+    let config = crate::config::Config::load().expect("Config::load failed");
+    let mut app = crate::tui::app::App::with_config(config);
     app.current_screen = crate::tui::app::Screen::Rules;
     app.rules_screen.start_add();
     app.rules_screen.editor.app_id_pattern =
