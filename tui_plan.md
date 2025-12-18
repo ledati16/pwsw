@@ -2,7 +2,7 @@
 
 **Goal:** Modernize TUI navigation to use number keys (1-4) instead of letters (d, s, r, t), improve discoverability, and reduce redundancy.
 
-**Status:** Phases 1-8 complete ✅ | Phase 9 (Dashboard enhancements) pending
+**Status:** Phases 1-8 complete ✅ (including all deferred cleanup) | Phase 9 (Dashboard enhancements) pending
 
 ---
 
@@ -872,11 +872,11 @@ add_keybind(&mut items, "Shift+↑/↓", "Move rule priority");
 
 ---
 
-### Phase 8: Standardize Modal Keybinding Display ✅ PARTIAL (ScreenMode enum complete)
+### Phase 8: Standardize Modal Keybinding Display ✅ COMPLETE
 
 **Goal:** Bring consistency to how modals show keybindings, remove keybinds from titles, and leverage context bar for modal-specific hints.
 
-**Note:** ScreenMode enum and get_mode() implemented for Phase 6. Full modal cleanup (titles, inline help removal) deferred as non-critical.
+**Note:** ScreenMode enum and get_mode() implemented for Phase 6. Deferred cleanup (titles, inline help removal) completed in follow-up commit.
 
 **Current Issues:**
 
@@ -1178,14 +1178,16 @@ let hint = Line::from(vec![
 **Checklist:**
 - [x] Extend `render_context_bar()` to handle modal modes
 - [x] Add `ScreenMode` enum and `App::get_mode()` implementation
-- [ ] Clean up sink selector modal title (remove keybinds) (deferred)
-- [ ] Clean up rule sink selector modal title (remove keybinds) (deferred)
-- [ ] Remove inline help from sink editor (deferred)
-- [ ] Remove inline help from rule editor (deferred)
-- [ ] Update sink editor layout (remove help chunk) (deferred)
-- [ ] Update rule editor layout (remove help chunk) (deferred)
-- [ ] Remove keybind text from delete confirmation modals (deferred)
-- [ ] Add text editing shortcuts section to help screen (deferred)
+- [x] Clean up sink selector modal title (remove keybinds) (deferred cleanup complete)
+- [x] Clean up rule sink selector modal title (remove keybinds) (deferred cleanup complete)
+- [x] Remove inline help from sink editor (deferred cleanup complete)
+- [x] Remove inline help from rule editor (deferred cleanup complete)
+- [x] Update sink editor layout (remove help chunk) (deferred cleanup complete)
+- [x] Update rule editor layout (remove help chunk) (deferred cleanup complete)
+- [x] Remove keybind text from delete confirmation modals (deferred cleanup complete)
+- [x] Clean up all screen titles - removed inline keybinds from Sinks, Rules, Settings, Help
+- [x] Remove unused modal_help_line() function (dead code cleanup)
+- [ ] Add text editing shortcuts section to help screen (deferred - can be added later)
 - [x] Test context bar appears correctly for all modal modes
 - [x] Test modals on small terminals (no help text overflow)
 - [x] Verify all modal keybindings work as documented
