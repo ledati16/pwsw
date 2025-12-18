@@ -27,6 +27,15 @@ pub(crate) enum Screen {
     Settings,
 }
 
+/// Screen mode for context-aware UI elements
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScreenMode {
+    /// Normal list/view mode
+    List,
+    /// Modal/dialog/editor mode
+    Modal,
+}
+
 impl Screen {
     /// Get all available screens in display order
     pub(crate) fn all() -> &'static [Screen] {
@@ -51,10 +60,10 @@ impl Screen {
     /// Get the keyboard shortcut key for this screen
     pub(crate) const fn key(self) -> char {
         match self {
-            Screen::Dashboard => 'd',
-            Screen::Sinks => 's',
-            Screen::Rules => 'r',
-            Screen::Settings => 't',
+            Screen::Dashboard => '1',
+            Screen::Sinks => '2',
+            Screen::Rules => '3',
+            Screen::Settings => '4',
         }
     }
 
@@ -257,6 +266,37 @@ impl App {
     pub(crate) fn prev_screen(&mut self) {
         self.current_screen = self.current_screen.prev();
         self.clear_status();
+    }
+
+    /// Get the current screen mode (list vs modal)
+    pub(crate) fn get_screen_mode(&self) -> ScreenMode {
+        use super::screens::rules::RulesMode;
+        use super::screens::sinks::SinksMode;
+
+        match self.current_screen {
+            Screen::Dashboard => ScreenMode::List,
+            Screen::Sinks => {
+                if self.sinks_screen.mode == SinksMode::List {
+                    ScreenMode::List
+                } else {
+                    ScreenMode::Modal
+                }
+            }
+            Screen::Rules => {
+                if self.rules_screen.mode == RulesMode::List {
+                    ScreenMode::List
+                } else {
+                    ScreenMode::Modal
+                }
+            }
+            Screen::Settings => {
+                if self.settings_screen.editing_log_level {
+                    ScreenMode::Modal
+                } else {
+                    ScreenMode::List
+                }
+            }
+        }
     }
 
     /// Set a status message to display to the user

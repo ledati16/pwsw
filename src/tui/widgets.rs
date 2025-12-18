@@ -153,11 +153,17 @@ pub(crate) fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'s
     let mut spans = Vec::new();
     for (i, (key, action)) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(colors::UI_SECONDARY)));
+            spans.push(Span::styled(
+                " | ",
+                Style::default().fg(colors::UI_SECONDARY),
+            ));
         }
         // Build "[key]" using three spans to avoid format!
         spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
-        spans.push(Span::styled(*key, Style::default().fg(colors::UI_HIGHLIGHT)));
+        spans.push(Span::styled(
+            *key,
+            Style::default().fg(colors::UI_HIGHLIGHT),
+        ));
         spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*action));
@@ -216,9 +222,15 @@ pub(crate) fn render_selector_button(
         ));
     } else {
         // Unfocused: Show as button with subtle dropdown arrow
-        spans.push(Span::styled("↓ [ ", Style::default().fg(colors::UI_SECONDARY)));
+        spans.push(Span::styled(
+            "↓ [ ",
+            Style::default().fg(colors::UI_SECONDARY),
+        ));
         spans.push(Span::raw(display_value));
-        spans.push(Span::styled(" ]", Style::default().fg(colors::UI_SECONDARY)));
+        spans.push(Span::styled(
+            " ]",
+            Style::default().fg(colors::UI_SECONDARY),
+        ));
     }
 
     let block = Block::default()

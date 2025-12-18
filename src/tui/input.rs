@@ -161,16 +161,16 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
 
         // Direct screen navigation shortcuts
-        (KeyCode::Char('d'), KeyModifiers::NONE) => {
+        (KeyCode::Char('1'), KeyModifiers::NONE) => {
             app.goto_screen(Screen::Dashboard);
         }
-        (KeyCode::Char('s'), KeyModifiers::NONE) => {
+        (KeyCode::Char('2'), KeyModifiers::NONE) => {
             app.goto_screen(Screen::Sinks);
         }
-        (KeyCode::Char('r'), KeyModifiers::NONE) => {
+        (KeyCode::Char('3'), KeyModifiers::NONE) => {
             app.goto_screen(Screen::Rules);
         }
-        (KeyCode::Char('t'), KeyModifiers::NONE) => {
+        (KeyCode::Char('4'), KeyModifiers::NONE) => {
             app.goto_screen(Screen::Settings);
         }
 
@@ -322,26 +322,46 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
     match app.sinks_screen.mode {
         SinksMode::List => {
-            match key.code {
-                KeyCode::Up => {
+            match (key.code, key.modifiers) {
+                (KeyCode::Up, KeyModifiers::NONE) => {
                     app.sinks_screen.select_previous(app.config.sinks.len());
                 }
-                KeyCode::Down => {
+                (KeyCode::Down, KeyModifiers::NONE) => {
                     app.sinks_screen.select_next(app.config.sinks.len());
                 }
-                KeyCode::Char('a') => {
+                // Shift+Up: Move sink up in list
+                (KeyCode::Up, KeyModifiers::SHIFT) => {
+                    let idx = app.sinks_screen.selected;
+                    if idx > 0 && idx < app.config.sinks.len() {
+                        app.config.sinks.swap(idx, idx - 1);
+                        app.sinks_screen.selected = idx - 1;
+                        app.sinks_screen.update_display_descs(&app.config.sinks);
+                        app.mark_dirty();
+                    }
+                }
+                // Shift+Down: Move sink down in list
+                (KeyCode::Down, KeyModifiers::SHIFT) => {
+                    let idx = app.sinks_screen.selected;
+                    if idx + 1 < app.config.sinks.len() {
+                        app.config.sinks.swap(idx, idx + 1);
+                        app.sinks_screen.selected = idx + 1;
+                        app.sinks_screen.update_display_descs(&app.config.sinks);
+                        app.mark_dirty();
+                    }
+                }
+                (KeyCode::Char('a'), KeyModifiers::NONE) => {
                     app.sinks_screen.start_add();
                 }
-                KeyCode::Char('e') => {
+                (KeyCode::Char('e'), KeyModifiers::NONE) => {
                     app.sinks_screen.start_edit(&app.config.sinks);
                 }
-                KeyCode::Char('x') => {
+                (KeyCode::Char('x'), KeyModifiers::NONE) => {
                     // 'x' for delete (avoids conflict with Dashboard shortcut 'd')
                     if !app.config.sinks.is_empty() {
                         app.sinks_screen.start_delete();
                     }
                 }
-                KeyCode::Char(' ') => {
+                (KeyCode::Char(' '), KeyModifiers::NONE) => {
                     // Toggle default status
                     let idx = app.sinks_screen.selected;
                     if idx < app.config.sinks.len() {
@@ -551,20 +571,38 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
 fn handle_rules_input(app: &mut App, key: KeyEvent) {
     match app.rules_screen.mode {
         RulesMode::List => {
-            match key.code {
-                KeyCode::Up => {
+            match (key.code, key.modifiers) {
+                (KeyCode::Up, KeyModifiers::NONE) => {
                     app.rules_screen.select_previous(app.config.rules.len());
                 }
-                KeyCode::Down => {
+                (KeyCode::Down, KeyModifiers::NONE) => {
                     app.rules_screen.select_next(app.config.rules.len());
                 }
-                KeyCode::Char('a') => {
+                // Shift+Up: Move rule up in list
+                (KeyCode::Up, KeyModifiers::SHIFT) => {
+                    let idx = app.rules_screen.selected;
+                    if idx > 0 && idx < app.config.rules.len() {
+                        app.config.rules.swap(idx, idx - 1);
+                        app.rules_screen.selected = idx - 1;
+                        app.mark_dirty();
+                    }
+                }
+                // Shift+Down: Move rule down in list
+                (KeyCode::Down, KeyModifiers::SHIFT) => {
+                    let idx = app.rules_screen.selected;
+                    if idx + 1 < app.config.rules.len() {
+                        app.config.rules.swap(idx, idx + 1);
+                        app.rules_screen.selected = idx + 1;
+                        app.mark_dirty();
+                    }
+                }
+                (KeyCode::Char('a'), KeyModifiers::NONE) => {
                     app.rules_screen.start_add();
                 }
-                KeyCode::Char('e') => {
+                (KeyCode::Char('e'), KeyModifiers::NONE) => {
                     app.rules_screen.start_edit(&app.config.rules);
                 }
-                KeyCode::Char('x') => {
+                (KeyCode::Char('x'), KeyModifiers::NONE) => {
                     // 'x' for delete (avoids conflict with Dashboard shortcut 'd')
                     if !app.config.rules.is_empty() {
                         app.rules_screen.start_delete();
