@@ -117,3 +117,68 @@ impl LogTailer {
         self.log_path.exists()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_log_tailer_reads_initial_logs() {
+        use tempfile::NamedTempFile;
+
+        // Create temp log file
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "2025-12-17T10:00:00 INFO test log line 1").unwrap();
+        writeln!(temp_file, "2025-12-17T10:00:01 WARN test log line 2").unwrap();
+        temp_file.flush().unwrap();
+
+        // Create tailer with this specific path
+        let log_path = temp_file.path().to_path_buf();
+        let mut tailer = LogTailer {
+            log_path,
+            lines: Vec::new(),
+            last_position: 0,
+        };
+
+        // Read initial logs
+        tailer.read_initial(100).unwrap();
+
+        // Verify logs were read
+        let lines = tailer.get_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("INFO"));
+        assert!(lines[1].contains("WARN"));
+    }
+
+    #[test]
+    fn test_log_tailer_reads_new_lines() {
+        use tempfile::NamedTempFile;
+
+        // Create temp file with initial content
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "line 1").unwrap();
+        temp_file.flush().unwrap();
+
+        let log_path = temp_file.path().to_path_buf();
+        let mut tailer = LogTailer {
+            log_path: log_path.clone(),
+            lines: Vec::new(),
+            last_position: 0,
+        };
+
+        // Read initial content
+        tailer.read_initial(100).unwrap();
+        assert_eq!(tailer.get_lines().len(), 1);
+
+        // Append new lines
+        writeln!(temp_file, "line 2").unwrap();
+        writeln!(temp_file, "line 3").unwrap();
+        temp_file.flush().unwrap();
+
+        // Read new lines
+        let new_lines = tailer.read_new_lines().unwrap();
+        assert_eq!(new_lines.len(), 2);
+        assert_eq!(tailer.get_lines().len(), 3);
+    }
+}
