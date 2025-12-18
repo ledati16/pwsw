@@ -1234,7 +1234,8 @@ fn render_daemon_section(
         ]));
     }
 
-    // Action buttons (compact, one line)
+    // Action buttons (compact, horizontal layout)
+    // Future: Add Enable/Disable for systemd unit management
     let actions = ["Start", "Stop", "Restart"];
     let mut action_spans = Vec::new();
     for (i, action) in actions.iter().enumerate() {
@@ -1258,6 +1259,10 @@ fn render_daemon_section(
         action_spans.push(Span::styled(*action, style));
         action_spans.push(Span::styled(suffix, style));
     }
+
+    // Future: Add spacing + Enable/Disable buttons
+    // action_spans.push(Span::raw("   ")); // Visual separator
+    // Add Enable/Disable with same pattern
 
     lines.push(Line::from(""));
     lines.push(Line::from(action_spans));
@@ -1539,15 +1544,22 @@ impl DashboardScreen {
 }
 ```
 
-#### 9.6: Add Page Up/Down keybindings for dashboard
+#### 9.6: Add navigation keybindings for dashboard
 **File:** `src/tui/input.rs` (in `handle_dashboard_input` function)
 
-**Add after existing arrow key handlers:**
+**Add horizontal and page-based navigation:**
 ```rust
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
     match key.code {
-        // ... existing Up/Down for action selection ...
+        // Left/Right for horizontal daemon action navigation
+        KeyCode::Left => {
+            app.dashboard_screen.select_previous();
+        }
+        KeyCode::Right => {
+            app.dashboard_screen.select_next();
+        }
 
+        // Page Up/Down for window list scrolling
         KeyCode::PageUp => {
             let page_size = 5; // Or calculate from visible area
             let total = app.all_windows.len();
@@ -1561,10 +1573,18 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
             app.dashboard_screen.scroll_windows_to_top();
         }
 
-        // ... existing Enter handler for executing actions ...
+        // Enter to execute selected daemon action
+        KeyCode::Enter => {
+            // Execute action based on selected_action index
+            // ... existing implementation ...
+        }
+
+        _ => {}
     }
 }
 ```
+
+**Note:** Left/Right navigation works with the horizontal button layout. When Enable/Disable are added in the future, `select_next()` will need to handle 5 actions instead of 3.
 
 #### 9.7: Update context bar for dashboard
 **File:** `src/tui/mod.rs` (in Phase 6's `render_context_bar` function)
@@ -1572,11 +1592,13 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
 **Add dashboard keybinds:**
 ```rust
 (Screen::Dashboard, ScreenMode::DashboardList) => vec![
-    ("[↑↓]", "Select"),
+    ("[←→]", "Select Action"),
     ("[Enter]", "Execute"),
     ("[PgUp/PgDn]", "Scroll Windows"),
 ],
 ```
+
+**Rationale:** Left/Right arrows navigate the horizontal daemon action buttons. Page Up/Down scroll the window list.
 
 #### 9.8: Data requirements for new features
 
@@ -1600,17 +1622,20 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
 - [ ] Redesign daemon section (compact, vertical)
 - [ ] Add uptime and PID display to daemon section
 - [ ] Add format_duration helper function
+- [ ] Add horizontal action button layout with spacing for future Enable/Disable
 - [ ] Enhance sink section with recent switches history
 - [ ] Add recent_switches state to App
 - [ ] Create render_window_tracking function
 - [ ] Add window scroll state to DashboardScreen
 - [ ] Add scroll methods (page_up, page_down, to_top)
-- [ ] Add PageUp/PageDown/Home keybindings
-- [ ] Update context bar for dashboard
+- [ ] Add Left/Right arrow keybindings for action selection
+- [ ] Add PageUp/PageDown/Home keybindings for window scrolling
+- [ ] Update context bar for dashboard (show ←→ for actions, PgUp/PgDn for windows)
 - [ ] Add truncate helper for long strings
 - [ ] Test layout on small terminals (minimum width/height)
 - [ ] Test window scrolling with many windows
 - [ ] Test with zero windows, zero matched windows
+- [ ] Test Left/Right navigation through action buttons
 - [ ] Verify daemon controls still work (start/stop/restart)
 - [ ] Run clippy and tests
 
@@ -1629,6 +1654,15 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
 - Daemon not running (hide uptime/PID, disable controls appropriately)
 - Very long app_id or title (truncate with ellipsis)
 - Terminal too narrow (minimum width ~80 cols recommended)
+- Action selection wraps at boundaries (left on first = last, right on last = first)
+
+**Future Extensions (Not in Phase 9):**
+- **Enable/Disable systemd unit actions:**
+  - Add two more buttons: `[  Enable]  [  Disable]`
+  - Visual spacing (3 spaces) between Start/Stop/Restart and Enable/Disable groups
+  - Update `selected_action` range to 0-4 (5 actions total)
+  - These would call `systemctl --user enable/disable pwsw.service`
+  - Only show if systemd unit is detected/installed
 
 ---
 
