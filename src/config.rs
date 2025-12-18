@@ -844,7 +844,10 @@ mod tests {
         }
 
         let result = config.validate();
-        assert!(result.is_err(), "Expected validation to fail for case: {name}");
+        assert!(
+            result.is_err(),
+            "Expected validation to fail for case: {name}"
+        );
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains(expected_error_substring),

@@ -15,9 +15,15 @@ fn pwsw_bin() -> Command {
 
 #[test]
 fn cli_help_works() {
-    let output = pwsw_bin().arg("--help").output().expect("Failed to run pwsw --help");
+    let output = pwsw_bin()
+        .arg("--help")
+        .output()
+        .expect("Failed to run pwsw --help");
 
-    assert!(output.status.success(), "pwsw --help should exit successfully");
+    assert!(
+        output.status.success(),
+        "pwsw --help should exit successfully"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Usage"), "Help should show usage");
@@ -84,7 +90,9 @@ fn cli_invalid_command_shows_error() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     // clap should show an error about unrecognized subcommand
     assert!(
-        stderr.contains("unrecognized") || stderr.contains("unexpected") || stderr.contains("error"),
+        stderr.contains("unrecognized")
+            || stderr.contains("unexpected")
+            || stderr.contains("error"),
         "Should show error for invalid command"
     );
 }

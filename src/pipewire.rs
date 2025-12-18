@@ -940,4 +940,39 @@ mod tests {
             "alsa_output.pci-0000_00_1f.3.analog-stereo"
         );
     }
+
+    #[test]
+    fn test_profile_switch_env_vars() {
+        // Test default values when env vars are not set
+        std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
+        std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+
+        assert_eq!(profile_switch_delay_ms(), 150);
+        assert_eq!(profile_switch_max_retries(), 5);
+
+        // Test valid overrides
+        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "300");
+        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "10");
+
+        assert_eq!(profile_switch_delay_ms(), 300);
+        assert_eq!(profile_switch_max_retries(), 10);
+
+        // Test invalid values fall back to defaults
+        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "invalid");
+        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "not_a_number");
+
+        assert_eq!(profile_switch_delay_ms(), 150);
+        assert_eq!(profile_switch_max_retries(), 5);
+
+        // Test empty strings fall back to defaults
+        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "");
+        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "");
+
+        assert_eq!(profile_switch_delay_ms(), 150);
+        assert_eq!(profile_switch_max_retries(), 5);
+
+        // Cleanup
+        std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
+        std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+    }
 }
