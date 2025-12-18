@@ -12,7 +12,9 @@ use throbber_widgets_tui::{Throbber, ThrobberState};
 use crate::config::{Rule, SinkConfig};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
-use crate::tui::widgets::{centered_modal, modal_size, render_input, render_validated_input, ValidationState};
+use crate::tui::widgets::{
+    centered_modal, modal_size, render_input, render_validated_input, ValidationState,
+};
 use regex::Regex;
 use std::fmt::Write;
 

@@ -15,11 +15,11 @@ use crossterm::terminal::{
 use futures_util::StreamExt;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Tabs},
-    Terminal,
+    Frame, Terminal,
 };
 use std::fmt::Write;
 use std::io;
@@ -431,7 +431,7 @@ async fn run_app<B: ratatui::backend::Backend>(
 
     // Frame rate constants
     const TARGET_FPS: u64 = 60;
-    const MIN_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS;  // 16ms (actual: ~62.5 FPS)
+    const MIN_FRAME_TIME_MS: u64 = 1000 / TARGET_FPS; // 16ms (actual: ~62.5 FPS)
     const ANIM_MS: u64 = 120; // spinner frame every 120ms
 
     // Timing state
@@ -571,11 +571,12 @@ async fn run_app<B: ratatui::backend::Backend>(
 fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let size = frame.area();
 
-    // Create main layout: [Header (tabs) | Content | Footer (status)]
+    // Create main layout: [Header (tabs) | Context Bar | Content | Footer (status)]
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Header with tabs
+            Constraint::Length(1), // Context bar
             Constraint::Min(0),    // Content area
             Constraint::Length(1), // Footer
         ])
@@ -584,11 +585,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Render header (tab bar)
     render_header(frame, chunks[0], app.current_screen, app.config_dirty);
 
+    // Render context bar
+    render_context_bar(frame, chunks[1], app);
+
     // Render screen content
     match app.current_screen {
         Screen::Dashboard => render_dashboard(
             frame,
-            chunks[1],
+            chunks[2],
             &app.config,
             &app.dashboard_screen,
             app.daemon_running,
@@ -597,7 +601,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         ),
         Screen::Sinks => render_sinks(
             frame,
-            chunks[1],
+            chunks[2],
             &app.config.sinks,
             &mut app.sinks_screen,
             &app.active_sinks,
@@ -619,7 +623,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
             render_rules(
                 frame,
-                chunks[1],
+                chunks[2],
                 &mut RulesRenderContext {
                     rules: &rules_snapshot,
                     sinks: &sinks_snapshot,
@@ -632,7 +636,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         }
         Screen::Settings => render_settings(
             frame,
-            chunks[1],
+            chunks[2],
             &app.config.settings,
             &mut app.settings_screen,
         ),
@@ -643,7 +647,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let status_clone = app.status_message().cloned();
     render_footer(
         frame,
-        chunks[2],
+        chunks[3],
         status_clone.as_ref(),
         app.daemon_action_pending,
         app.throbber_state_mut(),
@@ -666,10 +670,11 @@ fn render_header(
         .iter()
         .map(|s| {
             let name = s.name();
-            let mut t = String::with_capacity(1 + 1 + name.len());
+            let mut t = String::with_capacity(1 + 1 + 1 + name.len()); // +1 for space
             t.push('[');
             t.push(s.key());
             t.push(']');
+            t.push(' '); // Add space
             t.push_str(name);
             t
         })
@@ -680,10 +685,10 @@ fn render_header(
         .position(|&s| s == current_screen)
         .unwrap_or(0);
 
-    // Build title with optional styled [unsaved] indicator
+    // Build left title with optional styled [unsaved] indicator
     let version = crate::version_string();
-    let title_line = if config_dirty {
-        Line::from(vec![
+    let left_title = if config_dirty {
+        ratatui::widgets::block::Title::from(Line::from(vec![
             Span::raw("PWSW "),
             Span::raw(&version),
             Span::raw(" "),
@@ -693,13 +698,27 @@ fn render_header(
                     .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
-        ])
+        ]))
     } else {
-        Line::from(vec![Span::raw("PWSW "), Span::raw(&version)])
+        ratatui::widgets::block::Title::from(Line::from(vec![
+            Span::raw("PWSW "),
+            Span::raw(&version),
+        ]))
     };
 
     let tabs = Tabs::new(titles)
-        .block(Block::default().borders(Borders::ALL).title(title_line))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(left_title)
+                .title_top(
+                    Line::from(vec![
+                        Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Help "),
+                    ])
+                    .alignment(Alignment::Right),
+                ),
+        )
         .select(selected)
         .style(Style::default().fg(colors::UI_SECONDARY))
         .highlight_style(
@@ -709,6 +728,140 @@ fn render_header(
         );
 
     frame.render_widget(tabs, area);
+}
+
+/// Render the context bar with screen-specific actions
+// Context bar shows comprehensive keybinding hints for all screen modes
+#[allow(clippy::too_many_lines)]
+fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
+    use crate::tui::app::ScreenMode;
+    use crate::tui::screens::rules::RulesMode;
+    use crate::tui::screens::sinks::SinksMode;
+
+    let mode = app.get_screen_mode();
+
+    let text = match (app.current_screen, mode) {
+        (app::Screen::Dashboard, ScreenMode::List) => Line::from(vec![
+            Span::raw("↑↓ Navigate  "),
+            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Execute  "),
+            Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Scroll logs  "),
+            Span::styled("[End]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Latest logs"),
+        ]),
+        (app::Screen::Sinks, ScreenMode::List) => Line::from(vec![
+            Span::raw("↑↓ Navigate  "),
+            Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Reorder  "),
+            Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Add  "),
+            Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Edit  "),
+            Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Delete  "),
+            Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Default"),
+        ]),
+        (app::Screen::Sinks, ScreenMode::Modal) => {
+            // Determine which modal we're in
+            match app.sinks_screen.mode {
+                SinksMode::AddEdit => Line::from(vec![
+                    Span::raw("↑↓/"),
+                    Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Switch field  "),
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Save/Select  "),
+                    Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Cancel"),
+                ]),
+                SinksMode::Delete => Line::from(vec![
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Confirm  "),
+                    Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Cancel"),
+                ]),
+                SinksMode::SelectSink => Line::from(vec![
+                    Span::raw("↑↓ Navigate  "),
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Select  "),
+                    Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Cancel"),
+                ]),
+                SinksMode::List => Line::from(""), // Should not happen in Modal mode
+            }
+        }
+        (app::Screen::Rules, ScreenMode::List) => Line::from(vec![
+            Span::raw("↑↓ Navigate  "),
+            Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Reorder  "),
+            Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Add  "),
+            Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Edit  "),
+            Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Delete"),
+        ]),
+        (app::Screen::Rules, ScreenMode::Modal) => {
+            // Determine which modal we're in
+            match app.rules_screen.mode {
+                RulesMode::AddEdit => {
+                    let mut spans = vec![
+                        Span::raw("↑↓/"),
+                        Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Switch field  "),
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Save/Select  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ];
+                    // Show live preview indicator if preview is active
+                    if app.preview.is_some() {
+                        spans.push(Span::raw("  "));
+                        spans.push(Span::styled(
+                            "⚡ Live preview",
+                            Style::default().fg(colors::UI_SUCCESS),
+                        ));
+                    }
+                    Line::from(spans)
+                }
+                RulesMode::Delete => Line::from(vec![
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Confirm  "),
+                    Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Cancel"),
+                ]),
+                RulesMode::SelectSink => Line::from(vec![
+                    Span::raw("↑↓ Navigate  "),
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Select  "),
+                    Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Cancel"),
+                ]),
+                RulesMode::List => Line::from(""), // Should not happen in Modal mode
+            }
+        }
+        (app::Screen::Settings, ScreenMode::List) => Line::from(vec![
+            Span::raw("↑↓ Navigate  "),
+            Span::styled("[Enter/Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Toggle/Edit"),
+        ]),
+        (app::Screen::Settings, ScreenMode::Modal) => Line::from(vec![
+            Span::raw("↑↓ Navigate  "),
+            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Confirm  "),
+            Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Cancel"),
+        ]),
+        _ => Line::from(""),
+    };
+
+    let paragraph = Paragraph::new(text).style(
+        Style::default()
+            .fg(colors::UI_SECONDARY)
+            .bg(ratatui::style::Color::Black),
+    );
+    frame.render_widget(paragraph, area);
 }
 
 /// Render the footer with keyboard shortcuts and status
@@ -752,16 +905,8 @@ fn render_footer(
         } else {
             Line::from(vec![
                 Span::raw("[q] Quit  "),
-                Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Help  [Tab] Next  "),
-                Span::styled("[d]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw("ashboard  "),
-                Span::styled("[s]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw("inks  "),
-                Span::styled("[r]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw("ules  Se"),
-                Span::styled("[t]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw("tings  "),
+                Span::styled("[Tab/Shift-Tab]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Cycle  "),
                 Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
                 Span::raw(" Save"),
             ])

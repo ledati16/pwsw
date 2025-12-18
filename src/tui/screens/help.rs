@@ -163,6 +163,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
         Screen::Sinks => {
             add_header(&mut items, "Sinks Screen");
             add_keybind(&mut items, "↑/↓", "Navigate sinks");
+            add_keybind(&mut items, "Shift+↑/↓", "Reorder sinks");
             add_keybind(&mut items, "a", "Add new sink");
             add_keybind(&mut items, "e", "Edit selected sink");
             add_keybind(&mut items, "x", "Delete selected sink");
@@ -177,6 +178,7 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
         Screen::Rules => {
             add_header(&mut items, "Rules Screen");
             add_keybind(&mut items, "↑/↓", "Navigate rules");
+            add_keybind(&mut items, "Shift+↑/↓", "Reorder rules");
             add_keybind(&mut items, "a", "Add new rule");
             add_keybind(&mut items, "e", "Edit selected rule");
             add_keybind(&mut items, "x", "Delete selected rule");
@@ -208,10 +210,10 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
     add_keybind(&mut items, "q/Ctrl+C", "Quit application");
     add_keybind(&mut items, "Tab", "Next screen");
     add_keybind(&mut items, "Shift+Tab", "Previous screen");
-    add_keybind(&mut items, "d", "Go to Dashboard");
-    add_keybind(&mut items, "s", "Go to Sinks");
-    add_keybind(&mut items, "r", "Go to Rules");
-    add_keybind(&mut items, "t", "Go to Settings");
+    add_keybind(&mut items, "1", "Go to Dashboard");
+    add_keybind(&mut items, "2", "Go to Sinks");
+    add_keybind(&mut items, "3", "Go to Rules");
+    add_keybind(&mut items, "4", "Go to Settings");
     add_keybind(&mut items, "Ctrl+S", "Save configuration");
     add_keybind(&mut items, "Esc", "Clear status message");
     add_keybind(&mut items, "?", "Toggle help");
@@ -270,6 +272,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         Screen::Sinks => {
             add_header(&mut rows, "Sinks Screen");
             add_keybind(&mut rows, "↑/↓", "Navigate sinks");
+            add_keybind(&mut rows, "Shift+↑/↓", "Reorder sinks");
             add_keybind(&mut rows, "a", "Add new sink");
             add_keybind(&mut rows, "e", "Edit selected sink");
             add_keybind(&mut rows, "x", "Delete selected sink");
@@ -284,6 +287,7 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         Screen::Rules => {
             add_header(&mut rows, "Rules Screen");
             add_keybind(&mut rows, "↑/↓", "Navigate rules");
+            add_keybind(&mut rows, "Shift+↑/↓", "Reorder rules");
             add_keybind(&mut rows, "a", "Add new rule");
             add_keybind(&mut rows, "e", "Edit selected rule");
             add_keybind(&mut rows, "x", "Delete selected rule");
@@ -318,10 +322,10 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
     add_keybind(&mut rows, "q/Ctrl+C", "Quit application");
     add_keybind(&mut rows, "Tab", "Next screen");
     add_keybind(&mut rows, "Shift+Tab", "Previous screen");
-    add_keybind(&mut rows, "d", "Go to Dashboard");
-    add_keybind(&mut rows, "s", "Go to Sinks");
-    add_keybind(&mut rows, "r", "Go to Rules");
-    add_keybind(&mut rows, "t", "Go to Settings");
+    add_keybind(&mut rows, "1", "Go to Dashboard");
+    add_keybind(&mut rows, "2", "Go to Sinks");
+    add_keybind(&mut rows, "3", "Go to Rules");
+    add_keybind(&mut rows, "4", "Go to Settings");
     add_keybind(&mut rows, "Ctrl+S", "Save configuration");
     add_keybind(&mut rows, "Esc", "Clear status message");
     add_keybind(&mut rows, "?", "Toggle help");
