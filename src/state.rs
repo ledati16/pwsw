@@ -467,95 +467,32 @@ pub fn switch_audio_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Settings, SinkConfig};
-    use regex::Regex;
+    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+    use test_case::test_case;
 
-    // Test helper functions
-    fn make_config(sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Config {
-        Config {
-            settings: Settings {
-                default_on_startup: true,
-                set_smart_toggle: true,
-                notify_manual: true,
-                notify_rules: true,
-                match_by_index: false,
-                log_level: "info".to_string(),
-            },
-            sinks,
-            rules,
-        }
-    }
-
-    fn make_sink(name: &str, desc: &str, default: bool) -> SinkConfig {
-        SinkConfig {
-            name: name.to_string(),
-            desc: desc.to_string(),
-            icon: None,
-            default,
-        }
-    }
-
-    fn make_rule(app_id: &str, title: Option<&str>, sink_ref: &str) -> Rule {
-        Rule {
-            app_id_regex: Regex::new(app_id).unwrap(),
-            title_regex: title.map(|t| Regex::new(t).unwrap()),
-            sink_ref: sink_ref.to_string(),
-            desc: None,
-            notify: None,
-            app_id_pattern: app_id.to_string(),
-            title_pattern: title.map(String::from),
-        }
-    }
-
-    // find_matching_rule() tests
-    #[test]
-    fn test_find_matching_rule_matches_app_id_only() {
+    // find_matching_rule() parameterized tests
+    #[test_case("firefox", None, "firefox", "Any Title", true ; "matches app_id only")]
+    #[test_case("steam", Some("Big Picture"), "steam", "Steam Big Picture Mode", true ; "matches app_id and title")]
+    #[test_case("firefox", None, "chrome", "Any Title", false ; "no match wrong app_id")]
+    #[test_case("steam", Some("Big Picture"), "steam", "Steam Library", false ; "no match wrong title")]
+    #[test_case("firefox", None, "org.mozilla.firefox", "Title", true ; "regex partial match")]
+    #[test_case("^steam$", None, "steamapp", "Title", false ; "regex anchored no match")]
+    #[test_case("^steam$", None, "steam", "Title", true ; "regex anchored exact match")]
+    fn test_find_matching_rule(
+        rule_app_id: &str,
+        rule_title: Option<&str>,
+        test_app_id: &str,
+        test_title: &str,
+        should_match: bool,
+    ) {
         let config = make_config(
             vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("firefox", None, "sink1")],
+            vec![make_rule(rule_app_id, rule_title, "sink1")],
         );
         let state = State::new_for_testing(config, "sink1".to_string());
 
-        let result = state.find_matching_rule("firefox", "Any Title");
-        assert!(result.is_some());
-        let (idx, _) = result.unwrap();
-        assert_eq!(idx, 0);
-    }
-
-    #[test]
-    fn test_find_matching_rule_matches_app_id_and_title() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("steam", Some("Big Picture"), "sink1")],
-        );
-        let state = State::new_for_testing(config, "sink1".to_string());
-
-        let result = state.find_matching_rule("steam", "Steam Big Picture Mode");
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_find_matching_rule_no_match_wrong_app_id() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("firefox", None, "sink1")],
-        );
-        let state = State::new_for_testing(config, "sink1".to_string());
-
-        let result = state.find_matching_rule("chrome", "Any Title");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_find_matching_rule_no_match_wrong_title() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("steam", Some("Big Picture"), "sink1")],
-        );
-        let state = State::new_for_testing(config, "sink1".to_string());
-
-        let result = state.find_matching_rule("steam", "Steam Library");
-        assert!(result.is_none());
+        let result = state.find_matching_rule(test_app_id, test_title);
+        assert_eq!(result.is_some(), should_match);
     }
 
     #[test]
@@ -573,33 +510,6 @@ mod tests {
         assert!(result.is_some());
         let (idx, _) = result.unwrap();
         assert_eq!(idx, 0);
-    }
-
-    #[test]
-    fn test_find_matching_rule_regex_partial_match() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("firefox", None, "sink1")],
-        );
-        let state = State::new_for_testing(config, "sink1".to_string());
-
-        let result = state.find_matching_rule("org.mozilla.firefox", "Title");
-        assert!(result.is_some());
-    }
-
-    #[test]
-    fn test_find_matching_rule_regex_anchored() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("^steam$", None, "sink1")],
-        );
-        let state = State::new_for_testing(config, "sink1".to_string());
-
-        let result = state.find_matching_rule("steamapp", "Title");
-        assert!(result.is_none());
-
-        let result2 = state.find_matching_rule("steam", "Title");
-        assert!(result2.is_some());
     }
 
     // should_switch_sink() tests

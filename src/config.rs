@@ -783,43 +783,8 @@ desc = "Steam Big Picture" # Custom name for notifications
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Test helper functions
-    fn make_config(sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Config {
-        Config {
-            settings: Settings {
-                default_on_startup: true,
-                set_smart_toggle: true,
-                notify_manual: true,
-                notify_rules: true,
-                match_by_index: false,
-                log_level: "info".to_string(),
-            },
-            sinks,
-            rules,
-        }
-    }
-
-    fn make_sink(name: &str, desc: &str, default: bool) -> SinkConfig {
-        SinkConfig {
-            name: name.to_string(),
-            desc: desc.to_string(),
-            icon: None,
-            default,
-        }
-    }
-
-    fn make_rule(app_id: &str, title: Option<&str>, sink_ref: &str) -> Rule {
-        Rule {
-            app_id_regex: Regex::new(app_id).unwrap(),
-            title_regex: title.map(|t| Regex::new(t).unwrap()),
-            sink_ref: sink_ref.to_string(),
-            desc: None,
-            notify: None,
-            app_id_pattern: app_id.to_string(),
-            title_pattern: title.map(String::from),
-        }
-    }
+    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+    use rstest::rstest;
 
     // validate() tests
     #[test]
@@ -834,83 +799,57 @@ mod tests {
         assert!(config.validate().is_ok());
     }
 
-    #[test]
-    fn test_validate_rejects_no_default_sink() {
-        let config = make_config(
-            vec![
-                make_sink("sink1", "Sink 1", false),
-                make_sink("sink2", "Sink 2", false),
-            ],
-            vec![],
-        );
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("default sink"));
-    }
+    /// Parameterized test for validation rejection cases
+    #[rstest]
+    #[case("no_default",
+           vec![make_sink("sink1", "Sink 1", false), make_sink("sink2", "Sink 2", false)],
+           vec![],
+           None,
+           "default sink")]
+    #[case("multiple_defaults",
+           vec![make_sink("sink1", "Sink 1", true), make_sink("sink2", "Sink 2", true)],
+           vec![],
+           None,
+           "default sinks found")]
+    #[case("duplicate_names",
+           vec![make_sink("duplicate", "Sink 1", true), make_sink("duplicate", "Sink 2", false)],
+           vec![],
+           None,
+           "Duplicate")]
+    #[case("duplicate_descs",
+           vec![make_sink("sink1", "Duplicate Desc", true), make_sink("sink2", "Duplicate Desc", false)],
+           vec![],
+           None,
+           "Duplicate")]
+    #[case("unknown_sink_ref",
+           vec![make_sink("sink1", "Sink 1", true)],
+           vec![make_rule("firefox", None, "nonexistent")],
+           None,
+           "unknown sink")]
+    #[case("invalid_log_level",
+           vec![make_sink("sink1", "Sink 1", true)],
+           vec![],
+           Some("invalid"),
+           "log_level")]
+    fn test_validate_rejection_cases(
+        #[case] name: &str,
+        #[case] sinks: Vec<SinkConfig>,
+        #[case] rules: Vec<Rule>,
+        #[case] log_level_override: Option<&str>,
+        #[case] expected_error_substring: &str,
+    ) {
+        let mut config = make_config(sinks, rules);
+        if let Some(level) = log_level_override {
+            config.settings.log_level = level.to_string();
+        }
 
-    #[test]
-    fn test_validate_rejects_multiple_default_sinks() {
-        let config = make_config(
-            vec![
-                make_sink("sink1", "Sink 1", true),
-                make_sink("sink2", "Sink 2", true),
-            ],
-            vec![],
+        let result = config.validate();
+        assert!(result.is_err(), "Expected validation to fail for case: {name}");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains(expected_error_substring),
+            "Expected error to contain '{expected_error_substring}', but got: {error_msg}"
         );
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("default sinks found"));
-    }
-
-    #[test]
-    fn test_validate_rejects_duplicate_sink_names() {
-        let config = make_config(
-            vec![
-                make_sink("duplicate", "Sink 1", true),
-                make_sink("duplicate", "Sink 2", false),
-            ],
-            vec![],
-        );
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Duplicate"));
-    }
-
-    #[test]
-    fn test_validate_rejects_duplicate_sink_descs() {
-        let config = make_config(
-            vec![
-                make_sink("sink1", "Duplicate Desc", true),
-                make_sink("sink2", "Duplicate Desc", false),
-            ],
-            vec![],
-        );
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Duplicate"));
-    }
-
-    #[test]
-    fn test_validate_rejects_unknown_rule_sink_ref() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("firefox", None, "nonexistent")],
-        );
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unknown sink"));
-    }
-
-    #[test]
-    fn test_validate_rejects_invalid_log_level() {
-        let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-        config.settings.log_level = "invalid".to_string();
-        let result = config.validate();
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("log_level"));
     }
 
     #[test]
