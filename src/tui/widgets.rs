@@ -2,12 +2,14 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use tui_input::Input;
+
+use crate::style::colors;
 
 /// Helper to create centered rect for modals
 ///
@@ -55,25 +57,51 @@ pub(crate) fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
 
 /// Get focus-aware border style
 ///
-/// Returns cyan border for focused elements, dark gray for unfocused.
+/// Returns magenta (bold) border for focused elements, gray for unfocused.
 /// This provides consistent visual feedback across all TUI widgets.
 pub(crate) const fn focus_border_style(focused: bool) -> Style {
     if focused {
-        Style::new().fg(Color::Cyan)
+        Style::new().fg(colors::UI_FOCUS)
     } else {
-        Style::new().fg(Color::DarkGray)
+        Style::new().fg(colors::UI_SECONDARY)
     }
 }
 
-/// Render a text input field with a block and correct scrolling/cursor
-pub(crate) fn render_input(
+/// Validation state for input fields
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ValidationState {
+    /// Input is valid
+    Valid,
+    /// Input is invalid
+    Invalid,
+    /// Input has not been validated or is in neutral state
+    Neutral,
+}
+
+/// Render a text input field with validation-aware border colors
+///
+/// Shows green border for valid input, red for invalid, magenta for focused.
+/// If not focused and validation state is provided, shows green/red for valid/invalid.
+pub(crate) fn render_validated_input(
     frame: &mut Frame,
     area: Rect,
     title: &str,
     input: &Input,
     focused: bool,
+    validation: ValidationState,
 ) {
-    let border_style = focus_border_style(focused);
+    let border_style = if focused {
+        // Focused always gets magenta border
+        Style::new().fg(colors::UI_FOCUS)
+    } else {
+        // When not focused, show validation state
+        match validation {
+            ValidationState::Valid => Style::new().fg(colors::UI_VALID),
+            ValidationState::Invalid => Style::new().fg(colors::UI_INVALID),
+            ValidationState::Neutral => Style::new().fg(colors::UI_SECONDARY),
+        }
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
@@ -99,6 +127,17 @@ pub(crate) fn render_input(
     }
 }
 
+/// Render a text input field with a block and correct scrolling/cursor
+pub(crate) fn render_input(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    input: &Input,
+    focused: bool,
+) {
+    render_validated_input(frame, area, title, input, focused, ValidationState::Neutral);
+}
+
 /// Build modal help line with consistent formatting
 ///
 /// Creates a help line with `[key] action | [key] action` format.
@@ -114,12 +153,12 @@ pub(crate) fn modal_help_line(items: &[(&'static str, &'static str)]) -> Line<'s
     let mut spans = Vec::new();
     for (i, (key, action)) in items.iter().enumerate() {
         if i > 0 {
-            spans.push(Span::styled(" | ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled(" | ", Style::default().fg(colors::UI_SECONDARY)));
         }
         // Build "[key]" using three spans to avoid format!
-        spans.push(Span::styled("[", Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled(*key, Style::default().fg(Color::Cyan)));
-        spans.push(Span::styled("]", Style::default().fg(Color::Cyan)));
+        spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
+        spans.push(Span::styled(*key, Style::default().fg(colors::UI_HIGHLIGHT)));
+        spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
         spans.push(Span::raw(" "));
         spans.push(Span::raw(*action));
     }
@@ -156,30 +195,30 @@ pub(crate) fn render_selector_button(
         spans.push(Span::styled(
             "↓ [ ",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             display_value,
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             " ]",
             Style::default()
-                .fg(Color::Cyan)
+                .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             " ◄ Enter to select",
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(colors::UI_WARNING),
         ));
     } else {
         // Unfocused: Show as button with subtle dropdown arrow
-        spans.push(Span::styled("↓ [ ", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled("↓ [ ", Style::default().fg(colors::UI_SECONDARY)));
         spans.push(Span::raw(display_value));
-        spans.push(Span::styled(" ]", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(" ]", Style::default().fg(colors::UI_SECONDARY)));
     }
 
     let block = Block::default()
@@ -257,7 +296,7 @@ pub(crate) fn render_scroll_arrows(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↑", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
     if has_below {
@@ -267,7 +306,7 @@ pub(crate) fn render_scroll_arrows(
             width: 1,
             height: 1,
         };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(Color::Yellow)));
+        let p = Paragraph::new(Span::styled("↓", Style::default().fg(colors::UI_WARNING)));
         frame.render_widget(p, r);
     }
 }
