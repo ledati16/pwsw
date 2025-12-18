@@ -2,19 +2,26 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Refactoring Protocol & Active Work
+## Active Work & Planning
 
-**Refactoring Status:**
-The comprehensive refactoring plan detailed in `refactor_review_final.md` has been **completed** (Phases A-D + optional tasks).
-- **Read First:** Before performing any task, read `refactor_review_final.md` to understand the completed refactor and current codebase state.
-- **Ongoing:** Continue to update `refactor_review_final.md` for any new significant changes.
-- **Achieved:** Modernized codebase using ecosystem crates (`tui-input`, `notify`, `color-eyre`), reduced boilerplate and fragility, preserved safety and testability, zero pedantic clippy warnings.
+**Next Major Feature: TUI Navigation Redesign**
+
+The comprehensive plan for TUI navigation improvements is detailed in `tui_plan.md`.
+- **Read First:** Before working on TUI features, read `tui_plan.md` to understand the planned modernization (number keys, context bars, dashboard enhancements)
+- **Status:** Ready for implementation - plan is complete with detailed phases (1-9)
+- **Highlights:** Modern number-based navigation (1-4), context-aware keybinding bars, enhanced dashboard with toggle views, comprehensive color system integration
 
 **Workflow & Coordination:**
-- Read `refactor_review_final.md` before starting any task
+- Read relevant planning documents (`tui_plan.md` for TUI work) before starting tasks
 - Follow the verification cycle described below before committing
 - Make small, reversible commits - prefer many tiny commits to one large one
 - DO NOT push to remote without explicit user approval
+
+**Recent Achievements:**
+- Comprehensive refactoring completed: Modernized codebase using ecosystem crates (`tui-input`, `notify`, `color-eyre`)
+- Zero pedantic clippy warnings achieved
+- Enhanced color system with semantic constants (magenta focus, validation feedback, accessibility features)
+- TUI log highlighting and improved visual feedback
 
 ## Project Overview
 
@@ -506,14 +513,15 @@ cargo clippy --all-targets -- -W clippy::pedantic      # Pedantic lint
 ### Test Coverage Areas
 
 **Current coverage (90 tests):**
-- ✅ Config validation and parsing (15 tests)
-- ✅ State management and rule matching (12 tests, parameterized)
-- ✅ PipeWire JSON parsing (12 tests)
+- ✅ Config validation and parsing (18 tests)
+- ✅ TUI logic and components (16 tests)
+- ✅ PipeWire JSON parsing and env vars (14 tests)
+- ✅ State management and rule matching (13 tests, parameterized)
 - ✅ IPC serialization and socket handling (11 tests)
+- ✅ Notification icon detection (6 tests)
 - ✅ CLI smoke tests (5 tests)
 - ✅ Config integration lifecycle (5 tests)
-- ✅ TUI async message passing (2 tests)
-- ✅ Various helper functions (widgets, notifications, etc.)
+- ✅ Doc tests (2 tests - style trait, widgets)
 
 **Testing philosophy:**
 - Focus on critical business logic (rule matching, sink switching)
@@ -1114,7 +1122,7 @@ Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
 - Subject: Concise (50 chars), imperative mood ("add" not "added")
 - Body: Explain WHY, not just what. Reference issues/PRs if applicable.
 - Include rationale for non-obvious changes
-- Link to `refactor_review_final.md` if part of refactor plan
+- Reference planning documents (`tui_plan.md`) if implementing planned features
 
 ### Git Push Policy
 
@@ -1174,14 +1182,15 @@ cargo test --lib        # Run unit tests only
 ```
 
 Test coverage by module:
-- `config.rs`: 15 tests - Config validation, sink resolution, default sink handling
-- `state.rs`: 12 tests - Rule matching, priority logic, window tracking
-- `pipewire.rs`: 13 tests - JSON parsing from `pw-dump` output, env var parsing (no external dependencies)
-- `ipc.rs`: 8 tests - Request/Response serialization roundtrips
+- `config.rs`: 18 tests - Config validation, sink resolution, default sink handling
+- `tui/`: 16 tests - Input handling, widgets, preview logic, async message passing
+- `pipewire.rs`: 14 tests - JSON parsing from `pw-dump` output, env var parsing (no external dependencies)
+- `state.rs`: 13 tests - Rule matching, priority logic, window tracking
+- `ipc.rs`: 11 tests - Request/Response serialization, socket handling roundtrips
 - `notification.rs`: 6 tests - Icon auto-detection for sinks and apps
-- `style.rs`: 1 doctest - Styling trait usage example
-- `tests/`: 5 CLI smoke tests - Binary execution, help, version, error handling
-- TUI modules: Various tests for input, widgets, preview logic, async message passing
+- `tests/cli_smoke_tests.rs`: 5 tests - Binary execution, help, version, error handling
+- `tests/config_integration.rs`: 5 tests - Config save/load, validation, permissions
+- Doc tests: 2 tests - Styling trait usage example, widget helpers
 
 All tests use inline `#[cfg(test)]` modules or subsystem test directories (e.g., `src/tui/tests/`). Integration tests in `tests/` verify public API behavior. No tests depend on external PipeWire/Wayland state.
 
