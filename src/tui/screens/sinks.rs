@@ -311,7 +311,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .style(Style::default().bg(ratatui::style::Color::Black));
+        .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
 
     // Name field - use button-like selector
@@ -403,7 +403,7 @@ fn render_delete_confirmation(
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Delete Sink")
-        .style(Style::default().bg(ratatui::style::Color::Black));
+        .style(Style::default().bg(colors::UI_MODAL_BG));
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);
@@ -521,7 +521,7 @@ fn render_sink_selector(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Select Node")
-                .style(Style::default().bg(ratatui::style::Color::Black)),
+                .style(Style::default().bg(colors::UI_MODAL_BG)),
         )
         .highlight_style(
             Style::default()

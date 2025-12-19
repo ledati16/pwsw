@@ -384,29 +384,8 @@ fn render_settings_list(
     let has_above = offset > 0;
     let has_below = offset + view_height < total;
 
-    // Draw top arrow if there's more above
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(p, r);
-    }
+    // Render scroll arrows using helper
+    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 
     // Render log level dropdown if editing
     if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
@@ -479,7 +458,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
         Block::default()
             .borders(Borders::ALL)
             .title("Select Log Level")
-            .style(Style::default().bg(ratatui::style::Color::Black)),
+            .style(Style::default().bg(colors::UI_MODAL_BG)),
     );
 
     frame.render_widget(list, popup_area);
