@@ -523,8 +523,12 @@ fn render_sink_selector(
                 .title("Select Node")
                 .style(Style::default().bg(ratatui::style::Color::Black)),
         )
-        .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))
-        .highlight_symbol("");
+        .highlight_style(
+            Style::default()
+                .fg(colors::UI_HIGHLIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(" → ");
 
     // Map our logical selector index (skipping headers) to the list item index
     let total_selectable = active_sinks.len() + profile_sinks.len();
@@ -551,35 +555,6 @@ fn render_sink_selector(
         &visual_items,
         content_width,
         screen_state.sink_selector_state.offset(),
-        view_height,
-    );
-
-    // Render scroll arrows
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
-
-    if !profile_sinks.is_empty() {
-        visual_items.push(String::new()); // spacer
-        visual_items.push("── Profile Sinks (require switching) ──".to_string());
-        for sink in profile_sinks {
-            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
-            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
-            visual_items.push({
-                let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
-                let _ = write!(tmp, "  {desc_text} ({name_text})");
-                tmp
-            });
-        }
-    }
-
-    // Compute content width and current logical offset
-    let content_width = inner.width as usize;
-    let raw_offset = screen_state.sink_selector_state.offset();
-
-    // Use helper to compute whether content exists above/below (accounts for wrapping)
-    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
-        &visual_items,
-        content_width,
-        raw_offset,
         view_height,
     );
 

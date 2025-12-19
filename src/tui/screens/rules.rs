@@ -665,20 +665,17 @@ fn render_sink_selector(
         .iter()
         .map(|sink| {
             let desc = crate::tui::widgets::truncate_desc(&sink.desc, content_width);
-            let name = crate::tui::widgets::truncate_node_name(&sink.name, content_width);
+            let name = crate::tui::widgets::truncate_node_name(&sink.name, 35);
 
             let line = Line::from(vec![
                 Span::raw("  "),
                 Span::styled(desc, Style::default().fg(colors::UI_TEXT)),
+                Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(name, Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
 
-            ListItem::new(vec![
-                line,
-                Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(name, Style::default().fg(colors::UI_SECONDARY)),
-                ]),
-            ])
+            ListItem::new(line)
         })
         .collect();
 
@@ -689,8 +686,12 @@ fn render_sink_selector(
                 .title("Select Target Sink")
                 .style(Style::default().bg(ratatui::style::Color::Black)),
         )
-        .highlight_style(Style::default().bg(colors::UI_SELECTED_BG))
-        .highlight_symbol(""); // Ensure no default symbol
+        .highlight_style(
+            Style::default()
+                .fg(colors::UI_HIGHLIGHT)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol(" → ");
 
     // Sync state
     editor
@@ -710,9 +711,14 @@ fn render_sink_selector(
 
     // Build visual_items to account for wrapping like in the selector rendering
     let mut visual_items: Vec<String> = Vec::new();
-    visual_items.push("── Active Sinks ──".to_string());
     for sink in sinks {
-        visual_items.push(sink.desc.clone());
+        let desc_text = crate::tui::widgets::truncate_desc(&sink.desc, content_width);
+        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
+        visual_items.push({
+            let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
+            let _ = write!(tmp, "  {desc_text} ({name_text})");
+            tmp
+        });
     }
 
     // Compute content width and logical offset
