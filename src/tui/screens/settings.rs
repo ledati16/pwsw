@@ -48,18 +48,100 @@ impl SettingItem {
         }
     }
 
-    /// Get the description for this setting
+    /// Get short description for this setting
     pub(crate) const fn description(self) -> &'static str {
         match self {
             SettingItem::DefaultOnStartup => "Switch to default sink when daemon starts",
-            SettingItem::SetSmartToggle => "set-sink toggles back to default if already active",
+            SettingItem::SetSmartToggle => "Intelligent toggling for manual sink switches",
             SettingItem::NotifyManual => "Show notifications for manual sink switches",
             SettingItem::NotifyRules => "Show notifications for rule-triggered switches",
-            SettingItem::MatchByIndex => {
-                "Prioritize by rule position (true) or most recent window (false)"
-            }
-            SettingItem::LogLevel => "Logging verbosity: error, warn, info, debug, trace",
+            SettingItem::MatchByIndex => "Rule priority strategy for window matching",
+            SettingItem::LogLevel => "Logging verbosity level",
         }
+    }
+
+    /// Get detailed description with examples for this setting
+    pub(crate) const fn detailed_description(self) -> &'static str {
+        match self {
+            SettingItem::DefaultOnStartup => {
+                "Automatically switches to the configured default sink when the daemon starts.\n\
+                 \n\
+                 When enabled: Daemon activates default sink on startup.\n\
+                 When disabled: Leaves the currently active sink unchanged.\n\
+                 \n\
+                 Useful for ensuring a consistent audio output when the daemon starts.\n\
+                 \n\
+                 Default: disabled"
+            }
+            SettingItem::SetSmartToggle => {
+                "Intelligent toggling behavior for manual sink switches via CLI.\n\
+                 \n\
+                 When enabled: Running 'pwsw set-sink <name>' toggles back to default\n\
+                 if the sink is already active.\n\
+                 When disabled: Always switches to the specified sink, even if already active.\n\
+                 \n\
+                 Example: If headphones are active:\n\
+                 • Enabled: 'pwsw set-sink headphones' → switches to default sink\n\
+                 • Disabled: 'pwsw set-sink headphones' → stays on headphones\n\
+                 \n\
+                 Default: disabled"
+            }
+            SettingItem::NotifyManual => {
+                "Desktop notifications for manual sink switches via CLI commands.\n\
+                 \n\
+                 When enabled: Shows notification when using 'pwsw set-sink <name>'.\n\
+                 When disabled: Manual switches happen silently.\n\
+                 \n\
+                 Requires a notification daemon (e.g., dunst, mako) to be running.\n\
+                 \n\
+                 Default: enabled"
+            }
+            SettingItem::NotifyRules => {
+                "Desktop notifications for automatic rule-triggered sink switches.\n\
+                 \n\
+                 When enabled: Shows notification when daemon switches sink due to a\n\
+                 window matching a rule.\n\
+                 When disabled: Rule-based switches happen silently.\n\
+                 \n\
+                 Useful for debugging rules or understanding why switches occur.\n\
+                 \n\
+                 Default: enabled"
+            }
+            SettingItem::MatchByIndex => {
+                "Rule priority strategy when multiple windows match different rules.\n\
+                 \n\
+                 When enabled: Uses rule position (first matching rule in config wins).\n\
+                 When disabled: Uses most recent window (latest matching window wins).\n\
+                 \n\
+                 Example: Firefox (rule 1) and Discord (rule 2) both open:\n\
+                 • Enabled: Firefox's sink is active (rule 1 has priority)\n\
+                 • Disabled: Discord's sink is active (most recently opened)\n\
+                 \n\
+                 Default: disabled (most recent window)\n\
+                 ⚠ Requires daemon restart"
+            }
+            SettingItem::LogLevel => {
+                "Logging verbosity level for daemon output.\n\
+                 \n\
+                 Levels (from least to most verbose):\n\
+                 • error: Only critical errors\n\
+                 • warn: Warnings and errors\n\
+                 • info: General information (recommended)\n\
+                 • debug: Detailed debugging information\n\
+                 • trace: Very verbose tracing (for development)\n\
+                 \n\
+                 View logs with: journalctl --user -u pwsw -f\n\
+                 Or in TUI: Dashboard → [l] for logs view\n\
+                 \n\
+                 Default: info\n\
+                 ⚠ Requires daemon restart"
+            }
+        }
+    }
+
+    /// Check if this setting requires daemon restart to take effect
+    pub(crate) const fn requires_restart(self) -> bool {
+        matches!(self, SettingItem::MatchByIndex | SettingItem::LogLevel)
     }
 }
 
@@ -174,8 +256,8 @@ pub(crate) fn render_settings(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),   // Settings list
-            Constraint::Length(4), // Description
+            Constraint::Min(10),    // Settings list
+            Constraint::Length(14), // Description (expanded for detailed help)
         ])
         .split(area);
 
@@ -255,15 +337,23 @@ fn render_settings_list(
                 }
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "> " } else { "  " },
+            let mut spans = vec![];
+
+            // Add arrow prefix only if selected
+            if is_selected {
+                spans.push(Span::styled(
+                    " → ",
                     Style::default().fg(colors::UI_HIGHLIGHT),
-                ),
-                Span::styled(padded_name, style),
-                Span::raw("  "),
-                value_span,
-            ]);
+                ));
+            } else {
+                spans.push(Span::raw("   "));
+            }
+
+            spans.push(Span::styled(padded_name, style));
+            spans.push(Span::raw("     ")); // 5 spaces for cleaner separation
+            spans.push(value_span);
+
+            let line = Line::from(spans);
 
             ListItem::new(line)
         })
@@ -358,13 +448,21 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
                 Style::default().fg(colors::UI_TEXT)
             };
 
-            let line = Line::from(vec![
-                Span::styled(
-                    if is_selected { "> " } else { "  " },
+            let mut spans = vec![];
+
+            // Add arrow prefix only if selected
+            if is_selected {
+                spans.push(Span::styled(
+                    " → ",
                     Style::default().fg(colors::UI_HIGHLIGHT),
-                ),
-                Span::styled(*level, style),
-            ]);
+                ));
+            } else {
+                spans.push(Span::raw("   "));
+            }
+
+            spans.push(Span::styled(*level, style));
+
+            let line = Line::from(spans);
 
             ListItem::new(line)
         })
@@ -383,18 +481,46 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
 /// Render the description panel
 fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
     let current_item = screen_state.current_item();
-    let description = current_item.description();
+    let detailed_desc = current_item.detailed_description();
 
-    let text = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            description,
-            Style::default().fg(colors::UI_SECONDARY),
-        )]),
-    ];
+    // Parse the detailed description into lines
+    let mut lines = vec![Line::from("")]; // Empty line at top for padding
 
-    let paragraph =
-        Paragraph::new(text).block(Block::default().borders(Borders::ALL).title("Description"));
+    for line in detailed_desc.lines() {
+        if line.is_empty() {
+            lines.push(Line::from(""));
+        } else if line.starts_with("⚠") {
+            // Warning lines in yellow
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(colors::UI_WARNING),
+            )));
+        } else if line.starts_with("When ") || line.starts_with("Example:") {
+            // Section headers in normal text
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(colors::UI_TEXT),
+            )));
+        } else if line.starts_with("• ") || line.starts_with("Default:") {
+            // Bullet points and metadata in secondary color
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(colors::UI_SECONDARY),
+            )));
+        } else {
+            // Regular description lines in secondary color
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default().fg(colors::UI_SECONDARY),
+            )));
+        }
+    }
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Description "),
+    );
 
     frame.render_widget(paragraph, area);
 }
