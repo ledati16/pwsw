@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -38,10 +38,19 @@ const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
     ("id=", colors::LOG_KEYWORD, false),
 ];
 
+/// Dashboard view mode (toggle between Logs and Windows)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DashboardView {
+    Logs,
+    Windows,
+}
+
 /// Dashboard screen state
 pub(crate) struct DashboardScreen {
-    pub selected_action: usize,   // 0 = start, 1 = stop, 2 = restart
-    pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
+    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
+    pub log_scroll_offset: usize,    // Lines scrolled back from the end (0 = showing latest)
+    pub window_scroll_offset: usize, // Window list scroll offset
+    pub current_view: DashboardView, // Toggle between Logs and Windows
 }
 
 impl DashboardScreen {
@@ -49,19 +58,33 @@ impl DashboardScreen {
         Self {
             selected_action: 0,
             log_scroll_offset: 0,
+            window_scroll_offset: 0,
+            current_view: DashboardView::Logs, // Default to logs
         }
     }
 
     pub(crate) fn select_next(&mut self) {
         if self.selected_action < 2 {
             self.selected_action += 1;
+        } else {
+            self.selected_action = 0; // Wrap to first
         }
     }
 
     pub(crate) fn select_previous(&mut self) {
         if self.selected_action > 0 {
             self.selected_action -= 1;
+        } else {
+            self.selected_action = 2; // Wrap to last
         }
+    }
+
+    /// Toggle between logs and windows view
+    pub(crate) fn toggle_view(&mut self) {
+        self.current_view = match self.current_view {
+            DashboardView::Logs => DashboardView::Windows,
+            DashboardView::Windows => DashboardView::Logs,
+        };
     }
 
     /// Scroll logs up (show older logs)
@@ -90,131 +113,211 @@ impl DashboardScreen {
     pub(crate) fn scroll_logs_to_bottom(&mut self) {
         self.log_scroll_offset = 0;
     }
+
+    /// Scroll windows up by page
+    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
+        let max_offset = total_windows.saturating_sub(page_size);
+        self.window_scroll_offset = (self.window_scroll_offset + page_size).min(max_offset);
+    }
+
+    /// Scroll windows down by page
+    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
+        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
+    }
+
+    /// Reset scroll to show top of window list
+    pub(crate) fn scroll_windows_to_top(&mut self) {
+        self.window_scroll_offset = 0;
+    }
+}
+
+// Note: format_duration helper will be added when uptime/PID tracking is implemented
+// with background polling infrastructure (Phase 9A future enhancement)
+
+/// Truncate string with ellipsis if exceeds max length
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+
+/// Context for rendering the dashboard screen
+pub(crate) struct DashboardRenderContext<'a> {
+    pub config: &'a Config,
+    pub screen_state: &'a DashboardScreen,
+    pub daemon_running: bool,
+    pub window_count: usize,
+    pub daemon_logs: &'a [String],
+    pub windows: &'a [crate::ipc::WindowInfo],
 }
 
 /// Render the dashboard screen
-pub(crate) fn render_dashboard(
-    frame: &mut Frame,
-    area: Rect,
-    config: &Config,
-    screen_state: &DashboardScreen,
-    daemon_running: bool,
-    window_count: usize,
-    daemon_logs: &[String],
-) {
-    // Split screen into sections: Header (Status/Control), Cards, and Logs
+pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
+    // Phase 9A/9B: Two-section layout (top section + toggleable bottom)
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(8),  // Daemon status + controls
-            Constraint::Length(10), // Info cards (reduced from Min(0))
-            Constraint::Min(0),     // Daemon logs
+            Constraint::Length(10), // Top section (daemon + sink + summary)
+            Constraint::Min(0),     // Bottom section (logs OR windows - toggleable)
         ])
         .split(area);
 
-    // Daemon Status Section
-    render_daemon_section(frame, chunks[0], screen_state, daemon_running);
-
-    // Info Grid (Horizontal split)
-    let card_chunks = Layout::default()
+    // Split top section horizontally (left: daemon+summary, right: sink)
+    let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .margin(1) // Add margin between top section and cards
-        .split(chunks[1]);
+        .split(chunks[0]);
 
-    // Current Sink Card
-    render_sink_card(frame, card_chunks[0], config);
+    // Split left column vertically (daemon above, summary below)
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Daemon control
+            Constraint::Length(4), // Window summary
+        ])
+        .split(top_chunks[0]);
 
-    // Stats Card
-    render_stats_card(frame, card_chunks[1], window_count);
+    // Render top section components
+    render_daemon_section(frame, left_chunks[0], ctx.screen_state, ctx.daemon_running);
 
-    // Daemon Logs
-    render_log_viewer(
+    // Calculate matched windows count
+    let matched_count = ctx
+        .windows
+        .iter()
+        .filter(|w| w.tracked.is_some())
+        .count();
+
+    render_window_summary(
         frame,
-        chunks[2],
-        daemon_logs,
-        daemon_running,
-        screen_state.log_scroll_offset,
+        left_chunks[1],
+        ctx.window_count,
+        matched_count,
+        ctx.screen_state.current_view,
     );
+
+    render_sink_card(frame, top_chunks[1], ctx.config);
+
+    // Bottom section: render logs OR windows based on current view
+    match ctx.screen_state.current_view {
+        DashboardView::Logs => {
+            render_log_viewer(
+                frame,
+                chunks[1],
+                ctx.daemon_logs,
+                ctx.daemon_running,
+                ctx.screen_state.log_scroll_offset,
+            );
+        }
+        DashboardView::Windows => {
+            render_window_tracking(
+                frame,
+                chunks[1],
+                ctx.windows,
+                matched_count,
+                ctx.screen_state.window_scroll_offset,
+            );
+        }
+    }
 }
 
-/// Render daemon status widget with control buttons
+/// Render daemon status widget with control buttons (compact vertical layout)
 fn render_daemon_section(
     frame: &mut Frame,
     area: Rect,
     screen_state: &DashboardScreen,
     daemon_running: bool,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" System Control ");
+    let block = Block::default().borders(Borders::ALL).title(" Daemon ");
     frame.render_widget(block.clone(), area);
 
     let inner = block.inner(area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(inner);
-
-    // Left: Status Indicator
     let (status_text, status_color, status_icon) = if daemon_running {
         ("RUNNING", colors::UI_SUCCESS, "●")
     } else {
         ("STOPPED", colors::UI_ERROR, "○")
     };
 
-    let status_content = vec![
-        Line::from(""),
-        Line::from(vec![Span::styled(
-            "Daemon Status",
-            Style::default().fg(colors::UI_SECONDARY),
-        )]),
+    // Build status lines
+    let mut lines = vec![Line::from(vec![
+        Span::styled(status_icon, Style::default().fg(status_color)),
+        Span::raw(" "),
+        Span::styled(
+            status_text,
+            Style::default()
+                .fg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
+
+    // Action buttons (compact horizontal layout)
+    let actions = ["Start", "Stop", "Restart"];
+    let mut action_spans = Vec::new();
+    for (i, action) in actions.iter().enumerate() {
+        let is_selected = i == screen_state.selected_action;
+        let style = if is_selected {
+            Style::default()
+                .fg(colors::UI_SELECTED)
+                .add_modifier(Modifier::BOLD)
+                .bg(colors::UI_SELECTED_BG)
+        } else {
+            Style::default().fg(colors::UI_TEXT)
+        };
+
+        if i > 0 {
+            action_spans.push(Span::raw(" "));
+        }
+
+        let prefix = if is_selected { "[▶ " } else { "[  " };
+        let suffix = "]";
+        action_spans.push(Span::styled(prefix, style));
+        action_spans.push(Span::styled(*action, style));
+        action_spans.push(Span::styled(suffix, style));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(action_spans));
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
+}
+
+/// Render window summary card (shows counts and toggle hint)
+fn render_window_summary(
+    frame: &mut Frame,
+    area: Rect,
+    window_count: usize,
+    matched_count: usize,
+    current_view: DashboardView,
+) {
+    let block = Block::default().borders(Borders::ALL).title(" Windows ");
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+
+    let lines = vec![
         Line::from(vec![
-            Span::styled(status_icon, Style::default().fg(status_color)),
-            Span::raw(" "),
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                status_text,
+                format!("{matched_count}/{window_count}"),
                 Style::default()
-                    .fg(status_color)
+                    .fg(colors::UI_STAT)
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(vec![Span::styled(
+            match current_view {
+                DashboardView::Logs => "Press [w] to view details",
+                DashboardView::Windows => "Viewing below (press [w] for logs)",
+            },
+            Style::default().fg(colors::UI_SECONDARY),
+        )]),
     ];
 
-    let status_paragraph = Paragraph::new(status_content).alignment(Alignment::Center);
-    frame.render_widget(status_paragraph, chunks[0]);
-
-    // Right: Actions List
-    let actions = ["Start Daemon", "Stop Daemon", "Restart Daemon"];
-    let items: Vec<ListItem> = actions
-        .iter()
-        .enumerate()
-        .map(|(i, action)| {
-            let is_selected = i == screen_state.selected_action;
-            let style = if is_selected {
-                Style::default()
-                    .fg(colors::UI_SELECTED)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(colors::UI_SELECTED_BG)
-            } else {
-                Style::default().fg(colors::UI_TEXT)
-            };
-
-            let prefix = if is_selected { " ▶ " } else { "   " };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::styled(*action, style),
-            ]))
-        })
-        .collect();
-
-    let controls_list = List::new(items).block(
-        Block::default()
-            .borders(Borders::LEFT)
-            .title(" Actions ([Enter] to execute) "),
-    );
-    frame.render_widget(controls_list, chunks[1]);
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
 }
 
 /// Render current sink card
@@ -264,36 +367,126 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
     frame.render_widget(paragraph, area);
 }
 
-/// Render active windows card
-fn render_stats_card(frame: &mut Frame, area: Rect, window_count: usize) {
-    let text = vec![
-        Line::from(""),
+/// Render window tracking section (full width bottom section when view is Windows)
+fn render_window_tracking(
+    frame: &mut Frame,
+    area: Rect,
+    windows: &[crate::ipc::WindowInfo],
+    matched_count: usize,
+    scroll_offset: usize,
+) {
+    let title = " Window Tracking - [w] to toggle back to Logs ";
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(colors::UI_HIGHLIGHT));
+    frame.render_widget(block.clone(), area);
+
+    let inner = block.inner(area);
+    let available_height = inner.height as usize;
+
+    // Count matched vs total
+    let total_count = windows.len();
+
+    let mut lines = vec![
         Line::from(vec![
+            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                window_count.to_string(),
+                format!("{matched_count}/{total_count} windows"),
                 Style::default()
                     .fg(colors::UI_STAT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" windows"),
         ]),
         Line::from(""),
-        Line::from(Span::styled(
-            "Currently Tracked",
-            Style::default().fg(colors::UI_SECONDARY),
-        )),
     ];
 
-    let paragraph = Paragraph::new(text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Statistics ")
-                .border_style(Style::default().fg(colors::UI_STAT)),
-        )
-        .alignment(Alignment::Center);
+    // Build window list with matched windows first
+    let mut window_lines: Vec<Line> = Vec::new();
 
-    frame.render_widget(paragraph, area);
+    // Add matched windows (use UI_MATCHED color - green for matched)
+    for win in windows.iter().filter(|w| w.tracked.is_some()) {
+        let rule_desc = win
+            .tracked
+            .as_ref()
+            .map_or("Unknown", |t| t.sink_desc.as_str());
+
+        window_lines.push(Line::from(vec![
+            Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
+            Span::styled(
+                truncate(&win.app_id, 20),
+                Style::default()
+                    .fg(colors::UI_TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" → "),
+            Span::styled(rule_desc, Style::default().fg(colors::UI_HIGHLIGHT)),
+        ]));
+
+        // Optional: Show truncated title on second line
+        if !win.title.is_empty() {
+            window_lines.push(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(
+                    truncate(&win.title, 40),
+                    Style::default().fg(colors::UI_SECONDARY),
+                ),
+            ]));
+        }
+    }
+
+    // Add unmatched windows (use UI_UNMATCHED color - dark gray)
+    for win in windows.iter().filter(|w| w.tracked.is_none()) {
+        window_lines.push(Line::from(vec![
+            Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
+            Span::styled(
+                truncate(&win.app_id, 20),
+                Style::default().fg(colors::UI_UNMATCHED),
+            ),
+            Span::raw(" (no match)"),
+        ]));
+    }
+
+    // Calculate visible range based on scroll offset
+    let total_lines = window_lines.len();
+    let visible_count = available_height.saturating_sub(2); // Reserve space for header
+    let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
+    let end_idx = (start_idx + visible_count).min(total_lines);
+
+    // Add visible window lines
+    for line in window_lines
+        .iter()
+        .skip(start_idx)
+        .take(end_idx - start_idx)
+    {
+        lines.push(line.clone());
+    }
+
+    // Add scroll indicator if needed
+    if total_lines > visible_count {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  [{}/{}] ", start_idx + 1, total_lines),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+            Span::styled(
+                "PgUp/PgDn to scroll",
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]));
+    }
+
+    // Handle empty window list
+    if window_lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "No windows tracked",
+            Style::default().fg(colors::UI_SECONDARY),
+        )));
+    }
+
+    let paragraph = Paragraph::new(lines);
+    frame.render_widget(paragraph, inner);
 }
 
 /// Highlight patterns in log message (`app_id`, `title`, `Rule matched`, etc.)
@@ -452,17 +645,17 @@ fn render_log_viewer(
     let end_index = total_lines.saturating_sub(scroll_offset);
     let start_index = end_index.saturating_sub(available_height);
 
-    // Build title with scroll indicator
+    // Build title with scroll indicator and toggle hint
     let title = if scroll_offset > 0 {
         if daemon_running {
-            format!(" Daemon Logs (Live) - ↑{scroll_offset} ")
+            format!(" Daemon Logs (Live) - ↑{scroll_offset} - [w] to toggle to Windows ")
         } else {
-            format!(" Daemon Logs (Stopped) - ↑{scroll_offset} ")
+            format!(" Daemon Logs (Stopped) - ↑{scroll_offset} - [w] to toggle to Windows ")
         }
     } else if daemon_running {
-        " Daemon Logs (Live) ".to_string()
+        " Daemon Logs (Live) - [w] to toggle to Windows ".to_string()
     } else {
-        " Daemon Logs (Stopped) ".to_string()
+        " Daemon Logs (Stopped) - [w] to toggle to Windows ".to_string()
     };
 
     let border_color = if daemon_running {
