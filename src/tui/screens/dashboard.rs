@@ -489,40 +489,54 @@ fn render_window_tracking(
             .as_ref()
             .map_or("Unknown", |t| t.sink_desc.as_str());
 
-        window_lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
             Span::styled(
-                truncate(&win.app_id, 20),
+                truncate(&win.app_id, 15),
                 Style::default()
                     .fg(colors::UI_TEXT)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" → "),
-            Span::styled(rule_desc, Style::default().fg(colors::UI_HIGHLIGHT)),
-        ]));
+        ];
 
-        // Optional: Show truncated title on second line
+        // Add title inline if present
         if !win.title.is_empty() {
-            window_lines.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    truncate(&win.title, 40),
-                    Style::default().fg(colors::UI_SECONDARY),
-                ),
-            ]));
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                truncate(&win.title, 20),
+                Style::default().fg(colors::UI_SECONDARY),
+            ));
         }
+
+        spans.push(Span::raw(" → "));
+        spans.push(Span::styled(
+            rule_desc,
+            Style::default().fg(colors::UI_HIGHLIGHT),
+        ));
+
+        window_lines.push(Line::from(spans));
     }
 
     // Add unmatched windows (use UI_UNMATCHED color - dark gray)
     for win in windows.iter().filter(|w| w.tracked.is_none()) {
-        window_lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
             Span::styled(
-                truncate(&win.app_id, 20),
+                truncate(&win.app_id, 15),
                 Style::default().fg(colors::UI_UNMATCHED),
             ),
-            Span::raw(" (no match)"),
-        ]));
+        ];
+
+        // Add title inline if present
+        if !win.title.is_empty() {
+            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(
+                truncate(&win.title, 20),
+                Style::default().fg(colors::UI_UNMATCHED),
+            ));
+        }
+
+        window_lines.push(Line::from(spans));
     }
 
     // Calculate visible range based on scroll offset
