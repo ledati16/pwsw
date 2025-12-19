@@ -194,29 +194,9 @@ pub async fn run() -> Result<()> {
         let mut last_windows_fp: Option<u64> = None;
         let debounce_ms = Duration::from_millis(150);
 
-        // Create log tailer and read initial logs
-        let mut log_tailer = match log_tailer::LogTailer::new() {
-            Ok(mut tailer) => {
-                // Read last 100 lines initially
-                if let Err(e) = tailer.read_initial(100) {
-                    tracing::warn!("Failed to read initial daemon logs: {e:#}");
-                }
-                // Send initial logs to UI
-                let initial_logs = tailer.get_lines().to_vec();
-                if !initial_logs.is_empty() {
-                    let _ = bg_tx.send(AppUpdate::DaemonLogs(initial_logs));
-                }
-                Some(tailer)
-            }
-            Err(e) => {
-                tracing::warn!("Failed to create log tailer: {e:#}");
-                None
-            }
-        };
-
-        loop {
+        // Helper function to poll daemon state and send update
+        let poll_daemon_state = || async {
             // Poll daemon state via IPC
-            // Query daemon manager info from daemon (daemon knows how it was started)
             let daemon_manager = match crate::ipc::send_request(crate::ipc::Request::GetManagerInfo)
                 .await
             {
@@ -243,7 +223,7 @@ pub async fn run() -> Result<()> {
                 Vec::new()
             };
 
-            // Compute a fingerprint for the current window snapshot so we can re-run previews
+            // Compute fingerprint for window snapshot (for preview re-runs)
             let current_fp = windows_fingerprint(&windows);
             let _ = bg_tx.send(AppUpdate::DaemonState {
                 running,
@@ -251,6 +231,33 @@ pub async fn run() -> Result<()> {
                 daemon_manager,
                 service_enabled,
             });
+
+            (windows, current_fp)
+        };
+
+        // Create log tailer and read initial logs
+        let mut log_tailer = match log_tailer::LogTailer::new() {
+            Ok(mut tailer) => {
+                // Read last 100 lines initially
+                if let Err(e) = tailer.read_initial(100) {
+                    tracing::warn!("Failed to read initial daemon logs: {e:#}");
+                }
+                // Send initial logs to UI
+                let initial_logs = tailer.get_lines().to_vec();
+                if !initial_logs.is_empty() {
+                    let _ = bg_tx.send(AppUpdate::DaemonLogs(initial_logs));
+                }
+                Some(tailer)
+            }
+            Err(e) => {
+                tracing::warn!("Failed to create log tailer: {e:#}");
+                None
+            }
+        };
+
+        loop {
+            // Poll daemon state and send update to UI
+            let (windows, current_fp) = poll_daemon_state().await;
 
             // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
             let pipewire_tx = bg_tx.clone();
@@ -284,6 +291,15 @@ pub async fn run() -> Result<()> {
                         match res {
                             Ok(msg) => {
                                 let _ = bg_tx.send(AppUpdate::ActionResult(msg));
+                                // Immediately poll daemon state for instant UI feedback on start/stop/restart
+                                if matches!(
+                                    action,
+                                    crate::tui::app::DaemonAction::Start
+                                        | crate::tui::app::DaemonAction::Stop
+                                        | crate::tui::app::DaemonAction::Restart
+                                ) {
+                                    let _ = poll_daemon_state().await;
+                                }
                             }
                             Err(e) => {
                                 let _ = bg_tx.send(AppUpdate::ActionResult({
