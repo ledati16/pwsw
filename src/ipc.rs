@@ -43,6 +43,8 @@ pub enum Request {
     TestRule { pattern: String },
     /// Manually switch to a specific sink
     SetSink { sink: String },
+    /// Get daemon manager information (systemd vs direct)
+    GetManagerInfo,
     /// Gracefully shutdown the daemon
     Shutdown,
 }
@@ -69,6 +71,10 @@ pub enum Response {
     RuleMatches {
         pattern: String,
         matches: Vec<WindowInfo>,
+    },
+    /// Daemon manager information
+    ManagerInfo {
+        daemon_manager: crate::daemon_manager::DaemonManager,
     },
 }
 

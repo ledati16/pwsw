@@ -100,6 +100,7 @@ pub(crate) enum AppUpdate {
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
+        daemon_manager: Option<crate::daemon_manager::DaemonManager>, // None if daemon not running
         service_enabled: Option<bool>, // None for direct mode, Some(bool) for systemd
     },
     ActionResult(String),

@@ -21,6 +21,7 @@ const BUG_NO_DEFAULT_SINK: &str =
 pub struct State {
     pub config: Config,
     pub current_sink_name: String,
+    pub daemon_manager: crate::daemon_manager::DaemonManager,
     /// Tracks windows that matched rules. Entries are removed on window close.
     active_windows: HashMap<u64, ActiveWindow>,
     /// Tracks ALL currently open windows (removed on close). Used for test-rule command.
@@ -49,7 +50,10 @@ impl State {
     ///
     /// # Panics
     /// Panics if no default sink is configured (should be prevented by config validation).
-    pub fn new(config: Config) -> Result<Self> {
+    pub fn new(
+        config: Config,
+        daemon_manager: crate::daemon_manager::DaemonManager,
+    ) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
             warn!(
                 "Could not query default sink: {}. Using configured default.",
@@ -74,6 +78,7 @@ impl State {
         Ok(Self {
             config,
             current_sink_name,
+            daemon_manager,
             active_windows: HashMap::new(),
             all_windows: HashMap::new(),
             sink_lookup,
@@ -93,6 +98,7 @@ impl State {
         Self {
             config,
             current_sink_name,
+            daemon_manager: crate::daemon_manager::DaemonManager::Direct,
             active_windows: HashMap::new(),
             all_windows: HashMap::new(),
             sink_lookup,

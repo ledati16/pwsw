@@ -59,6 +59,7 @@ struct IpcContext {
     uptime_secs: u64,
     current_sink_name: String,
     active_window: Option<String>,
+    daemon_manager: crate::daemon_manager::DaemonManager,
     // tracked: (id, app_id, title, sink_name, sink_desc)
     tracked_with_sinks: Vec<(u64, String, String, String, String)>,
     // all windows: (id, app_id, title)
@@ -198,7 +199,12 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     );
 
     let start_time = Instant::now();
-    let mut state = State::new(config)?;
+
+    // Detect how the daemon is being managed (systemd vs direct)
+    let daemon_manager = crate::daemon_manager::DaemonManager::detect();
+    info!("Daemon manager: {:?}", daemon_manager);
+
+    let mut state = State::new(config, daemon_manager)?;
 
     // Create shutdown channel with larger buffer to handle concurrent subscribers
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
@@ -300,6 +306,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                     current_sink_name: state.current_sink_name.clone(),
                     active_window: state.get_most_recent_window()
                         .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name)),
+                    daemon_manager: state.daemon_manager,
                     tracked_with_sinks,
                     all_windows,
                     config: state.config.clone(),
@@ -463,6 +470,10 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
             Err(e) => Response::Error {
                 message: format!("Invalid regex pattern: {e}"),
             },
+        },
+
+        Request::GetManagerInfo => Response::ManagerInfo {
+            daemon_manager: ctx.daemon_manager,
         },
 
         Request::SetSink { sink } => {
