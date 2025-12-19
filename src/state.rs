@@ -271,18 +271,17 @@ impl State {
         let was_tracked = self.is_window_tracked(id);
 
         if let Some((sink_name, sink_desc, trigger_desc, rule_notify, rule_index)) = matched {
-            info!("Rule matched: '{}' → {}", app_id, sink_desc);
-
             // Update opened_at for new windows, preserve original time for existing
             if was_tracked {
                 // Window is already tracked and still matches - update app_id and title in case they changed
-                // but preserve opened_at to maintain priority ordering
+                // but preserve opened_at to maintain priority ordering (no log spam on focus changes)
                 if let Some(window) = self.active_windows.get_mut(&id) {
                     window.app_id.clone_from(&app_id.to_string());
                     window.title.clone_from(&title.to_string());
                 }
             } else {
-                // New window - track it and potentially switch sink
+                // New window match - log and track it, potentially switch sink
+                info!("Rule matched: '{}' → {}", app_id, sink_desc);
                 self.track_window(
                     id,
                     sink_name.clone(),
