@@ -375,7 +375,7 @@ fn render_editor(
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .style(Style::default().bg(ratatui::style::Color::Black));
+        .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
 
     // App ID pattern field with real-time validation
@@ -684,7 +684,7 @@ fn render_sink_selector(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Select Target Sink")
-                .style(Style::default().bg(ratatui::style::Color::Black)),
+                .style(Style::default().bg(colors::UI_MODAL_BG)),
         )
         .highlight_style(
             Style::default()
@@ -782,7 +782,7 @@ fn render_delete_confirmation(
     let block = Block::default()
         .borders(Borders::ALL)
         .title("Delete Rule")
-        .style(Style::default().bg(ratatui::style::Color::Black));
+        .style(Style::default().bg(colors::UI_MODAL_BG));
 
     let paragraph = Paragraph::new(text).block(block);
     frame.render_widget(paragraph, popup_area);

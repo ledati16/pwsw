@@ -45,11 +45,7 @@ pub(crate) fn render_help(
         Block::default()
             .borders(Borders::ALL)
             .title(" Help ")
-            .style(
-                Style::default()
-                    .bg(ratatui::style::Color::Black)
-                    .fg(colors::UI_TEXT),
-            ),
+            .style(Style::default().bg(colors::UI_MODAL_BG).fg(colors::UI_TEXT)),
     );
 
     // No selection enforced - we control offset manually for view scrolling
@@ -231,15 +227,34 @@ fn build_help_items(current_screen: Screen) -> Vec<(String, String)> {
 fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
     let mut rows = Vec::new();
 
-    // Helper to add a section header
+    // Helper to add a main screen header (Level 1: yellow + bold)
     let add_header = |rows: &mut Vec<Row>, text: &str| {
+        rows.push(Row::new(vec![Cell::from(Span::styled(
+            text.to_string(),
+            Style::default()
+                .fg(colors::UI_WARNING)
+                .add_modifier(Modifier::BOLD),
+        ))]));
+        rows.push(Row::new(vec![Cell::from("")])); // Spacer
+    };
+
+    // Helper to add a section header (Level 2: cyan + bold)
+    let add_section = |rows: &mut Vec<Row>, text: &str| {
+        rows.push(Row::new(vec![Cell::from("")])); // Spacer before section
         rows.push(Row::new(vec![Cell::from(Span::styled(
             text.to_string(),
             Style::default()
                 .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         ))]));
-        rows.push(Row::new(vec![Cell::from("")])); // Spacer
+    };
+
+    // Helper to add a subsection header (Level 3: gray)
+    let add_subsection = |rows: &mut Vec<Row>, text: &str| {
+        rows.push(Row::new(vec![Cell::from(Span::styled(
+            text.to_string(),
+            Style::default().fg(colors::UI_SECONDARY),
+        ))]));
     };
 
     // Helper to add a keybind row
@@ -253,82 +268,165 @@ fn build_help_rows(current_screen: Screen) -> Vec<Row<'static>> {
         ]));
     };
 
-    // Helper to add a sub-header
-    let add_subheader = |rows: &mut Vec<Row>, text: &str| {
-        rows.push(Row::new(vec![Cell::from("")])); // Spacer
+    // Helper to add compact inline keybinds (saves vertical space)
+    let add_compact = |rows: &mut Vec<Row>, text: &str| {
         rows.push(Row::new(vec![Cell::from(Span::styled(
             text.to_string(),
-            Style::default().fg(colors::UI_WARNING),
+            Style::default().fg(colors::UI_SECONDARY),
         ))]));
     };
+
+    // Helper to add an empty row (visual separation)
+    let add_empty = |rows: &mut Vec<Row>| {
+        rows.push(Row::new(vec![Cell::from("")]));
+    };
+
+    // Add help navigation hint at the top
+    add_compact(
+        &mut rows,
+        "↑↓ Scroll • PgUp/PgDn Page • Home/End Jump • Esc/q/? Close",
+    );
+    add_empty(&mut rows);
 
     // Populate rows based on screen
     match current_screen {
         Screen::Dashboard => {
             add_header(&mut rows, "Dashboard Screen");
-            add_keybind(&mut rows, "↑/↓", "Navigate daemon control actions");
-            add_keybind(&mut rows, "Enter", "Execute selected action");
+
+            add_section(&mut rows, "View Toggle");
+            add_keybind(&mut rows, "w", "Toggle between Logs ↔ Windows view");
+
+            add_section(&mut rows, "Daemon Control");
+            add_keybind(&mut rows, "←/→", "Navigate daemon actions");
+            add_keybind(
+                &mut rows,
+                "Enter",
+                "Execute selected action (start/stop/restart/enable/disable)",
+            );
+
+            add_section(&mut rows, "Scrolling");
+            add_subsection(&mut rows, "Logs View:");
+            add_keybind(&mut rows, "↑/↓", "Scroll logs line by line");
+            add_keybind(&mut rows, "PageUp/PageDown", "Page scroll");
+            add_keybind(&mut rows, "Home", "Jump to latest (bottom)");
+            add_subsection(&mut rows, "Windows View:");
+            add_keybind(&mut rows, "PageUp/PageDown", "Scroll window list");
+            add_keybind(&mut rows, "Home", "Jump to top");
         }
         Screen::Sinks => {
             add_header(&mut rows, "Sinks Screen");
-            add_keybind(&mut rows, "↑/↓", "Navigate sinks");
-            add_keybind(&mut rows, "Shift+↑/↓", "Reorder sinks");
-            add_keybind(&mut rows, "a", "Add new sink");
-            add_keybind(&mut rows, "e", "Edit selected sink");
-            add_keybind(&mut rows, "x", "Delete selected sink");
-            add_keybind(&mut rows, "Space", "Toggle default status");
-            add_subheader(&mut rows, "In Editor (Add/Edit)");
-            add_keybind(&mut rows, "Tab", "Next field");
-            add_keybind(&mut rows, "Shift+Tab", "Previous field");
-            add_keybind(&mut rows, "Space", "Toggle checkbox");
-            add_keybind(&mut rows, "Enter", "Save");
+
+            add_section(&mut rows, "Navigation & List Management");
+            add_compact(
+                &mut rows,
+                "↑↓ Navigate • Shift+↑↓ Reorder • a Add • e Edit • x Delete • Space Set Default",
+            );
+
+            add_section(&mut rows, "Editor - Field Navigation");
+            add_keybind(&mut rows, "Tab/Shift+Tab, ↑/↓", "Switch field");
+            add_keybind(&mut rows, "Enter", "Save / Open node selector (Name field)");
             add_keybind(&mut rows, "Esc", "Cancel");
+
+            add_section(&mut rows, "Editor - Editing");
+            add_keybind(
+                &mut rows,
+                "Space",
+                "Toggle default checkbox (Default Sink field)",
+            );
         }
         Screen::Rules => {
             add_header(&mut rows, "Rules Screen");
-            add_keybind(&mut rows, "↑/↓", "Navigate rules");
-            add_keybind(&mut rows, "Shift+↑/↓", "Reorder rules");
-            add_keybind(&mut rows, "a", "Add new rule");
-            add_keybind(&mut rows, "e", "Edit selected rule");
-            add_keybind(&mut rows, "x", "Delete selected rule");
-            add_subheader(&mut rows, "In Editor (Add/Edit)");
-            add_keybind(&mut rows, "Tab", "Next field");
-            add_keybind(&mut rows, "Shift+Tab", "Previous field");
-            add_keybind(&mut rows, "Space", "Cycle notify option");
-            add_keybind(&mut rows, "Enter", "Save / Open sink selector");
+
+            add_section(&mut rows, "Navigation & List Management");
+            add_compact(
+                &mut rows,
+                "↑↓ Navigate • Shift+↑↓ Reorder • a Add • e Edit • x Delete",
+            );
+
+            add_section(&mut rows, "Editor - Field Navigation");
+            add_keybind(&mut rows, "Tab/Shift+Tab, ↑/↓", "Switch field");
+            add_keybind(
+                &mut rows,
+                "Enter",
+                "Save / Open sink selector (Target Sink field)",
+            );
             add_keybind(&mut rows, "Esc", "Cancel");
-            rows.push(Row::new(vec![
-                Cell::from(Span::styled(
-                    "Live Preview",
-                    Style::default().fg(colors::UI_SUCCESS),
-                )),
-                Cell::from("Shows matching windows as you type"),
-            ]));
+
+            add_section(&mut rows, "Editor - Notify Setting");
+            add_keybind(
+                &mut rows,
+                "Space",
+                "Cycle: Default → Enabled → Disabled (Notify field)",
+            );
+
+            add_section(&mut rows, "Regex Pattern Syntax");
+            add_subsection(&mut rows, "Common Patterns:");
+            add_keybind(&mut rows, "firefox", "Matches 'firefox' anywhere in text");
+            add_keybind(&mut rows, "^steam$", "Exact match (^ = start, $ = end)");
+            add_keybind(&mut rows, "^(mpv|vlc)$", "Match mpv OR vlc");
+            add_keybind(&mut rows, "(?i)discord", "Case-insensitive match");
+            add_keybind(&mut rows, "[Ff]irefox", "Match Firefox or firefox");
+            add_keybind(&mut rows, "\\d+", "One or more digits");
+
+            add_subsection(&mut rows, "Special Characters:");
+            add_compact(
+                &mut rows,
+                "^  Start • $  End • .  Any char • *  0+ • +  1+ • ?  0-1",
+            );
+            add_compact(
+                &mut rows,
+                "\\d Digit • \\w Word • \\s Space • \\b Word boundary",
+            );
+
+            add_subsection(&mut rows, "💡 Tip:");
+            add_compact(
+                &mut rows,
+                "Use the live preview panel below editor to test your patterns!",
+            );
         }
         Screen::Settings => {
             add_header(&mut rows, "Settings Screen");
+
+            add_section(&mut rows, "Navigation");
             add_keybind(&mut rows, "↑/↓", "Navigate settings");
-            add_keybind(&mut rows, "Enter/Space", "Toggle setting / Dropdown");
-            add_subheader(&mut rows, "In Log Level Dropdown");
+            add_keybind(&mut rows, "Enter/Space", "Toggle setting / Open dropdown");
+
+            add_section(&mut rows, "Log Level Dropdown");
             add_keybind(&mut rows, "↑/↓", "Navigate log levels");
             add_keybind(&mut rows, "Enter", "Confirm selection");
             add_keybind(&mut rows, "Esc", "Cancel");
         }
     }
 
+    // Text Input Fields (shared across all screens with editors)
+    add_empty(&mut rows);
+    add_header(&mut rows, "Text Input Fields");
+    add_subsection(&mut rows, "Cursor Movement:");
+    add_keybind(&mut rows, "←/→", "Move cursor left/right");
+    add_keybind(&mut rows, "Home/End, Ctrl+A/E", "Jump to start/end");
+    add_keybind(&mut rows, "Alt+B/F, Alt+←/→", "Move by word");
+
+    add_subsection(&mut rows, "Editing:");
+    add_keybind(&mut rows, "Backspace/Del", "Delete character");
+    add_keybind(&mut rows, "Ctrl+W, Alt+Backspace", "Delete previous word");
+    add_keybind(&mut rows, "Alt+D", "Delete next word");
+    add_keybind(&mut rows, "Ctrl+U", "Clear entire line");
+    add_keybind(&mut rows, "Ctrl+K", "Delete from cursor to end");
+
     // Global shortcuts
-    rows.push(Row::new(vec![Cell::from("")]));
+    add_empty(&mut rows);
     add_header(&mut rows, "Global Shortcuts");
-    add_keybind(&mut rows, "q/Ctrl+C", "Quit application");
-    add_keybind(&mut rows, "Tab", "Next screen");
-    add_keybind(&mut rows, "Shift+Tab", "Previous screen");
-    add_keybind(&mut rows, "1", "Go to Dashboard");
-    add_keybind(&mut rows, "2", "Go to Sinks");
-    add_keybind(&mut rows, "3", "Go to Rules");
-    add_keybind(&mut rows, "4", "Go to Settings");
+    add_subsection(&mut rows, "Screen Navigation:");
+    add_compact(
+        &mut rows,
+        "Tab Next • Shift+Tab Previous • 1-4 Direct screen access",
+    );
+
+    add_subsection(&mut rows, "Actions:");
     add_keybind(&mut rows, "Ctrl+S", "Save configuration");
-    add_keybind(&mut rows, "Esc", "Clear status message");
-    add_keybind(&mut rows, "?", "Toggle help");
+    add_keybind(&mut rows, "q, Ctrl+C", "Quit application");
+    add_keybind(&mut rows, "Esc", "Clear status message / Cancel quit");
+    add_keybind(&mut rows, "?", "Toggle this help");
 
     // Close instruction
     rows.push(Row::new(vec![Cell::from("")]));

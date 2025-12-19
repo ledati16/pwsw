@@ -330,4 +330,7 @@ pub mod colors {
 
     /// Color for unmatched/inactive items (dark gray, dimmed)
     pub const UI_UNMATCHED: Color = Color::DarkGray;
+
+    /// Background color for modals, overlays, and popups (black for contrast)
+    pub const UI_MODAL_BG: Color = Color::Black;
 }
