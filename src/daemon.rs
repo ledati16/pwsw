@@ -164,32 +164,47 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
     });
 
+    // Always write to log file for TUI integration
+    let log_path = get_log_file_path()?;
+    let log_dir = log_path
+        .parent()
+        .context("Log file path has no parent directory")?;
+
+    std::fs::create_dir_all(log_dir)
+        .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
+
+    let file_appender = tracing_appender::rolling::never(log_dir, "daemon.log");
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+
     if foreground {
-        // User ran with --foreground for debugging: log to stderr
-        tracing_subscriber::fmt().with_env_filter(filter).init();
+        // Foreground mode (systemd or user debugging): log to BOTH stderr and file
+        // This ensures TUI log viewer works with systemd, and journalctl captures logs
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
+
+        let stderr_layer = tracing_subscriber::fmt::layer().with_filter(filter.clone());
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(non_blocking)
+            .with_ansi(false) // No ANSI colors in log file
+            .with_filter(filter);
+
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
     } else {
-        // Background daemon (spawned child): log to file for TUI integration and debugging
-        let log_path = get_log_file_path()?;
-        let log_dir = log_path
-            .parent()
-            .context("Log file path has no parent directory")?;
-
-        std::fs::create_dir_all(log_dir)
-            .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
-
-        let file_appender = tracing_appender::rolling::never(log_dir, "daemon.log");
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
+        // Background daemon (spawned child): log to file only
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(non_blocking)
             .with_ansi(false) // No ANSI colors in log file
             .init();
-
-        // Store guard to prevent it from being dropped (would close log file)
-        // SAFETY: Guard must live for entire daemon lifetime
-        std::mem::forget(guard);
     }
+
+    // Store guard to prevent it from being dropped (would close log file)
+    // SAFETY: Guard must live for entire daemon lifetime
+    std::mem::forget(guard);
 
     info!("Starting PWSW daemon {}", crate::version_string());
     info!(
