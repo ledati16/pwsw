@@ -301,7 +301,7 @@ fn render_daemon_section(
 
         // Add arrow prefix only if selected
         if is_selected {
-            left_spans.push(Span::styled("→ ", style));
+            left_spans.push(Span::styled(" → ", style));
         }
 
         left_spans.push(Span::styled(actions[i], style));
@@ -328,7 +328,7 @@ fn render_daemon_section(
 
             // Add arrow prefix only if selected
             if is_selected {
-                right_spans.push(Span::styled("→ ", style));
+                right_spans.push(Span::styled(" → ", style));
             }
 
             right_spans.push(Span::styled(actions[i], style));
@@ -372,7 +372,14 @@ fn render_window_summary(
         Line::from(vec![
             Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                format!("{matched_count}/{window_count}"),
+                matched_count.to_string(),
+                Style::default()
+                    .fg(colors::UI_SUCCESS)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("/", Style::default().fg(colors::UI_STAT)),
+            Span::styled(
+                window_count.to_string(),
                 Style::default()
                     .fg(colors::UI_STAT)
                     .add_modifier(Modifier::BOLD),
@@ -716,17 +723,38 @@ fn render_log_viewer(
     let end_index = total_lines.saturating_sub(scroll_offset);
     let start_index = end_index.saturating_sub(available_height);
 
-    // Build title with scroll indicator and toggle hint
+    // Build title with scroll indicator and toggle hint (with colors)
     let title = if scroll_offset > 0 {
-        if daemon_running {
-            format!(" Daemon Logs (Live) - ↑{scroll_offset} - [w] to toggle to Windows ")
+        let status_text = if daemon_running { "Live" } else { "Stopped" };
+        let status_color = if daemon_running {
+            colors::UI_SUCCESS
         } else {
-            format!(" Daemon Logs (Stopped) - ↑{scroll_offset} - [w] to toggle to Windows ")
-        }
-    } else if daemon_running {
-        " Daemon Logs (Live) - [w] to toggle to Windows ".to_string()
+            colors::UI_ERROR
+        };
+
+        Line::from(vec![
+            Span::raw(" Daemon Logs ("),
+            Span::styled(status_text, Style::default().fg(status_color)),
+            Span::raw(") - "),
+            Span::styled(
+                format!("↑{scroll_offset}"),
+                Style::default().fg(colors::UI_WARNING),
+            ),
+            Span::raw(" - [w] to toggle to Windows "),
+        ])
     } else {
-        " Daemon Logs (Stopped) - [w] to toggle to Windows ".to_string()
+        let status_text = if daemon_running { "Live" } else { "Stopped" };
+        let status_color = if daemon_running {
+            colors::UI_SUCCESS
+        } else {
+            colors::UI_ERROR
+        };
+
+        Line::from(vec![
+            Span::raw(" Daemon Logs ("),
+            Span::styled(status_text, Style::default().fg(status_color)),
+            Span::raw(") - [w] to toggle to Windows "),
+        ])
     };
 
     let border_color = if daemon_running {

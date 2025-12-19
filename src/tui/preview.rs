@@ -132,9 +132,18 @@ pub(crate) async fn execute_preview(
 /// renderers to convert `execute_preview`/`match_windows` output into `ratatui::text::Line` for
 /// direct rendering.
 pub(crate) fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>> {
+    use crate::style::colors;
+    use ratatui::style::Style;
+
     matches
         .iter()
-        .map(|s| Line::from(vec![Span::raw("  ✓ "), Span::raw(s.clone())]))
+        .map(|s| {
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled("✓ ", Style::default().fg(colors::UI_SUCCESS)),
+                Span::raw(s.clone()),
+            ])
+        })
         .collect()
 }
 
