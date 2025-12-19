@@ -590,15 +590,17 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     // Render screen content
     match app.current_screen {
-        Screen::Dashboard => render_dashboard(
-            frame,
-            chunks[2],
-            &app.config,
-            &app.dashboard_screen,
-            app.daemon_running,
-            app.window_count,
-            &app.daemon_log_lines,
-        ),
+        Screen::Dashboard => {
+            let ctx = screens::DashboardRenderContext {
+                config: &app.config,
+                screen_state: &app.dashboard_screen,
+                daemon_running: app.daemon_running,
+                window_count: app.window_count,
+                daemon_logs: &app.daemon_log_lines,
+                windows: &app.windows,
+            };
+            render_dashboard(frame, chunks[2], &ctx);
+        }
         Screen::Sinks => render_sinks(
             frame,
             chunks[2],
@@ -741,15 +743,46 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
     let mode = app.get_screen_mode();
 
     let text = match (app.current_screen, mode) {
-        (app::Screen::Dashboard, ScreenMode::List) => Line::from(vec![
-            Span::raw("↑↓ Navigate  "),
-            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Execute  "),
-            Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Scroll logs  "),
-            Span::styled("[End]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Latest logs"),
-        ]),
+        (app::Screen::Dashboard, ScreenMode::List) => {
+            // Phase 9B: View-aware context bar for dashboard
+            use crate::tui::screens::DashboardView;
+            let mut spans = vec![
+                Span::styled("[←→]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Select Action  "),
+                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Execute  "),
+            ];
+
+            // Add view-specific scrolling hints
+            match app.dashboard_screen.current_view {
+                DashboardView::Logs => {
+                    spans.push(Span::styled(
+                        "[↑↓/PgUp/PgDn]",
+                        Style::default().fg(colors::UI_HIGHLIGHT),
+                    ));
+                    spans.push(Span::raw(" Scroll Logs  "));
+                    spans.push(Span::styled(
+                        "[w]",
+                        Style::default().fg(colors::UI_HIGHLIGHT),
+                    ));
+                    spans.push(Span::raw(" View Windows"));
+                }
+                DashboardView::Windows => {
+                    spans.push(Span::styled(
+                        "[PgUp/PgDn]",
+                        Style::default().fg(colors::UI_HIGHLIGHT),
+                    ));
+                    spans.push(Span::raw(" Scroll Windows  "));
+                    spans.push(Span::styled(
+                        "[w]",
+                        Style::default().fg(colors::UI_HIGHLIGHT),
+                    ));
+                    spans.push(Span::raw(" View Logs"));
+                }
+            }
+
+            Line::from(spans)
+        }
         (app::Screen::Sinks, ScreenMode::List) => Line::from(vec![
             Span::raw("↑↓ Navigate  "),
             Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),

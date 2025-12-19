@@ -207,42 +207,77 @@ fn handle_screen_specific_input(app: &mut App, key: KeyEvent) {
 
 /// Handle dashboard screen input
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
+    use super::screens::DashboardView;
     use crossterm::event::KeyModifiers;
 
     match (key.code, key.modifiers) {
-        // Up/Down without modifiers: select actions
-        (KeyCode::Up, KeyModifiers::NONE) => {
+        // Toggle between Logs and Windows view (Phase 9B)
+        (KeyCode::Char('w'), KeyModifiers::NONE) => {
+            app.dashboard_screen.toggle_view();
+        }
+
+        // Left/Right for horizontal daemon action navigation (Phase 9A)
+        (KeyCode::Left, KeyModifiers::NONE) => {
             app.dashboard_screen.select_previous();
         }
-        (KeyCode::Down, KeyModifiers::NONE) => {
+        (KeyCode::Right, KeyModifiers::NONE) => {
             app.dashboard_screen.select_next();
         }
 
-        // Shift+Up/Shift+Down: scroll logs line by line
-        (KeyCode::Up, KeyModifiers::SHIFT) => {
-            let total = app.daemon_log_lines.len();
-            let visible = 20; // Rough estimate, will be recalculated in scroll method
-            app.dashboard_screen.scroll_logs_up(total, visible);
-        }
-        (KeyCode::Down, KeyModifiers::SHIFT) => {
-            app.dashboard_screen.scroll_logs_down();
-        }
+        // Up/Down for scrolling (view-aware)
+        (KeyCode::Up, KeyModifiers::NONE) => match app.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                let total = app.daemon_log_lines.len();
+                let visible = 20;
+                app.dashboard_screen.scroll_logs_up(total, visible);
+            }
+            DashboardView::Windows => {
+                // Single-line scroll not implemented for windows (use PageUp/Down)
+            }
+        },
+        (KeyCode::Down, KeyModifiers::NONE) => match app.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                app.dashboard_screen.scroll_logs_down();
+            }
+            DashboardView::Windows => {
+                // Single-line scroll not implemented for windows (use PageUp/Down)
+            }
+        },
 
-        // PageUp/PageDown: scroll logs by page
-        (KeyCode::PageUp, _) => {
-            let total = app.daemon_log_lines.len();
-            let visible = 20; // Rough estimate
-            app.dashboard_screen.scroll_logs_page_up(total, visible);
-        }
-        (KeyCode::PageDown, _) => {
-            let visible = 20; // Rough estimate
-            app.dashboard_screen.scroll_logs_page_down(visible);
-        }
+        // PageUp/PageDown for scrolling (view-aware)
+        (KeyCode::PageUp, _) => match app.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                let total = app.daemon_log_lines.len();
+                let visible = 10;
+                app.dashboard_screen.scroll_logs_page_up(total, visible);
+            }
+            DashboardView::Windows => {
+                let page_size = 5;
+                let total = app.windows.len();
+                app.dashboard_screen
+                    .scroll_windows_page_up(page_size, total);
+            }
+        },
+        (KeyCode::PageDown, _) => match app.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                let visible = 10;
+                app.dashboard_screen.scroll_logs_page_down(visible);
+            }
+            DashboardView::Windows => {
+                let page_size = 5;
+                app.dashboard_screen.scroll_windows_page_down(page_size);
+            }
+        },
 
-        // End: jump to latest logs
-        (KeyCode::End, _) => {
-            app.dashboard_screen.scroll_logs_to_bottom();
-        }
+        // Home: jump to top/bottom (view-aware)
+        (KeyCode::Home, _) => match app.dashboard_screen.current_view {
+            DashboardView::Logs => {
+                app.dashboard_screen.scroll_logs_to_bottom(); // Reset to latest
+            }
+            DashboardView::Windows => {
+                app.dashboard_screen.scroll_windows_to_top();
+            }
+        },
 
         // Enter: execute selected daemon action
         (KeyCode::Enter, KeyModifiers::NONE) => {
