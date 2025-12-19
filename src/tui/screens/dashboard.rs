@@ -156,6 +156,31 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
+/// Truncate long ALSA node names intelligently
+/// Example: `alsa_output.pci-0000_00_1f.3.analog-stereo` → `alsa_output...analog-stereo`
+fn truncate_node_name(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
+    }
+
+    // For ALSA nodes, try to keep prefix and suffix
+    if name.starts_with("alsa_output.") || name.starts_with("alsa_input.") {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 3 {
+            // Keep first part (alsa_output/alsa_input) and last part (profile)
+            let prefix = parts[0];
+            let suffix = parts[parts.len() - 1];
+            let combined = format!("{prefix}...{suffix}");
+            if combined.len() <= max_len {
+                return combined;
+            }
+        }
+    }
+
+    // Fallback to simple truncation
+    truncate(name, max_len)
+}
+
 /// Context for rendering the dashboard screen
 pub(crate) struct DashboardRenderContext<'a> {
     pub config: &'a Config,
@@ -177,7 +202,7 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
         ])
         .split(area);
 
-    // Split top section horizontally (left: daemon+summary, right: sink)
+    // Split top section horizontally (left: daemon+summary, right: sink+stats)
     let top_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -191,6 +216,15 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
             Constraint::Length(4), // Window summary
         ])
         .split(top_chunks[0]);
+
+    // Split right column vertically (sink above, stats below)
+    let right_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(6), // Active sink details
+            Constraint::Length(4), // Statistics
+        ])
+        .split(top_chunks[1]);
 
     // Render top section components
     render_daemon_section(frame, left_chunks[0], ctx.screen_state, ctx.daemon_running);
@@ -206,7 +240,14 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
         ctx.screen_state.current_view,
     );
 
-    render_sink_card(frame, top_chunks[1], ctx.config);
+    render_sink_card(frame, right_chunks[0], ctx.config);
+    render_statistics_card(
+        frame,
+        right_chunks[1],
+        ctx.config,
+        matched_count,
+        ctx.window_count,
+    );
 
     // Bottom section: render logs OR windows based on current view
     match ctx.screen_state.current_view {
@@ -402,22 +443,26 @@ fn render_window_summary(
 fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
     let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
 
-    let (sink_desc, sink_name) = current_sink_name
+    let (sink_desc, sink_icon, node_name) = current_sink_name
         .as_ref()
         .and_then(|name| {
             config.sinks.iter().find(|s| &s.name == name).map(|s| {
                 (
                     s.desc.clone(),
                     s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+                    name.clone(),
                 )
             })
         })
-        .unwrap_or(("Unknown Sink".to_string(), "?".to_string()));
+        .unwrap_or((
+            "Unknown Sink".to_string(),
+            "?".to_string(),
+            "unknown".to_string(),
+        ));
 
     let text = vec![
-        Line::from(""),
         Line::from(vec![
-            Span::styled(sink_name, Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::styled(sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" "),
             Span::styled(
                 sink_desc,
@@ -427,6 +472,13 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
             ),
         ]),
         Line::from(""),
+        Line::from(vec![
+            Span::styled("Node: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                truncate_node_name(&node_name, 35),
+                Style::default().fg(colors::UI_TEXT),
+            ),
+        ]),
         Line::from(Span::styled(
             "Active Audio Output",
             Style::default().fg(colors::UI_SECONDARY),
@@ -440,7 +492,45 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
                 .title(" Active Sink ")
                 .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
         )
-        .alignment(Alignment::Center);
+        .alignment(Alignment::Left);
+
+    frame.render_widget(paragraph, area);
+}
+
+/// Render statistics card showing quick overview
+fn render_statistics_card(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    _matched_count: usize,
+    _window_count: usize,
+) {
+    let rule_count = config.rules.len();
+    let sink_count = config.sinks.len();
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Rules: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{rule_count} active"),
+                Style::default()
+                    .fg(colors::UI_STAT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Sinks: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{sink_count} available"),
+                Style::default()
+                    .fg(colors::UI_STAT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    let paragraph =
+        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Overview "));
 
     frame.render_widget(paragraph, area);
 }
