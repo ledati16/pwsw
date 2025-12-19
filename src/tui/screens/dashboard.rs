@@ -47,10 +47,11 @@ pub(crate) enum DashboardView {
 
 /// Dashboard screen state
 pub(crate) struct DashboardScreen {
-    pub selected_action: usize,      // 0 = start, 1 = stop, 2 = restart
-    pub log_scroll_offset: usize,    // Lines scrolled back from the end (0 = showing latest)
+    pub selected_action: usize,   // 0-4: start, stop, restart, enable, disable
+    pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
     pub window_scroll_offset: usize, // Window list scroll offset
     pub current_view: DashboardView, // Toggle between Logs and Windows
+    pub max_action_index: usize,  // Maximum action index (2 for direct, 4 for systemd)
 }
 
 impl DashboardScreen {
@@ -60,11 +61,21 @@ impl DashboardScreen {
             log_scroll_offset: 0,
             window_scroll_offset: 0,
             current_view: DashboardView::Logs, // Default to logs
+            max_action_index: 2,               // Default to 3 actions (start/stop/restart)
+        }
+    }
+
+    /// Update max action index based on daemon manager type
+    pub(crate) fn set_max_actions(&mut self, is_systemd: bool) {
+        self.max_action_index = if is_systemd { 4 } else { 2 };
+        // Clamp current selection if it's out of range
+        if self.selected_action > self.max_action_index {
+            self.selected_action = 0;
         }
     }
 
     pub(crate) fn select_next(&mut self) {
-        if self.selected_action < 2 {
+        if self.selected_action < self.max_action_index {
             self.selected_action += 1;
         } else {
             self.selected_action = 0; // Wrap to first
@@ -75,7 +86,7 @@ impl DashboardScreen {
         if self.selected_action > 0 {
             self.selected_action -= 1;
         } else {
-            self.selected_action = 2; // Wrap to last
+            self.selected_action = self.max_action_index; // Wrap to last
         }
     }
 
@@ -183,11 +194,7 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
     render_daemon_section(frame, left_chunks[0], ctx.screen_state, ctx.daemon_running);
 
     // Calculate matched windows count
-    let matched_count = ctx
-        .windows
-        .iter()
-        .filter(|w| w.tracked.is_some())
-        .count();
+    let matched_count = ctx.windows.iter().filter(|w| w.tracked.is_some()).count();
 
     render_window_summary(
         frame,
@@ -252,8 +259,13 @@ fn render_daemon_section(
         ),
     ])];
 
-    // Action buttons (compact horizontal layout)
-    let actions = ["Start", "Stop", "Restart"];
+    // Action buttons (compact horizontal layout with optional Enable/Disable)
+    let actions: &[&str] = if screen_state.max_action_index == 4 {
+        &["Start", "Stop", "Restart", "Enable", "Disable"]
+    } else {
+        &["Start", "Stop", "Restart"]
+    };
+
     let mut action_spans = Vec::new();
     for (i, action) in actions.iter().enumerate() {
         let is_selected = i == screen_state.selected_action;
@@ -266,8 +278,13 @@ fn render_daemon_section(
             Style::default().fg(colors::UI_TEXT)
         };
 
+        // Add spacing before button
         if i > 0 {
             action_spans.push(Span::raw(" "));
+        }
+        // Add extra spacing between Start/Stop/Restart and Enable/Disable groups
+        if i == 3 {
+            action_spans.push(Span::raw("  "));
         }
 
         let prefix = if is_selected { "[▶ " } else { "[  " };

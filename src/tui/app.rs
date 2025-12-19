@@ -206,6 +206,8 @@ pub(crate) enum DaemonAction {
     Start,
     Stop,
     Restart,
+    Enable,
+    Disable,
 }
 
 impl App {
