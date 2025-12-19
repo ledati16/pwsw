@@ -100,6 +100,7 @@ pub(crate) enum AppUpdate {
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
+        service_enabled: Option<bool>, // None for direct mode, Some(bool) for systemd
     },
     ActionResult(String),
     /// Live-preview started (pending)
