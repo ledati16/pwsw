@@ -301,7 +301,7 @@ fn render_daemon_section(
 
         // Add arrow prefix only if selected
         if is_selected {
-            left_spans.push(Span::styled("▶ ", style));
+            left_spans.push(Span::styled("→ ", style));
         }
 
         left_spans.push(Span::styled(actions[i], style));
@@ -328,7 +328,7 @@ fn render_daemon_section(
 
             // Add arrow prefix only if selected
             if is_selected {
-                right_spans.push(Span::styled("▶ ", style));
+                right_spans.push(Span::styled("→ ", style));
             }
 
             right_spans.push(Span::styled(actions[i], style));
