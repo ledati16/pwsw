@@ -52,6 +52,7 @@ pub(crate) struct DashboardScreen {
     pub window_scroll_offset: usize, // Window list scroll offset
     pub current_view: DashboardView, // Toggle between Logs and Windows
     pub max_action_index: usize,  // Maximum action index (2 for direct, 4 for systemd)
+    pub service_enabled: Option<bool>, // None for direct mode, Some(true/false) for systemd
 }
 
 impl DashboardScreen {
@@ -62,6 +63,7 @@ impl DashboardScreen {
             window_scroll_offset: 0,
             current_view: DashboardView::Logs, // Default to logs
             max_action_index: 2,               // Default to 3 actions (start/stop/restart)
+            service_enabled: None,             // Updated by background worker
         }
     }
 
@@ -248,7 +250,7 @@ fn render_daemon_section(
     };
 
     // Build status lines
-    let mut lines = vec![Line::from(vec![
+    let mut status_spans = vec![
         Span::styled(status_icon, Style::default().fg(status_color)),
         Span::raw(" "),
         Span::styled(
@@ -257,7 +259,18 @@ fn render_daemon_section(
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-    ])];
+    ];
+
+    // Add enabled/disabled state for systemd mode
+    if let Some(enabled) = screen_state.service_enabled {
+        let enabled_text = if enabled { " (enabled)" } else { " (disabled)" };
+        status_spans.push(Span::styled(
+            enabled_text,
+            Style::default().fg(colors::UI_TEXT),
+        ));
+    }
+
+    let mut lines = vec![Line::from(status_spans)];
 
     // Action buttons (compact horizontal layout with optional Enable/Disable)
     let actions: &[&str] = if screen_state.max_action_index == 4 {

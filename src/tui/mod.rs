@@ -208,9 +208,13 @@ pub async fn run() -> Result<()> {
 
         loop {
             // Poll daemon state in blocking-friendly way
-            let running = crate::tui::daemon_control::DaemonManager::detect()
-                .is_running()
-                .await;
+            let dm = crate::tui::daemon_control::DaemonManager::detect();
+            let running = dm.is_running().await;
+            let service_enabled = if dm == crate::tui::daemon_control::DaemonManager::Systemd {
+                Some(dm.is_enabled())
+            } else {
+                None
+            };
             let windows = if running {
                 match crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
                     Ok(crate::ipc::Response::Windows { windows }) => windows,
@@ -225,6 +229,7 @@ pub async fn run() -> Result<()> {
             let _ = bg_tx.send(AppUpdate::DaemonState {
                 running,
                 windows: windows.clone(),
+                service_enabled,
             });
 
             // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
@@ -484,10 +489,15 @@ async fn run_app<B: ratatui::backend::Backend>(
                             app.active_sinks = names;
                             app.dirty = true;
                         }
-                        AppUpdate::DaemonState { running, windows } => {
+                        AppUpdate::DaemonState {
+                            running,
+                            windows,
+                            service_enabled,
+                        } => {
                             app.daemon_running = running;
                             app.window_count = windows.len();
                             app.windows = windows;
+                            app.dashboard_screen.service_enabled = service_enabled;
                             app.dirty = true;
                         }
                         AppUpdate::ActionResult(msg) => {
