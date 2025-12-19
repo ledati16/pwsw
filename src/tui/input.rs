@@ -286,6 +286,8 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 0 => DaemonAction::Start,
                 1 => DaemonAction::Stop,
                 2 => DaemonAction::Restart,
+                3 => DaemonAction::Enable,
+                4 => DaemonAction::Disable,
                 _ => return,
             };
             if let Some(tx) = &app.bg_cmd_tx {

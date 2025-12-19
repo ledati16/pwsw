@@ -676,6 +676,30 @@ cargo run -- validate
 cargo run -- tui
 ```
 
+### systemd User Service
+
+For automatic daemon startup on login, a systemd user service is available in `contrib/systemd/`:
+
+```bash
+# Install the service
+mkdir -p ~/.config/systemd/user
+cp contrib/systemd/pwsw.service ~/.config/systemd/user/
+
+# Enable and start the service
+systemctl --user daemon-reload
+systemctl --user enable --now pwsw.service
+
+# Check status
+systemctl --user status pwsw.service
+
+# View logs
+journalctl --user -u pwsw.service -f
+```
+
+**Note:** Update the `ExecStart` path in the service file if you installed `pwsw` somewhere other than `~/.cargo/bin/pwsw`.
+
+See `contrib/systemd/README.md` for complete installation, management, and troubleshooting instructions.
+
 ## Architecture
 
 ### Core Components

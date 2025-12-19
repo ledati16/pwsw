@@ -1,0 +1,25 @@
+[Unit]
+Description=PWSW - PipeWire Switcher daemon
+Documentation=https://github.com/ledati16/pwsw
+After=pipewire.service
+Requires=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/pwsw daemon --foreground
+Restart=on-failure
+RestartSec=5s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pwsw
+
+# Security hardening (optional but recommended)
+# ProtectSystem=strict
+# ProtectHome=read-only
+# PrivateTmp=yes
+# NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

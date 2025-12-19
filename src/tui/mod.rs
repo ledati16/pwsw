@@ -117,6 +117,11 @@ pub async fn run() -> Result<()> {
     // Create app state (pass pre-loaded config)
     let mut app = App::with_config(config);
 
+    // Detect daemon manager and configure max actions accordingly
+    let is_systemd = crate::tui::daemon_control::DaemonManager::detect()
+        == crate::tui::daemon_control::DaemonManager::Systemd;
+    app.dashboard_screen.set_max_actions(is_systemd);
+
     // Terminal guard to ensure we restore terminal state on panic/return
     struct TerminalGuard;
     impl Drop for TerminalGuard {
@@ -248,6 +253,8 @@ pub async fn run() -> Result<()> {
                             crate::tui::app::DaemonAction::Start => dm.start().await,
                             crate::tui::app::DaemonAction::Stop => dm.stop().await,
                             crate::tui::app::DaemonAction::Restart => dm.restart().await,
+                            crate::tui::app::DaemonAction::Enable => dm.enable(),
+                            crate::tui::app::DaemonAction::Disable => dm.disable(),
                         };
                         match res {
                             Ok(msg) => {

@@ -155,4 +155,67 @@ impl DaemonManager {
             }
         }
     }
+
+    /// Enable the daemon service (only supported for systemd)
+    ///
+    /// # Errors
+    /// Returns an error if the service fails to enable or if using direct mode.
+    pub fn enable(self) -> Result<String> {
+        match self {
+            DaemonManager::Systemd => {
+                let output = Command::new("systemctl")
+                    .args(["--user", "enable", "pwsw.service"])
+                    .output()
+                    .context("Failed to execute systemctl enable")?;
+
+                if output.status.success() {
+                    Ok("Service enabled (will start on login)".to_string())
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("systemctl enable failed: {stderr}");
+                }
+            }
+            DaemonManager::Direct => {
+                anyhow::bail!("Enable/disable only supported with systemd service")
+            }
+        }
+    }
+
+    /// Disable the daemon service (only supported for systemd)
+    ///
+    /// # Errors
+    /// Returns an error if the service fails to disable or if using direct mode.
+    pub fn disable(self) -> Result<String> {
+        match self {
+            DaemonManager::Systemd => {
+                let output = Command::new("systemctl")
+                    .args(["--user", "disable", "pwsw.service"])
+                    .output()
+                    .context("Failed to execute systemctl disable")?;
+
+                if output.status.success() {
+                    Ok("Service disabled (won't start on login)".to_string())
+                } else {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    anyhow::bail!("systemctl disable failed: {stderr}");
+                }
+            }
+            DaemonManager::Direct => {
+                anyhow::bail!("Enable/disable only supported with systemd service")
+            }
+        }
+    }
+
+    /// Check if the daemon service is enabled (only for systemd)
+    pub fn is_enabled(self) -> bool {
+        match self {
+            DaemonManager::Systemd => Command::new("systemctl")
+                .args(["--user", "is-enabled", "pwsw.service"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success()),
+            DaemonManager::Direct => false,
+        }
+    }
 }
