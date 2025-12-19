@@ -19,6 +19,7 @@ pub mod commands;
 pub mod compositor;
 pub mod config;
 pub mod daemon;
+pub mod daemon_manager;
 pub mod ipc;
 pub mod notification;
 pub mod pipewire;

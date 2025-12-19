@@ -3,40 +3,10 @@
 use anyhow::{Context, Result};
 use std::process::{Command, Stdio};
 
+use crate::daemon_manager::DaemonManager;
 use crate::ipc;
 
-/// Strategy for controlling the daemon
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DaemonManager {
-    /// Use systemd user service (systemctl --user)
-    Systemd,
-    /// Direct execution (spawn pwsw daemon process)
-    Direct,
-}
-
 impl DaemonManager {
-    /// Detect which daemon manager to use
-    ///
-    /// Checks if systemd user session is available AND `pwsw.service` exists.
-    /// Falls back to direct execution otherwise.
-    pub fn detect() -> Self {
-        if Self::check_systemd_available() {
-            DaemonManager::Systemd
-        } else {
-            DaemonManager::Direct
-        }
-    }
-
-    /// Check if systemd user service is available and `pwsw.service` exists
-    fn check_systemd_available() -> bool {
-        Command::new("systemctl")
-            .args(["--user", "cat", "pwsw.service"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-    }
-
     /// Start the daemon
     ///
     /// # Errors
@@ -207,6 +177,7 @@ impl DaemonManager {
     }
 
     /// Check if the daemon service is enabled (only for systemd)
+    #[must_use]
     pub fn is_enabled(self) -> bool {
         match self {
             DaemonManager::Systemd => Command::new("systemctl")

@@ -117,9 +117,17 @@ pub async fn run() -> Result<()> {
     // Create app state (pass pre-loaded config)
     let mut app = App::with_config(config);
 
-    // Detect daemon manager and configure max actions accordingly
-    let is_systemd = crate::tui::daemon_control::DaemonManager::detect()
-        == crate::tui::daemon_control::DaemonManager::Systemd;
+    // Query daemon for manager info, or detect locally if daemon not running
+    let is_systemd = match crate::ipc::send_request(crate::ipc::Request::GetManagerInfo).await {
+        Ok(crate::ipc::Response::ManagerInfo { daemon_manager }) => {
+            daemon_manager == crate::daemon_manager::DaemonManager::Systemd
+        }
+        _ => {
+            // Daemon not running, fall back to local detection for UI configuration
+            crate::daemon_manager::DaemonManager::detect()
+                == crate::daemon_manager::DaemonManager::Systemd
+        }
+    };
     app.dashboard_screen.set_max_actions(is_systemd);
 
     // Terminal guard to ensure we restore terminal state on panic/return
@@ -207,14 +215,25 @@ pub async fn run() -> Result<()> {
         };
 
         loop {
-            // Poll daemon state in blocking-friendly way
-            let dm = crate::tui::daemon_control::DaemonManager::detect();
-            let running = dm.is_running().await;
-            let service_enabled = if dm == crate::tui::daemon_control::DaemonManager::Systemd {
-                Some(dm.is_enabled())
-            } else {
-                None
+            // Poll daemon state via IPC
+            // Query daemon manager info from daemon (daemon knows how it was started)
+            let daemon_manager = match crate::ipc::send_request(crate::ipc::Request::GetManagerInfo)
+                .await
+            {
+                Ok(crate::ipc::Response::ManagerInfo { daemon_manager }) => Some(daemon_manager),
+                _ => None, // Daemon not running or query failed
             };
+
+            let running = daemon_manager.is_some();
+            let service_enabled = daemon_manager.and_then(|dm| {
+                if dm == crate::daemon_manager::DaemonManager::Systemd {
+                    // Query enabled state (uses systemctl)
+                    Some(dm.is_enabled())
+                } else {
+                    None
+                }
+            });
+
             let windows = if running {
                 match crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
                     Ok(crate::ipc::Response::Windows { windows }) => windows,
@@ -229,6 +248,7 @@ pub async fn run() -> Result<()> {
             let _ = bg_tx.send(AppUpdate::DaemonState {
                 running,
                 windows: windows.clone(),
+                daemon_manager,
                 service_enabled,
             });
 
@@ -253,7 +273,7 @@ pub async fn run() -> Result<()> {
                 match cmd {
                     BgCommand::DaemonAction(action) => {
                         // execute action and send result back
-                        let dm = crate::tui::daemon_control::DaemonManager::detect();
+                        let dm = crate::daemon_manager::DaemonManager::detect();
                         let res = match action {
                             crate::tui::app::DaemonAction::Start => dm.start().await,
                             crate::tui::app::DaemonAction::Stop => dm.stop().await,
@@ -492,12 +512,18 @@ async fn run_app<B: ratatui::backend::Backend>(
                         AppUpdate::DaemonState {
                             running,
                             windows,
+                            daemon_manager,
                             service_enabled,
                         } => {
                             app.daemon_running = running;
                             app.window_count = windows.len();
                             app.windows = windows;
                             app.dashboard_screen.service_enabled = service_enabled;
+                            // Update max actions if daemon manager changed (e.g., service installed/removed)
+                            if let Some(dm) = daemon_manager {
+                                let is_systemd = dm == crate::daemon_manager::DaemonManager::Systemd;
+                                app.dashboard_screen.set_max_actions(is_systemd);
+                            }
                             app.dirty = true;
                         }
                         AppUpdate::ActionResult(msg) => {
