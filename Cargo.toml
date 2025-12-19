@@ -38,6 +38,9 @@ anyhow = "1"
 # Desktop notifications
 notify-rust = "4"
 
+# systemd notification protocol
+sd-notify = "0.4"
+
 # Terminal styling for CLI output (also used by future TUI)
 crossterm = { version = "0.28", features = ["event-stream"] }
 

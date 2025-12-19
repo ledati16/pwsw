@@ -5,7 +5,8 @@ After=pipewire.service
 Requires=pipewire.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=%h/.cargo/bin/pwsw daemon --foreground
 Restart=on-failure
 RestartSec=5s

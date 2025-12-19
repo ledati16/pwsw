@@ -277,7 +277,19 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         }
     }
 
-    info!("Monitoring window events...");
+    // Notify systemd that daemon is ready
+    #[cfg(unix)]
+    {
+        if let Ok(true) = sd_notify::booted() {
+            if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
+                warn!("Failed to notify systemd: {}", e);
+            } else {
+                info!("Notified systemd that daemon is ready");
+            }
+        }
+    }
+
+    info!("Daemon initialization complete, entering event loop");
 
     // Main event loop
     loop {

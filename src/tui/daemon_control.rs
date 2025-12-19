@@ -20,8 +20,7 @@ impl DaemonManager {
                     .context("Failed to execute systemctl start")?;
 
                 if output.status.success() {
-                    // Wait a moment for daemon to start
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    // With Type=notify, systemd waits for ready signal
                     Ok("Daemon started via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -90,8 +89,7 @@ impl DaemonManager {
                     .context("Failed to execute systemctl restart")?;
 
                 if output.status.success() {
-                    // Wait a moment for daemon to restart
-                    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    // With Type=notify, systemd waits for ready signal
                     Ok("Daemon restarted via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
