@@ -329,3 +329,186 @@ Where `truncate_node_name` shortens long ALSA node names like:
 - **Values:** `UI_TEXT` (white) for normal text, `UI_STAT` (yellow + bold) for counts
 - **Icon:** `UI_HIGHLIGHT` (cyan) for sink icon
 - **Borders:** Default for stats card, `UI_HIGHLIGHT` (cyan) for active sink card
+
+---
+
+## Implementation Status
+
+**Implemented:** Simplified version (commit: 026b21a)
+
+### What Was Actually Implemented
+
+Instead of parsing `pw-dump` output for sample rate/format, the implementation shows the **node name** with intelligent truncation:
+
+```rust
+// src/tui/screens/dashboard.rs (lines 159-182)
+fn truncate_node_name(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
+    }
+
+    // For ALSA nodes, try to keep prefix and suffix
+    if name.starts_with("alsa_output.") || name.starts_with("alsa_input.") {
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() >= 3 {
+            let prefix = parts[0];
+            let suffix = parts[parts.len() - 1];
+            let combined = format!("{prefix}...{suffix}");
+            if combined.len() <= max_len {
+                return combined;
+            }
+        }
+    }
+
+    truncate(name, max_len)
+}
+```
+
+**Active Sink card now shows:**
+- Icon + sink description (bold)
+- **Node:** `alsa_output...analog-stereo` (truncated intelligently)
+- "Active Audio Output" label
+
+**Statistics card shows:**
+- Rules: X active
+- Sinks: Y available
+
+### Why This Approach
+
+1. No `pw-dump` available in development environment for testing
+2. Avoids fragile JSON parsing that may vary across PipeWire versions
+3. Node name still provides useful technical information
+4. Simpler and more maintainable
+
+### How to Switch to Full Version (Sample Rate/Format)
+
+When you have `pw-dump` available and want to show technical audio params:
+
+**Step 1:** Add `PipeWire::get_sink_info()` in `src/pipewire.rs`:
+
+```rust
+/// Node information for a sink
+pub struct SinkInfo {
+    pub sample_rate: String,
+    pub format: String,
+}
+
+impl PipeWire {
+    /// Get detailed information about a specific sink
+    ///
+    /// # Errors
+    /// Returns error if pw-dump fails or node not found
+    pub fn get_sink_info(node_name: &str) -> Result<SinkInfo> {
+        let objects = Self::dump()?;
+
+        // Find the node in pw-dump output
+        let node = objects
+            .iter()
+            .filter(|obj| obj["type"] == "PipeWire:Interface:Node")
+            .find(|obj| {
+                obj["info"]["props"]["node.name"]
+                    .as_str()
+                    .map_or(false, |name| name == node_name)
+            })
+            .context("Sink node not found")?;
+
+        // Extract audio parameters from info.params
+        // NOTE: Structure may vary - inspect actual pw-dump output!
+        let params = &node["info"]["params"];
+        let format_param = params["Format"]
+            .as_array()
+            .and_then(|arr| arr.first())
+            .context("No Format param found")?;
+
+        let sample_rate = format_param["rate"]
+            .as_u64()
+            .map(|rate| format!("{rate} Hz"))
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        let format = format_param["format"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string();
+
+        Ok(SinkInfo { sample_rate, format })
+    }
+}
+```
+
+**Step 2:** Update `render_sink_card()` in `src/tui/screens/dashboard.rs` (lines 402-457):
+
+Replace:
+```rust
+let (sink_desc, sink_icon, node_name) = current_sink_name
+    .as_ref()
+    .and_then(|name| {
+        config.sinks.iter().find(|s| &s.name == name).map(|s| {
+            (
+                s.desc.clone(),
+                s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+                name.clone(),
+            )
+        })
+    })
+    .unwrap_or((
+        "Unknown Sink".to_string(),
+        "?".to_string(),
+        "unknown".to_string(),
+    ));
+
+let text = vec![
+    Line::from(vec![...]),
+    Line::from(""),
+    Line::from(vec![
+        Span::styled("Node: ", Style::default().fg(colors::UI_SECONDARY)),
+        Span::styled(
+            truncate_node_name(&node_name, 35),
+            Style::default().fg(colors::UI_TEXT),
+        ),
+    ]),
+    Line::from(Span::styled("Active Audio Output", ...)),
+];
+```
+
+With:
+```rust
+let (sink_desc, sink_icon, sample_rate, format) = current_sink_name
+    .as_ref()
+    .and_then(|name| {
+        let sink = config.sinks.iter().find(|s| &s.name == name)?;
+        let node_info = crate::pipewire::PipeWire::get_sink_info(name).ok()?;
+        Some((
+            sink.desc.clone(),
+            sink.icon.clone().unwrap_or_else(|| "🔊".to_string()),
+            node_info.sample_rate,
+            node_info.format,
+        ))
+    })
+    .unwrap_or((
+        "Unknown Sink".to_string(),
+        "?".to_string(),
+        "Unknown".to_string(),
+        "Unknown".to_string(),
+    ));
+
+let text = vec![
+    Line::from(vec![...]),
+    Line::from(""),
+    Line::from(vec![
+        Span::styled("Sample Rate: ", Style::default().fg(colors::UI_SECONDARY)),
+        Span::styled(sample_rate, Style::default().fg(colors::UI_TEXT)),
+    ]),
+    Line::from(vec![
+        Span::styled("Format: ", Style::default().fg(colors::UI_TEXT)),
+        Span::styled(format, Style::default().fg(colors::UI_TEXT)),
+    ]),
+];
+```
+
+**Step 3:** Test with real `pw-dump` output:
+1. Run `pw-dump | jq '.[] | select(.type == "PipeWire:Interface:Node") | select(.info.params != null) | .info.params'`
+2. Inspect actual JSON structure for audio params
+3. Adjust parsing logic in `get_sink_info()` to match actual structure
+4. Test with HDMI, analog, and Bluetooth sinks
+
+**Note:** The `info.params` structure varies by PipeWire version and sink type. You may need to check `EnumFormat` instead of `Format`, or different paths entirely.
