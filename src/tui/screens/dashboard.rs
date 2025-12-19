@@ -272,15 +272,18 @@ fn render_daemon_section(
 
     let mut lines = vec![Line::from(status_spans)];
 
-    // Action buttons (compact horizontal layout with optional Enable/Disable)
+    // Action buttons (split layout: lifecycle left, service management right)
     let actions: &[&str] = if screen_state.max_action_index == 4 {
         &["Start", "Stop", "Restart", "Enable", "Disable"]
     } else {
         &["Start", "Stop", "Restart"]
     };
 
-    let mut action_spans = Vec::new();
-    for (i, action) in actions.iter().enumerate() {
+    let separator = Span::styled(" │ ", Style::default().fg(colors::UI_SECONDARY));
+
+    // Build left group (lifecycle: Start, Stop, Restart)
+    let mut left_spans = Vec::new();
+    for i in 0..3.min(actions.len()) {
         let is_selected = i == screen_state.selected_action;
         let style = if is_selected {
             Style::default()
@@ -291,24 +294,62 @@ fn render_daemon_section(
             Style::default().fg(colors::UI_TEXT)
         };
 
-        // Add spacing before button
+        // Add separator before (except first)
         if i > 0 {
-            action_spans.push(Span::raw(" "));
-        }
-        // Add extra spacing between Start/Stop/Restart and Enable/Disable groups
-        if i == 3 {
-            action_spans.push(Span::raw("  "));
+            left_spans.push(separator.clone());
         }
 
-        let prefix = if is_selected { "[▶ " } else { "[  " };
-        let suffix = "]";
-        action_spans.push(Span::styled(prefix, style));
-        action_spans.push(Span::styled(*action, style));
-        action_spans.push(Span::styled(suffix, style));
+        // Add arrow prefix only if selected
+        if is_selected {
+            left_spans.push(Span::styled("▶ ", style));
+        }
+
+        left_spans.push(Span::styled(actions[i], style));
+    }
+
+    // Build right group (service management: Enable, Disable) if systemd
+    let mut right_spans = Vec::new();
+    if screen_state.max_action_index == 4 {
+        for i in 3..5 {
+            let is_selected = i == screen_state.selected_action;
+            let style = if is_selected {
+                Style::default()
+                    .fg(colors::UI_SELECTED)
+                    .add_modifier(Modifier::BOLD)
+                    .bg(colors::UI_SELECTED_BG)
+            } else {
+                Style::default().fg(colors::UI_TEXT)
+            };
+
+            // Add separator before (except first in group)
+            if i > 3 {
+                right_spans.push(separator.clone());
+            }
+
+            // Add arrow prefix only if selected
+            if is_selected {
+                right_spans.push(Span::styled("▶ ", style));
+            }
+
+            right_spans.push(Span::styled(actions[i], style));
+        }
+    }
+
+    // Calculate spacing to push groups apart
+    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+    let available_width = inner.width as usize;
+    let spacing = available_width.saturating_sub(left_width + right_width + 1);
+
+    // Build final button line with groups pushed apart
+    let mut button_spans = left_spans;
+    if !right_spans.is_empty() {
+        button_spans.push(Span::raw(" ".repeat(spacing)));
+        button_spans.extend(right_spans);
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(action_spans));
+    lines.push(Line::from(button_spans));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
