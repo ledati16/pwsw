@@ -87,10 +87,14 @@ impl SettingItem {
                  Default: disabled"
             }
             SettingItem::NotifyManual => {
-                "Desktop notifications for manual sink switches via CLI commands.\n\
+                "Desktop notifications for manual sink switches and daemon lifecycle events.\n\
                  \n\
-                 When enabled: Shows notification when using 'pwsw set-sink <name>'.\n\
-                 When disabled: Manual switches happen silently.\n\
+                 When enabled: Shows notifications for:\n\
+                 • Manual sink switches: 'pwsw set-sink <name>'\n\
+                 • Cycling commands: 'pwsw prev-sink' and 'pwsw next-sink'\n\
+                 • Daemon lifecycle: start and stop events\n\
+                 \n\
+                 When disabled: All manual operations happen silently.\n\
                  \n\
                  Requires a notification daemon (e.g., dunst, mako) to be running.\n\
                  \n\
@@ -110,12 +114,15 @@ impl SettingItem {
             SettingItem::MatchByIndex => {
                 "Rule priority strategy when multiple windows match different rules.\n\
                  \n\
-                 When enabled: Uses rule position (first matching rule in config wins).\n\
-                 When disabled: Uses most recent window (latest matching window wins).\n\
+                 When enabled: Uses rule priority - higher priority rules always win.\n\
+                 Rules at the top of the list have higher priority than those below.\n\
+                 When disabled: Most recently opened matching window determines active sink.\n\
                  \n\
-                 Example: Firefox (rule 1) and Discord (rule 2) both open:\n\
-                 • Enabled: Firefox's sink is active (rule 1 has priority)\n\
-                 • Disabled: Discord's sink is active (most recently opened)\n\
+                 Example: Firefox (rule 1, higher priority) and Discord (rule 2, lower priority):\n\
+                 • Enabled: Firefox's sink stays active regardless of which window opened last\n\
+                 • Disabled: Whichever window you focused most recently determines the sink\n\
+                 \n\
+                 Tip: Reorder rules in the Rules tab (arrow keys + Shift+Up/Down) to adjust priority.\n\
                  \n\
                  Default: disabled (most recent window)\n\
                  ⚠ Requires daemon restart"
