@@ -88,28 +88,42 @@ impl Screen {
     }
 }
 
-/// Application state
 /// Messages sent from background worker to UI
 pub(crate) enum AppUpdate {
     /// Full sink data including active and profile sinks
+    ///
+    /// Sent by background poller every 1s with current PipeWire state snapshot.
     SinksData {
         active: Vec<crate::pipewire::ActiveSink>,
         profiles: Vec<crate::pipewire::ProfileSink>,
         names: Vec<String>, // For backwards compat
     },
+    /// Daemon state snapshot including running status, tracked windows, and manager info
+    ///
+    /// Sent by background poller every 1s and immediately after daemon control actions
+    /// (start/stop/restart/enable/disable) complete.
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
         daemon_manager: Option<crate::daemon_manager::DaemonManager>, // None if daemon not running
         service_enabled: Option<bool>, // None for direct mode, Some(bool) for systemd
     },
+    /// Result message from daemon control action (start/stop/restart/enable/disable)
+    ///
+    /// Sent immediately after a daemon action completes, containing success or error message.
     ActionResult(String),
     /// Live-preview started (pending)
+    ///
+    /// Sent by background preview worker when a new preview request begins execution.
+    /// Used to show loading state in the rules editor.
     PreviewPending {
         app_pattern: String,
         title_pattern: Option<String>,
     },
     /// Live-preview results for the rules editor
+    ///
+    /// Sent by background preview worker when matching completes (or times out).
+    /// Contains up to max_results matching windows.
     PreviewMatches {
         app_pattern: String,
         title_pattern: Option<String>,
@@ -117,6 +131,9 @@ pub(crate) enum AppUpdate {
         timed_out: bool,
     },
     /// New daemon log lines
+    ///
+    /// Sent by log tail worker when new lines are appended to daemon log file.
+    /// Used to update the dashboard log viewer in real-time.
     DaemonLogs(Vec<String>),
 }
 
@@ -327,11 +344,20 @@ impl App {
     }
 
     /// Mutable accessor for `throbber_state` (keeps field private)
+    ///
+    /// # Panics
+    /// Never panics - returns mutable reference to owned field
     pub(crate) fn throbber_state_mut(&mut self) -> &mut ThrobberState {
         &mut self.throbber_state
     }
 
     /// Borrow mutable references to rules screen and throbber together
+    ///
+    /// This helper avoids borrow-checker conflicts when rendering rules
+    /// that need both mutable state (throbber) and screen state.
+    ///
+    /// # Panics
+    /// Never panics - returns mutable references to owned fields
     pub(crate) fn borrow_rules_and_throbber(&mut self) -> (&mut RulesScreen, &mut ThrobberState) {
         (&mut self.rules_screen, &mut self.throbber_state)
     }

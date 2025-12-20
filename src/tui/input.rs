@@ -9,10 +9,10 @@ use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
 use regex::Regex;
 
-/// Handle a single input event (async-friendly)
+/// Handle a single input event and update app state
 ///
-/// # Errors
-/// Returns an error if internal processing fails (currently infallible).
+/// Sets `app.dirty = true` to trigger a redraw. Delegates to `handle_key_event` for
+/// keyboard input and handles terminal resize events.
 pub(crate) fn handle_event(app: &mut App, event: &Event) {
     if let Event::Key(key_event) = event {
         handle_key_event(app, *key_event);

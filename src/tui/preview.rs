@@ -59,8 +59,16 @@ where
 
 /// Execute preview matching with a timeout.
 ///
-/// Returns `(Vec<String>, bool)` where the `bool` is `true` when the preview timed out or the
-/// regexes were invalid.
+/// Runs the regex matching operation in `spawn_blocking` with a timeout to prevent
+/// catastrophic backtracking from freezing the UI. If the operation exceeds the timeout,
+/// matching is aborted and an empty result is returned.
+///
+/// Returns `(Vec<String>, bool)` where:
+/// - First element: Vector of matching window strings (up to `max_results`)
+/// - Second element: `true` if the operation timed out OR regexes were invalid, `false` on success
+///
+/// When timeout occurs or regexes are invalid, the returned vector will be empty and the
+/// boolean flag will be `true`, signaling to the UI to show an error/warning indicator.
 pub(crate) async fn execute_preview(
     app_pattern: String,
     title_pattern: Option<String>,
@@ -159,7 +167,7 @@ pub(crate) fn match_windows_with_compiled_count(
 ) -> (Vec<String>, usize) {
     let mut out = Vec::new();
     let mut total = 0usize;
-    for w in windows.iter().take(10) {
+    for w in windows.iter() {
         let app_ok = app_re.map_or(true, |r| r.is_match(&w.app_id));
         let title_ok = title_re.map_or(true, |r| r.is_match(&w.title));
         if app_ok && title_ok {

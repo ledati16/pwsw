@@ -42,17 +42,8 @@ use input::handle_event;
 use screens::{
     render_dashboard, render_help, render_rules, render_settings, render_sinks, RulesRenderContext,
 };
-use std::sync::Arc as StdArc;
-
-// Aliases and small struct to keep complex types readable
-type CompiledRegex = StdArc<regex::Regex>;
-// Message payload for preview forwarder (app pattern, title pattern, optional compiled regexes)
-type PreviewInMsg = (
-    String,
-    Option<String>,
-    Option<CompiledRegex>,
-    Option<CompiledRegex>,
-);
+// Import type aliases from app module to avoid duplication
+use app::{CompiledRegex, PreviewInMsg};
 #[derive(Clone)]
 struct PreviewReq {
     app_pattern: String,
@@ -70,6 +61,14 @@ struct PreviewExec {
     compiled_title: Option<CompiledRegex>,
 }
 
+/// Compute a hash fingerprint for a window list snapshot
+///
+/// Used to detect when the window list has changed, triggering preview re-runs
+/// in the background worker. Only hashes `app_id` and `title` fields since
+/// those are what matter for rule matching.
+///
+/// # Returns
+/// A 64-bit hash value that changes when window list content changes
 #[must_use]
 pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -449,8 +448,8 @@ pub async fn run() -> Result<()> {
                 }
             }
 
-            // Reduced polling frequency (was 700ms) - log reading is now event-driven
-            tokio::time::sleep(Duration::from_millis(2500)).await;
+            // Poll daemon state regularly - reduced to 1s for better stop detection
+            tokio::time::sleep(Duration::from_millis(1000)).await;
         }
     });
 

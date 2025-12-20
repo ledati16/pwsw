@@ -264,6 +264,41 @@ When you need both immutable and mutable borrows in render/update paths:
 3. Then take mutable borrows
 4. Prefer this over adding `RefCell`/`Mutex` just to bypass borrow checker
 
+**Visibility & API Surface Design:**
+Minimize public API surface to make refactoring easier and prevent accidental misuse:
+
+- **Default to private**: Start with private visibility, only widen as needed
+- **Use `pub(crate)` sparingly**: Only for items used across modules within the same crate
+- **Provide accessors instead of public fields**: Encapsulate state behind methods
+- **Mark test helpers with `#[cfg(test)]`**: Never expose test utilities in production builds
+- **Use `#[must_use]` on functions that return values**: Catch accidental ignoring of results
+
+```rust
+// ❌ BAD: Everything public
+pub struct Config {
+    pub field1: String,
+    pub field2: u32,
+}
+
+// ✅ GOOD: Private fields with controlled access
+pub struct Config {
+    field1: String,
+    field2: u32,
+}
+
+impl Config {
+    pub fn field1(&self) -> &str {
+        &self.field1
+    }
+
+    pub fn set_field1(&mut self, value: String) {
+        self.field1 = value;
+    }
+}
+```
+
+**Guideline:** If a struct field or function is only used within one module, keep it private. If used across modules in the crate, use `pub(crate)`. Only use `pub` for true public API items.
+
 ### Performance Patterns: Async vs Blocking Decision Tree
 
 **When to use `spawn_blocking`:**

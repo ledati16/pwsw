@@ -38,6 +38,12 @@ const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
     ("id=", colors::LOG_KEYWORD, false),
 ];
 
+/// Maximum display width for truncating app_id in window tracking display
+const WINDOW_APPID_MAX_WIDTH: usize = 15;
+
+/// Maximum display width for truncating window title in window tracking display
+const WINDOW_TITLE_MAX_WIDTH: usize = 20;
+
 /// Dashboard view mode (toggle between Logs and Windows)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DashboardView {
@@ -290,8 +296,8 @@ fn render_daemon_section(
         ("STOPPED", colors::UI_ERROR, "○")
     };
 
-    // Build status lines
-    let mut status_spans = vec![
+    // Build status line
+    let status_line = Line::from(vec![
         Span::styled(status_icon, Style::default().fg(status_color)),
         Span::raw(" "),
         Span::styled(
@@ -300,104 +306,73 @@ fn render_daemon_section(
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-    ];
+    ]);
 
-    // Add enabled/disabled state for systemd mode
+    let mut lines = vec![status_line];
+
+    // Add systemd unit status if daemon is running and reports it
     if let Some(enabled) = screen_state.service_enabled {
-        let enabled_text = if enabled { " (enabled)" } else { " (disabled)" };
-        status_spans.push(Span::styled(
-            enabled_text,
-            Style::default().fg(colors::UI_TEXT),
-        ));
+        let (unit_icon, unit_text, unit_color) = if enabled {
+            ("✓", "enabled", colors::UI_SUCCESS)
+        } else {
+            ("✗", "disabled", colors::UI_ERROR)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled("SystemD unit: ", Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(unit_icon, Style::default().fg(unit_color)),
+            Span::raw(" "),
+            Span::styled(unit_text, Style::default().fg(unit_color)),
+        ]));
     }
 
-    let mut lines = vec![Line::from(status_spans)];
+    // Add spacing to push buttons to bottom
+    lines.push(Line::from(""));
+    if screen_state.service_enabled.is_none() {
+        lines.push(Line::from("")); // Extra line if no systemd status
+    }
 
-    // Action buttons (split layout: lifecycle left, service management right)
+    // Action buttons (all in a single row)
     let actions: &[&str] = if screen_state.max_action_index == 4 {
         &["Start", "Stop", "Restart", "Enable", "Disable"]
     } else {
         &["Start", "Stop", "Restart"]
     };
 
-    let separator = Span::styled(" │ ", Style::default().fg(colors::UI_SECONDARY));
+    let separator = Span::styled(" · ", Style::default().fg(colors::UI_SECONDARY));
 
-    // Build left group (lifecycle: Start, Stop, Restart)
-    let mut left_spans = Vec::new();
-    for i in 0..3.min(actions.len()) {
+    // Build button spans
+    let mut button_spans = Vec::new();
+    for (i, action) in actions.iter().enumerate() {
         let is_selected = i == screen_state.selected_action;
-        let style = if is_selected {
-            Style::default()
-                .fg(colors::UI_SELECTED)
-                .add_modifier(Modifier::BOLD)
-                .bg(colors::UI_SELECTED_BG)
-        } else {
-            Style::default().fg(colors::UI_TEXT)
-        };
 
         // Add separator before (except first)
         if i > 0 {
-            left_spans.push(separator.clone());
+            button_spans.push(separator.clone());
         }
 
-        // Add arrow prefix only if selected
+        // Use brackets around selected item instead of arrow/background
         if is_selected {
-            left_spans.push(Span::styled(" → ", style));
-        }
-
-        left_spans.push(Span::styled(actions[i], style));
-    }
-
-    // Build right group (service management: Enable, Disable) if systemd
-    let mut right_spans = Vec::new();
-    if screen_state.max_action_index == 4 {
-        for i in 3..5 {
-            let is_selected = i == screen_state.selected_action;
-            let style = if is_selected {
+            button_spans.push(Span::styled(
+                "[",
+                Style::default().fg(colors::UI_HIGHLIGHT),
+            ));
+            button_spans.push(Span::styled(
+                *action,
                 Style::default()
                     .fg(colors::UI_SELECTED)
-                    .add_modifier(Modifier::BOLD)
-                    .bg(colors::UI_SELECTED_BG)
-            } else {
-                Style::default().fg(colors::UI_TEXT)
-            };
-
-            // Add separator before (except first in group)
-            if i > 3 {
-                right_spans.push(separator.clone());
-            }
-
-            // Add arrow prefix only if selected
-            if is_selected {
-                right_spans.push(Span::styled(" → ", style));
-            }
-
-            right_spans.push(Span::styled(actions[i], style));
+                    .add_modifier(Modifier::BOLD),
+            ));
+            button_spans.push(Span::styled(
+                "]",
+                Style::default().fg(colors::UI_HIGHLIGHT),
+            ));
+        } else {
+            button_spans.push(Span::styled(*action, Style::default().fg(colors::UI_TEXT)));
         }
     }
 
-    // Build button line: left group stays left, right group aligns to right edge
-    lines.push(Line::from(""));
-
-    if right_spans.is_empty() {
-        // No right group - just show left group
-        lines.push(Line::from(left_spans));
-    } else {
-        // Calculate widths for alignment
-        let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
-        let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
-        let available_width = inner.width as usize;
-
-        // Calculate spacing to push right group all the way to the right
-        let spacing = available_width.saturating_sub(left_width + right_width);
-
-        // Build line with right-aligned right group
-        let mut button_spans = left_spans;
-        button_spans.push(Span::raw(" ".repeat(spacing)));
-        button_spans.extend(right_spans);
-
-        lines.push(Line::from(button_spans));
-    }
+    lines.push(Line::from(button_spans));
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
@@ -589,7 +564,7 @@ fn render_window_tracking(
         let mut spans = vec![
             Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
             Span::styled(
-                truncate(&win.app_id, 15),
+                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
                 Style::default()
                     .fg(colors::UI_TEXT)
                     .add_modifier(Modifier::BOLD),
@@ -600,7 +575,7 @@ fn render_window_tracking(
         if !win.title.is_empty() {
             spans.push(Span::raw(" | "));
             spans.push(Span::styled(
-                truncate(&win.title, 20),
+                truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
                 Style::default().fg(colors::UI_SECONDARY),
             ));
         }
@@ -619,7 +594,7 @@ fn render_window_tracking(
         let mut spans = vec![
             Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
             Span::styled(
-                truncate(&win.app_id, 15),
+                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
                 Style::default().fg(colors::UI_UNMATCHED),
             ),
         ];
@@ -628,7 +603,7 @@ fn render_window_tracking(
         if !win.title.is_empty() {
             spans.push(Span::raw(" | "));
             spans.push(Span::styled(
-                truncate(&win.title, 20),
+                truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
                 Style::default().fg(colors::UI_UNMATCHED),
             ));
         }

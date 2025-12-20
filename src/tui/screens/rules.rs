@@ -19,8 +19,9 @@ use regex::Regex;
 use std::fmt::Write;
 
 /// Rules screen mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum RulesMode {
+    #[default]
     List,
     AddEdit,
     Delete,
