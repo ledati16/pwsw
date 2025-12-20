@@ -70,42 +70,119 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             KeyCode::Esc | KeyCode::Char('?' | 'q') => {
                 app.show_help = false;
             }
+            KeyCode::Char(' ') => {
+                // Toggle section at current selected row
+                if let Some(selected_row) = app.help_scroll_state.selected() {
+                    if let Some(section_name) = crate::tui::screens::help::get_section_at_row(
+                        app.current_screen,
+                        &app.help_collapsed_sections,
+                        selected_row,
+                    ) {
+                        if app.help_collapsed_sections.contains(&section_name) {
+                            app.help_collapsed_sections.remove(&section_name);
+                        } else {
+                            app.help_collapsed_sections.insert(section_name);
+                        }
+                        app.dirty = true;
+                    }
+                }
+            }
             KeyCode::Up => {
-                app.help_scroll_state.select(None); // Ensure view mode
-                let offset = app.help_scroll_state.offset_mut();
-                *offset = offset.saturating_sub(1);
+                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
+                if let Some(prev_section) = crate::tui::screens::help::find_prev_section_header(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                    current_selected,
+                ) {
+                    app.help_scroll_state.select(Some(prev_section));
+
+                    // Adjust scroll offset if cursor moves above viewport
+                    let current_offset = app.help_scroll_state.offset();
+                    if prev_section < current_offset {
+                        *app.help_scroll_state.offset_mut() = prev_section;
+                    }
+                }
             }
             KeyCode::Down => {
-                app.help_scroll_state.select(None); // Ensure view mode
-                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
-                let offset = app.help_scroll_state.offset_mut();
-                // Allow scrolling until the last item is at the top (or slightly less, but this is safe)
-                if *offset < count.saturating_sub(1) {
-                    *offset += 1;
+                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
+                if let Some(next_section) = crate::tui::screens::help::find_next_section_header(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                    current_selected,
+                ) {
+                    app.help_scroll_state.select(Some(next_section));
+
+                    // Adjust scroll offset if cursor moves below viewport
+                    let current_offset = app.help_scroll_state.offset();
+                    let viewport_bottom = current_offset + app.help_viewport_height;
+                    if next_section >= viewport_bottom {
+                        *app.help_scroll_state.offset_mut() = current_offset + 1;
+                    }
                 }
             }
             KeyCode::Home => {
-                app.help_scroll_state.select(None);
+                // Jump to first section header (row 0)
+                app.help_scroll_state.select(Some(0));
                 *app.help_scroll_state.offset_mut() = 0;
             }
             KeyCode::End => {
-                app.help_scroll_state.select(None);
-                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
-                *app.help_scroll_state.offset_mut() = count.saturating_sub(1);
+                let row_count = crate::tui::screens::help::get_help_row_count(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                );
+
+                // Find last section header by searching backwards from end
+                let mut last_section = row_count.saturating_sub(1);
+                for row in (0..row_count).rev() {
+                    if crate::tui::screens::help::get_section_at_row(
+                        app.current_screen,
+                        &app.help_collapsed_sections,
+                        row,
+                    ).is_some() {
+                        last_section = row;
+                        break;
+                    }
+                }
+
+                app.help_scroll_state.select(Some(last_section));
+
+                let max_offset = crate::tui::screens::help::get_help_max_offset(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                    app.help_viewport_height,
+                );
+                *app.help_scroll_state.offset_mut() = max_offset;
             }
             KeyCode::PageUp => {
-                app.help_scroll_state.select(None);
-                let offset = app.help_scroll_state.offset_mut();
-                *offset = offset.saturating_sub(15); // Approximate page size
+                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
+                let new_selected = current_selected.saturating_sub(15);
+                app.help_scroll_state.select(Some(new_selected));
+
+                let current_offset = app.help_scroll_state.offset();
+                let new_offset = current_offset.saturating_sub(15);
+                *app.help_scroll_state.offset_mut() = new_offset;
             }
             KeyCode::PageDown => {
-                app.help_scroll_state.select(None);
-                let count = crate::tui::screens::help::get_help_row_count(app.current_screen);
-                let offset = app.help_scroll_state.offset_mut();
-                *offset = (*offset + 15).min(count.saturating_sub(1));
+                let row_count = crate::tui::screens::help::get_help_row_count(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                );
+                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
+                let new_selected = current_selected.saturating_add(15).min(row_count.saturating_sub(1));
+                app.help_scroll_state.select(Some(new_selected));
+
+                let max_offset = crate::tui::screens::help::get_help_max_offset(
+                    app.current_screen,
+                    &app.help_collapsed_sections,
+                    app.help_viewport_height,
+                );
+                let current_offset = app.help_scroll_state.offset();
+                let new_offset = current_offset.saturating_add(15).min(max_offset);
+                *app.help_scroll_state.offset_mut() = new_offset;
             }
             _ => {}
         }
+        app.dirty = true;
         return;
     }
 
@@ -128,6 +205,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             // Let's allow ? to open help even over a modal.
             KeyCode::Char('?') => {
                 app.show_help = true;
+                // Reset cursor and scroll to top when opening help
+                app.help_scroll_state.select(Some(0));
+                *app.help_scroll_state.offset_mut() = 0;
                 return;
             }
             _ => {
@@ -186,6 +266,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // ?: Toggle help overlay
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
             app.show_help = true;
+            // Reset cursor and scroll to top when opening help
+            app.help_scroll_state.select(Some(0));
+            *app.help_scroll_state.offset_mut() = 0;
         }
 
         // Screen-specific input

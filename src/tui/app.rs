@@ -179,6 +179,10 @@ pub(crate) struct App {
     pub(crate) show_help: bool,
     /// Scroll state for help overlay
     pub(crate) help_scroll_state: ratatui::widgets::TableState,
+    /// Viewport height for help overlay (updated during rendering)
+    pub(crate) help_viewport_height: usize,
+    /// Collapsed sections in help overlay (section names)
+    pub(crate) help_collapsed_sections: std::collections::HashSet<String>,
     /// Whether user requested quit (waiting for confirmation if `config_dirty`)
     pub(crate) confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
@@ -237,6 +241,8 @@ impl App {
             config_dirty: false,
             show_help: false,
             help_scroll_state: ratatui::widgets::TableState::default(),
+            help_viewport_height: 30, // Default value, updated during first render
+            help_collapsed_sections: std::collections::HashSet::new(),
             confirm_quit: false,
             daemon_running: false,
             window_count: 0,

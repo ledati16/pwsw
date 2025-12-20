@@ -47,7 +47,7 @@ pub mod modal_size {
     pub(crate) const MEDIUM: (u16, u16) = (70, 65);
     pub(crate) const LARGE: (u16, u16) = (80, 85);
     pub(crate) const DROPDOWN: (u16, u16) = (40, 50);
-    pub(crate) const HELP: (u16, u16) = (65, 75);
+    pub(crate) const HELP: (u16, u16) = (90, 80);
 }
 
 /// Helper to create centered modal with standard size
