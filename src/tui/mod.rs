@@ -18,7 +18,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{block::BorderType, Block, Borders, Paragraph, Tabs},
     Frame, Terminal,
 };
 use std::fmt::Write;
@@ -777,6 +777,7 @@ fn render_header(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title(left_title)
                 .title_top(
                     Line::from(vec![

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{block::BorderType, Block, Borders, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
@@ -367,7 +367,7 @@ fn render_settings_list(
         })
         .collect();
 
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Settings "));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Settings "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -457,7 +457,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
 
     let list = List::new(items).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_type(BorderType::Rounded)
             .title("Select Log Level")
             .style(Style::default().bg(colors::UI_MODAL_BG)),
     );
@@ -549,7 +549,7 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScre
 
     let paragraph = Paragraph::new(lines).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_type(BorderType::Rounded)
             .title(" Description "),
     );
 
