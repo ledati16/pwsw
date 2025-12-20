@@ -124,8 +124,7 @@ impl SettingItem {
                  \n\
                  Tip: Reorder rules in the Rules tab (arrow keys + Shift+Up/Down) to adjust priority.\n\
                  \n\
-                 Default: disabled (most recent window)\n\
-                 ⚠ Requires daemon restart"
+                 Default: disabled (most recent window)"
             }
             SettingItem::LogLevel => {
                 "Logging verbosity level for daemon output.\n\
@@ -140,8 +139,7 @@ impl SettingItem {
                  View logs with: journalctl --user -u pwsw -f\n\
                  Or in TUI: Dashboard → [l] for logs view\n\
                  \n\
-                 Default: info\n\
-                 ⚠ Requires daemon restart"
+                 Default: info"
             }
         }
     }
@@ -467,37 +465,81 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
 /// Render the description panel
 fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
     let current_item = screen_state.current_item();
+    let short_desc = current_item.description();
     let detailed_desc = current_item.detailed_description();
+    let needs_restart = current_item.requires_restart();
 
-    // Parse the detailed description into lines
-    let mut lines = vec![Line::from("")]; // Empty line at top for padding
+    let mut lines = vec![];
 
+    // Short description at top (highlighted)
+    lines.push(Line::from(Span::styled(
+        short_desc,
+        Style::default()
+            .fg(colors::UI_HIGHLIGHT)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    // Restart warning badge if needed (with extra space after emoji)
+    if needs_restart {
+        lines.push(Line::from(Span::styled(
+            "⚠  Requires daemon restart",
+            Style::default()
+                .fg(colors::UI_WARNING)
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    lines.push(Line::from("")); // Spacing
+
+    // Parse the detailed description with simpler, consistent coloring
     for line in detailed_desc.lines() {
         if line.is_empty() {
             lines.push(Line::from(""));
         } else if line.starts_with("⚠") {
-            // Warning lines in yellow
+            // Skip hardcoded warnings - we show the badge dynamically now
+            continue;
+        } else if line.starts_with("When enabled:") {
+            // "When enabled:" prefix - green, rest white
+            let rest = line.trim_start_matches("When enabled:");
+            lines.push(Line::from(vec![
+                Span::styled("When enabled:", Style::default().fg(colors::UI_SUCCESS)),
+                Span::styled(rest, Style::default().fg(colors::UI_TEXT)),
+            ]));
+        } else if line.starts_with("When disabled:") {
+            // "When disabled:" prefix - red, rest white
+            let rest = line.trim_start_matches("When disabled:");
+            lines.push(Line::from(vec![
+                Span::styled("When disabled:", Style::default().fg(colors::UI_ERROR)),
+                Span::styled(rest, Style::default().fg(colors::UI_TEXT)),
+            ]));
+        } else if line.ends_with(':') && !line.contains("pw") && !line.starts_with("• ") {
+            // Section headers (lines ending with colon) - bold white
             lines.push(Line::from(Span::styled(
                 line,
-                Style::default().fg(colors::UI_WARNING),
+                Style::default()
+                    .fg(colors::UI_TEXT)
+                    .add_modifier(Modifier::BOLD),
             )));
-        } else if line.starts_with("When ") || line.starts_with("Example:") {
-            // Section headers in normal text
+        } else if line.starts_with("• ") {
+            // Bullet points - cyan bullet with white text
+            let content = line.trim_start_matches("• ");
+            lines.push(Line::from(vec![
+                Span::styled("• ", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::styled(content, Style::default().fg(colors::UI_TEXT)),
+            ]));
+        } else if line.starts_with("Default:") {
+            // Default value - dimmed
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::default()
+                    .fg(colors::UI_SECONDARY)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+        } else {
+            // All other lines - normal white text for readability
             lines.push(Line::from(Span::styled(
                 line,
                 Style::default().fg(colors::UI_TEXT),
-            )));
-        } else if line.starts_with("• ") || line.starts_with("Default:") {
-            // Bullet points and metadata in secondary color
-            lines.push(Line::from(Span::styled(
-                line,
-                Style::default().fg(colors::UI_SECONDARY),
-            )));
-        } else {
-            // Regular description lines in secondary color
-            lines.push(Line::from(Span::styled(
-                line,
-                Style::default().fg(colors::UI_SECONDARY),
             )));
         }
     }

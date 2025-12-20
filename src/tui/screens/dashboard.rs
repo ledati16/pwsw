@@ -376,21 +376,28 @@ fn render_daemon_section(
         }
     }
 
-    // Calculate spacing to push groups apart
-    let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
-    let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
-    let available_width = inner.width as usize;
-    let spacing = available_width.saturating_sub(left_width + right_width + 1);
+    // Build button line: left group stays left, right group aligns to right edge
+    lines.push(Line::from(""));
 
-    // Build final button line with groups pushed apart
-    let mut button_spans = left_spans;
-    if !right_spans.is_empty() {
+    if right_spans.is_empty() {
+        // No right group - just show left group
+        lines.push(Line::from(left_spans));
+    } else {
+        // Calculate widths for alignment
+        let left_width: usize = left_spans.iter().map(|s| s.content.len()).sum();
+        let right_width: usize = right_spans.iter().map(|s| s.content.len()).sum();
+        let available_width = inner.width as usize;
+
+        // Calculate spacing to push right group all the way to the right
+        let spacing = available_width.saturating_sub(left_width + right_width);
+
+        // Build line with right-aligned right group
+        let mut button_spans = left_spans;
         button_spans.push(Span::raw(" ".repeat(spacing)));
         button_spans.extend(right_spans);
-    }
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(button_spans));
+        lines.push(Line::from(button_spans));
+    }
 
     let paragraph = Paragraph::new(lines);
     frame.render_widget(paragraph, inner);
