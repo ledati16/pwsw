@@ -500,7 +500,7 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScre
             lines.push(Line::from(""));
         } else if line.starts_with("⚠") {
             // Skip hardcoded warnings - we show the badge dynamically now
-            continue;
+            // (no action needed - line not added to output)
         } else if line.starts_with("When enabled:") {
             // "When enabled:" prefix - green, rest white
             let rest = line.trim_start_matches("When enabled:");

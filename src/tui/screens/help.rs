@@ -47,7 +47,7 @@ pub(crate) fn render_help(
 
     // Build help content
     let rows = build_help_rows(current_screen, collapsed_sections);
-    let _total_rows = rows.len();
+    let total_rows = rows.len();
 
     let table = Table::new(
         rows,
@@ -83,7 +83,6 @@ pub(crate) fn render_help(
     });
     let view_height = inner.height as usize;
     *viewport_height = view_height; // Update cached viewport height for scroll handling
-    let total_rows = _total_rows;
     let current_offset = scroll_state.offset();
 
     // Simple scroll indicator logic: check if we can scroll in each direction
@@ -98,8 +97,9 @@ pub(crate) fn render_help(
 
     // Draw top arrow if there's more above
     if has_above {
-        let arrow_text = format!("↑{}", lines_above);
-        let arrow_width = arrow_text.len() as u16;
+        let arrow_text = format!("↑{lines_above}");
+        #[allow(clippy::cast_possible_truncation)]
+        let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
             y: inner.y,
@@ -115,8 +115,9 @@ pub(crate) fn render_help(
 
     // Draw bottom arrow if there's more below
     if has_below {
-        let arrow_text = format!("↓{}", lines_below);
-        let arrow_width = arrow_text.len() as u16;
+        let arrow_text = format!("↓{lines_below}");
+        #[allow(clippy::cast_possible_truncation)]
+        let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
             y: inner.y + inner.height.saturating_sub(1),
@@ -146,12 +147,8 @@ pub(crate) fn find_next_section_header(
 ) -> Option<usize> {
     let row_count = get_help_row_count(current_screen, collapsed_sections);
 
-    for row in (current_row + 1)..row_count {
-        if get_section_at_row(current_screen, collapsed_sections, row).is_some() {
-            return Some(row);
-        }
-    }
-    None
+    ((current_row + 1)..row_count)
+        .find(|&row| get_section_at_row(current_screen, collapsed_sections, row).is_some())
 }
 
 /// Find the previous section header row index starting from current row
@@ -164,12 +161,9 @@ pub(crate) fn find_prev_section_header(
         return None;
     }
 
-    for row in (0..current_row).rev() {
-        if get_section_at_row(current_screen, collapsed_sections, row).is_some() {
-            return Some(row);
-        }
-    }
-    None
+    (0..current_row)
+        .rev()
+        .find(|&row| get_section_at_row(current_screen, collapsed_sections, row).is_some())
 }
 
 /// Get the section name at a given row index if it's a section header
@@ -296,7 +290,7 @@ fn build_help_rows(
                         .add_modifier(Modifier::ITALIC),
                 ),
                 Span::styled(
-                    format!(" to {}>", action),
+                    format!(" to {action}>"),
                     Style::default()
                         .fg(colors::UI_SECONDARY)
                         .add_modifier(Modifier::ITALIC),
@@ -305,7 +299,7 @@ fn build_help_rows(
 
             rows.push(Row::new(vec![
                 Cell::from(Span::styled(
-                    format!("{} {}", indicator, name),
+                    format!("{indicator} {name}"),
                     Style::default()
                         .fg(colors::UI_WARNING)
                         .add_modifier(Modifier::BOLD),

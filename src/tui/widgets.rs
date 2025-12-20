@@ -228,12 +228,84 @@ pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
     }
 }
 
-/// Truncate a node/sink name to fit within display width, appending `...` when truncated.
+/// Truncate a node/sink name intelligently to fit within display width
 ///
-/// This is a semantic alias for `truncate_desc` used specifically for node/sink names
-/// in UI rendering. Operates on character counts (not grapheme clusters) which is
-/// acceptable for the ASCII-based `PipeWire` node names used in this application.
+/// Handles different node types with appropriate truncation strategies:
+///
+/// **ALSA nodes** (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`):
+/// - Keeps prefix and profile suffix: `alsa_output...analog-stereo`
+/// - If still too long, truncates suffix: `alsa_output...iec958-ac3-surround...`
+///
+/// **Bluetooth nodes** (e.g., `bluez_output.40_ED_98_1C_1D_08.1`):
+/// - Keeps prefix, last 2 MAC octets, and device number: `bluez_output...1D_08.1`
+/// - Format: `{prefix}...{last_2_mac_octets}.{device_num}`
+///
+/// **Other nodes**: Uses simple truncation with ellipsis.
 pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
+    let max_len = max_width as usize;
+
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+
+    // For ALSA nodes, use intelligent truncation (prefix...suffix)
+    if text.starts_with("alsa_output.") || text.starts_with("alsa_input.") {
+        let parts: Vec<&str> = text.split('.').collect();
+        if parts.len() >= 3 {
+            let prefix = parts[0];
+            let suffix = parts[parts.len() - 1];
+            let combined = format!("{prefix}...{suffix}");
+
+            // If the intelligent format fits, use it
+            if combined.len() <= max_len {
+                return combined;
+            }
+
+            // Otherwise, truncate the suffix to fit within max_width
+            // Format: "prefix...truncated_suffix..."
+            let prefix_len = prefix.len();
+            let ellipsis_len = 3; // "..."
+            let available_for_suffix = max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
+
+            if available_for_suffix > 3 {
+                let truncated_suffix = &suffix[..available_for_suffix.min(suffix.len())];
+                return format!("{prefix}...{truncated_suffix}...");
+            }
+
+            // If we can't fit anything meaningful, just use prefix
+            return format!("{prefix}...");
+        }
+    }
+
+    // For Bluetooth nodes, use intelligent truncation (prefix...last_mac_octets.device_num)
+    // Format: bluez_output.XX_XX_XX_XX_XX_XX.N -> bluez_output...XX_XX.N
+    if text.starts_with("bluez_output.") || text.starts_with("bluez_input.") {
+        let parts: Vec<&str> = text.split('.').collect();
+        if parts.len() >= 3 {
+            let prefix = parts[0]; // "bluez_output" or "bluez_input"
+            let mac = parts[1]; // "40_ED_98_1C_1D_08"
+            let device_num = parts[2]; // "1"
+
+            // Extract last 2 octets from MAC (last 5 chars: "1D_08")
+            let mac_suffix = if mac.len() >= 5 {
+                &mac[mac.len() - 5..]
+            } else {
+                mac
+            };
+
+            let combined = format!("{prefix}...{mac_suffix}.{device_num}");
+
+            // If the intelligent format fits, use it
+            if combined.len() <= max_len {
+                return combined;
+            }
+
+            // If still too long, just show prefix and device number
+            return format!("{prefix}...{device_num}");
+        }
+    }
+
+    // Fallback to simple truncation for other node types
     truncate_desc(text, max_width)
 }
 
@@ -316,5 +388,68 @@ mod tests {
         // width=4 => first -> 1, second -> 2
         let counts = compute_visual_line_counts(&items, 4);
         assert_eq!(counts, vec![1usize, 2usize]);
+    }
+
+    #[test]
+    fn test_truncate_node_name_no_truncation_needed() {
+        // Short names should pass through unchanged
+        assert_eq!(truncate_node_name("short", 35), "short");
+        assert_eq!(
+            truncate_node_name("alsa_output.analog-stereo", 35),
+            "alsa_output.analog-stereo"
+        );
+    }
+
+    #[test]
+    fn test_truncate_node_name_alsa_intelligent() {
+        // ALSA nodes should use intelligent truncation (prefix...suffix)
+        let alsa_long = "alsa_output.pci-0000_0c_00.4.analog-stereo";
+        assert_eq!(
+            truncate_node_name(alsa_long, 35),
+            "alsa_output...analog-stereo"
+        );
+
+        // ALSA input nodes
+        let alsa_input = "alsa_input.pci-0000_0c_00.4.analog-stereo";
+        assert_eq!(
+            truncate_node_name(alsa_input, 35),
+            "alsa_input...analog-stereo"
+        );
+
+        // Very long profile names should be truncated further
+        let alsa_very_long = "alsa_output.pci-0000_0c_00.4.iec958-ac3-surround-51-analog-stereo";
+        let result = truncate_node_name(alsa_very_long, 35);
+        assert!(result.starts_with("alsa_output..."));
+        assert!(result.len() <= 35);
+    }
+
+    #[test]
+    fn test_truncate_node_name_bluetooth_intelligent() {
+        // Bluetooth nodes should keep prefix, last 2 MAC octets, and device number when truncated
+        // This node is 33 chars, so with max=30 it will be truncated
+        let bt_output = "bluez_output.40_ED_98_1C_1D_08.1";
+        assert_eq!(truncate_node_name(bt_output, 30), "bluez_output...1D_08.1");
+
+        let bt_input = "bluez_input.A0_B1_C2_D3_E4_F5.2";
+        assert_eq!(truncate_node_name(bt_input, 30), "bluez_input...E4_F5.2");
+
+        // If under the limit, no truncation
+        assert_eq!(truncate_node_name(bt_output, 35), bt_output);
+    }
+
+    #[test]
+    fn test_truncate_node_name_bluetooth_very_short_width() {
+        // If even the intelligent format is too long, fallback to prefix + device num
+        let bt_output = "bluez_output.40_ED_98_1C_1D_08.1";
+        assert_eq!(truncate_node_name(bt_output, 20), "bluez_output...1");
+    }
+
+    #[test]
+    fn test_truncate_node_name_other_types() {
+        // Non-ALSA, non-Bluetooth nodes should use simple truncation
+        let other = "some_very_long_sink_name_that_needs_truncation";
+        let result = truncate_node_name(other, 20);
+        assert_eq!(result, "some_very_long_si...");
+        assert!(result.len() <= 20);
     }
 }
