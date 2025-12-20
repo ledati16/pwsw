@@ -5,7 +5,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        block::BorderType, Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row,
+        block::{BorderType, Padding}, Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row,
         Table, TableState,
     },
     Frame,
@@ -312,6 +312,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Background block
     let block = Block::default()
         .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
@@ -403,7 +404,8 @@ fn render_delete_confirmation(
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL).border_type(BorderType::Double)
+        .padding(Padding::horizontal(1))
         .title("Delete Sink")
         .style(Style::default().bg(colors::UI_MODAL_BG));
 
@@ -522,6 +524,7 @@ fn render_sink_selector(
         .block(
             Block::default()
                 .borders(Borders::ALL).border_type(BorderType::Rounded)
+                .padding(Padding::horizontal(1))
                 .title("Select Node")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
         )

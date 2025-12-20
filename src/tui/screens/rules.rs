@@ -4,7 +4,10 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{block::BorderType, Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
+    widgets::{
+        block::{BorderType, Padding},
+        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+    },
     Frame,
 };
 use throbber_widgets_tui::{Throbber, ThrobberState};
@@ -374,7 +377,9 @@ fn render_editor(
         .split(popup_area);
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
@@ -683,7 +688,9 @@ fn render_sink_selector(
     let list = List::new(items)
         .block(
             Block::default()
-                .borders(Borders::ALL).border_type(BorderType::Rounded)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .padding(Padding::horizontal(1))
                 .title("Select Target Sink")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
         )
@@ -781,7 +788,9 @@ fn render_delete_confirmation(
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
+        .padding(Padding::horizontal(1))
         .title("Delete Rule")
         .style(Style::default().bg(colors::UI_MODAL_BG));
 
