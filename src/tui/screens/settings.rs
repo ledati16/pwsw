@@ -12,6 +12,9 @@ use crate::config::Settings;
 use crate::style::colors;
 use crate::tui::widgets::{centered_modal, modal_size};
 
+/// Height of the description panel at the bottom of the settings screen
+const DESCRIPTION_PANEL_HEIGHT: u16 = 14;
+
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingItem {
@@ -261,8 +264,8 @@ pub(crate) fn render_settings(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),    // Settings list
-            Constraint::Length(14), // Description (expanded for detailed help)
+            Constraint::Min(10),                        // Settings list
+            Constraint::Length(DESCRIPTION_PANEL_HEIGHT), // Description (expanded for detailed help)
         ])
         .split(area);
 

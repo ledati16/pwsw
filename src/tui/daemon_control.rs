@@ -106,6 +106,12 @@ impl DaemonManager {
     }
 
     /// Check if the daemon is currently running
+    ///
+    /// For systemd mode: Checks if the systemd service is active using `systemctl is-active`.
+    /// Returns `false` if the command fails or the service is inactive.
+    ///
+    /// For direct mode: Attempts to connect to the daemon via IPC socket with a health check.
+    /// Returns `true` if the socket exists and responds to a status query within timeout.
     pub async fn is_running(self) -> bool {
         match self {
             DaemonManager::Systemd => {

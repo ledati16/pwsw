@@ -17,8 +17,9 @@ use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
 /// Sinks screen mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SinksMode {
+    #[default]
     List,
     AddEdit,
     Delete,

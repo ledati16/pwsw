@@ -292,6 +292,10 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         }
     }
 
+    // Setup signal handlers for graceful shutdown
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
+
     // Notify systemd that daemon is ready
     #[cfg(unix)]
     {
@@ -379,6 +383,14 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             _ = signal::ctrl_c() => {
                 info!("Shutting down (Ctrl-C)");
+                if state.config.settings.notify_manual {
+                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
+                }
+                break;
+            }
+
+            _ = sigterm.recv() => {
+                info!("Shutting down (SIGTERM from systemd)");
                 if state.config.settings.notify_manual {
                     let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
                 }

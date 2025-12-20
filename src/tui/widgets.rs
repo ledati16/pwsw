@@ -51,6 +51,10 @@ pub mod modal_size {
 }
 
 /// Helper to create centered modal with standard size
+///
+/// Returns the calculated `Rect` for the modal area. Callers must use this rect
+/// to render the modal widget.
+#[must_use]
 pub(crate) fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
     centered_rect(size.0, size.1, r)
 }
@@ -224,7 +228,11 @@ pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
     }
 }
 
-/// Truncate a node/sink name similarly to `truncate_desc`.
+/// Truncate a node/sink name to fit within display width, appending `...` when truncated.
+///
+/// This is a semantic alias for `truncate_desc` used specifically for node/sink names
+/// in UI rendering. Operates on character counts (not grapheme clusters) which is
+/// acceptable for the ASCII-based `PipeWire` node names used in this application.
 pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
     truncate_desc(text, max_width)
 }

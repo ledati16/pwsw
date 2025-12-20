@@ -178,8 +178,14 @@ pub(crate) fn get_section_at_row(
     collapsed_sections: &std::collections::HashSet<String>,
     row_index: usize,
 ) -> Option<String> {
-    // We need to rebuild with metadata to check if row is a section header
-    // This is inefficient but simple for now
+    // IMPORTANT: Metadata must be rebuilt on every call because the help content structure
+    // is dynamic - sections can be collapsed/expanded which changes row counts and indices.
+    // The metadata needs to exactly match the current visible rows accounting for collapsed
+    // state, so we rebuild it here with the same logic as build_help_rows().
+    //
+    // This is O(n) where n is the number of help rows, but simple and correct. An alternative
+    // would be to cache metadata and invalidate on collapse/expand, but that adds complexity
+    // for a rarely-used feature (help overlay navigation).
     let mut metadata: Vec<HelpRowMeta> = Vec::new();
 
     // Helper to track metadata (simplified version)
