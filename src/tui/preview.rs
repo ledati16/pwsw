@@ -167,7 +167,7 @@ pub(crate) fn match_windows_with_compiled_count(
 ) -> (Vec<String>, usize) {
     let mut out = Vec::new();
     let mut total = 0usize;
-    for w in windows.iter() {
+    for w in windows {
         let app_ok = app_re.map_or(true, |r| r.is_match(&w.app_id));
         let title_ok = title_re.map_or(true, |r| r.is_match(&w.title));
         if app_ok && title_ok {

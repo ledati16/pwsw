@@ -73,6 +73,10 @@ struct IpcContext {
 /// # Errors
 /// Returns an error if another daemon is running, initialization fails, compositor
 /// connection fails, or any critical component encounters an error.
+///
+/// # Panics
+/// Panics if the SIGTERM signal handler cannot be installed. This is a platform-level
+/// failure that prevents graceful shutdown handling.
 // Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
 #[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run(config: Config, foreground: bool) -> Result<()> {

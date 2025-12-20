@@ -43,7 +43,9 @@ pub struct Settings {
 /// Audio sink configuration
 #[derive(Debug, Clone)]
 pub struct SinkConfig {
-    /// `PipeWire` node name (e.g., `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`)
+    /// `PipeWire` node name
+    /// - ALSA: `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`
+    /// - Bluetooth: `"bluez_output.40_ED_98_1C_1D_08.1"`
     pub name: String,
     /// Human-readable description
     pub desc: String,

@@ -449,7 +449,7 @@ fn render_sink_selector(
             Span::raw("  "),
             Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
             Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(name_text, Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(name_text, Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
             Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
         ]);
         items.push(ListItem::new(line));
@@ -473,7 +473,7 @@ fn render_sink_selector(
                 Span::raw("  "),
                 Span::styled(desc_text.clone(), Style::default().fg(colors::UI_TEXT)),
                 Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-                Span::styled(name_text.clone(), Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(name_text.clone(), Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
                 Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
             items.push(ListItem::new(line));
@@ -529,7 +529,7 @@ fn render_sink_selector(
                 .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(" → ");
+        .highlight_symbol(" →");
 
     // Map our logical selector index (skipping headers) to the list item index
     let total_selectable = active_sinks.len() + profile_sinks.len();

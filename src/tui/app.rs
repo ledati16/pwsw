@@ -92,7 +92,7 @@ impl Screen {
 pub(crate) enum AppUpdate {
     /// Full sink data including active and profile sinks
     ///
-    /// Sent by background poller every 1s with current PipeWire state snapshot.
+    /// Sent by background poller every 1s with current `PipeWire` state snapshot.
     SinksData {
         active: Vec<crate::pipewire::ActiveSink>,
         profiles: Vec<crate::pipewire::ProfileSink>,
@@ -123,7 +123,7 @@ pub(crate) enum AppUpdate {
     /// Live-preview results for the rules editor
     ///
     /// Sent by background preview worker when matching completes (or times out).
-    /// Contains up to max_results matching windows.
+    /// Contains up to `max_results` matching windows.
     PreviewMatches {
         app_pattern: String,
         title_pattern: Option<String>,

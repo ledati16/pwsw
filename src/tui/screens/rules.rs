@@ -672,7 +672,7 @@ fn render_sink_selector(
                 Span::raw("  "),
                 Span::styled(desc, Style::default().fg(colors::UI_TEXT)),
                 Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-                Span::styled(name, Style::default().fg(colors::UI_SECONDARY)),
+                Span::styled(name, Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
                 Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
 
@@ -692,7 +692,7 @@ fn render_sink_selector(
                 .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(" → ");
+        .highlight_symbol(" →");
 
     // Sync state
     editor

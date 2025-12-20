@@ -30,7 +30,7 @@ impl DaemonManager {
     /// 2. If exists AND `INVOCATION_ID` is set, return Systemd (supervised)
     /// 3. Otherwise return Direct (manual start or no service file)
     ///
-    /// Note: We use `systemctl cat` instead of checking LoadState to avoid false
+    /// Note: We use `systemctl cat` instead of checking `LoadState` to avoid false
     /// positives from systemd's cached state after service file deletion.
     /// `INVOCATION_ID` alone is unreliable - it's set for all processes in
     /// a systemd user session, not just supervised services.
@@ -62,6 +62,6 @@ impl DaemonManager {
         Command::new("systemctl")
             .args(["--user", "cat", "pwsw.service"])
             .output()
-            .map_or(false, |output| output.status.success())
+            .is_ok_and(|output| output.status.success())
     }
 }

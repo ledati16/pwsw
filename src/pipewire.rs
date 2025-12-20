@@ -3,7 +3,11 @@
 //! Provides audio sink discovery and control via `PipeWire` native tools:
 //! - `pw-dump`: JSON queries for objects (sinks, devices, metadata)
 //! - `pw-metadata`: Setting the default audio sink
-//! - `pw-cli`: Profile switching for analog/digital outputs
+//! - `pw-cli`: Profile switching for ALSA analog/digital outputs
+//!
+//! Supports both ALSA and Bluetooth audio sinks. ALSA devices support profile
+//! switching (e.g., analog ↔ digital). Bluetooth devices appear as active sinks
+//! when connected (A2DP/HSP modes appear as separate nodes).
 //!
 //! All required tools must be present in `PATH` for `PWSW` to function.
 
@@ -314,6 +318,10 @@ impl PipeWire {
     }
 
     /// Get sinks available through profile switching
+    ///
+    /// Note: Profile switching is ALSA-specific. Bluetooth devices use a different
+    /// mechanism (A2DP/HSP appear as separate nodes, not profiles). Bluetooth sinks
+    /// that are already active will appear in `get_active_sinks()` instead.
     #[must_use]
     pub fn get_profile_sinks(
         objects: &[PwObject],
@@ -337,7 +345,7 @@ impl PipeWire {
                 continue;
             };
 
-            // Only ALSA audio devices
+            // Only ALSA audio devices (Bluetooth doesn't use profile switching)
             let device_name = match &props.device_name {
                 Some(name) if name.starts_with("alsa_card.") => name,
                 _ => continue,

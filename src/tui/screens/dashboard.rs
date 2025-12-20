@@ -10,6 +10,7 @@ use ratatui::{
 
 use crate::config::Config;
 use crate::style::colors;
+use crate::tui::widgets::truncate_node_name;
 
 /// Patterns to highlight in log messages (keyword, color, bold)
 const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
@@ -38,7 +39,7 @@ const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
     ("id=", colors::LOG_KEYWORD, false),
 ];
 
-/// Maximum display width for truncating app_id in window tracking display
+/// Maximum display width for truncating `app_id` in window tracking display
 const WINDOW_APPID_MAX_WIDTH: usize = 15;
 
 /// Maximum display width for truncating window title in window tracking display
@@ -162,30 +163,6 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-/// Truncate long ALSA node names intelligently
-/// Example: `alsa_output.pci-0000_00_1f.3.analog-stereo` → `alsa_output...analog-stereo`
-fn truncate_node_name(name: &str, max_len: usize) -> String {
-    if name.len() <= max_len {
-        return name.to_string();
-    }
-
-    // For ALSA nodes, try to keep prefix and suffix
-    if name.starts_with("alsa_output.") || name.starts_with("alsa_input.") {
-        let parts: Vec<&str> = name.split('.').collect();
-        if parts.len() >= 3 {
-            // Keep first part (alsa_output/alsa_input) and last part (profile)
-            let prefix = parts[0];
-            let suffix = parts[parts.len() - 1];
-            let combined = format!("{prefix}...{suffix}");
-            if combined.len() <= max_len {
-                return combined;
-            }
-        }
-    }
-
-    // Fallback to simple truncation
-    truncate(name, max_len)
-}
 
 /// Context for rendering the dashboard screen
 pub(crate) struct DashboardRenderContext<'a> {
