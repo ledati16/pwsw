@@ -334,9 +334,9 @@ fn render_daemon_section(
 
     // Action buttons (all in a single row)
     let actions: &[&str] = if screen_state.max_action_index == 4 {
-        &["Start", "Stop", "Restart", "Enable", "Disable"]
+        &["START", "STOP", "RESTART", "ENABLE", "DISABLE"]
     } else {
-        &["Start", "Stop", "Restart"]
+        &["START", "STOP", "RESTART"]
     };
 
     let separator = Span::styled(" · ", Style::default().fg(colors::UI_SECONDARY));
@@ -351,7 +351,7 @@ fn render_daemon_section(
             button_spans.push(separator.clone());
         }
 
-        // Use brackets around selected item instead of arrow/background
+        // Use brackets around selected item, reserve space on unselected for alignment
         if is_selected {
             button_spans.push(Span::styled(
                 "[",
@@ -368,7 +368,10 @@ fn render_daemon_section(
                 Style::default().fg(colors::UI_HIGHLIGHT),
             ));
         } else {
+            // Reserve space for brackets to prevent text shifting
+            button_spans.push(Span::raw(" "));
             button_spans.push(Span::styled(*action, Style::default().fg(colors::UI_TEXT)));
+            button_spans.push(Span::raw(" "));
         }
     }
 
