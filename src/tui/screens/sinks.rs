@@ -5,7 +5,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row, Table, TableState,
+        block::BorderType, Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row,
+        Table, TableState,
     },
     Frame,
 };
@@ -264,7 +265,7 @@ fn render_list(
             )
             .bottom_margin(1),
     )
-    .block(Block::default().borders(Borders::ALL).title(" Sinks "));
+    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Sinks "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -310,7 +311,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 
     // Background block
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
@@ -361,7 +362,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let border_style =
         crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 3);
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
@@ -402,7 +403,7 @@ fn render_delete_confirmation(
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .title("Delete Sink")
         .style(Style::default().bg(colors::UI_MODAL_BG));
 
@@ -520,7 +521,7 @@ fn render_sink_selector(
     let list = ratatui::widgets::List::new(items.clone())
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::ALL).border_type(BorderType::Rounded)
                 .title("Select Node")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
         )

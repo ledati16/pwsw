@@ -66,10 +66,10 @@ users = "0.11"
 tempfile = "3"
 
 [profile.release]
-lto = true
-codegen-units = 1
-strip = true
-panic = "abort"
+lto = "fat"         # Full link-time optimization for maximum performance
+codegen-units = 1   # Single compilation unit for better optimization
+strip = true        # Remove debug symbols (smaller binary, no runtime cost)
+panic = "abort"     # Immediate termination on panic (systemd restarts daemon)
 
 [profile.dev]
 opt-level = 0

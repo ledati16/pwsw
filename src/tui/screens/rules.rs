@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
+    widgets::{block::BorderType, Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState},
     Frame,
 };
 use throbber_widgets_tui::{Throbber, ThrobberState};
@@ -315,7 +315,7 @@ fn render_list(
         )
         .bottom_margin(1),
     )
-    .block(Block::default().borders(Borders::ALL).title(" Rules "));
+    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Rules "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -374,7 +374,7 @@ fn render_editor(
         .split(popup_area);
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
     frame.render_widget(block, popup_area);
@@ -468,7 +468,7 @@ fn render_editor(
     let border_style =
         crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 4);
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let notify_widget = Paragraph::new(Line::from(notify_spans)).block(block);
@@ -505,7 +505,7 @@ fn render_live_preview(
             // If background worker marked this preview as pending, show spinner (computing).
             if res.pending && res.matches.is_empty() && !res.timed_out {
                 let block = Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::ALL).border_type(BorderType::Rounded)
                     .title("Matching Windows");
                 let inner = block.inner(area);
                 frame.render_widget(block, area);
@@ -555,7 +555,7 @@ fn render_live_preview(
 
             let preview_widget = Paragraph::new(preview_lines).block(
                 Block::default()
-                    .borders(Borders::ALL)
+                    .borders(Borders::ALL).border_type(BorderType::Rounded)
                     .title("Matching Windows"),
             );
             frame.render_widget(preview_widget, area);
@@ -640,7 +640,7 @@ fn render_live_preview(
 
     let preview_widget = Paragraph::new(preview_lines).block(
         Block::default()
-            .borders(Borders::ALL)
+            .borders(Borders::ALL).border_type(BorderType::Rounded)
             .title("Matching Windows"),
     );
     frame.render_widget(preview_widget, area);
@@ -683,7 +683,7 @@ fn render_sink_selector(
     let list = List::new(items)
         .block(
             Block::default()
-                .borders(Borders::ALL)
+                .borders(Borders::ALL).border_type(BorderType::Rounded)
                 .title("Select Target Sink")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
         )
@@ -781,7 +781,7 @@ fn render_delete_confirmation(
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .title("Delete Rule")
         .style(Style::default().bg(colors::UI_MODAL_BG));
 

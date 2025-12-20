@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{block::BorderType, Block, Borders, Paragraph},
     Frame,
 };
 use tui_input::Input;
@@ -107,7 +107,7 @@ pub(crate) fn render_validated_input(
     };
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(title);
 
@@ -205,7 +205,7 @@ pub(crate) fn render_selector_button(
     }
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::ALL).border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let paragraph = Paragraph::new(Line::from(spans)).block(block);

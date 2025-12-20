@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{block::BorderType, Block, Borders, Paragraph},
     Frame,
 };
 
@@ -262,7 +262,10 @@ fn render_daemon_section(
     screen_state: &DashboardScreen,
     daemon_running: bool,
 ) {
-    let block = Block::default().borders(Borders::ALL).title(" Daemon ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Daemon ");
     frame.render_widget(block.clone(), area);
 
     let inner = block.inner(area);
@@ -366,7 +369,10 @@ fn render_window_summary(
     matched_count: usize,
     current_view: DashboardView,
 ) {
-    let block = Block::default().borders(Borders::ALL).title(" Windows ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Windows ");
     frame.render_widget(block.clone(), area);
 
     let inner = block.inner(area);
@@ -451,6 +457,7 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .title(" Active Sink ")
                 .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
         )
@@ -491,8 +498,12 @@ fn render_statistics_card(
         ]),
     ];
 
-    let paragraph =
-        Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title(" Overview "));
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Overview "),
+    );
 
     frame.render_widget(paragraph, area);
 }
@@ -508,6 +519,7 @@ fn render_window_tracking(
     let title = " Window Tracking - [w] to toggle back to Logs ";
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .title(title)
         .border_style(Style::default().fg(colors::UI_HIGHLIGHT));
     frame.render_widget(block.clone(), area);
@@ -848,6 +860,7 @@ fn render_log_viewer(
     let paragraph = Paragraph::new(log_text).block(
         Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title(title)
             .border_style(Style::default().fg(border_color)),
     );

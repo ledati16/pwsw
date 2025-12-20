@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
+    widgets::{block::BorderType, Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState},
     Frame,
 };
 
@@ -59,6 +59,7 @@ pub(crate) fn render_help(
     .block(
         Block::default()
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title(" Help "),
     )
     .column_spacing(2) // Add spacing between columns for better readability
