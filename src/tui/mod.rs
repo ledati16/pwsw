@@ -716,7 +716,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
     // Render help overlay on top if active
     if app.show_help {
-        render_help(frame, size, app.current_screen, &mut app.help_scroll_state);
+        render_help(
+            frame,
+            size,
+            app.current_screen,
+            &mut app.help_scroll_state,
+            &mut app.help_viewport_height,
+            &app.help_collapsed_sections,
+        );
     }
 }
 

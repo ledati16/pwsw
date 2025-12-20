@@ -2,7 +2,7 @@
 //!
 //! Determines whether the daemon is running under systemd supervision or directly.
 
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 /// How the daemon is being managed
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -42,11 +42,21 @@ impl DaemonManager {
 
     /// Check if systemd user service is available and `pwsw.service` exists
     fn check_systemd_available() -> bool {
-        Command::new("systemctl")
-            .args(["--user", "cat", "pwsw.service"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+        // Check if the service unit is loaded (exists in systemd)
+        // LoadState will be "loaded" if the service exists, "not-found" if it doesn't
+        let output = Command::new("systemctl")
+            .args(["--user", "show", "pwsw.service", "--property=LoadState"])
+            .output();
+
+        if let Ok(output) = output {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let is_loaded = stdout.contains("LoadState=loaded");
+                eprintln!("DEBUG: systemctl output: {:?}, is_loaded: {}", stdout.trim(), is_loaded);
+                return is_loaded;
+            }
+        }
+        eprintln!("DEBUG: systemctl command failed or didn't succeed");
+        false
     }
 }
