@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 use wayland_client::{
-    globals::{registry_queue_init, GlobalListContents},
-    protocol::{wl_output, wl_registry},
     Connection, Dispatch, Proxy, QueueHandle,
+    globals::{GlobalListContents, registry_queue_init},
+    protocol::{wl_output, wl_registry},
 };
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
@@ -135,9 +135,7 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()>
                         let title = window.title.clone();
                         trace!(
                             "Window changed: id={}, app_id='{}', title='{}'",
-                            id,
-                            app_id,
-                            title
+                            id, app_id, title
                         );
                         state.send_event(WindowEvent::Changed { id, app_id, title });
                     } else {

@@ -8,7 +8,7 @@ mod wlr_toplevel;
 use color_eyre::eyre::{self, Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info};
-use wayland_client::{protocol::wl_registry, Connection};
+use wayland_client::{Connection, protocol::wl_registry};
 
 /// Window event from a compositor
 #[derive(Debug, Clone)]
@@ -118,7 +118,7 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
 /// protocol is advertised by the compositor.
 fn detect_available_protocol(conn: &Connection) -> Result<()> {
     use tracing::debug;
-    use wayland_client::globals::{registry_queue_init, GlobalListContents};
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
 
     // Temporary state for registry detection
     #[derive(Default)]

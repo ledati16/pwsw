@@ -52,10 +52,10 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
         // Ctrl+S: Save config (global)
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-            if app.config_dirty {
-                if let Err(e) = app.save_config() {
-                    app.set_status(format!("Failed to save config: {e}"));
-                }
+            if app.config_dirty
+                && let Err(e) = app.save_config()
+            {
+                app.set_status(format!("Failed to save config: {e}"));
             }
             return;
         }
@@ -72,19 +72,19 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Char(' ') => {
                 // Toggle section at current selected row
-                if let Some(selected_row) = app.help_scroll_state.selected() {
-                    if let Some(section_name) = crate::tui::screens::help::get_section_at_row(
+                if let Some(selected_row) = app.help_scroll_state.selected()
+                    && let Some(section_name) = crate::tui::screens::help::get_section_at_row(
                         app.current_screen,
                         &app.help_collapsed_sections,
                         selected_row,
-                    ) {
-                        if app.help_collapsed_sections.contains(&section_name) {
-                            app.help_collapsed_sections.remove(&section_name);
-                        } else {
-                            app.help_collapsed_sections.insert(section_name);
-                        }
-                        app.dirty = true;
+                    )
+                {
+                    if app.help_collapsed_sections.contains(&section_name) {
+                        app.help_collapsed_sections.remove(&section_name);
+                    } else {
+                        app.help_collapsed_sections.insert(section_name);
                     }
+                    app.dirty = true;
                 }
             }
             KeyCode::Up => {
@@ -138,7 +138,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                         app.current_screen,
                         &app.help_collapsed_sections,
                         row,
-                    ).is_some() {
+                    )
+                    .is_some()
+                    {
                         last_section = row;
                         break;
                     }
@@ -168,7 +170,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                     &app.help_collapsed_sections,
                 );
                 let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                let new_selected = current_selected.saturating_add(15).min(row_count.saturating_sub(1));
+                let new_selected = current_selected
+                    .saturating_add(15)
+                    .min(row_count.saturating_sub(1));
                 app.help_scroll_state.select(Some(new_selected));
 
                 let max_offset = crate::tui::screens::help::get_help_max_offset(

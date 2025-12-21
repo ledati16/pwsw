@@ -1,14 +1,14 @@
 //! Sinks screen - Manage audio output sinks
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        block::{BorderType, Padding}, Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row,
-        Table, TableState,
+        Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row, Table, TableState,
+        block::{BorderType, Padding},
     },
-    Frame,
 };
 use std::fmt::Write;
 
@@ -265,7 +265,12 @@ fn render_list(
             )
             .bottom_margin(1),
     )
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Sinks "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Sinks "),
+    );
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -311,7 +316,8 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 
     // Background block
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .padding(Padding::horizontal(1))
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
@@ -363,7 +369,8 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     let border_style =
         crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 3);
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
@@ -404,7 +411,8 @@ fn render_delete_confirmation(
     ];
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Double)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Double)
         .padding(Padding::horizontal(1))
         .title("Delete Sink")
         .style(Style::default().bg(colors::UI_MODAL_BG));
@@ -452,7 +460,12 @@ fn render_sink_selector(
             Span::raw("  "),
             Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
             Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(name_text, Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
+            Span::styled(
+                name_text,
+                Style::default()
+                    .fg(colors::UI_SECONDARY)
+                    .add_modifier(Modifier::DIM),
+            ),
             Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
         ]);
         items.push(ListItem::new(line));
@@ -476,7 +489,12 @@ fn render_sink_selector(
                 Span::raw("  "),
                 Span::styled(desc_text.clone(), Style::default().fg(colors::UI_TEXT)),
                 Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-                Span::styled(name_text.clone(), Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
+                Span::styled(
+                    name_text.clone(),
+                    Style::default()
+                        .fg(colors::UI_SECONDARY)
+                        .add_modifier(Modifier::DIM),
+                ),
                 Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
             items.push(ListItem::new(line));
@@ -523,7 +541,8 @@ fn render_sink_selector(
     let list = ratatui::widgets::List::new(items.clone())
         .block(
             Block::default()
-                .borders(Borders::ALL).border_type(BorderType::Rounded)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .padding(Padding::horizontal(1))
                 .title("Select Node")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),

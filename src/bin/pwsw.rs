@@ -2,8 +2,8 @@
 //!
 //! Dispatches to daemon mode or subcommands based on CLI arguments.
 
-use color_eyre::eyre::Result;
 use clap::Parser;
+use color_eyre::eyre::Result;
 use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 
 /// Initialize logging
@@ -13,15 +13,13 @@ use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 fn init_logging(tui_mode: bool) {
     if tui_mode {
         // TUI mode: Use tracing layer to capture events in TUI widget
-        use tui_logger::TuiTracingSubscriberLayer;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
+        use tui_logger::TuiTracingSubscriberLayer;
 
         let tui_layer = TuiTracingSubscriberLayer;
 
-        tracing_subscriber::registry()
-            .with(tui_layer)
-            .init();
+        tracing_subscriber::registry().with(tui_layer).init();
     } else {
         // CLI mode: logs go to stdout/stderr based on env or default
         tracing_subscriber::fmt()

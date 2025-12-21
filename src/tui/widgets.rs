@@ -1,11 +1,11 @@
 //! Shared TUI widget helpers
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{block::BorderType, Block, Borders, Paragraph},
-    Frame,
+    widgets::{Block, Borders, Paragraph, block::BorderType},
 };
 use tui_input::Input;
 
@@ -107,7 +107,8 @@ pub(crate) fn render_validated_input(
     };
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(title);
 
@@ -205,7 +206,8 @@ pub(crate) fn render_selector_button(
     }
 
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let paragraph = Paragraph::new(Line::from(spans)).block(block);
@@ -265,7 +267,8 @@ pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
             // Format: "prefix...truncated_suffix..."
             let prefix_len = prefix.len();
             let ellipsis_len = 3; // "..."
-            let available_for_suffix = max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
+            let available_for_suffix =
+                max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
 
             if available_for_suffix > 3 {
                 let truncated_suffix = &suffix[..available_for_suffix.min(suffix.len())];

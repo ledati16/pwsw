@@ -130,10 +130,7 @@ impl State {
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
         self.config.rules.iter().enumerate().find(|(_, rule)| {
             rule.app_id_regex.is_match(app_id)
-                && rule
-                    .title_regex
-                    .as_ref()
-                    .map_or(true, |r| r.is_match(title))
+                && rule.title_regex.as_ref().is_none_or(|r| r.is_match(title))
         })
     }
 
@@ -312,9 +309,7 @@ impl State {
                         )
                     });
 
-                    let inner = join
-                        .await
-                        .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
+                    let inner = join.await.map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
                     inner?;
 
                     // Only update state on success
@@ -432,9 +427,7 @@ impl State {
             )
         });
 
-        let inner = join
-            .await
-            .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
+        let inner = join.await.map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
         inner?;
 
         self.update_sink(target);

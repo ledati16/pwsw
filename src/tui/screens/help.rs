@@ -1,14 +1,14 @@
 //! Help overlay - Context-aware keyboard shortcut reference
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        block::{BorderType, Padding},
         Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState,
+        block::{BorderType, Padding},
     },
-    Frame,
 };
 
 use crate::style::colors;
@@ -212,17 +212,25 @@ pub(crate) fn get_section_at_row(
     if !collapsed_sections.contains(&screen_section_name) {
         match current_screen {
             Screen::Dashboard => {
-                for _ in 0..6 { add_meta_keybind(&mut metadata); }
+                for _ in 0..6 {
+                    add_meta_keybind(&mut metadata);
+                }
             }
             Screen::Sinks => {
-                for _ in 0..9 { add_meta_keybind(&mut metadata); }
+                for _ in 0..9 {
+                    add_meta_keybind(&mut metadata);
+                }
             }
             Screen::Rules => {
                 // 9 keybinds + 2 hints (empty + "Regex Examples:") + 4 regex examples = 15
-                for _ in 0..15 { add_meta_keybind(&mut metadata); }
+                for _ in 0..15 {
+                    add_meta_keybind(&mut metadata);
+                }
             }
             Screen::Settings => {
-                for _ in 0..3 { add_meta_keybind(&mut metadata); }
+                for _ in 0..3 {
+                    add_meta_keybind(&mut metadata);
+                }
             }
         }
     }
@@ -231,14 +239,18 @@ pub(crate) fn get_section_at_row(
     let text_input_section = "Text Input Fields".to_string();
     add_meta_section(&mut metadata, &text_input_section);
     if !collapsed_sections.contains(&text_input_section) {
-        for _ in 0..8 { add_meta_keybind(&mut metadata); }
+        for _ in 0..8 {
+            add_meta_keybind(&mut metadata);
+        }
     }
 
     // Global section
     let global_section = "Global Shortcuts".to_string();
     add_meta_section(&mut metadata, &global_section);
     if !collapsed_sections.contains(&global_section) {
-        for _ in 0..7 { add_meta_keybind(&mut metadata); }
+        for _ in 0..7 {
+            add_meta_keybind(&mut metadata);
+        }
     }
 
     metadata.get(row_index).and_then(|m| {
@@ -335,12 +347,22 @@ fn build_help_rows(
     // Screen-specific section
     let screen_section_name = format!("{} Screen", current_screen.name());
     let screen_collapsed = collapsed_sections.contains(&screen_section_name);
-    add_section_header(&mut rows, &mut metadata, &screen_section_name, screen_collapsed);
+    add_section_header(
+        &mut rows,
+        &mut metadata,
+        &screen_section_name,
+        screen_collapsed,
+    );
 
     if !screen_collapsed {
         match current_screen {
             Screen::Dashboard => {
-                add_keybind(&mut rows, &mut metadata, "w", "Toggle between Logs ↔ Windows view");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "w",
+                    "Toggle between Logs ↔ Windows view",
+                );
                 add_keybind(&mut rows, &mut metadata, "←/→", "Navigate daemon actions");
                 add_keybind(
                     &mut rows,
@@ -350,7 +372,12 @@ fn build_help_rows(
                 );
                 add_keybind(&mut rows, &mut metadata, "↑/↓", "Scroll logs line by line");
                 add_keybind(&mut rows, &mut metadata, "PageUp/PageDown", "Page scroll");
-                add_keybind(&mut rows, &mut metadata, "Home", "Jump to latest (logs) / top (windows)");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Home",
+                    "Jump to latest (logs) / top (windows)",
+                );
             }
             Screen::Sinks => {
                 add_keybind(&mut rows, &mut metadata, "↑/↓", "Navigate list");
@@ -359,8 +386,18 @@ fn build_help_rows(
                 add_keybind(&mut rows, &mut metadata, "e", "Edit selected sink");
                 add_keybind(&mut rows, &mut metadata, "x", "Delete selected sink");
                 add_keybind(&mut rows, &mut metadata, "Space", "Set as default sink");
-                add_keybind(&mut rows, &mut metadata, "Tab/Shift+Tab", "Switch field (in editor)");
-                add_keybind(&mut rows, &mut metadata, "Enter", "Save / Open node selector");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Tab/Shift+Tab",
+                    "Switch field (in editor)",
+                );
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Enter",
+                    "Save / Open node selector",
+                );
                 add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
             }
             Screen::Rules => {
@@ -369,20 +406,40 @@ fn build_help_rows(
                 add_keybind(&mut rows, &mut metadata, "a", "Add new rule");
                 add_keybind(&mut rows, &mut metadata, "e", "Edit selected rule");
                 add_keybind(&mut rows, &mut metadata, "x", "Delete selected rule");
-                add_keybind(&mut rows, &mut metadata, "Tab/Shift+Tab", "Switch field (in editor)");
-                add_keybind(&mut rows, &mut metadata, "Enter", "Save / Open sink selector");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Tab/Shift+Tab",
+                    "Switch field (in editor)",
+                );
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Enter",
+                    "Save / Open sink selector",
+                );
                 add_keybind(&mut rows, &mut metadata, "Space", "Cycle notify setting");
                 add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
                 add_hint(&mut rows, &mut metadata, "");
                 add_hint(&mut rows, &mut metadata, "Regex Examples:");
-                add_keybind(&mut rows, &mut metadata, "firefox", "Matches anywhere in text");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "firefox",
+                    "Matches anywhere in text",
+                );
                 add_keybind(&mut rows, &mut metadata, "^steam$", "Exact match only");
                 add_keybind(&mut rows, &mut metadata, "^(mpv|vlc)$", "Match mpv OR vlc");
                 add_keybind(&mut rows, &mut metadata, "(?i)discord", "Case-insensitive");
             }
             Screen::Settings => {
                 add_keybind(&mut rows, &mut metadata, "↑/↓", "Navigate settings");
-                add_keybind(&mut rows, &mut metadata, "Enter/Space", "Toggle setting / Open dropdown");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Enter/Space",
+                    "Toggle setting / Open dropdown",
+                );
                 add_keybind(&mut rows, &mut metadata, "Esc", "Cancel dropdown");
             }
         }
@@ -391,17 +448,42 @@ fn build_help_rows(
     // Text Input Fields section (collapsed by default)
     let text_input_section = "Text Input Fields".to_string();
     let text_collapsed = collapsed_sections.contains(&text_input_section);
-    add_section_header(&mut rows, &mut metadata, &text_input_section, text_collapsed);
+    add_section_header(
+        &mut rows,
+        &mut metadata,
+        &text_input_section,
+        text_collapsed,
+    );
 
     if !text_collapsed {
         add_keybind(&mut rows, &mut metadata, "←/→", "Move cursor left/right");
-        add_keybind(&mut rows, &mut metadata, "Home/End, Ctrl+A/E", "Jump to start/end");
+        add_keybind(
+            &mut rows,
+            &mut metadata,
+            "Home/End, Ctrl+A/E",
+            "Jump to start/end",
+        );
         add_keybind(&mut rows, &mut metadata, "Alt+B/F, Alt+←/→", "Move by word");
-        add_keybind(&mut rows, &mut metadata, "Backspace/Del", "Delete character");
-        add_keybind(&mut rows, &mut metadata, "Ctrl+W, Alt+Backspace", "Delete previous word");
+        add_keybind(
+            &mut rows,
+            &mut metadata,
+            "Backspace/Del",
+            "Delete character",
+        );
+        add_keybind(
+            &mut rows,
+            &mut metadata,
+            "Ctrl+W, Alt+Backspace",
+            "Delete previous word",
+        );
         add_keybind(&mut rows, &mut metadata, "Alt+D", "Delete next word");
         add_keybind(&mut rows, &mut metadata, "Ctrl+U", "Clear entire line");
-        add_keybind(&mut rows, &mut metadata, "Ctrl+K", "Delete from cursor to end");
+        add_keybind(
+            &mut rows,
+            &mut metadata,
+            "Ctrl+K",
+            "Delete from cursor to end",
+        );
     }
 
     // Global Shortcuts section
@@ -415,7 +497,12 @@ fn build_help_rows(
         add_keybind(&mut rows, &mut metadata, "1-4", "Jump directly to screen");
         add_keybind(&mut rows, &mut metadata, "Ctrl+S", "Save configuration");
         add_keybind(&mut rows, &mut metadata, "q, Ctrl+C", "Quit application");
-        add_keybind(&mut rows, &mut metadata, "Esc", "Clear status / Cancel quit");
+        add_keybind(
+            &mut rows,
+            &mut metadata,
+            "Esc",
+            "Clear status / Cancel quit",
+        );
         add_keybind(&mut rows, &mut metadata, "?", "Toggle this help");
     }
 

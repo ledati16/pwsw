@@ -219,12 +219,12 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
     if is_stale {
         debug!("Removing stale socket: {:?}", socket_path);
         // If the file disappeared between checks, ignore the error
-        if let Err(e) = std::fs::remove_file(socket_path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                return Err(e).with_context(|| {
-                    format!("Failed to remove stale socket: {}", socket_path.display())
-                });
-            }
+        if let Err(e) = std::fs::remove_file(socket_path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e).with_context(|| {
+                format!("Failed to remove stale socket: {}", socket_path.display())
+            });
         }
     }
 
@@ -464,7 +464,10 @@ mod tests {
 
         // Ensure cleanup_stale_socket will look at our tempdir
         let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
 
         // Create a regular file at the socket path
         std::fs::write(&socket_path, b"not a socket").unwrap();
@@ -478,10 +481,13 @@ mod tests {
         );
 
         // Restore env
-        if let Some(val) = prev {
-            std::env::set_var("XDG_RUNTIME_DIR", val);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
+        // SAFETY: Test-only code, restoring environment after test
+        unsafe {
+            if let Some(val) = prev {
+                std::env::set_var("XDG_RUNTIME_DIR", val);
+            } else {
+                std::env::remove_var("XDG_RUNTIME_DIR");
+            }
         }
     }
 
@@ -495,7 +501,10 @@ mod tests {
 
         // Ensure cleanup_stale_socket will look at our tempdir
         let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        }
 
         // Bind and keep the listener alive to simulate active daemon
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
@@ -509,10 +518,13 @@ mod tests {
         drop(listener);
 
         // Restore env
-        if let Some(val) = prev {
-            std::env::set_var("XDG_RUNTIME_DIR", val);
-        } else {
-            std::env::remove_var("XDG_RUNTIME_DIR");
+        // SAFETY: Test-only code, restoring environment after test
+        unsafe {
+            if let Some(val) = prev {
+                std::env::set_var("XDG_RUNTIME_DIR", val);
+            } else {
+                std::env::remove_var("XDG_RUNTIME_DIR");
+            }
         }
     }
 

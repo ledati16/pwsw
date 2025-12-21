@@ -1,14 +1,14 @@
 //! Rules screen - Manage window matching rules
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        block::{BorderType, Padding},
         Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        block::{BorderType, Padding},
     },
-    Frame,
 };
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
@@ -16,7 +16,7 @@ use crate::config::{Rule, SinkConfig};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{
-    centered_modal, modal_size, render_input, render_validated_input, ValidationState,
+    ValidationState, centered_modal, modal_size, render_input, render_validated_input,
 };
 use regex::Regex;
 use std::fmt::Write;
@@ -318,7 +318,12 @@ fn render_list(
         )
         .bottom_margin(1),
     )
-    .block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Rules "));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Rules "),
+    );
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -473,7 +478,8 @@ fn render_editor(
     let border_style =
         crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 4);
     let block = Block::default()
-        .borders(Borders::ALL).border_type(BorderType::Rounded)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
         .border_style(border_style);
 
     let notify_widget = Paragraph::new(Line::from(notify_spans)).block(block);
@@ -510,7 +516,8 @@ fn render_live_preview(
             // If background worker marked this preview as pending, show spinner (computing).
             if res.pending && res.matches.is_empty() && !res.timed_out {
                 let block = Block::default()
-                    .borders(Borders::ALL).border_type(BorderType::Rounded)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title("Matching Windows");
                 let inner = block.inner(area);
                 frame.render_widget(block, area);
@@ -560,7 +567,8 @@ fn render_live_preview(
 
             let preview_widget = Paragraph::new(preview_lines).block(
                 Block::default()
-                    .borders(Borders::ALL).border_type(BorderType::Rounded)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .title("Matching Windows"),
             );
             frame.render_widget(preview_widget, area);
@@ -645,7 +653,8 @@ fn render_live_preview(
 
     let preview_widget = Paragraph::new(preview_lines).block(
         Block::default()
-            .borders(Borders::ALL).border_type(BorderType::Rounded)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .title("Matching Windows"),
     );
     frame.render_widget(preview_widget, area);
@@ -677,7 +686,12 @@ fn render_sink_selector(
                 Span::raw("  "),
                 Span::styled(desc, Style::default().fg(colors::UI_TEXT)),
                 Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-                Span::styled(name, Style::default().fg(colors::UI_SECONDARY).add_modifier(Modifier::DIM)),
+                Span::styled(
+                    name,
+                    Style::default()
+                        .fg(colors::UI_SECONDARY)
+                        .add_modifier(Modifier::DIM),
+                ),
                 Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
             ]);
 
