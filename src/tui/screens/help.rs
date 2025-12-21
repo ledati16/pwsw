@@ -103,7 +103,6 @@ pub(crate) fn render_help(
     // Draw top arrow if there's more above
     if has_above {
         let arrow_text = format!("↑{lines_above}");
-        #[allow(clippy::cast_possible_truncation)]
         let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
@@ -121,7 +120,6 @@ pub(crate) fn render_help(
     // Draw bottom arrow if there's more below
     if has_below {
         let arrow_text = format!("↓{lines_below}");
-        #[allow(clippy::cast_possible_truncation)]
         let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
@@ -263,7 +261,6 @@ pub(crate) fn get_section_at_row(
 }
 
 /// Build the list of rows for the help table with collapsible sections
-#[allow(clippy::too_many_lines)]
 fn build_help_rows(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,

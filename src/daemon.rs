@@ -78,7 +78,6 @@ struct IpcContext {
 /// Panics if the SIGTERM signal handler cannot be installed. This is a platform-level
 /// failure that prevents graceful shutdown handling.
 // Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
-#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run(config: Config, foreground: bool) -> Result<()> {
     use std::process::Command;
     use std::time::Duration;
@@ -413,7 +412,6 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
 /// Handle a single IPC request from a client
 // IPC request handler - cohesive dispatch logic for all request types
-#[allow(clippy::too_many_lines)]
 async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext) -> Result<()> {
     let request = ipc::read_request(stream).await?;
 

@@ -288,7 +288,6 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
 
     // Write length prefix (4 bytes big-endian)
     // Safe cast: MAX_MESSAGE_SIZE is 1MB, well within u32 range
-    #[allow(clippy::cast_possible_truncation)]
     let len = (json.len() as u32).to_be_bytes();
     stream
         .write_all(&len)

@@ -40,7 +40,6 @@ fn is_modal_active(app: &App) -> bool {
 
 /// Handle keyboard input
 // Input dispatch across all screens - cohesive routing logic
-#[allow(clippy::too_many_lines)]
 fn handle_key_event(app: &mut App, key: KeyEvent) {
     // Always-global keybindings (work even in modals)
     match (key.code, key.modifiers) {
@@ -442,7 +441,6 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
 
 /// Handle sinks screen input
 // Sinks screen input handling - modal and list modes with many keybindings
-#[allow(clippy::too_many_lines)]
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
     match app.sinks_screen.mode {
         SinksMode::List => {
@@ -788,7 +786,6 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 
 /// Handle rule editor input (add/edit modal)
 // Match arms handle conceptually different field types despite similar-looking actions
-#[allow(clippy::too_many_lines, clippy::match_same_arms)]
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
