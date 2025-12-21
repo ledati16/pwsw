@@ -571,10 +571,19 @@ fn write_pid_file() -> Result<()> {
 
 ### Phase 5: Polish (Low Priority - Optional)
 
-- [ ] **Issue #15**: Standardize error messages for missing PipeWire tools
-- [ ] **Issue #16**: Document health check timeout rationale
-- [ ] **Issue #17**: Add `make_sink_with_icon()` test fixture
-- [ ] **Issue #18**: Implement PID file for daemon
+- [x] **Issue #15**: Standardize error messages for missing PipeWire tools
+  - [x] Updated all 3 error messages in `src/pipewire.rs` to consistent format
+  
+- [x] **Issue #16**: Document health check timeout rationale
+  - [x] Enhanced doc comments in `src/ipc.rs:19-26`
+  
+- [x] **Issue #17**: Add `make_sink_with_icon()` test fixture
+  - [x] Added new fixture in `src/test_utils.rs:114-123`
+  
+- [x] **Issue #18**: Implement PID file for daemon
+  - [x] Added PID file management functions in `src/daemon.rs`
+  - [x] Added `nix` dependency for Unix process checking
+  - [x] Integrated PID file lifecycle (write on start, cleanup on shutdown, stale file detection)
 
 ---
 
@@ -623,8 +632,8 @@ cargo clippy --all-targets -- -W clippy::pedantic
 **Phase 3 Completed**: 2025-12-21 (pre-existing, verified)  
 **Phase 4 Started**: 2025-12-21  
 **Phase 4 Completed**: 2025-12-21  
-**Phase 5 Started**: [Pending]  
-**Phase 5 Completed**: [Pending]
+**Phase 5 Started**: 2025-12-21  
+**Phase 5 Completed**: 2025-12-21
 
 ---
 
@@ -718,6 +727,37 @@ cargo clippy --all-targets -- -W clippy::pedantic
 - `src/daemon.rs`: +9 lines (better error context)
 - `src/ipc.rs`: +8 lines (size check before cast)
 - `src/config.rs`: +9 lines (directory sync + let-chains)
+
+**Commits Created**: 0 (changes not yet committed)
+
+---
+
+## Phase 5 Summary
+
+**Completed**: 2025-12-21
+
+**Changes Made**:
+1. Standardized error messages for missing PipeWire tools (`pw-dump`, `pw-metadata`, `pw-cli`)
+   - Consistent format: "PipeWire tool 'X' not found or failed"
+2. Enhanced documentation for health check timeout constants
+   - Added rationale for 500ms timeout choice
+3. Added `make_sink_with_icon()` test fixture helper
+   - Enables testing icon-related functionality
+4. Implemented comprehensive PID file management
+   - PID file location: `$XDG_RUNTIME_DIR/pwsw.pid` or `/tmp/pwsw-$USER.pid`
+   - Stale PID file detection using Unix kill(pid, 0) check
+   - Automatic cleanup on daemon shutdown
+   - User-only permissions (0o600)
+   - Added `nix` crate dependency for Unix signal support
+
+**Test Results**: 109 tests passing (no new tests added, existing tests cover changes)
+
+**Files Modified**:
+- `src/pipewire.rs`: +9 lines (3 error message updates)
+- `src/ipc.rs`: +5 lines (enhanced doc comments)
+- `src/test_utils.rs`: +12 lines (new test fixture)
+- `src/daemon.rs`: +123 lines (PID file management)
+- `Cargo.toml`: +3 lines (nix dependency)
 
 **Commits Created**: 0 (changes not yet committed)
 
