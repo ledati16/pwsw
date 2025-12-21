@@ -860,3 +860,106 @@ fn render_log_viewer(
 
     frame.render_widget(paragraph, area);
 }
+
+#[cfg(test)]
+mod tests {
+    /// Helper to calculate log viewport indices
+    /// This mirrors the logic in `render_log_viewer` (lines 752-754)
+    fn calculate_log_viewport(
+        total_lines: usize,
+        scroll_offset: usize,
+        available_height: usize,
+    ) -> (usize, usize) {
+        let end_index = total_lines.saturating_sub(scroll_offset);
+        let start_index = end_index.saturating_sub(available_height);
+        (start_index, end_index)
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_empty_logs() {
+        // Empty logs → no content to display
+        let (start, end) = calculate_log_viewport(0, 0, 20);
+        assert_eq!((start, end), (0, 0));
+        assert_eq!(end - start, 0); // No lines to display
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_logs_smaller_than_viewport() {
+        // 5 logs, 20 line viewport → show all 5
+        let (start, end) = calculate_log_viewport(5, 0, 20);
+        assert_eq!((start, end), (0, 5));
+        assert_eq!(end - start, 5);
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_scroll_offset_exceeds_total() {
+        // 10 logs, scroll_offset=100 (way too much) → end_index becomes 0
+        // When end_index = 0, no logs are visible
+        let (start, end) = calculate_log_viewport(10, 100, 20);
+        assert_eq!((start, end), (0, 0));
+        assert_eq!(end - start, 0); // No lines visible when scrolled way beyond available logs
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_exactly_viewport_size() {
+        // 20 logs, 20 line viewport, no scroll → show all
+        let (start, end) = calculate_log_viewport(20, 0, 20);
+        assert_eq!((start, end), (0, 20));
+        assert_eq!(end - start, 20);
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_normal_scroll() {
+        // 100 logs, 20 line viewport, scroll_offset=10 → show lines 70-90
+        let (start, end) = calculate_log_viewport(100, 10, 20);
+        assert_eq!((start, end), (70, 90));
+        assert_eq!(end - start, 20);
+    }
+
+    #[test]
+    fn test_log_scroll_viewport_max_scroll() {
+        // 100 logs, 20 line viewport, scroll_offset=80 → show lines 0-20 (oldest)
+        let (start, end) = calculate_log_viewport(100, 80, 20);
+        assert_eq!((start, end), (0, 20));
+        assert_eq!(end - start, 20);
+    }
+
+    /// Helper to calculate window viewport indices
+    /// This mirrors the logic in `render_window_tracking` (line 598)
+    fn calculate_window_viewport(
+        total_lines: usize,
+        scroll_offset: usize,
+        visible_count: usize,
+    ) -> (usize, usize) {
+        let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
+        let end_idx = (start_idx + visible_count).min(total_lines);
+        (start_idx, end_idx)
+    }
+
+    #[test]
+    fn test_window_scroll_viewport_empty() {
+        let (start, end) = calculate_window_viewport(0, 0, 20);
+        assert_eq!((start, end), (0, 0));
+    }
+
+    #[test]
+    fn test_window_scroll_viewport_smaller_than_page() {
+        let (start, end) = calculate_window_viewport(5, 0, 20);
+        assert_eq!((start, end), (0, 5));
+    }
+
+    #[test]
+    fn test_window_scroll_viewport_scroll_beyond_end() {
+        // 10 windows, scroll_offset=50 → clamp to show last page
+        let (start, end) = calculate_window_viewport(10, 50, 20);
+        assert_eq!((start, end), (0, 10));
+    }
+
+    #[test]
+    fn test_window_scroll_viewport_normal_pagination() {
+        // 100 windows, page_size=20, scroll_offset=40 → show lines 40-60
+        let (start, end) = calculate_window_viewport(100, 40, 20);
+        assert_eq!((start, end), (40, 60));
+        assert_eq!(end - start, 20);
+    }
+}

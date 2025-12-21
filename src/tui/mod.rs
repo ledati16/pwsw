@@ -159,12 +159,14 @@ pub async fn run() -> Result<()> {
 
     // Forwarder task: collapse rapid preview updates and attempt to flush to `cmd_tx`.
     let forward_cmd = cmd_tx.clone();
+    let forward_bg_tx = bg_tx.clone();
     let _preview_forwarder = tokio::spawn(async move {
         while let Some((app_pattern, title_pattern, compiled_app, compiled_title)) =
             preview_in_rx.recv().await
         {
             use tokio::time::{Duration, sleep};
             // Try to flush immediately (a few retries). If unable to send, next recv will overwrite the pending request.
+            let mut sent = false;
             for _ in 0..3 {
                 if forward_cmd
                     .try_send(crate::tui::app::BgCommand::PreviewRequest {
@@ -175,11 +177,26 @@ pub async fn run() -> Result<()> {
                     })
                     .is_ok()
                 {
+                    sent = true;
                     break;
                 }
                 sleep(Duration::from_millis(20)).await;
             }
-            // If still not sent, loop will continue and the next recv will overwrite the previous request.
+            // If unable to send after retries, send a preview result indicating failure
+            if !sent {
+                tracing::warn!(
+                    "Preview request dropped: channel full after 3 retries (app_pattern: {})",
+                    app_pattern
+                );
+                // Send a "timed_out" preview result to provide UI feedback
+                let _ = forward_bg_tx.send(AppUpdate::PreviewMatches {
+                    app_pattern: app_pattern.clone(),
+                    title_pattern: title_pattern.clone(),
+                    matches: Vec::new(),
+                    timed_out: true,
+                    regex_error: None,
+                });
+            }
         }
     });
 
@@ -203,14 +220,14 @@ pub async fn run() -> Result<()> {
             };
 
             let running = daemon_manager.is_some();
-            let service_enabled = daemon_manager.and_then(|dm| {
-                if dm == crate::daemon_manager::DaemonManager::Systemd {
-                    // Query enabled state (uses systemctl)
-                    Some(dm.is_enabled())
-                } else {
-                    None
-                }
-            });
+            let service_enabled = if let Some(dm) = daemon_manager
+                && dm == crate::daemon_manager::DaemonManager::Systemd
+            {
+                // Query enabled state (uses systemctl)
+                Some(dm.is_enabled())
+            } else {
+                None
+            };
 
             let windows = if running {
                 match crate::ipc::send_request(crate::ipc::Request::ListWindows).await {
@@ -363,22 +380,24 @@ pub async fn run() -> Result<()> {
                     let timeout = Duration::from_millis(200);
 
                     // Use the new execute_preview helper which handles spawn_blocking + timeout and accepts optional compiled regexes
-                    let (matches_out, timed_out) = crate::tui::preview::execute_preview(
-                        app_pat_send.clone(),
-                        title_pat_send.clone(),
-                        windows_clone,
-                        100,
-                        timeout,
-                        compiled_app_send,
-                        compiled_title_send,
-                    )
-                    .await;
+                    let (matches_out, timed_out, regex_error) =
+                        crate::tui::preview::execute_preview(
+                            app_pat_send.clone(),
+                            title_pat_send.clone(),
+                            windows_clone,
+                            100,
+                            timeout,
+                            compiled_app_send,
+                            compiled_title_send,
+                        )
+                        .await;
 
                     let _ = tx.send(AppUpdate::PreviewMatches {
                         app_pattern: app_pat_send.clone(),
                         title_pattern: title_pat_send.clone(),
                         matches: matches_out.into_iter().take(10).collect(),
                         timed_out,
+                        regex_error,
                     });
                 });
             }
@@ -410,22 +429,24 @@ pub async fn run() -> Result<()> {
                         // use std::time::Duration; (moved to module imports)
                         let timeout = Duration::from_millis(200);
 
-                        let (matches_out, timed_out) = crate::tui::preview::execute_preview(
-                            app_pat_send.clone(),
-                            title_pat_send.clone(),
-                            windows_clone,
-                            100,
-                            timeout,
-                            compiled_app_send,
-                            compiled_title_send,
-                        )
-                        .await;
+                        let (matches_out, timed_out, regex_error) =
+                            crate::tui::preview::execute_preview(
+                                app_pat_send.clone(),
+                                title_pat_send.clone(),
+                                windows_clone,
+                                100,
+                                timeout,
+                                compiled_app_send,
+                                compiled_title_send,
+                            )
+                            .await;
 
                         let _ = tx.send(AppUpdate::PreviewMatches {
                             app_pattern: app_pat_send.clone(),
                             title_pattern: title_pat_send.clone(),
                             matches: matches_out.into_iter().take(10).collect(),
                             timed_out,
+                            regex_error,
                         });
                     });
                 }
@@ -549,22 +570,33 @@ async fn run_app<B: ratatui::backend::Backend>(
                             // Only mark pending if it matches current editor content
                             if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
-                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true });
+                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches: Vec::new(), timed_out: false, pending: true, regex_error: None });
                             }
                         }
-                        AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out } => {
+                        AppUpdate::PreviewMatches { app_pattern, title_pattern, matches, timed_out, regex_error } => {
                             // Only apply preview if patterns match current editor content (avoid race)
                             if app.rules_screen.editor.app_id_pattern.value() == app_pattern && app.rules_screen.editor.title_pattern.value() == title_pattern.clone().unwrap_or_default() {
                                 // Store preview in app.preview as a typed struct
-                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false });
+                                app.set_preview(crate::tui::app::PreviewResult { app_pattern, title_pattern, matches, timed_out, pending: false, regex_error });
                             }
                         }
                         AppUpdate::DaemonLogs(new_lines) => {
+                            // Limit burst size before extending to avoid temporary memory spikes
+                            const MAX_LOG_LINES: usize = 500;
+                            let available_space = MAX_LOG_LINES.saturating_sub(app.daemon_log_lines.len());
+                            let safe_new_lines = if new_lines.len() > available_space {
+                                // Take last N lines if burst is too large
+                                &new_lines[new_lines.len().saturating_sub(MAX_LOG_LINES)..]
+                            } else {
+                                &new_lines
+                            };
+
                             // Append new log lines to the buffer
-                            app.daemon_log_lines.extend(new_lines);
-                            // Keep only last 500 lines to avoid unbounded growth
-                            if app.daemon_log_lines.len() > 500 {
-                                let excess = app.daemon_log_lines.len() - 500;
+                            app.daemon_log_lines.extend_from_slice(safe_new_lines);
+
+                            // Keep only last 500 lines to avoid unbounded growth (defensive)
+                            if app.daemon_log_lines.len() > MAX_LOG_LINES {
+                                let excess = app.daemon_log_lines.len() - MAX_LOG_LINES;
                                 app.daemon_log_lines.drain(0..excess);
                             }
                             app.dirty = true;

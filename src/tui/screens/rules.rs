@@ -116,7 +116,13 @@ impl RuleEditor {
             self.compiled_app_id = Regex::new(self.app_id_pattern.value())
                 .ok()
                 .map(std::sync::Arc::new);
-            self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
+            // Only cache the pattern string if compilation succeeded
+            if self.compiled_app_id.is_some() {
+                self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
+            } else {
+                // Don't cache invalid patterns
+                self.compiled_app_id_for = None;
+            }
         }
 
         // Compile title pattern if non-empty
@@ -127,7 +133,13 @@ impl RuleEditor {
             self.compiled_title = Regex::new(self.title_pattern.value())
                 .ok()
                 .map(std::sync::Arc::new);
-            self.compiled_title_for = Some(self.title_pattern.value().to_string());
+            // Only cache the pattern string if compilation succeeded
+            if self.compiled_title.is_some() {
+                self.compiled_title_for = Some(self.title_pattern.value().to_string());
+            } else {
+                // Don't cache invalid patterns
+                self.compiled_title_for = None;
+            }
         }
     }
 }
@@ -534,15 +546,22 @@ fn render_live_preview(
             // Normal results display
             let mut preview_lines = vec![];
 
-            if res.timed_out {
+            if let Some(ref error) = res.regex_error {
+                // Invalid regex error (distinct from timeout)
                 preview_lines.push(Line::from(vec![Span::styled(
-                    "  Preview timed out or invalid regex",
+                    format!("  Invalid regex: {error}"),
                     Style::default().fg(colors::UI_ERROR),
+                )]));
+            } else if res.timed_out {
+                // Timeout (no regex error)
+                preview_lines.push(Line::from(vec![Span::styled(
+                    "  Preview timed out (200ms)",
+                    Style::default().fg(colors::UI_WARNING),
                 )]));
             } else if res.matches.is_empty() {
                 preview_lines.push(Line::from(vec![Span::styled(
                     "  No matching windows",
-                    Style::default().fg(colors::UI_WARNING),
+                    Style::default().fg(colors::UI_SECONDARY),
                 )]));
             } else {
                 // Use helper to convert strings -> Lines, preserving the limit of 5 shown items.

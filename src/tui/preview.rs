@@ -63,12 +63,13 @@ where
 /// catastrophic backtracking from freezing the UI. If the operation exceeds the timeout,
 /// matching is aborted and an empty result is returned.
 ///
-/// Returns `(Vec<String>, bool)` where:
+/// Returns `(Vec<String>, bool, Option<String>)` where:
 /// - First element: Vector of matching window strings (up to `max_results`)
-/// - Second element: `true` if the operation timed out OR regexes were invalid, `false` on success
+/// - Second element: `true` if the operation timed out, `false` on success or regex error
+/// - Third element: `Some(error_message)` if regex was invalid, `None` otherwise
 ///
-/// When timeout occurs or regexes are invalid, the returned vector will be empty and the
-/// boolean flag will be `true`, signaling to the UI to show an error/warning indicator.
+/// When timeout occurs, returned vector will be empty and timeout flag will be `true`.
+/// When regex is invalid, returned vector will be empty and error message will be `Some(...)`.
 pub(crate) async fn execute_preview(
     app_pattern: String,
     title_pattern: Option<String>,
@@ -77,7 +78,7 @@ pub(crate) async fn execute_preview(
     timeout: Duration,
     compiled_app: Option<std::sync::Arc<regex::Regex>>,
     compiled_title: Option<std::sync::Arc<regex::Regex>>,
-) -> (Vec<String>, bool) {
+) -> (Vec<String>, bool, Option<String>) {
     // We'll run matching inside `spawn_blocking` and enforce a timeout. If compiled regexes were
     // provided by the sender (editor cache), prefer reusing them to avoid recompilation.
     let patterns_app = app_pattern.clone();
@@ -129,8 +130,9 @@ pub(crate) async fn execute_preview(
     };
 
     match run_blocking_with_timeout(blocking_closure, timeout).await {
-        Ok(Ok(v)) => (v, false),
-        Ok(Err(_)) | Err(_) => (Vec::new(), true), // invalid regex or timed out / join error
+        Ok(Ok(v)) => (v, false, None),              // Success
+        Ok(Err(e)) => (Vec::new(), false, Some(e)), // Invalid regex
+        Err(_) => (Vec::new(), true, None),         // Timeout or join error
     }
 }
 
@@ -227,7 +229,7 @@ mod tests {
                 });
 
                 // execute preview
-                let (matches_out, timed_out) = execute_preview(
+                let (matches_out, timed_out, regex_error) = execute_preview(
                     app_pat.clone(),
                     title_pat.clone(),
                     windows.clone(),
@@ -243,6 +245,7 @@ mod tests {
                     title_pattern: title_pat.clone(),
                     matches: matches_out.into_iter().take(10).collect(),
                     timed_out,
+                    regex_error,
                 });
             }
 
@@ -389,7 +392,7 @@ mod tests {
             },
         ];
 
-        let (matches, timed_out) = execute_preview(
+        let (matches, timed_out, regex_error) = execute_preview(
             "firefox".into(),
             None,
             windows,
@@ -400,6 +403,7 @@ mod tests {
         )
         .await;
         assert!(!timed_out);
+        assert!(regex_error.is_none());
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0], "firefox | Firefox Browser");
     }
@@ -407,7 +411,7 @@ mod tests {
     #[tokio::test]
     async fn test_execute_preview_invalid_regex() {
         let windows: Vec<WindowInfo> = Vec::new();
-        let (matches, timed_out) = execute_preview(
+        let (matches, timed_out, regex_error) = execute_preview(
             "(".into(),
             None,
             windows,
@@ -417,7 +421,8 @@ mod tests {
             None,
         )
         .await;
-        assert!(timed_out);
+        assert!(!timed_out); // Should not be timeout
+        assert!(regex_error.is_some()); // Should have regex error
         assert!(matches.is_empty());
     }
 

@@ -584,3 +584,71 @@ fn render_sink_selector(
     // Render scroll arrows
     crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
+
+#[cfg(test)]
+mod tests {
+    /// Helper to calculate the list index from a logical selector index
+    /// This mirrors the logic in `render_sink_selector_popup` (lines 556-571)
+    fn calculate_list_index(
+        selector_index: usize,
+        active_len: usize,
+        profile_len: usize,
+    ) -> Option<usize> {
+        let total_selectable = active_len + profile_len;
+        if total_selectable == 0 {
+            return None;
+        }
+
+        let sel = selector_index.min(total_selectable - 1);
+        let list_index = if sel < active_len {
+            // Active sink: after the active header (line 0 is header, sinks start at line 1)
+            1 + sel
+        } else {
+            // Profile sink: account for active items + spacer + profile header
+            // Layout: [Active header] [active sinks...] [spacer] [Profile header] [profile sinks...]
+            // Indices: 0              1..active_len+1    active_len+1  active_len+2      active_len+3...
+            let profile_idx = sel - active_len;
+            3 + active_len + profile_idx
+        };
+        Some(list_index)
+    }
+
+    #[test]
+    fn test_sink_selector_index_mapping_empty_lists() {
+        // Case 1: Empty lists → no selection
+        assert_eq!(calculate_list_index(0, 0, 0), None);
+    }
+
+    #[test]
+    fn test_sink_selector_index_mapping_only_active() {
+        // Case 2: Only active sinks (3 items)
+        // Layout: [Header(0)] [Active0(1)] [Active1(2)] [Active2(3)]
+        assert_eq!(calculate_list_index(0, 3, 0), Some(1)); // First active → list index 1
+        assert_eq!(calculate_list_index(1, 3, 0), Some(2)); // Second active → list index 2
+        assert_eq!(calculate_list_index(2, 3, 0), Some(3)); // Third active → list index 3
+    }
+
+    #[test]
+    fn test_sink_selector_index_mapping_only_profile() {
+        // Case 3: Only profile sinks (2 items)
+        // Layout: [Active Header(0)] [Spacer(1)] [Profile Header(2)] [Profile0(3)] [Profile1(4)]
+        assert_eq!(calculate_list_index(0, 0, 2), Some(3)); // First profile → list index 3
+        assert_eq!(calculate_list_index(1, 0, 2), Some(4)); // Second profile → list index 4
+    }
+
+    #[test]
+    fn test_sink_selector_index_mapping_mixed() {
+        // Case 4: Mixed (2 active, 2 profile)
+        // Layout: [Active Header(0)] [Active0(1)] [Active1(2)] [Spacer(3)] [Profile Header(4)] [Profile0(5)] [Profile1(6)]
+        assert_eq!(calculate_list_index(0, 2, 2), Some(1)); // First active → list index 1
+        assert_eq!(calculate_list_index(1, 2, 2), Some(2)); // Second active → list index 2
+        assert_eq!(calculate_list_index(2, 2, 2), Some(5)); // First profile → list index 5 (3 + 2 + 0)
+        assert_eq!(calculate_list_index(3, 2, 2), Some(6)); // Second profile → list index 6 (3 + 2 + 1)
+    }
+
+    #[test]
+    fn test_sink_selector_index_mapping_out_of_bounds() {
+        // Case 5: Selector index exceeds total → should clamp to last item
+        assert_eq!(calculate_list_index(10, 2, 2), Some(6)); // Clamped to last profile (index 3)
+    }
+}
