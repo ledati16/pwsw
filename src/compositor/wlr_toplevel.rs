@@ -21,7 +21,7 @@ use super::WindowEvent;
 /// State for handling toplevel windows
 pub struct WlrToplevelState {
     /// Channel to send window events back to tokio runtime
-    tx: mpsc::UnboundedSender<WindowEvent>,
+    tx: mpsc::Sender<WindowEvent>,
     /// Toplevels being tracked (handle `object_id` -> window state)
     toplevels: HashMap<u32, ToplevelWindow>,
 }
@@ -40,7 +40,7 @@ struct ToplevelWindow {
 }
 
 impl WlrToplevelState {
-    pub fn new(tx: mpsc::UnboundedSender<WindowEvent>) -> Self {
+    pub fn new(tx: mpsc::Sender<WindowEvent>) -> Self {
         Self {
             tx,
             toplevels: HashMap::new(),
@@ -49,8 +49,14 @@ impl WlrToplevelState {
 
     /// Send a window event to the daemon
     fn send_event(&self, event: WindowEvent) {
-        if let Err(e) = self.tx.send(event) {
-            warn!("Failed to send window event (receiver dropped): {}", e);
+        // Use blocking_send since we're in a dedicated thread (not async context)
+        // This will block if the channel is full, which is intentional to apply backpressure
+        match self.tx.blocking_send(event) {
+            Ok(()) => {}
+            Err(e) => {
+                // Channel closed means daemon shut down
+                warn!("Failed to send window event (receiver dropped): {}", e);
+            }
         }
     }
 }
@@ -216,7 +222,7 @@ impl Dispatch<wl_output::WlOutput, ()> for WlrToplevelState {
 ///
 /// This function runs in a dedicated thread and dispatches `Wayland` events.
 // Connection must be moved, not borrowed (Wayland protocol requirement)
-pub fn run_event_loop(conn: Connection, tx: mpsc::UnboundedSender<WindowEvent>) -> Result<()> {
+pub fn run_event_loop(conn: Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
     let (globals, mut event_queue) = registry_queue_init::<WlrToplevelState>(&conn)
         .context("Failed to initialize Wayland registry")?;
 
