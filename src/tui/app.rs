@@ -161,7 +161,6 @@ pub(crate) struct PreviewResult {
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
-#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
     pub(crate) bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,

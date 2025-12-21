@@ -224,7 +224,6 @@ pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderC
 
 /// Render the rules list
 // Rules list rendering - complex table with multiple columns and highlighting
-#[allow(clippy::too_many_lines)]
 fn render_list(
     frame: &mut Frame,
     area: Rect,
@@ -350,7 +349,6 @@ fn render_list(
 
 /// Render the add/edit modal
 // Rule editor modal - complex form with multiple fields and validation
-#[allow(clippy::too_many_lines)]
 fn render_editor(
     frame: &mut Frame,
     area: Rect,
@@ -498,7 +496,6 @@ fn render_editor(
 
 /// Render live regex preview showing matching windows
 // Live preview rendering - complex async state display with multiple modes
-#[allow(clippy::too_many_lines)]
 fn render_live_preview(
     frame: &mut Frame,
     area: Rect,

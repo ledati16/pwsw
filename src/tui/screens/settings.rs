@@ -281,7 +281,6 @@ pub(crate) fn render_settings(
 
 /// Render the settings list
 // Settings screen rendering - complex interactive list with multiple field types
-#[allow(clippy::too_many_lines)]
 fn render_settings_list(
     frame: &mut Frame,
     area: Rect,

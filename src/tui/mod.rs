@@ -85,7 +85,6 @@ pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
 /// # Errors
 /// Returns an error if TUI initialization fails or terminal operations fail.
 // TUI main event loop - cohesive logic hard to split; constants scoped for clarity
-#[allow(clippy::too_many_lines, clippy::items_after_statements)]
 pub async fn run() -> Result<()> {
     // Load config BEFORE entering alternate screen to ensure any first-run messages
     // (e.g., "Created default config", "Next steps...") appear normally on the terminal
@@ -469,7 +468,6 @@ pub async fn run() -> Result<()> {
 }
 
 /// Main application loop
-#[allow(clippy::too_many_lines)] // Event loop logic is cohesive, hard to split meaningfully
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -800,7 +798,6 @@ fn render_header(
 
 /// Render the context bar with screen-specific actions
 // Context bar shows comprehensive keybinding hints for all screen modes
-#[allow(clippy::too_many_lines)]
 fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
     use crate::tui::app::ScreenMode;
     use crate::tui::screens::rules::RulesMode;

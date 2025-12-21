@@ -30,7 +30,6 @@ pub struct Config {
 /// Global settings
 // Multiple independent boolean flags for different features (not a state machine)
 #[derive(Debug, Clone)]
-#[allow(clippy::struct_excessive_bools)]
 pub struct Settings {
     pub default_on_startup: bool,
     pub set_smart_toggle: bool,
@@ -84,7 +83,6 @@ struct ConfigFile {
 
 // TOML serialization format - mirrors Settings structure with serde defaults
 #[derive(Debug, Deserialize, Serialize)]
-#[allow(clippy::struct_excessive_bools)]
 struct SettingsFile {
     #[serde(default = "default_true")]
     default_on_startup: bool,

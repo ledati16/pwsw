@@ -423,7 +423,6 @@ fn render_delete_confirmation(
 
 /// Render sink selector modal for adding sinks
 // Sink selector modal rendering - complex table with multiple sections
-#[allow(clippy::too_many_lines)]
 fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,
