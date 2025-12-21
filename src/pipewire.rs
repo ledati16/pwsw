@@ -11,7 +11,7 @@
 //!
 //! All required tools must be present in `PATH` for `PWSW` to function.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::process::Command;
@@ -249,7 +249,7 @@ impl PipeWire {
         }
 
         if !missing.is_empty() {
-            anyhow::bail!(
+            eyre::bail!(
                 "Missing required PipeWire tools: {}\n\
                  \n\
                  Please install the PipeWire utilities package for your distribution:\n\
@@ -275,7 +275,7 @@ impl PipeWire {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("pw-dump failed: {}", stderr.trim());
+            eyre::bail!("pw-dump failed: {}", stderr.trim());
         }
 
         let objects: Vec<PwObject> =
@@ -453,7 +453,7 @@ impl PipeWire {
     pub fn get_default_sink_name() -> Result<String> {
         let objects = Self::dump()?;
         Self::get_default_sink_name_from_objects(&objects)
-            .ok_or_else(|| anyhow::anyhow!("No default sink found in PipeWire metadata"))
+            .ok_or_else(|| eyre::eyre!("No default sink found in PipeWire metadata"))
     }
 
     /// Set the default audio sink via `pw-metadata`
@@ -475,7 +475,7 @@ impl PipeWire {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
+            eyre::bail!(
                 "Failed to set default sink to '{}': {}",
                 node_name,
                 stderr.trim()
@@ -503,7 +503,7 @@ impl PipeWire {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
+            eyre::bail!(
                 "Failed to set device {} to profile {}: {}",
                 device_id,
                 profile_index,
@@ -550,7 +550,7 @@ impl PipeWire {
 
         // Need profile switching?
         let profile_sink = Self::find_profile_sink(&objects, sink_name).ok_or_else(|| {
-            anyhow::anyhow!(
+            eyre::eyre!(
                 "Sink '{sink_name}' not found (not active and no profile switch available)"
             )
         })?;
@@ -604,7 +604,7 @@ impl PipeWire {
         }
 
         // Profile switch succeeded but sink node didn't appear - this is an error
-        anyhow::bail!(
+        eyre::bail!(
             "Profile switched successfully but sink '{sink_name}' did not appear after {max_retries} attempts.\n\
              \n\
              This may indicate:\n\

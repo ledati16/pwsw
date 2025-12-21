@@ -3,7 +3,7 @@
 //! Handles sending notifications via notify-rust and icon detection
 //! using `FreeDesktop` standard icon names.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{Context, Result};
 use notify_rust::Notification;
 
 use crate::config::SinkConfig;

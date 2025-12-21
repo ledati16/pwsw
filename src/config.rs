@@ -3,7 +3,7 @@
 //! Handles loading, parsing, and validating the TOML configuration file.
 //! Supports settings, sink definitions, and window matching rules.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use crossterm::style::Stylize;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -162,7 +162,7 @@ impl Config {
             // modify user files. Cargo sets `RUST_TEST_THREADS` in test processes,
             // so use its presence as a heuristic for test mode.
             if std::env::var("RUST_TEST_THREADS").is_ok() {
-                anyhow::bail!(
+                eyre::bail!(
                     "Config file not found at {} and test mode prevents creating it",
                     config_path.display()
                 );
@@ -190,7 +190,7 @@ impl Config {
 
     fn from_config_file(config_file: ConfigFile) -> Result<Self> {
         if config_file.sinks.is_empty() {
-            anyhow::bail!("No sinks defined. Add at least one [[sinks]] section to config.");
+            eyre::bail!("No sinks defined. Add at least one [[sinks]] section to config.");
         }
 
         let settings = Settings {
@@ -291,8 +291,8 @@ impl Config {
             }
         }
         let Some(mut tmp) = tmp else {
-            return Err(anyhow::Error::new(last_err.unwrap())
-                .context("Failed to create temporary file for atomic config save"));
+            return Err(last_err.unwrap())
+                .wrap_err("Failed to create temporary file for atomic config save");
         };
         tmp.as_file_mut()
             .write_all(contents.as_bytes())
@@ -318,7 +318,7 @@ impl Config {
         if written_len == 0 && config_path.exists() {
             if let Ok(meta) = fs::metadata(config_path) {
                 if meta.is_file() && meta.len() > 0 {
-                    anyhow::bail!("Refusing to overwrite non-empty config with empty data");
+                    eyre::bail!("Refusing to overwrite non-empty config with empty data");
                 }
             }
         }
@@ -389,7 +389,7 @@ impl Config {
                             // explicit allow; proceed
                         }
                         _ => {
-                            anyhow::bail!(
+                            eyre::bail!(
                                 "Refusing to write real user config at {} without PWSW_ALLOW_CONFIG_WRITE=1",
                                 config_path.display()
                             );
@@ -485,7 +485,7 @@ impl Config {
         // Validate log level
         match self.settings.log_level.as_str() {
             "error" | "warn" | "info" | "debug" | "trace" => {}
-            level => anyhow::bail!(
+            level => eyre::bail!(
                 "Invalid log_level '{level}'. Must be: error, warn, info, debug, or trace"
             ),
         }
@@ -493,9 +493,9 @@ impl Config {
         // Exactly one default sink
         let default_count = self.sinks.iter().filter(|s| s.default).count();
         match default_count {
-            0 => anyhow::bail!("No default sink. Mark one sink with 'default = true'"),
+            0 => eyre::bail!("No default sink. Mark one sink with 'default = true'"),
             1 => {}
-            n => anyhow::bail!("{n} default sinks found. Only one allowed."),
+            n => eyre::bail!("{n} default sinks found. Only one allowed."),
         }
 
         // No duplicate descriptions or names
@@ -503,10 +503,10 @@ impl Config {
         let mut seen_names = HashSet::with_capacity(self.sinks.len());
         for sink in &self.sinks {
             if !seen_descs.insert(&sink.desc) {
-                anyhow::bail!("Duplicate sink description: '{}'", sink.desc);
+                eyre::bail!("Duplicate sink description: '{}'", sink.desc);
             }
             if !seen_names.insert(&sink.name) {
-                anyhow::bail!("Duplicate sink name: '{}'", sink.name);
+                eyre::bail!("Duplicate sink name: '{}'", sink.name);
             }
             // Validate name doesn't look like a position number
             if sink.desc.parse::<usize>().is_ok() {
@@ -523,7 +523,7 @@ impl Config {
                     .enumerate()
                     .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
                     .collect();
-                anyhow::bail!(
+                eyre::bail!(
                     "Rule {} references unknown sink '{}'. Available: [{}]",
                     i + 1,
                     rule.sink_ref,

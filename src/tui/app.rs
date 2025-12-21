@@ -2,7 +2,7 @@
 //!
 //! Manages screen navigation, user input, and application state.
 
-use anyhow::Result;
+use color_eyre::eyre::Result;
 use throbber_widgets_tui::ThrobberState;
 
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};

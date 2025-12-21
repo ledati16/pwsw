@@ -2,19 +2,26 @@
 //!
 //! Dispatches to daemon mode or subcommands based on CLI arguments.
 
-use anyhow::Result;
+use color_eyre::eyre::Result;
 use clap::Parser;
 use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 
 /// Initialize logging
 ///
 /// - For CLI commands: Use `tracing_subscriber` to log to stdout/stderr.
-/// - For TUI mode: Use `tui_logger` to capture logs for display in the UI.
+/// - For TUI mode: Use `TuiTracingSubscriberLayer` to capture tracing events for the widget.
 fn init_logging(tui_mode: bool) {
     if tui_mode {
-        // TUI mode: logs go to the widget, not stdout
-        tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
-        tui_logger::set_default_level(log::LevelFilter::Info);
+        // TUI mode: Use tracing layer to capture events in TUI widget
+        use tui_logger::TuiTracingSubscriberLayer;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let tui_layer = TuiTracingSubscriberLayer;
+
+        tracing_subscriber::registry()
+            .with(tui_layer)
+            .init();
     } else {
         // CLI mode: logs go to stdout/stderr based on env or default
         tracing_subscriber::fmt()

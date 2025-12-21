@@ -3,7 +3,7 @@
 //! Provides Unix socket-based IPC for CLI commands to communicate with the daemon.
 //! Uses length-prefixed JSON messages for protocol framing.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -120,7 +120,7 @@ pub fn get_socket_path() -> Result<PathBuf> {
         }))
     } else {
         // Cannot determine a consistent socket path
-        anyhow::bail!(
+        eyre::bail!(
             "Cannot determine IPC socket path: Both `XDG_RUNTIME_DIR` and `USER` environment variables are unset.\n\
              \n\
              This is unusual - please ensure your environment is set up correctly.\n\
@@ -259,7 +259,7 @@ async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> 
     let msg_len = u32::from_be_bytes(len_buf) as usize;
 
     if msg_len > MAX_MESSAGE_SIZE {
-        anyhow::bail!("Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})");
+        eyre::bail!("Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})");
     }
 
     // Read the JSON payload
@@ -279,7 +279,7 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
     let json = serde_json::to_vec(message).context("Failed to serialize message")?;
 
     if json.len() > MAX_MESSAGE_SIZE {
-        anyhow::bail!(
+        eyre::bail!(
             "Message too large: {} bytes (max: {})",
             json.len(),
             MAX_MESSAGE_SIZE

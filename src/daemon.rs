@@ -3,7 +3,7 @@
 //! Runs the main event loop, listening to compositor window events,
 //! IPC requests, and switching audio sinks based on configured rules.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -85,7 +85,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Check if a daemon is already running BEFORE any initialization
     if ipc::is_daemon_running().await {
         let socket_path = ipc::get_socket_path()?;
-        anyhow::bail!(
+        eyre::bail!(
             "Another PWSW daemon is already running.\n\
              Socket: {}\n\n\
              To stop the existing daemon, run:\n  \
@@ -136,7 +136,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             if attempt % 5 == 0 {
                 match child.try_wait() {
                     Ok(Some(status)) => {
-                        anyhow::bail!(
+                        eyre::bail!(
                             "Daemon process (PID: {pid}) exited during startup with status: {status}\n\
                              Check logs with: journalctl --user -xe | grep pwsw"
                         );
@@ -149,7 +149,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             }
         }
 
-        anyhow::bail!(
+        eyre::bail!(
             "Daemon failed to start within {} seconds.\n\
              Process may still be initializing. Check with: pwsw status",
             (u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS) / 1000
@@ -233,7 +233,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         let default = state
             .config
             .get_default_sink()
-            .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
+            .ok_or_else(|| eyre::eyre!("No default sink configured"))?;
         if state.current_sink_name != default.name {
             info!("Switching to default sink: {}", default.desc);
 
@@ -246,7 +246,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
 
             let inner = join
                 .await
-                .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
             inner?;
 
             state.current_sink_name.clone_from(&default.name);

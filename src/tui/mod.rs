@@ -5,7 +5,7 @@
 
 use crate::style::colors;
 use crate::tui::app::{AppUpdate, BgCommand};
-use anyhow::{Context, Result};
+use color_eyre::eyre::{Context, Result};
 use crossterm::cursor::Show;
 use crossterm::event::EventStream;
 use crossterm::execute;

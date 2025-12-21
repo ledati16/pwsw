@@ -3,7 +3,7 @@
 //! Implements both local commands (list-sinks, validate) and IPC-based commands
 //! that communicate with the daemon (status, reload, list-windows, test-rule).
 
-use anyhow::Result;
+use color_eyre::eyre::{self, Result};
 use crossterm::style::Stylize;
 use std::collections::HashSet;
 use tracing::{info, warn};
@@ -205,7 +205,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
             .enumerate()
             .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
             .collect();
-        anyhow::anyhow!(
+        eyre::eyre!(
             "Unknown sink '{}'. Available: {}",
             sink_ref,
             available.join(", ")
@@ -215,7 +215,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     let current = PipeWire::get_default_sink_name()?;
     let default = config
         .get_default_sink()
-        .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
+        .ok_or_else(|| eyre::eyre!("No default sink configured"))?;
 
     if config.settings.set_smart_toggle && current == target.name {
         if target.name == default.name {
@@ -449,7 +449,7 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
 /// Returns an error if no daemon is running or IPC communication fails.
 pub async fn shutdown() -> Result<()> {
     if !ipc::is_daemon_running().await {
-        anyhow::bail!("Daemon is not running");
+        eyre::bail!("Daemon is not running");
     }
 
     let response = ipc::send_request(Request::Shutdown).await?;
@@ -460,10 +460,10 @@ pub async fn shutdown() -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {message}");
+            eyre::bail!("Error: {message}");
         }
         _ => {
-            anyhow::bail!("Unexpected response from daemon");
+            eyre::bail!("Unexpected response from daemon");
         }
     }
 }
@@ -474,7 +474,7 @@ pub async fn shutdown() -> Result<()> {
 /// Returns an error if no daemon is running or IPC communication fails.
 pub async fn list_windows(json_output: bool) -> Result<()> {
     if !ipc::is_daemon_running().await {
-        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
+        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
 
     let response = ipc::send_request(Request::ListWindows).await?;
@@ -533,10 +533,10 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {message}");
+            eyre::bail!("Error: {message}");
         }
         _ => {
-            anyhow::bail!("Unexpected response from daemon");
+            eyre::bail!("Unexpected response from daemon");
         }
     }
 }
@@ -547,7 +547,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
 /// Returns an error if the regex is invalid, no daemon is running, or IPC fails.
 pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
     if !ipc::is_daemon_running().await {
-        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
+        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
 
     let response = ipc::send_request(Request::TestRule {
@@ -606,10 +606,10 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            anyhow::bail!("Error: {message}");
+            eyre::bail!("Error: {message}");
         }
         _ => {
-            anyhow::bail!("Unexpected response from daemon");
+            eyre::bail!("Unexpected response from daemon");
         }
     }
 }

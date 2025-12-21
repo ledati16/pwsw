@@ -2,7 +2,7 @@
 //!
 //! Reads and tails the daemon log file located at `~/.local/share/pwsw/daemon.log`
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};

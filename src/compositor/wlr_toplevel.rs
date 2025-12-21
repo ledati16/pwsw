@@ -3,7 +3,7 @@
 //! This protocol is supported by Sway, Hyprland, Wayfire, River, labwc, dwl, hikari, Niri,
 //! and other wlroots-based compositors.
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{Context, Result};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};

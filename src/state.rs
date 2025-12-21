@@ -3,7 +3,7 @@
 //! Tracks active windows, rule matching, and audio sink state
 //! for the daemon mode event loop.
 
-use anyhow::Result;
+use color_eyre::eyre::{self, Result};
 use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, info, warn};
@@ -251,7 +251,7 @@ impl State {
         // Extract rule data before mutating state (borrow checker)
         let matched = if let Some((rule_index, rule)) = self.find_matching_rule(app_id, title) {
             let sink = self.config.resolve_sink(&rule.sink_ref)
-                .ok_or_else(|| anyhow::anyhow!(
+                .ok_or_else(|| eyre::eyre!(
                     "BUG: Rule references non-existent sink '{}' (should have been caught in config validation)",
                     rule.sink_ref
                 ))?;
@@ -314,7 +314,7 @@ impl State {
 
                     let inner = join
                         .await
-                        .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
+                        .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
                     inner?;
 
                     // Only update state on success
@@ -434,7 +434,7 @@ impl State {
 
         let inner = join
             .await
-            .map_err(|e| anyhow::anyhow!("Join error: {e:#}"))?;
+            .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
         inner?;
 
         self.update_sink(target);
