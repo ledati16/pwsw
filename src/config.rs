@@ -531,6 +531,63 @@ impl Config {
                     available.join(", ")
                 );
             }
+
+            // Validate regex patterns for catastrophic backtracking
+            Self::validate_regex_safe(&rule.app_id_pattern, "app_id", i + 1)?;
+            if let Some(ref title_pattern) = rule.title_pattern {
+                Self::validate_regex_safe(title_pattern, "title", i + 1)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validate that a regex pattern is safe from catastrophic backtracking
+    ///
+    /// Checks for known dangerous patterns that can cause exponential time complexity.
+    ///
+    /// # Errors
+    /// Returns an error if the pattern contains dangerous constructs.
+    fn validate_regex_safe(pattern: &str, field_name: &str, rule_num: usize) -> Result<()> {
+        // Check for known catastrophic backtracking patterns
+        let dangerous_patterns = [
+            ("(.*)*", "nested quantifiers on wildcard"),
+            ("(.*)+", "nested quantifiers on wildcard"),
+            ("(.+)+", "nested quantifiers on wildcard"),
+            ("(.+)*", "nested quantifiers on wildcard"),
+            ("([^x]*)*", "nested quantifiers on negated character class"),
+            ("([^x]+)+", "nested quantifiers on negated character class"),
+        ];
+
+        for (danger, reason) in &dangerous_patterns {
+            if pattern.contains(danger) {
+                eyre::bail!(
+                    "Rule {}: {} pattern '{}' contains dangerous construct '{}' ({})",
+                    rule_num,
+                    field_name,
+                    pattern,
+                    danger,
+                    reason
+                );
+            }
+        }
+
+        // Check for excessive alternations that might cause backtracking
+        let alternation_count = pattern.matches('|').count();
+        if alternation_count > 50 {
+            warn!(
+                "Rule {}: {} pattern has {} alternations - this may cause slow matching",
+                rule_num, field_name, alternation_count
+            );
+        }
+
+        // Check for excessive nested groups
+        let open_paren_count = pattern.matches('(').count();
+        if open_paren_count > 20 {
+            warn!(
+                "Rule {}: {} pattern has {} nested groups - this may cause slow compilation",
+                rule_num, field_name, open_paren_count
+            );
         }
 
         Ok(())
@@ -1027,5 +1084,78 @@ mod tests {
         // Attempt to overwrite with empty content should fail
         let r = Config::save_str_for_test("", &path);
         assert!(r.is_err());
+    }
+
+    // Regex validation tests
+    #[test]
+    fn test_validate_regex_safe_accepts_normal_patterns() {
+        let result = Config::validate_regex_safe("^firefox$", "app_id", 1);
+        assert!(result.is_ok());
+
+        let result = Config::validate_regex_safe("(mpv|vlc)", "app_id", 1);
+        assert!(result.is_ok());
+
+        let result = Config::validate_regex_safe(".*steam.*", "title", 1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_regex_safe_rejects_catastrophic_backtracking() {
+        // Test all dangerous patterns
+        let dangerous = ["(.*)*", "(.*)+", "(.+)+", "(.+)*", "([^x]*)*", "([^x]+)+"];
+
+        for pattern in &dangerous {
+            let result = Config::validate_regex_safe(pattern, "app_id", 1);
+            assert!(
+                result.is_err(),
+                "Pattern '{}' should be rejected as dangerous",
+                pattern
+            );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("dangerous construct"),
+                "Error should mention dangerous construct: {}",
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_regex_safe_embedded_in_larger_pattern() {
+        // Dangerous pattern embedded in larger context should still be caught
+        let result = Config::validate_regex_safe("^firefox(.*)*$", "app_id", 1);
+        assert!(result.is_err());
+
+        let result = Config::validate_regex_safe("steam|(.+)+|mpv", "app_id", 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_with_catastrophic_regex() {
+        // Integration test: config validation should reject catastrophic patterns
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("(.*)*", None, "sink1")],
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("dangerous"));
+    }
+
+    #[test]
+    fn test_validate_catastrophic_in_title_pattern() {
+        // Test that title patterns are also validated
+        let config = make_config(
+            vec![make_sink("sink1", "Sink 1", true)],
+            vec![make_rule("firefox", Some("(.+)+"), "sink1")],
+        );
+
+        let result = config.validate();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("dangerous"));
+        assert!(err.contains("title"));
     }
 }

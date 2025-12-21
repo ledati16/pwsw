@@ -368,6 +368,12 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                     Ok(new_config) => {
                         let notify_enabled = state.config.settings.notify_manual;
                         state.reload_config(new_config);
+
+                        // Re-evaluate all active windows against new rules
+                        if let Err(e) = state.reevaluate_all_windows().await {
+                            error!("Failed to re-evaluate windows after config reload: {e:#}", e = e);
+                        }
+
                         if notify_enabled {
                             let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
                         }

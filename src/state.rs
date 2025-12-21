@@ -125,6 +125,39 @@ impl State {
         );
     }
 
+    /// Re-evaluate all active windows against current rules after config reload
+    ///
+    /// This ensures that config changes take effect immediately rather than
+    /// waiting for the next window focus change. Windows that no longer match
+    /// rules will be untracked, and windows that now match will be tracked.
+    ///
+    /// # Errors
+    /// Returns an error if sink activation fails during re-evaluation.
+    pub async fn reevaluate_all_windows(&mut self) -> Result<()> {
+        debug!("Re-evaluating all active windows against new rules");
+
+        // Collect all tracked window IDs to avoid borrow issues
+        let window_ids: Vec<u64> = self.active_windows.keys().copied().collect();
+
+        for window_id in window_ids {
+            // Get window info (must clone to avoid borrow conflicts)
+            if let Some(window) = self.active_windows.get(&window_id) {
+                let app_id = window.app_id.clone();
+                let title = window.title.clone();
+
+                // Process as Changed event to re-evaluate rules
+                self.process_event(WindowEvent::Changed {
+                    id: window_id,
+                    app_id,
+                    title,
+                })
+                .await?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Find a rule that matches the given `app_id` and title, returning the rule and its index
     #[must_use]
     pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
@@ -607,5 +640,63 @@ mod tests {
 
         // Most recent (mpv) should win
         assert_eq!(state.determine_target_sink(), "mpv_sink");
+    }
+
+    #[tokio::test]
+    async fn test_all_windows_cleanup_on_close() {
+        let config = make_config(
+            vec![make_sink("default_sink", "Default", true)],
+            vec![make_rule("firefox", None, "default_sink")],
+        );
+        let mut state = State::new_for_testing(config, "default_sink".to_string());
+
+        // Add window to all_windows (happens during Opened event)
+        state
+            .all_windows
+            .insert(1, ("firefox".to_string(), "Browser".to_string()));
+
+        // Verify it's there
+        assert_eq!(state.all_windows.len(), 1);
+        assert!(state.all_windows.contains_key(&1));
+
+        // Close the window (should remove from all_windows)
+        let close_result = state.handle_window_close(1).await;
+        assert!(close_result.is_ok());
+
+        // Verify cleanup happened
+        assert_eq!(state.all_windows.len(), 0);
+        assert!(!state.all_windows.contains_key(&1));
+    }
+
+    #[tokio::test]
+    async fn test_all_windows_cleanup_multiple_windows() {
+        let config = make_config(
+            vec![make_sink("default_sink", "Default", true)],
+            vec![make_rule(".*", None, "default_sink")],
+        );
+        let mut state = State::new_for_testing(config, "default_sink".to_string());
+
+        // Add multiple windows
+        state
+            .all_windows
+            .insert(1, ("firefox".to_string(), "Browser".to_string()));
+        state
+            .all_windows
+            .insert(2, ("chrome".to_string(), "Browser".to_string()));
+        state
+            .all_windows
+            .insert(3, ("mpv".to_string(), "Video".to_string()));
+
+        assert_eq!(state.all_windows.len(), 3);
+
+        // Close window 2
+        let close_result = state.handle_window_close(2).await;
+        assert!(close_result.is_ok());
+
+        // Verify only window 2 was removed
+        assert_eq!(state.all_windows.len(), 2);
+        assert!(state.all_windows.contains_key(&1));
+        assert!(!state.all_windows.contains_key(&2));
+        assert!(state.all_windows.contains_key(&3));
     }
 }
