@@ -299,12 +299,12 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Notify systemd that daemon is ready
     #[cfg(unix)]
     {
-        if let Ok(true) = sd_notify::booted() {
-            if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
-                warn!("Failed to notify systemd: {}", e);
-            } else {
-                info!("Notified systemd that daemon is ready");
-            }
+        if let Ok(true) = sd_notify::booted()
+            && let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready])
+        {
+            warn!("Failed to notify systemd: {}", e);
+        } else if let Ok(true) = sd_notify::booted() {
+            info!("Notified systemd that daemon is ready");
         }
     }
 
@@ -314,13 +314,13 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     loop {
         tokio::select! {
             result = window_events.recv() => {
-                if let Some(event) = result {
-                    if let Err(e) = state.process_event(event).await {
-                        error!("Event processing error: {e:#}", e = e);
-                    }
-                } else {
+                let Some(event) = result else {
                     error!("Compositor connection lost (event channel closed)");
                     break;
+                };
+
+                if let Err(e) = state.process_event(event).await {
+                    error!("Event processing error: {e:#}", e = e);
                 }
             }
 
