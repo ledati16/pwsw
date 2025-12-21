@@ -256,11 +256,14 @@ async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> 
         .context("Timeout reading message length")?
         .context("Failed to read message length")?;
 
-    let msg_len = u32::from_be_bytes(len_buf) as usize;
+    let msg_len_u32 = u32::from_be_bytes(len_buf);
 
-    if msg_len > MAX_MESSAGE_SIZE {
-        eyre::bail!("Message too large: {msg_len} bytes (max: {MAX_MESSAGE_SIZE})");
+    // Check size before cast to prevent overflow on 32-bit systems
+    if msg_len_u32 > MAX_MESSAGE_SIZE as u32 {
+        eyre::bail!("Message too large: {msg_len_u32} bytes (max: {MAX_MESSAGE_SIZE})");
     }
+
+    let msg_len = msg_len_u32 as usize;
 
     // Read the JSON payload
     let mut msg_buf = vec![0u8; msg_len];
