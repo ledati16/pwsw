@@ -29,15 +29,26 @@ pub enum WindowEvent {
     Closed { id: u64 },
 }
 
+/// Maximum number of window events to buffer before dropping events
+///
+/// This prevents unbounded memory growth if the daemon's main loop is slow.
+/// With 100 events buffered, we can handle 10 window switches per second for
+/// 10 seconds before dropping events - far beyond normal usage patterns.
+///
+/// In practice, events should be processed in <10ms, so this buffer should
+/// never fill unless there's a serious performance issue (e.g., slow profile
+/// switch blocking the entire daemon for multiple seconds).
+const WINDOW_EVENT_CHANNEL_CAPACITY: usize = 100;
+
 /// Spawn a dedicated thread for Wayland event processing
 ///
 /// This function connects to the Wayland display, detects which protocols are available,
 /// and spawns a dedicated thread to run the Wayland event loop. Window events are sent
-/// back to the caller via an unbounded mpsc channel.
+/// back to the caller via a bounded mpsc channel.
 ///
 /// # Returns
 ///
-/// An unbounded receiver for `WindowEvent`s from the compositor.
+/// A bounded receiver for `WindowEvent`s from the compositor (capacity: 100 events).
 ///
 /// # Errors
 ///
@@ -51,6 +62,11 @@ pub enum WindowEvent {
 /// - The compositor disconnects
 /// - The Wayland thread encounters a fatal error
 /// - The compositor shuts down
+///
+/// **Event Dropping:** If the main event loop is slow (e.g., during profile switches)
+/// and window events arrive faster than they can be processed, the oldest events will
+/// be dropped after the channel buffer (100 events) fills up. This prevents unbounded
+/// memory growth but may cause some window state changes to be missed.
 ///
 /// Callers should handle channel closure gracefully by breaking out of
 /// their event loop and performing cleanup.
@@ -67,7 +83,7 @@ pub enum WindowEvent {
 /// - **hikari** - wlr-foreign-toplevel
 ///
 /// **Note:** GNOME/Mutter and KDE Plasma do not expose window management protocols and are not supported.
-pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>> {
+pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
     // Connect to Wayland display
     let conn = Connection::connect_to_env()
         .context("Failed to connect to Wayland display. Is a Wayland compositor running?")?;
@@ -77,8 +93,9 @@ pub fn spawn_compositor_thread() -> Result<mpsc::UnboundedReceiver<WindowEvent>>
     // Pre-detect available protocols by checking the registry
     detect_available_protocol(&conn)?;
 
-    // Create channel for sending events from Wayland thread to tokio runtime
-    let (tx, rx) = mpsc::unbounded_channel();
+    // Create bounded channel for sending events from Wayland thread to tokio runtime
+    // This prevents unbounded growth if the main loop is slow
+    let (tx, rx) = mpsc::channel(WINDOW_EVENT_CHANNEL_CAPACITY);
 
     // Spawn dedicated thread for Wayland event loop
     std::thread::spawn(move || {

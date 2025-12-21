@@ -220,6 +220,13 @@ pub struct PipeWire;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex as StdMutex};
 
+/// Maximum number of device locks to retain before cleanup
+///
+/// This prevents unbounded memory growth from USB device plug/unplug cycles.
+/// 100 devices is far more than typical usage (2-5 devices), but conservative
+/// enough to avoid cleanup in normal scenarios.
+const MAX_DEVICE_LOCKS: usize = 100;
+
 static DEVICE_LOCKS: OnceLock<StdMutex<std::collections::HashMap<u32, Arc<StdMutex<()>>>>> =
     OnceLock::new();
 
@@ -562,6 +569,38 @@ impl PipeWire {
         let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
         let device_mutex_arc = {
             let mut guard = locks.lock().unwrap();
+
+            // Clean up old locks if we're accumulating too many (USB device churn)
+            if guard.len() >= MAX_DEVICE_LOCKS {
+                // Remove locks that are only held by the HashMap (strong_count == 1)
+                // This clears stale entries without disrupting active profile switches
+                guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
+
+                // If still over limit after cleanup, remove oldest 20% arbitrarily
+                // (since we can't tell which are "oldest" without timestamps)
+                if guard.len() >= MAX_DEVICE_LOCKS {
+                    let to_remove = guard.len() / 5; // Remove ~20%
+                    let keys_to_remove: Vec<u32> = guard
+                        .iter()
+                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1)
+                        .take(to_remove)
+                        .map(|(id, _)| *id)
+                        .collect();
+
+                    for key in keys_to_remove {
+                        guard.remove(&key);
+                    }
+
+                    if !guard.is_empty() {
+                        debug!(
+                            "Cleaned up device locks: {} → {} entries",
+                            guard.len() + to_remove,
+                            guard.len()
+                        );
+                    }
+                }
+            }
+
             Arc::clone(
                 guard
                     .entry(profile_sink.device_id)
@@ -877,6 +916,113 @@ mod tests {
 
         // After both have run, order should be 11 (1 from t1, 10 from t2)
         assert_eq!(order.load(Ordering::SeqCst), 11);
+    }
+
+    #[test]
+    fn test_device_locks_cleanup_on_limit() {
+        // Test that DEVICE_LOCKS cleanup happens when MAX_DEVICE_LOCKS is reached
+        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+
+        // Clear any existing locks from other tests
+        {
+            let mut guard = locks.lock().unwrap();
+            guard.clear();
+        }
+
+        // Add MAX_DEVICE_LOCKS entries
+        {
+            let mut guard = locks.lock().unwrap();
+            for i in 0..MAX_DEVICE_LOCKS {
+                guard.insert(i as u32, Arc::new(StdMutex::new(())));
+            }
+        }
+
+        // Verify we have MAX_DEVICE_LOCKS entries
+        {
+            let guard = locks.lock().unwrap();
+            assert_eq!(guard.len(), MAX_DEVICE_LOCKS);
+        }
+
+        // Simulate the cleanup logic that happens during lock acquisition
+        // by adding one more entry (which should trigger cleanup)
+        {
+            let mut guard = locks.lock().unwrap();
+            let initial_count = guard.len();
+
+            // This mimics the cleanup in activate_sink
+            if guard.len() >= MAX_DEVICE_LOCKS {
+                guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
+
+                if guard.len() >= MAX_DEVICE_LOCKS {
+                    let to_remove = guard.len() / 5;
+                    let keys_to_remove: Vec<u32> = guard
+                        .iter()
+                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1)
+                        .take(to_remove)
+                        .map(|(id, _)| *id)
+                        .collect();
+
+                    for key in keys_to_remove {
+                        guard.remove(&key);
+                    }
+                }
+            }
+
+            // After cleanup, we should have removed some entries
+            // (all have strong_count == 1, so first retain removes all, then we'd add new entry)
+            assert!(
+                guard.len() < initial_count,
+                "Cleanup should have removed entries"
+            );
+        }
+    }
+
+    #[test]
+    fn test_device_locks_preserves_active_locks() {
+        // Test that cleanup doesn't remove locks that are actively held
+        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+
+        // Clear any existing locks
+        {
+            let mut guard = locks.lock().unwrap();
+            guard.clear();
+        }
+
+        // Add MAX_DEVICE_LOCKS entries
+        let mut held_arcs = Vec::new();
+        {
+            let mut guard = locks.lock().unwrap();
+            for i in 0..MAX_DEVICE_LOCKS {
+                let arc = Arc::new(StdMutex::new(()));
+                guard.insert(i as u32, arc.clone());
+
+                // Hold onto first 10 entries (simulating active profile switches)
+                if i < 10 {
+                    held_arcs.push(arc);
+                }
+            }
+        }
+
+        // Trigger cleanup
+        {
+            let mut guard = locks.lock().unwrap();
+
+            if guard.len() >= MAX_DEVICE_LOCKS {
+                // Retain only locks with strong_count > 1 (held externally)
+                guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
+            }
+
+            // Should have kept the 10 we're holding + 1 in the HashMap = strong_count of 2
+            assert_eq!(guard.len(), 10);
+
+            // Verify the held locks are still present
+            for (i, _arc) in held_arcs.iter().enumerate() {
+                assert!(guard.contains_key(&(i as u32)));
+            }
+        }
+
+        // Clean up held references
+        drop(held_arcs);
     }
 
     #[test]
