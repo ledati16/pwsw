@@ -429,6 +429,16 @@ impl Config {
         // Ensure final permissions as well
         Self::ensure_unix_permissions(config_path)?;
 
+        // Sync parent directory to ensure rename is durable
+        #[cfg(unix)]
+        if let Some(parent) = config_path.parent()
+            && let Ok(dir_file) = std::fs::File::open(parent)
+        {
+            dir_file
+                .sync_all()
+                .with_context(|| format!("Failed to sync directory: {}", parent.display()))?;
+        }
+
         Ok(())
     }
 

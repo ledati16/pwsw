@@ -107,7 +107,17 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
-            .with_context(|| "Failed to spawn background daemon")?;
+            .with_context(|| {
+                format!(
+                    "Failed to spawn background daemon: exe={}, working_dir={}",
+                    exe.display(),
+                    std::env::current_dir()
+                        .ok()
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                )
+            })?;
 
         let pid = child.id();
         println!("Starting daemon (PID: {})...", pid.to_string().technical());
