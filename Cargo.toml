@@ -32,8 +32,8 @@ serde_json = "1"
 # Pattern matching for window rules
 regex = "1"
 
-# Error handling with context
-anyhow = "1"
+# Error handling with context - modern approach with better error display
+# anyhow removed in favor of color-eyre (eyre)
 
 # Desktop notifications
 notify-rust = "4"
@@ -56,12 +56,11 @@ dirs = "5"
 ratatui = { version = "0.29", optional = true, default-features = false, features = ["crossterm"] }
 tui-input = "0.14.0"
 throbber-widgets-tui = "0.8"
-tui-logger = "0.17.4"
+tui-logger = { version = "0.17.4", features = ["tracing-support"] }
 color-eyre = "0.6.5"
 notify = "6.1.1"
 serde_regex = "1.1.0"
 futures-util = "0.3.31"
-log = "0.4.29"
 users = "0.11"
 tempfile = "3"
 

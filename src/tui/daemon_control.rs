@@ -1,6 +1,6 @@
 //! Daemon control integration - systemd with fallback to direct execution
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, Result};
 use std::process::{Command, Stdio};
 
 use crate::daemon_manager::DaemonManager;
@@ -24,7 +24,7 @@ impl DaemonManager {
                     Ok("Daemon started via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl start failed: {stderr}");
+                    eyre::bail!("systemctl start failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
@@ -63,14 +63,14 @@ impl DaemonManager {
                     Ok("Daemon stopped via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl stop failed: {stderr}");
+                    eyre::bail!("systemctl stop failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
                 // Send shutdown request via IPC
                 match ipc::send_request(ipc::Request::Shutdown).await {
                     Ok(_) => Ok("Daemon shutdown requested".to_string()),
-                    Err(e) => anyhow::bail!("Failed to send shutdown request: {e:#}"),
+                    Err(e) => eyre::bail!("Failed to send shutdown request: {e:#}"),
                 }
             }
         }
@@ -93,7 +93,7 @@ impl DaemonManager {
                     Ok("Daemon restarted via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl restart failed: {stderr}");
+                    eyre::bail!("systemctl restart failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
@@ -146,11 +146,11 @@ impl DaemonManager {
                     Ok("Service enabled (will start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl enable failed: {stderr}");
+                    eyre::bail!("systemctl enable failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
-                anyhow::bail!("Enable/disable only supported with systemd service")
+                eyre::bail!("Enable/disable only supported with systemd service")
             }
         }
     }
@@ -171,11 +171,11 @@ impl DaemonManager {
                     Ok("Service disabled (won't start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("systemctl disable failed: {stderr}");
+                    eyre::bail!("systemctl disable failed: {stderr}");
                 }
             }
             DaemonManager::Direct => {
-                anyhow::bail!("Enable/disable only supported with systemd service")
+                eyre::bail!("Enable/disable only supported with systemd service")
             }
         }
     }

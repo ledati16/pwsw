@@ -5,7 +5,7 @@
 
 mod wlr_toplevel;
 
-use anyhow::{Context, Result};
+use color_eyre::eyre::{self, Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use wayland_client::{protocol::wl_registry, Connection};
@@ -171,7 +171,7 @@ fn detect_available_protocol(conn: &Connection) -> Result<()> {
     }
 
     // No supported protocol found
-    anyhow::bail!(
+    eyre::bail!(
         "No supported window management protocol found.\n\
          \n\
          Supported protocols:\n\
