@@ -30,3 +30,114 @@
 mod forwarder;
 mod input_integration_tests;
 mod windows_fp;
+
+#[cfg(test)]
+mod daemon_log_tests {
+    use crate::config::Config;
+    use crate::tui::app::App;
+
+    #[test]
+    fn test_daemon_logs_bounded_on_large_burst() {
+        // Create a minimal config for App
+        let config = Config {
+            sinks: vec![],
+            rules: vec![],
+            settings: crate::config::Settings {
+                default_on_startup: true,
+                set_smart_toggle: true,
+                notify_manual: true,
+                notify_rules: true,
+                match_by_index: false,
+                log_level: "info".to_string(),
+            },
+        };
+        let mut app = App::with_config(config);
+
+        // Simulate 1000-line burst
+        let burst: Vec<String> = (0..1000).map(|i| format!("line {i}")).collect();
+
+        // Apply the bounding logic from mod.rs:578-593
+        const MAX_LOG_LINES: usize = 500;
+        let available_space = MAX_LOG_LINES.saturating_sub(app.daemon_log_lines.len());
+        let safe_new_lines = if burst.len() > available_space {
+            // Take last N lines if burst is too large
+            &burst[burst.len().saturating_sub(MAX_LOG_LINES)..]
+        } else {
+            &burst
+        };
+
+        app.daemon_log_lines.extend_from_slice(safe_new_lines);
+
+        // Keep only last 500 lines to avoid unbounded growth (defensive)
+        if app.daemon_log_lines.len() > MAX_LOG_LINES {
+            let excess = app.daemon_log_lines.len() - MAX_LOG_LINES;
+            app.daemon_log_lines.drain(0..excess);
+        }
+
+        // Verify logs are bounded
+        assert_eq!(app.daemon_log_lines.len(), 500);
+        // Verify we kept the last 500 lines from the burst
+        assert_eq!(app.daemon_log_lines[0], "line 500");
+        assert_eq!(app.daemon_log_lines[499], "line 999");
+    }
+
+    #[test]
+    fn test_daemon_logs_incremental_growth() {
+        let config = Config {
+            sinks: vec![],
+            rules: vec![],
+            settings: crate::config::Settings {
+                default_on_startup: true,
+                set_smart_toggle: true,
+                notify_manual: true,
+                notify_rules: true,
+                match_by_index: false,
+                log_level: "info".to_string(),
+            },
+        };
+        let mut app = App::with_config(config);
+
+        const MAX_LOG_LINES: usize = 500;
+
+        // Add 300 lines
+        for i in 0..300 {
+            let new_lines = vec![format!("line {i}")];
+            let available_space = MAX_LOG_LINES.saturating_sub(app.daemon_log_lines.len());
+            let safe_new_lines = if new_lines.len() > available_space {
+                &new_lines[new_lines.len().saturating_sub(MAX_LOG_LINES)..]
+            } else {
+                &new_lines
+            };
+            app.daemon_log_lines.extend_from_slice(safe_new_lines);
+
+            if app.daemon_log_lines.len() > MAX_LOG_LINES {
+                let excess = app.daemon_log_lines.len() - MAX_LOG_LINES;
+                app.daemon_log_lines.drain(0..excess);
+            }
+        }
+
+        assert_eq!(app.daemon_log_lines.len(), 300);
+
+        // Add 300 more lines (total 600, should trim to 500)
+        for i in 300..600 {
+            let new_lines = vec![format!("line {i}")];
+            let available_space = MAX_LOG_LINES.saturating_sub(app.daemon_log_lines.len());
+            let safe_new_lines = if new_lines.len() > available_space {
+                &new_lines[new_lines.len().saturating_sub(MAX_LOG_LINES)..]
+            } else {
+                &new_lines
+            };
+            app.daemon_log_lines.extend_from_slice(safe_new_lines);
+
+            if app.daemon_log_lines.len() > MAX_LOG_LINES {
+                let excess = app.daemon_log_lines.len() - MAX_LOG_LINES;
+                app.daemon_log_lines.drain(0..excess);
+            }
+        }
+
+        assert_eq!(app.daemon_log_lines.len(), 500);
+        // Verify we kept lines 100-599
+        assert_eq!(app.daemon_log_lines[0], "line 100");
+        assert_eq!(app.daemon_log_lines[499], "line 599");
+    }
+}

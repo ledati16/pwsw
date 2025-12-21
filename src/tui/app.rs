@@ -129,6 +129,7 @@ pub(crate) enum AppUpdate {
         title_pattern: Option<String>,
         matches: Vec<String>,
         timed_out: bool,
+        regex_error: Option<String>,
     },
     /// New daemon log lines
     ///
@@ -158,6 +159,7 @@ pub(crate) struct PreviewResult {
     pub(crate) matches: Vec<String>,
     pub(crate) timed_out: bool,
     pub(crate) pending: bool,
+    pub(crate) regex_error: Option<String>,
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
