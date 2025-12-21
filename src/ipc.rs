@@ -16,12 +16,16 @@ use tracing::{debug, error, warn};
 // Constants
 // ============================================================================
 
-/// Timeout for checking if daemon is running (health check connection)
+/// Timeout for checking if daemon is running (health check connection).
+///
 /// Set to 500ms to accommodate slow systems and high load scenarios
+/// while still being fast enough for typical daemon startup checks.
+/// This balances responsiveness with reliability across different system loads.
 const DAEMON_HEALTH_CHECK_TIMEOUT_MS: u64 = 500;
 
-/// Timeout for stale socket cleanup check (same as health check for consistency)
-/// If daemon responds within health check timeout, socket is not stale
+/// Timeout for stale socket cleanup check (same as health check for consistency).
+///
+/// If daemon responds within health check timeout, socket is not stale.
 const STALE_SOCKET_CHECK_TIMEOUT_MS: u64 = 500;
 
 /// Timeout for client connections (longer to allow daemon to process request)

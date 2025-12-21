@@ -111,6 +111,18 @@ pub(crate) mod fixtures {
         }
     }
 
+    /// Create a test `SinkConfig` with an explicit icon.
+    ///
+    /// Useful for testing icon-related functionality in sinks and notifications.
+    pub fn make_sink_with_icon(name: &str, desc: &str, default: bool, icon: &str) -> SinkConfig {
+        SinkConfig {
+            name: name.to_string(),
+            desc: desc.to_string(),
+            icon: Some(icon.to_string()),
+            default,
+        }
+    }
+
     /// Create a test `Rule` with the given `app_id` pattern, optional title pattern, and sink reference.
     ///
     /// Compiles regex patterns from strings. Uses None for desc and notify fields.

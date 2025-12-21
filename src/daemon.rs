@@ -36,6 +36,128 @@ pub fn get_log_file_path() -> Result<PathBuf> {
     Ok(log_dir.join("daemon.log"))
 }
 
+/// Get the daemon PID file path
+///
+/// Returns `$XDG_RUNTIME_DIR/pwsw.pid` or `/tmp/pwsw-$USER.pid` as fallback
+///
+/// # Errors
+/// Returns an error if the runtime directory cannot be determined and temp fallback fails.
+pub fn get_pid_file_path() -> Result<PathBuf> {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
+
+    if let Some(dir) = runtime_dir {
+        Ok(PathBuf::from(dir).join("pwsw.pid"))
+    } else {
+        // Fallback to /tmp with username suffix for multi-user safety
+        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
+        Ok(PathBuf::from("/tmp").join(format!("pwsw-{user}.pid")))
+    }
+}
+
+/// Write the daemon PID file
+///
+/// Creates a file with the current process ID, with user-only permissions (0o600).
+///
+/// # Errors
+/// Returns an error if the PID file cannot be written or permissions cannot be set.
+fn write_pid_file() -> Result<()> {
+    let pid_path = get_pid_file_path()?;
+    let pid = std::process::id();
+
+    std::fs::write(&pid_path, pid.to_string())
+        .with_context(|| format!("Failed to write PID file: {}", pid_path.display()))?;
+
+    // Set user-only permissions on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600)).with_context(
+            || format!("Failed to set PID file permissions: {}", pid_path.display()),
+        )?;
+    }
+
+    info!("PID file written: {} (PID: {})", pid_path.display(), pid);
+    Ok(())
+}
+
+/// Remove the daemon PID file
+///
+/// Attempts to remove the PID file. Logs warnings on failure but does not return errors
+/// since cleanup failure is not critical during shutdown.
+fn remove_pid_file() {
+    if let Ok(pid_path) = get_pid_file_path()
+        && pid_path.exists()
+    {
+        if let Err(e) = std::fs::remove_file(&pid_path) {
+            warn!("Failed to remove PID file {}: {}", pid_path.display(), e);
+        } else {
+            info!("PID file removed: {}", pid_path.display());
+        }
+    }
+}
+
+/// Check if a stale PID file exists and clean it up if the process is not running
+///
+/// Returns `Ok(true)` if a running daemon was detected, `Ok(false)` otherwise.
+///
+/// # Errors
+/// Returns an error if PID file reading fails or process checking encounters errors.
+fn check_and_cleanup_stale_pid_file() -> Result<bool> {
+    let pid_path = get_pid_file_path()?;
+
+    if !pid_path.exists() {
+        return Ok(false);
+    }
+
+    // Read PID from file
+    let pid_str = std::fs::read_to_string(&pid_path)
+        .with_context(|| format!("Failed to read PID file: {}", pid_path.display()))?;
+
+    let pid: u32 = pid_str
+        .trim()
+        .parse()
+        .with_context(|| format!("Invalid PID in file {}: '{}'", pid_path.display(), pid_str))?;
+
+    // Check if process is still running using kill(pid, 0) on Unix
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::kill;
+        use nix::unistd::Pid;
+
+        // Signal 0 is a special case: checks if process exists without sending a signal
+        match kill(Pid::from_raw(pid as i32), None) {
+            Ok(()) => {
+                // Process exists
+                info!("Daemon already running with PID {}", pid);
+                Ok(true)
+            }
+            Err(nix::errno::Errno::ESRCH) => {
+                // Process does not exist - stale PID file
+                warn!("Stale PID file found (PID {} not running), removing", pid);
+                std::fs::remove_file(&pid_path).with_context(|| {
+                    format!("Failed to remove stale PID file: {}", pid_path.display())
+                })?;
+                Ok(false)
+            }
+            Err(e) => {
+                eyre::bail!("Failed to check if process {} exists: {}", pid, e);
+            }
+        }
+    }
+
+    // On non-Unix, we can't reliably check if process exists, so assume it's stale if old enough
+    #[cfg(not(unix))]
+    {
+        warn!(
+            "Cannot verify PID {} on non-Unix system, assuming stale",
+            pid
+        );
+        std::fs::remove_file(&pid_path)
+            .with_context(|| format!("Failed to remove PID file: {}", pid_path.display()))?;
+        Ok(false)
+    }
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -90,6 +212,16 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
              To stop the existing daemon, run:\n  \
              pwsw shutdown",
             socket_path.display()
+        );
+    }
+
+    // Check for stale PID file and clean it up if process is not running
+    // This must happen after IPC check to avoid race conditions
+    if check_and_cleanup_stale_pid_file()? {
+        // A running daemon was detected via PID file but not via IPC
+        // This shouldn't happen, but handle it gracefully
+        warn!(
+            "PID file indicates running daemon, but IPC check failed. Daemon may be starting up or in bad state."
         );
     }
 
@@ -218,6 +350,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     // Store guard to prevent it from being dropped (would close log file)
     // SAFETY: Guard must live for entire daemon lifetime
     std::mem::forget(guard);
+
+    // Write PID file now that daemon is fully initialized
+    write_pid_file()?;
 
     info!("Starting PWSW daemon {}", crate::version_string());
     info!(
@@ -422,6 +557,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
             }
         }
     }
+
+    // Cleanup PID file on shutdown
+    remove_pid_file();
 
     Ok(())
 }

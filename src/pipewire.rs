@@ -278,7 +278,7 @@ impl PipeWire {
     pub fn dump() -> Result<Vec<PwObject>> {
         let output = Command::new("pw-dump")
             .output()
-            .context("Failed to run pw-dump. Is PipeWire running?")?;
+            .context("PipeWire tool 'pw-dump' not found or failed. Is PipeWire installed?")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -477,7 +477,9 @@ impl PipeWire {
             .args(["0", "default.audio.sink", &value, "Spa:String:JSON"])
             .output()
             .with_context(|| {
-                format!("Failed to run pw-metadata to set default sink to '{node_name}'")
+                format!(
+                    "PipeWire tool 'pw-metadata' not found or failed. Attempted to set default sink to '{node_name}'"
+                )
             })?;
 
         if !output.status.success() {
@@ -505,7 +507,9 @@ impl PipeWire {
             .args(["s", &device_id.to_string(), "Profile", &profile_json])
             .output()
             .with_context(|| {
-                format!("Failed to run pw-cli to set device {device_id} profile {profile_index}")
+                format!(
+                    "PipeWire tool 'pw-cli' not found or failed. Attempted to set device {device_id} profile {profile_index}"
+                )
             })?;
 
         if !output.status.success() {
