@@ -22,7 +22,7 @@ pub(crate) fn match_windows(
 
     let mut out = Vec::new();
     for w in windows {
-        if app_re.is_match(&w.app_id) && title_re.as_ref().map_or(true, |r| r.is_match(&w.title)) {
+        if app_re.is_match(&w.app_id) && title_re.as_ref().is_none_or(|r| r.is_match(&w.title)) {
             {
                 let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
                 s.push_str(&w.app_id);
@@ -103,7 +103,7 @@ pub(crate) async fn execute_preview(
             // perform matching
             let mut out = Vec::new();
             for w in &windows {
-                let title_ok = title_re.as_ref().map_or(true, |r| r.is_match(&w.title));
+                let title_ok = title_re.as_ref().is_none_or(|r| r.is_match(&w.title));
                 if app_re_ref.is_match(&w.app_id) && title_ok {
                     let mut s = String::with_capacity(w.app_id.len() + 3 + w.title.len());
                     s.push_str(&w.app_id);
@@ -168,8 +168,8 @@ pub(crate) fn match_windows_with_compiled_count(
     let mut out = Vec::new();
     let mut total = 0usize;
     for w in windows {
-        let app_ok = app_re.map_or(true, |r| r.is_match(&w.app_id));
-        let title_ok = title_re.map_or(true, |r| r.is_match(&w.title));
+        let app_ok = app_re.is_none_or(|r| r.is_match(&w.app_id));
+        let title_ok = title_re.is_none_or(|r| r.is_match(&w.title));
         if app_ok && title_ok {
             total += 1;
             if out.len() < max_results {
@@ -215,35 +215,35 @@ mod tests {
                 last_preview_req = Some((app_pat, title_pat, Instant::now()));
             }
 
-            if let Some((app_pat, title_pat, ts)) = last_preview_req.clone() {
-                if ts.elapsed() >= debounce_ms {
-                    last_preview_req = None;
+            if let Some((app_pat, title_pat, ts)) = last_preview_req.clone()
+                && ts.elapsed() >= debounce_ms
+            {
+                last_preview_req = None;
 
-                    // send pending
-                    let _ = bg_tx.send(AppUpdate::PreviewPending {
-                        app_pattern: app_pat.clone(),
-                        title_pattern: title_pat.clone(),
-                    });
+                // send pending
+                let _ = bg_tx.send(AppUpdate::PreviewPending {
+                    app_pattern: app_pat.clone(),
+                    title_pattern: title_pat.clone(),
+                });
 
-                    // execute preview
-                    let (matches_out, timed_out) = execute_preview(
-                        app_pat.clone(),
-                        title_pat.clone(),
-                        windows.clone(),
-                        100,
-                        timeout,
-                        None,
-                        None,
-                    )
-                    .await;
+                // execute preview
+                let (matches_out, timed_out) = execute_preview(
+                    app_pat.clone(),
+                    title_pat.clone(),
+                    windows.clone(),
+                    100,
+                    timeout,
+                    None,
+                    None,
+                )
+                .await;
 
-                    let _ = bg_tx.send(AppUpdate::PreviewMatches {
-                        app_pattern: app_pat.clone(),
-                        title_pattern: title_pat.clone(),
-                        matches: matches_out.into_iter().take(10).collect(),
-                        timed_out,
-                    });
-                }
+                let _ = bg_tx.send(AppUpdate::PreviewMatches {
+                    app_pattern: app_pat.clone(),
+                    title_pattern: title_pat.clone(),
+                    matches: matches_out.into_iter().take(10).collect(),
+                    timed_out,
+                });
             }
 
             // Sleep a short poll interval

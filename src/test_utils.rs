@@ -21,7 +21,10 @@ impl XdgTemp {
     pub fn new() -> Self {
         let dir = tempfile::tempdir().expect("failed to create tempdir for XDG_CONFIG_HOME");
         let prev = std::env::var_os("XDG_CONFIG_HOME");
-        std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", dir.path());
+        }
         Self { prev, dir }
     }
 
@@ -42,10 +45,13 @@ impl Default for XdgTemp {
 #[cfg(test)]
 impl Drop for XdgTemp {
     fn drop(&mut self) {
-        if let Some(ref val) = self.prev {
-            std::env::set_var("XDG_CONFIG_HOME", val);
-        } else {
-            std::env::remove_var("XDG_CONFIG_HOME");
+        // SAFETY: Test-only code, restoring environment after test
+        unsafe {
+            if let Some(ref val) = self.prev {
+                std::env::set_var("XDG_CONFIG_HOME", val);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
         }
         // TempDir will be removed when dropped
     }

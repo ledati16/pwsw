@@ -1,14 +1,14 @@
 //! Settings screen - Configure PWSW behavior
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        block::{BorderType, Padding},
         Block, Borders, List, ListItem, ListState, Paragraph,
+        block::{BorderType, Padding},
     },
-    Frame,
 };
 
 use crate::config::Settings;
@@ -267,7 +267,7 @@ pub(crate) fn render_settings(
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),                        // Settings list
+            Constraint::Min(10),                          // Settings list
             Constraint::Length(DESCRIPTION_PANEL_HEIGHT), // Description (expanded for detailed help)
         ])
         .split(area);
@@ -370,7 +370,12 @@ fn render_settings_list(
         })
         .collect();
 
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).border_type(BorderType::Rounded).title(" Settings "));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(" Settings "),
+    );
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));

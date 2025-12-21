@@ -7,9 +7,9 @@ pub mod settings;
 pub mod sinks;
 
 pub(crate) use dashboard::{
-    render_dashboard, DashboardRenderContext, DashboardScreen, DashboardView,
+    DashboardRenderContext, DashboardScreen, DashboardView, render_dashboard,
 };
 pub(crate) use help::render_help;
-pub(crate) use rules::{render_rules, RulesRenderContext, RulesScreen};
-pub(crate) use settings::{render_settings, SettingsScreen};
-pub(crate) use sinks::{render_sinks, SinksScreen};
+pub(crate) use rules::{RulesRenderContext, RulesScreen, render_rules};
+pub(crate) use settings::{SettingsScreen, render_settings};
+pub(crate) use sinks::{SinksScreen, render_sinks};

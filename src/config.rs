@@ -315,12 +315,13 @@ impl Config {
             .metadata()
             .context("Failed to stat temporary config file")?
             .len();
-        if written_len == 0 && config_path.exists() {
-            if let Ok(meta) = fs::metadata(config_path) {
-                if meta.is_file() && meta.len() > 0 {
-                    eyre::bail!("Refusing to overwrite non-empty config with empty data");
-                }
-            }
+        if written_len == 0
+            && config_path.exists()
+            && let Ok(meta) = fs::metadata(config_path)
+            && meta.is_file()
+            && meta.len() > 0
+        {
+            eyre::bail!("Refusing to overwrite non-empty config with empty data");
         }
         Ok(())
     }
@@ -340,17 +341,16 @@ impl Config {
             let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
             if config_path == home_cfg {
                 // Create a timestamped backup of the existing file if present
-                if config_path.exists() {
-                    if let Ok(metadata) = fs::metadata(config_path) {
-                        if metadata.is_file() {
-                            use std::time::{SystemTime, UNIX_EPOCH};
-                            if let Ok(n) = SystemTime::now().duration_since(UNIX_EPOCH) {
-                                let bak_name = format!("config.toml.bak.{}", n.as_secs());
-                                let bak_path = config_path.parent().unwrap().join(bak_name);
-                                let _ = fs::copy(config_path, &bak_path);
-                                // Best-effort: ignore copy errors but try to continue
-                            }
-                        }
+                if config_path.exists()
+                    && let Ok(metadata) = fs::metadata(config_path)
+                    && metadata.is_file()
+                {
+                    use std::time::{SystemTime, UNIX_EPOCH};
+                    if let Ok(n) = SystemTime::now().duration_since(UNIX_EPOCH) {
+                        let bak_name = format!("config.toml.bak.{}", n.as_secs());
+                        let bak_path = config_path.parent().unwrap().join(bak_name);
+                        let _ = fs::copy(config_path, &bak_path);
+                        // Best-effort: ignore copy errors but try to continue
                     }
                 }
 
@@ -510,7 +510,10 @@ impl Config {
             }
             // Validate name doesn't look like a position number
             if sink.desc.parse::<usize>().is_ok() {
-                warn!("Sink description '{}' looks like a number - this may cause confusion with position references", sink.desc);
+                warn!(
+                    "Sink description '{}' looks like a number - this may cause confusion with position references",
+                    sink.desc
+                );
             }
         }
 

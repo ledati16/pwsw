@@ -183,9 +183,9 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     if foreground {
         // Foreground mode (systemd or user debugging): log to BOTH stderr and file
         // This ensures TUI log viewer works with systemd, and journalctl captures logs
+        use tracing_subscriber::Layer;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
-        use tracing_subscriber::Layer;
 
         let stderr_layer = tracing_subscriber::fmt::layer().with_filter(filter.clone());
         let file_layer = tracing_subscriber::fmt::layer()
@@ -244,9 +244,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 crate::state::switch_audio_blocking(&name_clone, &desc_clone, None, None, false)
             });
 
-            let inner = join
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
+            let inner = join.await.map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
             inner?;
 
             state.current_sink_name.clone_from(&default.name);
@@ -288,12 +286,11 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         warn!("Failed to watch config directory for hot-reload: {}", e);
     }
 
-    if state.config.settings.notify_manual {
-        if let Err(e) =
+    if state.config.settings.notify_manual
+        && let Err(e) =
             send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None)
-        {
-            warn!("Could not send startup notification: {}", e);
-        }
+    {
+        warn!("Could not send startup notification: {}", e);
     }
 
     // Setup signal handlers for graceful shutdown

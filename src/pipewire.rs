@@ -130,10 +130,10 @@ impl PwMetadataEntry {
     pub fn get_name(&self) -> Option<String> {
         let value = self.value.as_ref()?;
         // Try object with "name" field first
-        if let Some(obj) = value.as_object() {
-            if let Some(name_val) = obj.get("name") {
-                return name_val.as_str().map(String::from);
-            }
+        if let Some(obj) = value.as_object()
+            && let Some(name_val) = obj.get("name")
+        {
+            return name_val.as_str().map(String::from);
         }
         // Fall back to plain string
         value.as_str().map(String::from)
@@ -550,9 +550,7 @@ impl PipeWire {
 
         // Need profile switching?
         let profile_sink = Self::find_profile_sink(&objects, sink_name).ok_or_else(|| {
-            eyre::eyre!(
-                "Sink '{sink_name}' not found (not active and no profile switch available)"
-            )
+            eyre::eyre!("Sink '{sink_name}' not found (not active and no profile switch available)")
         })?;
 
         info!(
@@ -952,35 +950,50 @@ mod tests {
     #[test]
     fn test_profile_switch_env_vars() {
         // Test default values when env vars are not set
-        std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
-        std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
+            std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+        }
 
         assert_eq!(profile_switch_delay_ms(), 150);
         assert_eq!(profile_switch_max_retries(), 5);
 
         // Test valid overrides
-        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "300");
-        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "10");
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "300");
+            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "10");
+        }
 
         assert_eq!(profile_switch_delay_ms(), 300);
         assert_eq!(profile_switch_max_retries(), 10);
 
         // Test invalid values fall back to defaults
-        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "invalid");
-        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "not_a_number");
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "invalid");
+            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "not_a_number");
+        }
 
         assert_eq!(profile_switch_delay_ms(), 150);
         assert_eq!(profile_switch_max_retries(), 5);
 
         // Test empty strings fall back to defaults
-        std::env::set_var("PROFILE_SWITCH_DELAY_MS", "");
-        std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "");
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "");
+            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "");
+        }
 
         assert_eq!(profile_switch_delay_ms(), 150);
         assert_eq!(profile_switch_max_retries(), 5);
 
         // Cleanup
-        std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
-        std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
+            std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
+        }
     }
 }

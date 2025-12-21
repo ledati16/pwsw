@@ -1,11 +1,11 @@
 //! Dashboard screen - Overview and quick actions
 
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{block::BorderType, Block, Borders, Paragraph},
-    Frame,
+    widgets::{Block, Borders, Paragraph, block::BorderType},
 };
 
 use crate::config::Config;
@@ -162,7 +162,6 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}…", &s[..max_len.saturating_sub(1)])
     }
 }
-
 
 /// Context for rendering the dashboard screen
 pub(crate) struct DashboardRenderContext<'a> {
@@ -333,20 +332,14 @@ fn render_daemon_section(
 
         // Use brackets around selected item, reserve space on unselected for alignment
         if is_selected {
-            button_spans.push(Span::styled(
-                "[",
-                Style::default().fg(colors::UI_HIGHLIGHT),
-            ));
+            button_spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
             button_spans.push(Span::styled(
                 *action,
                 Style::default()
                     .fg(colors::UI_SELECTED)
                     .add_modifier(Modifier::BOLD),
             ));
-            button_spans.push(Span::styled(
-                "]",
-                Style::default().fg(colors::UI_HIGHLIGHT),
-            ));
+            button_spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
         } else {
             // Reserve space for brackets to prevent text shifting
             button_spans.push(Span::raw(" "));
