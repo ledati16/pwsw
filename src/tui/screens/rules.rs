@@ -604,36 +604,36 @@ fn render_live_preview(
 
     let mut preview_lines = vec![];
 
-    if let Some(app_regex) = app_id_regex_ref {
-        if windows.is_empty() {
+    if let Some(_app_regex) = app_id_regex_ref
+        && windows.is_empty()
+    {
+        preview_lines.push(Line::from(vec![Span::styled(
+            "  (daemon not running)",
+            Style::default().fg(colors::UI_SECONDARY),
+        )]));
+    } else if let Some(app_regex) = app_id_regex_ref {
+        // Use helper to perform matching with compiled regex refs and get both the preview strings and total count.
+        let (matches_vec, total) = crate::tui::preview::match_windows_with_compiled_count(
+            Some(app_regex),
+            title_regex_ref,
+            windows,
+            5,
+        );
+
+        if matches_vec.is_empty() {
             preview_lines.push(Line::from(vec![Span::styled(
-                "  (daemon not running)",
-                Style::default().fg(colors::UI_SECONDARY),
+                "  No matching windows",
+                Style::default().fg(colors::UI_WARNING),
             )]));
         } else {
-            // Use helper to perform matching with compiled regex refs and get both the preview strings and total count.
-            let (matches_vec, total) = crate::tui::preview::match_windows_with_compiled_count(
-                Some(app_regex),
-                title_regex_ref,
-                windows,
-                5,
-            );
-
-            if matches_vec.is_empty() {
+            preview_lines.extend(crate::tui::preview::build_preview_lines_from_strings(
+                &matches_vec,
+            ));
+            if total > 5 {
                 preview_lines.push(Line::from(vec![Span::styled(
-                    "  No matching windows",
-                    Style::default().fg(colors::UI_WARNING),
+                    (total - 5).to_string(),
+                    Style::default().fg(colors::UI_SECONDARY),
                 )]));
-            } else {
-                preview_lines.extend(crate::tui::preview::build_preview_lines_from_strings(
-                    &matches_vec,
-                ));
-                if total > 5 {
-                    preview_lines.push(Line::from(vec![Span::styled(
-                        (total - 5).to_string(),
-                        Style::default().fg(colors::UI_SECONDARY),
-                    )]));
-                }
             }
         }
     } else if !screen_state.editor.app_id_pattern.value().is_empty() {
