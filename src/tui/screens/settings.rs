@@ -168,6 +168,8 @@ pub(crate) struct SettingsScreen {
     pub padded_names: Vec<String>,
     /// List scroll state
     pub state: ListState,
+    /// Description panel scroll offset
+    pub desc_scroll: u16,
 }
 
 impl SettingsScreen {
@@ -198,6 +200,7 @@ impl SettingsScreen {
             log_level_index,
             padded_names,
             state: ListState::default(),
+            desc_scroll: 0,
         }
     }
 
@@ -205,6 +208,7 @@ impl SettingsScreen {
     pub(crate) fn select_previous(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
+            self.desc_scroll = 0; // Reset description scroll on selection change
         }
     }
 
@@ -212,7 +216,18 @@ impl SettingsScreen {
     pub(crate) fn select_next(&mut self) {
         if self.selected < SettingItem::all().len() - 1 {
             self.selected += 1;
+            self.desc_scroll = 0; // Reset description scroll on selection change
         }
+    }
+
+    /// Scroll description up
+    pub(crate) fn scroll_desc_up(&mut self) {
+        self.desc_scroll = self.desc_scroll.saturating_sub(1);
+    }
+
+    /// Scroll description down
+    pub(crate) fn scroll_desc_down(&mut self) {
+        self.desc_scroll = self.desc_scroll.saturating_add(1);
     }
 
     /// Toggle the currently selected boolean setting
@@ -296,7 +311,7 @@ fn render_settings_list(
 
             let style = if is_selected {
                 Style::default()
-                    .fg(colors::UI_SELECTED)
+                    .fg(colors::UI_TEXT)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(colors::UI_TEXT)
@@ -310,36 +325,17 @@ fn render_settings_list(
             // Apply color styling to boolean toggles
             let value_span = match item {
                 SettingItem::LogLevel => Span::styled(value_text, style),
-                SettingItem::DefaultOnStartup => {
-                    if settings.default_on_startup {
-                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                    } else {
-                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                    }
-                }
-                SettingItem::SetSmartToggle => {
-                    if settings.set_smart_toggle {
-                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                    } else {
-                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                    }
-                }
-                SettingItem::NotifyManual => {
-                    if settings.notify_manual {
-                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                    } else {
-                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                    }
-                }
-                SettingItem::NotifyRules => {
-                    if settings.notify_rules {
-                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                    } else {
-                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                    }
-                }
-                SettingItem::MatchByIndex => {
-                    if settings.match_by_index {
+                _ => {
+                    let enabled = match item {
+                        SettingItem::DefaultOnStartup => settings.default_on_startup,
+                        SettingItem::SetSmartToggle => settings.set_smart_toggle,
+                        SettingItem::NotifyManual => settings.notify_manual,
+                        SettingItem::NotifyRules => settings.notify_rules,
+                        SettingItem::MatchByIndex => settings.match_by_index,
+                        _ => false,
+                    };
+                    
+                    if enabled {
                         Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                     } else {
                         Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
@@ -349,23 +345,25 @@ fn render_settings_list(
 
             let mut spans = vec![];
 
-            // Add arrow prefix only if selected
+            // Add standard Cyan indicator if selected
             if is_selected {
-                spans.push(Span::styled(
-                    " → ",
-                    Style::default().fg(colors::UI_HIGHLIGHT),
-                ));
+                spans.push(Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)));
             } else {
-                spans.push(Span::raw("   "));
+                spans.push(Span::raw(" "));
             }
 
             spans.push(Span::styled(padded_name, style));
-            spans.push(Span::raw("     ")); // 5 spaces for cleaner separation
+            spans.push(Span::raw("     ")); // Separation
             spans.push(value_span);
 
             let line = Line::from(spans);
 
-            ListItem::new(line)
+            let mut item_style = Style::default();
+            if is_selected {
+                item_style = item_style.bg(colors::UI_SELECTED_BG);
+            }
+
+            ListItem::new(line).style(item_style)
         })
         .collect();
 
@@ -475,7 +473,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
 }
 
 /// Render the description panel
-fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
+fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut SettingsScreen) {
     let current_item = screen_state.current_item();
     let short_desc = current_item.description();
     let detailed_desc = current_item.detailed_description();
@@ -556,13 +554,43 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &SettingsScre
         }
     }
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .padding(Padding::horizontal(1))
-            .title(" Description "),
-    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .padding(Padding::horizontal(1))
+        .title(" Description ");
+
+    let inner_area = block.inner(area);
+    let width = inner_area.width as usize;
+    let height = inner_area.height as usize;
+
+    // Calculate total visual lines (accounting for wrapping)
+    let mut total_visual_lines = 0;
+    for line in &lines {
+        let line_width = line.width();
+        if line_width == 0 {
+            total_visual_lines += 1;
+        } else {
+            // Ceiling division: (num + divisor - 1) / divisor
+            total_visual_lines += (line_width + width - 1) / width;
+        }
+    }
+
+    // Determine max scroll
+    let max_scroll = total_visual_lines.saturating_sub(height) as u16;
+
+    // Clamp scroll state
+    screen_state.desc_scroll = screen_state.desc_scroll.min(max_scroll);
+
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(ratatui::widgets::Wrap { trim: false })
+        .scroll((screen_state.desc_scroll, 0));
 
     frame.render_widget(paragraph, area);
+
+    // Render scroll arrows
+    let has_above = screen_state.desc_scroll > 0;
+    let has_below = screen_state.desc_scroll < max_scroll;
+    crate::tui::widgets::render_scroll_arrows(frame, inner_area, has_above, has_below);
 }

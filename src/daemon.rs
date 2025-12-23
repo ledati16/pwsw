@@ -349,7 +349,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     std::fs::create_dir_all(log_dir)
         .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
 
-    let file_appender = tracing_appender::rolling::never(log_dir, "daemon.log");
+    // Use custom rotating appender (1MB limit, keeps 1 backup)
+    let file_appender = crate::logging::RotatingFileAppender::new(log_dir, "daemon.log", 1_000_000);
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     if foreground {

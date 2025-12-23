@@ -20,7 +20,8 @@ pub(crate) fn get_help_row_count(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
 ) -> usize {
-    build_help_rows(current_screen, collapsed_sections).len()
+    // For counting rows, width doesn't matter as we just need the number of items
+    build_help_rows(current_screen, collapsed_sections, u16::MAX).len()
 }
 
 /// Get the maximum scroll offset for the help screen given viewport height
@@ -48,15 +49,19 @@ pub(crate) fn render_help(
     // Clear background to prevent bleed-through from underlying screens
     frame.render_widget(Clear, popup_area);
 
+    // Calculate description column width for wrapping
+    // width - 2 (border) - 2 (padding) - 22 (key col) - 2 (spacing)
+    let desc_width = popup_area.width.saturating_sub(2 + 2 + 22 + 2).max(1);
+
     // Build help content
-    let rows = build_help_rows(current_screen, collapsed_sections);
+    let rows = build_help_rows(current_screen, collapsed_sections, desc_width);
     let total_rows = rows.len();
 
     let table = Table::new(
         rows,
         [
             Constraint::Length(22), // Key column (accommodate long combinations like "Ctrl+W, Alt+Backspace")
-            Constraint::Min(50),    // Description column (ensure minimum width)
+            Constraint::Fill(1),    // Description column (take remaining space and wrap)
         ],
     )
     .block(
@@ -264,19 +269,27 @@ pub(crate) fn get_section_at_row(
 fn build_help_rows(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
+    desc_width: u16,
 ) -> Vec<Row<'static>> {
     let mut rows = Vec::new();
     let mut metadata: Vec<HelpRowMeta> = Vec::new();
 
+    // Helper to calculate height based on wrapping
+    let calc_height = |text: &str| -> u16 {
+        let len = text.len() as u16;
+        if len == 0 { 1 } else { (len + desc_width - 1) / desc_width }
+    };
+
     // Helper to add a keybind row
     let add_keybind = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, key: &str, desc: &str| {
+        let height = calc_height(desc).max(1);
         rows.push(Row::new(vec![
             Cell::from(Span::styled(
                 key.to_string(),
                 Style::default().fg(colors::UI_SUCCESS),
             )),
             Cell::from(Span::raw(desc.to_string())),
-        ]));
+        ]).height(height));
         meta.push(HelpRowMeta {
             is_section_header: false,
             section_name: None,
@@ -328,13 +341,14 @@ fn build_help_rows(
 
     // Helper to add compact hint text (for regex examples in Rules screen)
     let add_hint = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, text: &str| {
+        let height = calc_height(text).max(1);
         rows.push(Row::new(vec![
             Cell::from(""),
             Cell::from(Span::styled(
                 text.to_string(),
                 Style::default().fg(colors::UI_SECONDARY),
             )),
-        ]));
+        ]).height(height));
         meta.push(HelpRowMeta {
             is_section_header: false,
             section_name: None,

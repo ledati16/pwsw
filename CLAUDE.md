@@ -250,7 +250,7 @@ Technical terms must use backticks in documentation and code comments:
 ### Code Quality Patterns
 
 **Error Handling:**
-- Use `anyhow::Result` and `Context` for rich error propagation in application code
+- Use `color_eyre::eyre::Result` and `Context` for rich error propagation in application code
 - Avoid `.expect()` in production paths (only for defensive checks that should never fail)
 - Document all panic conditions with `# Panics`
 - Check process exit codes with `.status()?.success()`, not just spawn errors
@@ -1112,7 +1112,7 @@ cargo clippy --all-targets -- -W clippy::pedantic
 - `tokio`: Async runtime (minimal features: rt-multi-thread, net, io-util, signal, sync, time)
 - `regex`: Compiled once during config load, reused for all matching
 - `serde_json`: Used for pw-dump parsing, IPC protocol, and secure command construction
-- `anyhow`: Error handling with context chaining (prefer over custom error types)
+- `color-eyre`: Error handling with context chaining (prefer over custom error types)
 - `toml` / `serde`: Config file parsing and serialization
 
 ### External Tools (must be in PATH)

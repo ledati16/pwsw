@@ -454,6 +454,12 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             app.settings_screen.select_next();
         }
+        KeyCode::PageUp => {
+            app.settings_screen.scroll_desc_up();
+        }
+        KeyCode::PageDown => {
+            app.settings_screen.scroll_desc_down();
+        }
         KeyCode::Enter | KeyCode::Char(' ') => {
             if app.settings_screen.toggle_current(&mut app.config.settings) {
                 app.mark_dirty();
@@ -520,6 +526,11 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         // Update caches
                         app.sinks_screen.update_display_descs(&app.config.sinks);
                         app.mark_dirty();
+                    }
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if !app.config.sinks.is_empty() {
+                        app.sinks_screen.start_inspect();
                     }
                 }
                 _ => {}
@@ -612,6 +623,14 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                 KeyCode::Esc => {
                     // Cancel and return to editor
                     app.sinks_screen.mode = SinksMode::AddEdit;
+                }
+                _ => {}
+            }
+        }
+        SinksMode::Inspect => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    app.sinks_screen.cancel();
                 }
                 _ => {}
             }
@@ -754,6 +773,11 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                         app.rules_screen.start_delete();
                     }
                 }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if !app.config.rules.is_empty() {
+                        app.rules_screen.start_inspect();
+                    }
+                }
                 _ => {}
             }
         }
@@ -805,6 +829,14 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
             }
             _ => {}
         },
+        RulesMode::Inspect => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Esc => {
+                    app.rules_screen.cancel();
+                }
+                _ => {}
+            }
+        }
     }
 }
 

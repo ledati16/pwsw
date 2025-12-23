@@ -23,6 +23,7 @@ pub mod config;
 pub mod daemon;
 pub mod daemon_manager;
 pub mod ipc;
+pub mod logging;
 pub mod notification;
 pub mod pipewire;
 pub mod state;

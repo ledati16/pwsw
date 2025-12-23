@@ -6,7 +6,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
         block::{BorderType, Padding},
     },
 };
@@ -29,6 +29,7 @@ pub(crate) enum RulesMode {
     AddEdit,
     Delete,
     SelectSink, // Dropdown for sink selection
+    Inspect,
 }
 
 /// Editor state for add/edit modal
@@ -199,6 +200,10 @@ impl RulesScreen {
         self.mode = RulesMode::SelectSink;
     }
 
+    pub(crate) fn start_inspect(&mut self) {
+        self.mode = RulesMode::Inspect;
+    }
+
     pub(crate) fn cancel(&mut self) {
         self.mode = RulesMode::List;
     }
@@ -231,6 +236,7 @@ pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderC
         RulesMode::SelectSink => {
             render_sink_selector(frame, area, ctx.sinks, &mut ctx.screen_state.editor);
         }
+        RulesMode::Inspect => render_inspect_popup(frame, area, ctx.rules, ctx.screen_state),
     }
 }
 
@@ -271,16 +277,36 @@ fn render_list(
                 .map_or(rule.sink_ref.as_str(), String::as_str);
 
             // Prepare cells
-            let index_cell = Cell::from((i + 1).to_string());
-            let app_id_cell = Cell::from(rule.app_id_pattern.as_str());
+            // Add selection indicator to index
+            let index_val = (i + 1).to_string();
+            let index_cell = if is_selected {
+                Cell::from(Line::from(vec![
+                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(index_val),
+                ]))
+            } else {
+                Cell::from(index_val)
+            };
+
+            let app_id_cell = Cell::from(Span::styled(
+                rule.app_id_pattern.as_str(),
+                if is_selected {
+                    Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(colors::UI_TEXT)
+                }
+            ));
+            
             let title_cell = rule.title_pattern.as_ref().map_or_else(
                 || Cell::from(Span::styled("*", Style::default().fg(colors::UI_SECONDARY))),
-                |s| Cell::from(s.as_str()),
+                |s| Cell::from(Span::styled(s.as_str(), Style::default().fg(colors::UI_SECONDARY))),
             );
+            
             let sink_cell = Cell::from(Span::styled(
                 sink_display,
                 Style::default().fg(colors::UI_HIGHLIGHT),
             ));
+            
             let desc_cell = rule
                 .desc
                 .as_ref()
@@ -357,6 +383,76 @@ fn render_list(
     // Render scroll arrows using helper
     let (has_above, has_below) = (has_above, has_below);
     crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
+}
+
+/// Render inspect modal
+fn render_inspect_popup(
+    frame: &mut Frame,
+    area: Rect,
+    rules: &[Rule],
+    screen_state: &RulesScreen,
+) {
+    if screen_state.selected >= rules.len() {
+        return;
+    }
+    let rule = &rules[screen_state.selected];
+    
+    let popup_area = centered_modal(modal_size::MEDIUM, area);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Rule Details ")
+        .style(Style::default().bg(colors::UI_MODAL_BG));
+    frame.render_widget(block.clone(), popup_area);
+
+    let inner = block.inner(popup_area);
+
+    let mut lines = Vec::new();
+    
+    // Helper for fields
+    let mut add_field = |label: &str, value: &str| {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}: ", label), Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
+        ]));
+        lines.push(Line::from(""));
+    };
+
+    add_field("App ID Pattern", &rule.app_id_pattern);
+    
+    if let Some(title) = &rule.title_pattern {
+        add_field("Title Pattern", title);
+    } else {
+        add_field("Title Pattern", "(any title)");
+    }
+
+    add_field("Target Sink", &rule.sink_ref);
+
+    if let Some(desc) = &rule.desc {
+        add_field("Description", desc);
+    }
+
+    // Notify status
+    let notify_status = match rule.notify {
+        Some(true) => "Enabled (override)",
+        Some(false) => "Disabled (override)",
+        None => "Default (use global setting)",
+    };
+    add_field("Notifications", notify_status);
+
+    // Hint at bottom
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press [Enter] or [Esc] to close", 
+        Style::default().fg(colors::UI_HIGHLIGHT)
+    )));
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(ratatui::widgets::Wrap { trim: false });
+        
+    frame.render_widget(paragraph, inner);
 }
 
 /// Render the add/edit modal
@@ -667,12 +763,14 @@ fn render_live_preview(
         )]));
     }
 
-    let preview_widget = Paragraph::new(preview_lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title("Matching Windows"),
-    );
+    let preview_widget = Paragraph::new(preview_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title("Matching Windows"),
+        )
+        .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(preview_widget, area);
 }
 
