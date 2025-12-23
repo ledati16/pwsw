@@ -274,39 +274,47 @@ fn build_help_rows(
     let mut rows = Vec::new();
     let mut metadata: Vec<HelpRowMeta> = Vec::new();
 
-    // Helper to calculate height based on word wrapping
-    let calc_height = |text: &str| -> u16 {
+    // Helper to wrap text and calculate height
+    let wrap_text = |text: &str| -> (String, u16) {
         if text.is_empty() {
-            return 1;
+            return (String::new(), 1);
         }
         
-        let mut lines = 1;
+        let mut lines = Vec::new();
+        let mut current_line = String::new();
         let mut current_width = 0;
         
         for word in text.split_whitespace() {
-            let word_len = word.len() as u16;
+            let word_len = word.len();
             // +1 for space if not at start of line
             let space = if current_width == 0 { 0 } else { 1 };
             
-            if current_width + space + word_len <= desc_width {
+            if current_width + space + word_len <= desc_width as usize {
+                if space > 0 {
+                    current_line.push(' ');
+                }
+                current_line.push_str(word);
                 current_width += space + word_len;
             } else {
-                lines += 1;
+                lines.push(current_line);
+                current_line = word.to_string();
                 current_width = word_len;
             }
         }
-        lines
+        lines.push(current_line);
+        
+        (lines.join("\n"), lines.len() as u16)
     };
 
     // Helper to add a keybind row
     let add_keybind = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, key: &str, desc: &str| {
-        let height = calc_height(desc).max(1);
+        let (wrapped_desc, height) = wrap_text(desc);
         rows.push(Row::new(vec![
             Cell::from(Span::styled(
                 key.to_string(),
                 Style::default().fg(colors::UI_SUCCESS),
             )),
-            Cell::from(Span::raw(desc.to_string())),
+            Cell::from(wrapped_desc),
         ]).height(height));
         meta.push(HelpRowMeta {
             is_section_header: false,
@@ -359,11 +367,11 @@ fn build_help_rows(
 
     // Helper to add compact hint text (for regex examples in Rules screen)
     let add_hint = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, text: &str| {
-        let height = calc_height(text).max(1);
+        let (wrapped_text, height) = wrap_text(text);
         rows.push(Row::new(vec![
             Cell::from(""),
             Cell::from(Span::styled(
-                text.to_string(),
+                wrapped_text,
                 Style::default().fg(colors::UI_SECONDARY),
             )),
         ]).height(height));
