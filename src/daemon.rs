@@ -493,6 +493,9 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     info!("Daemon initialization complete, entering event loop");
 
+    let mut last_config_reload = Instant::now();
+    const CONFIG_DEBOUNCE_MS: u64 = 250;
+
     // Main event loop
     loop {
         tokio::select! {
@@ -545,26 +548,29 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
             }
 
             _ = config_rx.recv() => {
-                // Debounce happens partly due to select! loop speed, but we should be careful.
-                info!("Config file changed, attempting reload...");
-                match Config::load() {
-                    Ok(new_config) => {
-                        let notify_enabled = state.config.settings.notify_manual;
-                        state.reload_config(Arc::new(new_config));
+                let now = Instant::now();
+                if now.duration_since(last_config_reload) >= Duration::from_millis(CONFIG_DEBOUNCE_MS) {
+                    last_config_reload = now;
+                    info!("Config file changed, attempting reload...");
+                    match Config::load() {
+                        Ok(new_config) => {
+                            let notify_enabled = state.config.settings.notify_manual;
+                            state.reload_config(Arc::new(new_config));
 
-                        // Re-evaluate all active windows against new rules
-                        if let Err(e) = state.reevaluate_all_windows().await {
-                            error!("Failed to re-evaluate windows after config reload: {e:#}");
-                        }
+                            // Re-evaluate all active windows against new rules
+                            if let Err(e) = state.reevaluate_all_windows().await {
+                                error!("Failed to re-evaluate windows after config reload: {e:#}");
+                            }
 
-                        if notify_enabled {
-                            let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
-                        }
-                    },
-                    Err(e) => {
-                        error!("Failed to reload config: {e:#}");
-                        if state.config.settings.notify_manual {
-                            let _ = send_notification("Reload Failed", &format!("Config error: {e:#}"), None);
+                            if notify_enabled {
+                                let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
+                            }
+                        },
+                        Err(e) => {
+                            error!("Failed to reload config: {e:#}");
+                            if state.config.settings.notify_manual {
+                                let _ = send_notification("Reload Failed", &format!("Config error: {e:#}"), None);
+                            }
                         }
                     }
                 }
