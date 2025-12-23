@@ -274,10 +274,28 @@ fn build_help_rows(
     let mut rows = Vec::new();
     let mut metadata: Vec<HelpRowMeta> = Vec::new();
 
-    // Helper to calculate height based on wrapping
+    // Helper to calculate height based on word wrapping
     let calc_height = |text: &str| -> u16 {
-        let len = text.len() as u16;
-        if len == 0 { 1 } else { (len + desc_width - 1) / desc_width }
+        if text.is_empty() {
+            return 1;
+        }
+        
+        let mut lines = 1;
+        let mut current_width = 0;
+        
+        for word in text.split_whitespace() {
+            let word_len = word.len() as u16;
+            // +1 for space if not at start of line
+            let space = if current_width == 0 { 0 } else { 1 };
+            
+            if current_width + space + word_len <= desc_width {
+                current_width += space + word_len;
+            } else {
+                lines += 1;
+                current_width = word_len;
+            }
+        }
+        lines
     };
 
     // Helper to add a keybind row
