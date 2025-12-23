@@ -564,10 +564,11 @@ impl PipeWire {
             eyre::eyre!("Sink '{sink_name}' not found (not active and no profile switch available)")
         })?;
 
-        info!(
-            "Switching profile: {} → {} (device: {})",
-            profile_sink.profile_name, sink_name, profile_sink.device_name
-        );
+                // Log at debug level to reduce noise
+                debug!(
+                    "Switching profile: {} → {} (device: {})",
+                    profile_sink.profile_name, sink_name, profile_sink.device_name
+                );
 
         // Acquire per-device lock to serialize profile switches
         let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
