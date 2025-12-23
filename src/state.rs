@@ -127,14 +127,14 @@ impl State {
     pub async fn reevaluate_all_windows(&mut self) -> Result<()> {
         debug!("Re-evaluating all active windows against new rules");
 
-        // Collect all tracked window IDs to avoid borrow issues
-        let window_ids: Vec<u64> = self.active_windows.keys().copied().collect();
+        // Collect all window IDs to avoid borrow issues
+        let window_ids: Vec<u64> = self.all_windows.keys().copied().collect();
 
         for window_id in window_ids {
             // Get window info (must clone to avoid borrow conflicts)
-            if let Some(window) = self.active_windows.get(&window_id) {
-                let app_id = window.app_id.clone();
-                let title = window.title.clone();
+            if let Some((app_id, title)) = self.all_windows.get(&window_id) {
+                let app_id = app_id.clone();
+                let title = title.clone();
 
                 // Process as Changed event to re-evaluate rules
                 self.process_event(WindowEvent::Changed {
@@ -387,7 +387,7 @@ impl State {
             // Window was tracked but no longer matches (e.g., title changed)
             if let Some(old_window) = self.untrack_window(id) {
                 info!(
-                    "○ UNTRACKED: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
+                    "Rule unmatched: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
                     id, old_window.trigger_desc, app_id, title
                 );
 

@@ -853,7 +853,7 @@ fn render_header(
 
     // Minimal right title
     let right_title = Line::from(vec![
-        Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
+        Span::styled("[F11/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
         Span::raw(" Help "),
     ])
     .alignment(Alignment::Right);
@@ -1097,7 +1097,7 @@ fn render_footer(
     frame.render_widget(Paragraph::new(status_text), chunks[1]);
 
     // 3. Quit Hint (Right-aligned)
-    let quit_hint = Paragraph::new(Span::styled("[q] Quit", Style::default().fg(colors::UI_SECONDARY)))
+    let quit_hint = Paragraph::new(Span::styled("[q] Quit ", Style::default().fg(colors::UI_SECONDARY)))
         .alignment(Alignment::Right);
     frame.render_widget(quit_hint, chunks[2]);
 }
