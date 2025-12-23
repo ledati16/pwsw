@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::process::Command;
 use std::time::Duration;
-use tracing::{debug, info, trace};
+use tracing::{debug, trace};
 
 // ============================================================================
 // Constants
