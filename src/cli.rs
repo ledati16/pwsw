@@ -83,7 +83,7 @@ pub enum Command {
 
     /// Show all open windows (tracked vs untracked)
     ListWindows {
-        /// Output in JSON format
+        /// Output in `JSON` format
         #[arg(long)]
         json: bool,
     },
@@ -96,7 +96,7 @@ pub enum Command {
         /// Regex pattern to test
         pattern: String,
 
-        /// Output in JSON format
+        /// Output in `JSON` format
         #[arg(long)]
         json: bool,
     },
@@ -113,6 +113,6 @@ pub enum Command {
     /// Cycle to previous configured sink
     PrevSink,
 
-    /// Terminal UI (not yet implemented)
+    /// Terminal UI for configuration and monitoring
     Tui,
 }

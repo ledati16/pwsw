@@ -6,13 +6,15 @@
 //! # Features
 //! - Automatic sink switching based on window rules
 //! - Profile switching for analog/digital outputs on the same card
-//! - Status bar integration with JSON output
+//! - Status bar integration with `JSON` output
 //! - Smart toggle between configured sinks
-//! - Multi-compositor support via Wayland protocols (wlr-foreign-toplevel, plasma-window-management)
+//! - Multi-compositor support via Wayland protocols (`wlr-foreign-toplevel`)
 //!
 //! # Supported Compositors
-//! - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (via wlr-foreign-toplevel)
-//! - KDE Plasma/KWin (via plasma-window-management)
+//! - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (via `wlr-foreign-toplevel`)
+//!
+//! # Unsupported Compositors
+//! - GNOME/Mutter, KDE Plasma 6 (no supported window management protocols exposed)
 
 pub mod cli;
 pub mod commands;
@@ -61,6 +63,27 @@ pub fn version_string() -> String {
         format!("v{base_version}+{git_commit}{dirty}")
     } else {
         format!("v{base_version}")
+    }
+}
+
+/// Format uptime in human-readable form (e.g., "1h 30m", "45s")
+#[must_use]
+pub fn format_uptime(secs: u64) -> String {
+    const SECS_PER_MINUTE: u64 = 60;
+    const SECS_PER_HOUR: u64 = 3600;
+
+    if secs < SECS_PER_MINUTE {
+        return format!("{secs}s");
+    }
+    if secs < SECS_PER_HOUR {
+        return format!("{mins}m", mins = secs / SECS_PER_MINUTE);
+    }
+    let hours = secs / SECS_PER_HOUR;
+    let mins = (secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
+    if mins > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{hours}h")
     }
 }
 

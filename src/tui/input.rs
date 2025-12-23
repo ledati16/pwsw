@@ -51,10 +51,18 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
         // Ctrl+S: Save config (global)
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-            if app.config_dirty
-                && let Err(e) = app.save_config()
-            {
-                app.set_status(format!("Failed to save config: {e}"));
+            if app.config_dirty {
+                if let Some(tx) = &app.bg_cmd_tx {
+                    let _ = tx.try_send(crate::tui::app::BgCommand::SaveConfig(app.config.clone()));
+                    // Clear dirty flag and set status immediately (optimistic)
+                    app.config_dirty = false;
+                    app.set_status("Saving configuration...".to_string());
+                } else {
+                    // Fallback to blocking save if background worker not available
+                    if let Err(e) = app.save_config() {
+                        app.set_status(format!("Failed to save config: {e}"));
+                    }
+                }
             }
             return;
         }
@@ -202,11 +210,18 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
                 return;
             }
+            // F1: Toggle help overlay (global)
+            KeyCode::F(1) => {
+                app.show_help = true;
+                app.help_scroll_state.select(Some(0));
+                *app.help_scroll_state.offset_mut() = 0;
+                return;
+            }
             // Help toggle is handled in global section below if no modal,
             // but if modal is active, we might want to allow it?
             // "Global shortcuts" say ? is global.
-            // Let's allow ? to open help even over a modal.
-            KeyCode::Char('?') => {
+            // Let's allow ? to open help even over a modal, but ONLY if not in input
+            KeyCode::Char('?') if !app.is_input_focused() => {
                 app.show_help = true;
                 // Reset cursor and scroll to top when opening help
                 app.help_scroll_state.select(Some(0));
@@ -266,8 +281,17 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
         }
 
-        // ?: Toggle help overlay
-        (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+        // F1: Always toggle help overlay (global)
+        (KeyCode::F(1), _) => {
+            app.show_help = true;
+            app.help_scroll_state.select(Some(0));
+            *app.help_scroll_state.offset_mut() = 0;
+        }
+
+        // ?: Toggle help overlay (only if no input focused)
+        (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if !app.is_input_focused() =>
+        {
             app.show_help = true;
             // Reset cursor and scroll to top when opening help
             app.help_scroll_state.select(Some(0));
@@ -910,9 +934,6 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     {
                         changed = true;
                     }
-                }
-                2 => {
-                    // Sink field - don't type
                 }
                 3 => {
                     // desc

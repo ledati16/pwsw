@@ -6,6 +6,8 @@ use clap::Parser;
 use color_eyre::eyre::Result;
 use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 
+use std::sync::Arc;
+
 /// Initialize logging
 ///
 /// - For CLI commands: Use `tracing_subscriber` to log to stdout/stderr.
@@ -52,7 +54,7 @@ async fn main() -> Result<()> {
             // Daemon handles its own logging initialization (file vs stdout)
             // But we need to load config first
             let config = Config::load()?;
-            daemon::run(config, foreground).await
+            daemon::run(Arc::new(config), foreground).await
         }
 
         // Hybrid commands (work with or without daemon)

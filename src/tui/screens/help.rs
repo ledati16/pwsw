@@ -246,7 +246,7 @@ pub(crate) fn get_section_at_row(
     let global_section = "Global Shortcuts".to_string();
     add_meta_section(&mut metadata, &global_section);
     if !collapsed_sections.contains(&global_section) {
-        for _ in 0..7 {
+        for _ in 0..8 {
             add_meta_keybind(&mut metadata);
         }
     }
@@ -500,7 +500,7 @@ fn build_help_rows(
             "Esc",
             "Clear status / Cancel quit",
         );
-        add_keybind(&mut rows, &mut metadata, "?", "Toggle this help");
+        add_keybind(&mut rows, &mut metadata, "F1, ?", "Toggle this help");
     }
 
     rows

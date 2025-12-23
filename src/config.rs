@@ -667,7 +667,6 @@ desc = "Headphones"
 #   Sway/River: swaymsg -t get_tree
 #   Hyprland: hyprctl clients
 #   Niri: niri msg windows
-#   KDE Plasma: KDE window inspector
 #
 # Regex patterns (for app_id and title fields):
 #   ".*"          - matches any window (useful for testing)
