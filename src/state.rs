@@ -408,7 +408,7 @@ impl State {
         self.all_windows.remove(&id);
 
         if let Some(closed_window) = self.untrack_window(id) {
-            debug!(
+            info!(
                 "Tracked window closed: {} (was: {})",
                 id, closed_window.trigger_desc
             );
@@ -513,7 +513,11 @@ pub fn switch_audio_blocking(
     icon: Option<&str>,
     notify: bool,
 ) -> Result<()> {
-    info!("Switching: {} ({})", desc, name);
+    if let Some(reason) = custom_desc {
+        info!("Switching: {} ({}) [Reason: {}]", desc, name, reason);
+    } else {
+        info!("Switching: {} ({})", desc, name);
+    }
     PipeWire::activate_sink(name)?;
 
     if notify {
