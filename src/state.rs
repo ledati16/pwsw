@@ -387,7 +387,7 @@ impl State {
             // Window was tracked but no longer matches (e.g., title changed)
             if let Some(old_window) = self.untrack_window(id) {
                 info!(
-                    "⚠️  UNTRACKED: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
+                    "○ UNTRACKED: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
                     id, old_window.trigger_desc, app_id, title
                 );
 
