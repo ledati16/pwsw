@@ -25,6 +25,7 @@ pub(crate) enum SinksMode {
     AddEdit,
     Delete,
     SelectSink,
+    Inspect,
 }
 
 /// Editor state for add/edit modal
@@ -147,6 +148,10 @@ impl SinksScreen {
         self.mode = SinksMode::Delete;
     }
 
+    pub(crate) fn start_inspect(&mut self) {
+        self.mode = SinksMode::Inspect;
+    }
+
     pub(crate) fn cancel(&mut self) {
         self.mode = SinksMode::List;
     }
@@ -173,6 +178,7 @@ pub(crate) fn render_sinks(
             profile_sink_list,
             screen_state,
         ),
+        SinksMode::Inspect => render_inspect_popup(frame, area, sinks, screen_state),
     }
 }
 
@@ -192,13 +198,19 @@ fn render_list(
             let is_active = active_sinks.contains(&sink.name);
 
             // Status Cell
-            let status_cell = if is_active {
-                Cell::from(Span::styled(
-                    "● Active",
-                    Style::default().fg(colors::UI_SUCCESS),
-                ))
+            let status_span = if is_active {
+                Span::styled("● Active", Style::default().fg(colors::UI_SUCCESS))
             } else {
-                Cell::from(Span::styled("○", Style::default().fg(colors::UI_SECONDARY)))
+                Span::styled("○", Style::default().fg(colors::UI_SECONDARY))
+            };
+
+            let status_cell = if is_selected {
+                Cell::from(Line::from(vec![
+                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    status_span,
+                ]))
+            } else {
+                Cell::from(status_span)
             };
 
             // Description Cell (with icon if present)
@@ -212,7 +224,7 @@ fn render_list(
                 desc_text,
                 if is_selected {
                     Style::default()
-                        .fg(colors::UI_SELECTED)
+                        .fg(colors::UI_TEXT)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(colors::UI_TEXT)
@@ -290,6 +302,69 @@ fn render_list(
 
     // Render scroll arrows using helper
     crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
+}
+
+/// Render inspect modal
+fn render_inspect_popup(
+    frame: &mut Frame,
+    area: Rect,
+    sinks: &[SinkConfig],
+    screen_state: &SinksScreen,
+) {
+    if screen_state.selected >= sinks.len() {
+        return;
+    }
+    let sink = &sinks[screen_state.selected];
+    
+    let popup_area = centered_modal(modal_size::MEDIUM, area);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(" Sink Details ")
+        .style(Style::default().bg(colors::UI_MODAL_BG));
+    frame.render_widget(block.clone(), popup_area);
+
+    let inner = block.inner(popup_area);
+
+    let mut lines = Vec::new();
+    
+    // Helper for fields
+    let mut add_field = |label: &str, value: &str| {
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}: ", label), Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
+        ]));
+        lines.push(Line::from(""));
+    };
+
+    add_field("Name", &sink.name);
+    add_field("Description", &sink.desc);
+    
+    if let Some(icon) = &sink.icon {
+        add_field("Icon", icon);
+    } else {
+        add_field("Icon", "(auto-detected)");
+    }
+
+    if sink.default {
+        lines.push(Line::from(Span::styled("✓ Default Sink", Style::default().fg(colors::UI_SUCCESS))));
+    } else {
+        lines.push(Line::from(Span::styled("✗ Not Default", Style::default().fg(colors::UI_SECONDARY))));
+    }
+
+    // Hint at bottom
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Press [Enter] or [Esc] to close", 
+        Style::default().fg(colors::UI_HIGHLIGHT)
+    )));
+
+    let paragraph = Paragraph::new(lines)
+        .wrap(ratatui::widgets::Wrap { trim: false });
+        
+    frame.render_widget(paragraph, inner);
 }
 
 /// Render the add/edit modal

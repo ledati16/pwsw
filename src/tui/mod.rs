@@ -686,14 +686,35 @@ async fn run_app<B: ratatui::backend::Backend>(
 fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let size = frame.area();
 
+    // Calculate context bar content and required height first
+    let context_text = get_context_bar_text(app);
+    let available_width = size.width.max(1);
+    
+    // Calculate required lines based on wrapping behavior
+    // We iterate through spans to calculate the total visual width accurately
+    let mut total_width = 0;
+    for span in context_text.spans.iter() {
+        total_width += span.width();
+    }
+    
+    // Calculate required lines: ceil(total_width / available_width)
+    let context_height = if total_width == 0 {
+        1
+    } else {
+        (total_width as u16 + available_width - 1) / available_width
+    };
+    
+    // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
+    let context_height = context_height.max(1).min(3);
+
     // Create main layout: [Header (tabs) | Context Bar | Content | Footer (status)]
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // Header with tabs
-            Constraint::Length(1), // Context bar
-            Constraint::Min(0),    // Content area
-            Constraint::Length(1), // Footer
+            Constraint::Length(3),              // Header with tabs
+            Constraint::Length(context_height), // Context bar (dynamic fixed height)
+            Constraint::Min(0),                 // Content area
+            Constraint::Length(1),              // Footer
         ])
         .split(size);
 
@@ -701,7 +722,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     render_header(frame, chunks[0], app.current_screen, app.config_dirty);
 
     // Render context bar
-    render_context_bar(frame, chunks[1], app);
+    render_context_bar_with_content(frame, chunks[1], context_text);
 
     // Render screen content
     match app.current_screen {
@@ -809,7 +830,7 @@ fn render_header(
         .position(|&s| s == current_screen)
         .unwrap_or(0);
 
-    // Build left title with optional styled [unsaved] indicator
+    // Build left title with optional styled [Ctrl+S] Save indicator
     let version = crate::version_string();
     let left_title = if config_dirty {
         ratatui::widgets::block::Title::from(Line::from(vec![
@@ -817,7 +838,7 @@ fn render_header(
             Span::raw(&version),
             Span::raw(" "),
             Span::styled(
-                "[unsaved]",
+                "[Ctrl+S] Save",
                 Style::default()
                     .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
@@ -830,19 +851,20 @@ fn render_header(
         ]))
     };
 
+    // Minimal right title
+    let right_title = Line::from(vec![
+        Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
+        Span::raw(" Help "),
+    ])
+    .alignment(Alignment::Right);
+
     let tabs = Tabs::new(titles)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .title(left_title)
-                .title_top(
-                    Line::from(vec![
-                        Span::styled("[F1/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Help "),
-                    ])
-                    .alignment(Alignment::Right),
-                ),
+                .title_top(right_title),
         )
         .select(selected)
         .style(Style::default().fg(colors::UI_SECONDARY))
@@ -855,16 +877,27 @@ fn render_header(
     frame.render_widget(tabs, area);
 }
 
-/// Render the context bar with screen-specific actions
-// Context bar shows comprehensive keybinding hints for all screen modes
-fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
+/// Render the context bar with pre-calculated content
+fn render_context_bar_with_content(frame: &mut Frame, area: Rect, content: Line) {
+    let paragraph = Paragraph::new(content)
+        .style(
+            Style::default()
+                .fg(colors::UI_SECONDARY)
+                .bg(ratatui::style::Color::Black),
+        )
+        .wrap(ratatui::widgets::Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+/// Generate the context bar text based on current app state
+fn get_context_bar_text(app: &App) -> Line<'static> {
     use crate::tui::app::ScreenMode;
     use crate::tui::screens::rules::RulesMode;
     use crate::tui::screens::sinks::SinksMode;
 
     let mode = app.get_screen_mode();
 
-    let text = match (app.current_screen, mode) {
+    match (app.current_screen, mode) {
         (app::Screen::Dashboard, ScreenMode::List) => {
             // Phase 9B: View-aware context bar for dashboard
             use crate::tui::screens::DashboardView;
@@ -916,7 +949,9 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" Delete  "),
             Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Default"),
+            Span::raw(" Default  "),
+            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Inspect"),
         ]),
         (app::Screen::Sinks, ScreenMode::Modal) => {
             // Determine which modal we're in
@@ -943,6 +978,10 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                     Span::raw(" Cancel"),
                 ]),
+                SinksMode::Inspect => Line::from(vec![
+                    Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Close Details"),
+                ]),
                 SinksMode::List => Line::from(""), // Should not happen in Modal mode
             }
         }
@@ -955,7 +994,9 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" Edit  "),
             Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Delete"),
+            Span::raw(" Delete  "),
+            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Inspect"),
         ]),
         (app::Screen::Rules, ScreenMode::Modal) => {
             // Determine which modal we're in
@@ -993,11 +1034,17 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
                     Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                     Span::raw(" Cancel"),
                 ]),
+                RulesMode::Inspect => Line::from(vec![
+                    Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Close Details"),
+                ]),
                 RulesMode::List => Line::from(""), // Should not happen in Modal mode
             }
         }
         (app::Screen::Settings, ScreenMode::List) => Line::from(vec![
             Span::raw("↑↓ Navigate  "),
+            Span::styled("[PgUp/PgDn]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Scroll Info  "),
             Span::styled("[Enter/Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
             Span::raw(" Toggle/Edit"),
         ]),
@@ -1009,14 +1056,7 @@ fn render_context_bar(frame: &mut Frame, area: Rect, app: &App) {
             Span::raw(" Cancel"),
         ]),
         _ => Line::from(""),
-    };
-
-    let paragraph = Paragraph::new(text).style(
-        Style::default()
-            .fg(colors::UI_SECONDARY)
-            .bg(ratatui::style::Color::Black),
-    );
-    frame.render_widget(paragraph, area);
+    }
 }
 
 /// Render the footer with keyboard shortcuts and status
@@ -1029,45 +1069,35 @@ fn render_footer(
 ) {
     use throbber_widgets_tui::Throbber;
 
-    // When a daemon action is pending, render a small throbber on the left and the
-    // status message to the right. Otherwise render the normal footer text.
-    if daemon_action_pending {
-        // Split area into throbber (3 chars) and text
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(3), Constraint::Min(0)])
-            .split(area);
+    // Split footer: [Throbber (3) | Status (Min 0) | Quit (8)]
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(3), // Throbber/Dot area
+            Constraint::Min(0),    // Status message
+            Constraint::Length(10), // Quit hint
+        ])
+        .split(area);
 
+    // 1. Throbber/Status Dot
+    if daemon_action_pending {
         let throb = Throbber::default().style(Style::default().fg(colors::UI_WARNING));
         frame.render_stateful_widget(throb, chunks[0], throbber_state);
-
-        let text = if let Some(msg) = status_message {
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(msg, Style::default().fg(colors::UI_TEXT)),
-            ])
-        } else {
-            Line::from(vec![Span::raw("Daemon action in progress...")])
-        };
-        let footer = Paragraph::new(text);
-        frame.render_widget(footer, chunks[1]);
-    } else {
-        let text = if let Some(msg) = status_message {
-            Line::from(vec![
-                Span::styled("● ", Style::default().fg(colors::UI_WARNING)),
-                Span::styled(msg, Style::default().fg(colors::UI_TEXT)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::raw("[q] Quit  "),
-                Span::styled("[Tab/Shift-Tab]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Cycle  "),
-                Span::styled("Ctrl+S", Style::default().fg(colors::UI_SUCCESS)),
-                Span::raw(" Save"),
-            ])
-        };
-
-        let footer = Paragraph::new(text);
-        frame.render_widget(footer, area);
+    } else if status_message.is_some() {
+        let dot = Paragraph::new(Span::styled("● ", Style::default().fg(colors::UI_WARNING)));
+        frame.render_widget(dot, chunks[0]);
     }
+
+    // 2. Status Message
+    let status_text = if let Some(msg) = status_message {
+        Span::styled(msg, Style::default().fg(colors::UI_TEXT))
+    } else {
+        Span::raw("")
+    };
+    frame.render_widget(Paragraph::new(status_text), chunks[1]);
+
+    // 3. Quit Hint (Right-aligned)
+    let quit_hint = Paragraph::new(Span::styled("[q] Quit", Style::default().fg(colors::UI_SECONDARY)))
+        .alignment(Alignment::Right);
+    frame.render_widget(quit_hint, chunks[2]);
 }

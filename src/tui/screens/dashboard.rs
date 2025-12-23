@@ -275,8 +275,8 @@ fn render_daemon_section(
         ("STOPPED", colors::UI_ERROR, "○")
     };
 
-    // Build status line
-    let status_line = Line::from(vec![
+    // Build compact status line
+    let mut status_spans = vec![
         Span::styled(status_icon, Style::default().fg(status_color)),
         Span::raw(" "),
         Span::styled(
@@ -285,72 +285,67 @@ fn render_daemon_section(
                 .fg(status_color)
                 .add_modifier(Modifier::BOLD),
         ),
-    ]);
+    ];
 
-    let mut lines = vec![status_line];
-
-    // Add systemd unit status if daemon is running and reports it
+    // Append systemd status if available
     if let Some(enabled) = screen_state.service_enabled {
+        status_spans.push(Span::styled(" · ", Style::default().fg(colors::UI_SECONDARY)));
         let (unit_icon, unit_text, unit_color) = if enabled {
             ("✓", "enabled", colors::UI_SUCCESS)
         } else {
             ("✗", "disabled", colors::UI_ERROR)
         };
-
-        lines.push(Line::from(vec![
-            Span::styled("SystemD unit: ", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(unit_icon, Style::default().fg(unit_color)),
-            Span::raw(" "),
-            Span::styled(unit_text, Style::default().fg(unit_color)),
-        ]));
+        status_spans.push(Span::styled(unit_icon, Style::default().fg(unit_color)));
+        status_spans.push(Span::raw(" "));
+        status_spans.push(Span::styled(unit_text, Style::default().fg(unit_color)));
     }
 
-    // Add spacing to push buttons to bottom
-    lines.push(Line::from(""));
-    if screen_state.service_enabled.is_none() {
-        lines.push(Line::from("")); // Extra line if no systemd status
-    }
+    let mut lines = vec![
+        Line::from(status_spans),
+        Line::from(""), // Spacing
+    ];
 
-    // Action buttons (all in a single row)
-    let actions: &[&str] = if screen_state.max_action_index == 4 {
-        &["START", "STOP", "RESTART", "ENABLE", "DISABLE"]
-    } else {
-        &["START", "STOP", "RESTART"]
-    };
-
-    let separator = Span::styled(" · ", Style::default().fg(colors::UI_SECONDARY));
-
-    // Build button spans
-    let mut button_spans = Vec::new();
-    for (i, action) in actions.iter().enumerate() {
-        let is_selected = i == screen_state.selected_action;
-
-        // Add separator before (except first)
-        if i > 0 {
-            button_spans.push(separator.clone());
-        }
-
-        // Use brackets around selected item, reserve space on unselected for alignment
+    // Helper for buttons
+    let render_button = |label: &'static str, index: usize| -> Vec<Span> {
+        let is_selected = index == screen_state.selected_action;
+        let mut spans = Vec::new();
         if is_selected {
-            button_spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
-            button_spans.push(Span::styled(
-                *action,
+            spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
+            spans.push(Span::styled(
+                label,
                 Style::default()
                     .fg(colors::UI_SELECTED)
                     .add_modifier(Modifier::BOLD),
             ));
-            button_spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
+            spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
         } else {
-            // Reserve space for brackets to prevent text shifting
-            button_spans.push(Span::raw(" "));
-            button_spans.push(Span::styled(*action, Style::default().fg(colors::UI_TEXT)));
-            button_spans.push(Span::raw(" "));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(label, Style::default().fg(colors::UI_TEXT)));
+            spans.push(Span::raw(" "));
         }
+        spans
+    };
+
+    // Row 1: Runtime actions
+    let mut row1 = Vec::new();
+    row1.extend(render_button("START", 0));
+    row1.push(Span::raw("  "));
+    row1.extend(render_button("STOP", 1));
+    row1.push(Span::raw("  "));
+    row1.extend(render_button("RESTART", 2));
+    
+    lines.push(Line::from(row1));
+
+    // Row 2: Persistence actions (only if systemd available)
+    if screen_state.max_action_index == 4 {
+        let mut row2 = Vec::new();
+        row2.extend(render_button("ENABLE", 3));
+        row2.push(Span::raw("   "));
+        row2.extend(render_button("DISABLE", 4));
+        lines.push(Line::from(row2));
     }
 
-    lines.push(Line::from(button_spans));
-
-    let paragraph = Paragraph::new(lines);
+    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
     frame.render_widget(paragraph, inner);
 }
 
@@ -850,13 +845,15 @@ fn render_log_viewer(
         visible_logs
     };
 
-    let paragraph = Paragraph::new(log_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(title)
-            .border_style(Style::default().fg(border_color)),
-    );
+    let paragraph = Paragraph::new(log_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(title)
+                .border_style(Style::default().fg(border_color)),
+        )
+        .wrap(ratatui::widgets::Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
 }
