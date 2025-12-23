@@ -565,6 +565,9 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
                             if notify_enabled {
                                 let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
                             }
+
+                            // Drain any pending events that occurred during processing (e.g. from atomic save steps)
+                            while config_rx.try_recv().is_ok() {}
                         },
                         Err(e) => {
                             error!("Failed to reload config: {e:#}");
