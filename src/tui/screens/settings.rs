@@ -15,8 +15,11 @@ use crate::config::Settings;
 use crate::style::colors;
 use crate::tui::widgets::{centered_modal, modal_size};
 
-/// Height of the description panel at the bottom of the settings screen
-const DESCRIPTION_PANEL_HEIGHT: u16 = 14;
+/// Minimum height of the description panel at the bottom of the settings screen
+const DESCRIPTION_PANEL_MIN_HEIGHT: u16 = 14;
+
+/// Target percentage of the screen height for the description panel
+const DESCRIPTION_PANEL_PERCENT: u16 = 40;
 
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -278,12 +281,15 @@ pub(crate) fn render_settings(
     settings: &Settings,
     screen_state: &mut SettingsScreen,
 ) {
+    // Calculate dynamic height: 40% of screen, but at least 14 lines
+    let desc_height = (area.height * DESCRIPTION_PANEL_PERCENT / 100).max(DESCRIPTION_PANEL_MIN_HEIGHT);
+
     // Split into [settings list | description]
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(10),                          // Settings list
-            Constraint::Length(DESCRIPTION_PANEL_HEIGHT), // Description (expanded for detailed help)
+            Constraint::Min(10),             // Settings list
+            Constraint::Length(desc_height), // Description (dynamic height)
         ])
         .split(area);
 
