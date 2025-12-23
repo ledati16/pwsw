@@ -67,7 +67,9 @@ async fn forwarder_collapses_rapid_requests_and_forwards_latest_after_drain() {
     let prefill = cmd_rx.recv().await.expect("expected prefill message");
     match prefill {
         BgCommand::DaemonAction(_) => {}
-        BgCommand::PreviewRequest { .. } => panic!("expected daemon action prefill"),
+        BgCommand::PreviewRequest { .. } | BgCommand::SaveConfig(_) => {
+            panic!("expected daemon action prefill")
+        }
     }
 
     // Now the forwarder should be able to deliver the latest preview request
@@ -85,7 +87,9 @@ async fn forwarder_collapses_rapid_requests_and_forwards_latest_after_drain() {
             assert_eq!(app_pattern, "three");
             assert!(title_pattern.is_none());
         }
-        other @ BgCommand::DaemonAction(_) => panic!("unexpected command: {other:?}"),
+        other @ (BgCommand::DaemonAction(_) | BgCommand::SaveConfig(_)) => {
+            panic!("unexpected command: {other:?}")
+        }
     }
 
     // cleanup
@@ -126,7 +130,9 @@ async fn forwarder_sends_when_space_appears_quickly() {
             assert_eq!(app_pattern, "alpha");
             assert!(title_pattern.is_none());
         }
-        other @ BgCommand::DaemonAction(_) => panic!("unexpected command: {other:?}"),
+        other @ (BgCommand::DaemonAction(_) | BgCommand::SaveConfig(_)) => {
+            panic!("unexpected command: {other:?}")
+        }
     }
 
     drop(preview_in_tx);

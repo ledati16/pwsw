@@ -224,7 +224,7 @@ pub async fn run() -> Result<()> {
                 && dm == crate::daemon_manager::DaemonManager::Systemd
             {
                 // Query enabled state (uses systemctl)
-                Some(dm.is_enabled())
+                Some(dm.is_enabled().await)
             } else {
                 None
             };
@@ -295,13 +295,19 @@ pub async fn run() -> Result<()> {
                 match cmd {
                     BgCommand::DaemonAction(action) => {
                         // execute action and send result back
-                        let dm = crate::daemon_manager::DaemonManager::detect();
+                        // Run detection in blocking pool
+                        let dm = tokio::task::spawn_blocking(
+                            crate::daemon_manager::DaemonManager::detect,
+                        )
+                        .await
+                        .unwrap_or(crate::daemon_manager::DaemonManager::Direct);
+
                         let res = match action {
                             crate::tui::app::DaemonAction::Start => dm.start().await,
                             crate::tui::app::DaemonAction::Stop => dm.stop().await,
                             crate::tui::app::DaemonAction::Restart => dm.restart().await,
-                            crate::tui::app::DaemonAction::Enable => dm.enable(),
-                            crate::tui::app::DaemonAction::Disable => dm.disable(),
+                            crate::tui::app::DaemonAction::Enable => dm.enable().await,
+                            crate::tui::app::DaemonAction::Disable => dm.disable().await,
                         };
                         match res {
                             Ok(msg) => {
@@ -323,6 +329,27 @@ pub async fn run() -> Result<()> {
                                     let _ = write!(s, "{e:#}");
                                     s
                                 }));
+                            }
+                        }
+                    }
+                    BgCommand::SaveConfig(config) => {
+                        // Run blocking save in thread pool
+                        let join = tokio::task::spawn_blocking(move || config.save());
+                        match join.await {
+                            Ok(Ok(())) => {
+                                let _ = bg_tx.send(AppUpdate::ActionResult(
+                                    "Configuration saved successfully".to_string(),
+                                ));
+                            }
+                            Ok(Err(e)) => {
+                                let _ = bg_tx.send(AppUpdate::ActionResult(format!(
+                                    "Failed to save config: {e}"
+                                )));
+                            }
+                            Err(e) => {
+                                let _ = bg_tx.send(AppUpdate::ActionResult(format!(
+                                    "Internal error saving config: {e}"
+                                )));
                             }
                         }
                     }
@@ -811,7 +838,7 @@ fn render_header(
                 .title(left_title)
                 .title_top(
                     Line::from(vec![
-                        Span::styled("[?]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::styled("[F1/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Help "),
                     ])
                     .alignment(Alignment::Right),

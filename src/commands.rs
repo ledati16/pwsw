@@ -40,8 +40,8 @@ fn get_sink_status(
 /// List all available sinks (active and profile-switch)
 ///
 /// # Errors
-/// Returns an error if `PipeWire` query fails or JSON serialization fails.
-// Sink listing with both JSON and human-readable formatting - cohesive output logic
+/// Returns an error if `PipeWire` query fails or `JSON` serialization fails.
+// Sink listing with both `JSON` and human-readable formatting - cohesive output logic
 pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     let objects = PipeWire::dump()?;
     let active = PipeWire::get_active_sinks(&objects);
@@ -316,36 +316,16 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     Ok(())
 }
 
-/// Format uptime in human-readable form
-fn format_uptime(secs: u64) -> String {
-    const SECS_PER_MINUTE: u64 = 60;
-    const SECS_PER_HOUR: u64 = 3600;
-
-    if secs < SECS_PER_MINUTE {
-        return format!("{secs}s");
-    }
-    if secs < SECS_PER_HOUR {
-        return format!("{mins}m", mins = secs / SECS_PER_MINUTE);
-    }
-    let hours = secs / SECS_PER_HOUR;
-    let mins = (secs % SECS_PER_HOUR) / SECS_PER_MINUTE;
-    if mins > 0 {
-        format!("{hours}h {mins}m")
-    } else {
-        format!("{hours}h")
-    }
-}
-
 // ============================================================================
 // IPC-based Commands (require daemon)
 // ============================================================================
 
-/// Query system and daemon status (hybrid local+IPC command)
+/// Query system and daemon status (hybrid local+`IPC` command)
 ///
 /// # Errors
-/// Returns an error if `PipeWire` query fails or IPC communication fails.
+/// Returns an error if `PipeWire` query fails or `IPC` communication fails.
 pub async fn status(config: &Config, json_output: bool) -> Result<()> {
-    // Always query PipeWire for current sink (works with or without daemon)
+    // Always query `PipeWire` for current sink (works with or without daemon)
     let current_sink_name = PipeWire::get_default_sink_name()?;
     let current_sink_desc = config
         .sinks
@@ -386,7 +366,7 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
                     "running": true,
                     "version": version,
                     "uptime_secs": uptime_secs,
-                    "uptime_human": format_uptime(uptime_secs),
+                    "uptime_human": crate::format_uptime(uptime_secs),
                     "daemon_sink": daemon_sink,
                     "active_window": active_window,
                     "tracked_windows": tracked_windows,
@@ -422,7 +402,7 @@ pub async fn status(config: &Config, json_output: bool) -> Result<()> {
             println!(
                 "{} {}",
                 "Status:".dim(),
-                format!("Running (uptime: {})", format_uptime(uptime_secs)).success()
+                format!("Running (uptime: {})", crate::format_uptime(uptime_secs)).success()
             );
             println!("{} {}", "Version:".dim(), version);
             if let Some(rule) = active_window {

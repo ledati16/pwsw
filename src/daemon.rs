@@ -1,12 +1,15 @@
 //! Daemon mode
 //!
 //! Runs the main event loop, listening to compositor window events,
-//! IPC requests, and switching audio sinks based on configured rules.
+//! `IPC` requests, and switching audio sinks based on configured rules.
 
 use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
+use tempfile::NamedTempFile;
 use tokio::signal;
 use tokio::sync::broadcast;
 use tracing::{error, info, warn};
@@ -64,17 +67,42 @@ fn write_pid_file() -> Result<()> {
     let pid_path = get_pid_file_path()?;
     let pid = std::process::id();
 
-    std::fs::write(&pid_path, pid.to_string())
-        .with_context(|| format!("Failed to write PID file: {}", pid_path.display()))?;
+    let dir = pid_path
+        .parent()
+        .context("Failed to get parent directory of PID file")?;
 
-    // Set user-only permissions on Unix
+    // Create a temporary file in the same directory as the target PID file
+    let mut temp = NamedTempFile::new_in(dir)
+        .with_context(|| format!("Failed to create temporary PID file in {}", dir.display()))?;
+
+    // Write the PID to the temporary file
+    write!(temp, "{pid}").with_context(|| {
+        format!(
+            "Failed to write to temporary PID file: {}",
+            temp.path().display()
+        )
+    })?;
+
+    // Set user-only permissions on Unix for the temp file before persisting
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&pid_path, std::fs::Permissions::from_mode(0o600)).with_context(
-            || format!("Failed to set PID file permissions: {}", pid_path.display()),
-        )?;
+        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o600))
+            .with_context(|| {
+                format!(
+                    "Failed to set permissions on temporary PID file: {}",
+                    temp.path().display()
+                )
+            })?;
     }
+
+    // Atomically move the temporary file to the final PID file path
+    temp.persist(&pid_path).with_context(|| {
+        format!(
+            "Failed to persist temporary PID file to {}",
+            pid_path.display()
+        )
+    })?;
 
     info!("PID file written: {} (PID: {})", pid_path.display(), pid);
     Ok(())
@@ -125,6 +153,7 @@ fn check_and_cleanup_stale_pid_file() -> Result<bool> {
         use nix::unistd::Pid;
 
         // Signal 0 is a special case: checks if process exists without sending a signal
+        #[allow(clippy::cast_possible_wrap)]
         match kill(Pid::from_raw(pid as i32), None) {
             Ok(()) => {
                 // Process exists
@@ -186,7 +215,7 @@ struct IpcContext {
     tracked_with_sinks: Vec<(u64, String, String, String, String)>,
     // all windows: (id, app_id, title)
     all_windows: Vec<(u64, String, String)>,
-    config: Config,
+    config: Arc<Config>,
     shutdown_tx: broadcast::Sender<()>,
 }
 
@@ -197,10 +226,13 @@ struct IpcContext {
 /// connection fails, or any critical component encounters an error.
 ///
 /// # Panics
-/// Panics if the SIGTERM signal handler cannot be installed. This is a platform-level
+/// Panics if the `SIGTERM` signal handler cannot be installed. This is a platform-level
 /// failure that prevents graceful shutdown handling.
+///
+/// # Returns
+/// Returns `Ok(())` on successful daemon shutdown.
 // Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
-pub async fn run(config: Config, foreground: bool) -> Result<()> {
+pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     use std::process::Command;
     use std::time::Duration;
     // Check if a daemon is already running BEFORE any initialization
@@ -246,8 +278,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                     std::env::current_dir()
                         .ok()
                         .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
+                        .map_or_else(|| "unknown".to_string(), |p| p.display().to_string())
                 )
             })?;
 
@@ -297,8 +328,8 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
         );
     }
 
-    // Validate required PipeWire tools are available
-    PipeWire::validate_tools().context("PipeWire tools validation failed")?;
+    // Validate required `PipeWire` tools are available
+    PipeWire::validate_tools().context("`PipeWire` tools validation failed")?;
 
     // Initialize logging with config log_level
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
@@ -364,10 +395,16 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
     let start_time = Instant::now();
 
     // Detect how the daemon is being managed (systemd vs direct)
-    let daemon_manager = crate::daemon_manager::DaemonManager::detect();
+    // Run detection in blocking thread as it executes external command
+    let daemon_manager = tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::detect)
+        .await
+        .map_err(|e| eyre::eyre!("Join error during manager detection: {e:#}"))?;
     info!("Daemon manager: {:?}", daemon_manager);
 
-    let mut state = State::new(config, daemon_manager)?;
+    let config_clone = config.clone();
+    let mut state = tokio::task::spawn_blocking(move || State::new(config_clone, daemon_manager))
+        .await
+        .map_err(|e| eyre::eyre!("Join error during state initialization: {e:#}"))??;
 
     // Create shutdown channel with larger buffer to handle concurrent subscribers
     let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
@@ -512,11 +549,11 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                 match Config::load() {
                     Ok(new_config) => {
                         let notify_enabled = state.config.settings.notify_manual;
-                        state.reload_config(new_config);
+                        state.reload_config(Arc::new(new_config));
 
                         // Re-evaluate all active windows against new rules
                         if let Err(e) = state.reevaluate_all_windows().await {
-                            error!("Failed to re-evaluate windows after config reload: {e:#}", e = e);
+                            error!("Failed to re-evaluate windows after config reload: {e:#}");
                         }
 
                         if notify_enabled {
@@ -524,7 +561,7 @@ pub async fn run(config: Config, foreground: bool) -> Result<()> {
                         }
                     },
                     Err(e) => {
-                        error!("Failed to reload config: {e:#}", e = e);
+                        error!("Failed to reload config: {e:#}");
                         if state.config.settings.notify_manual {
                             let _ = send_notification("Reload Failed", &format!("Config error: {e:#}"), None);
                         }
@@ -672,16 +709,24 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
             // Resolve sink reference (name, description, or 1-indexed position)
             if let Some(target) = ctx.config.resolve_sink(&sink) {
                 // Attempt to activate the sink via PipeWire
-                match PipeWire::activate_sink(&target.name) {
-                    Ok(()) => Response::Ok {
+                // Run blocking activation in spawn_blocking to avoid blocking the IPC task/runtime
+                let target_name = target.name.clone();
+                let join =
+                    tokio::task::spawn_blocking(move || PipeWire::activate_sink(&target_name));
+
+                match join.await {
+                    Ok(Ok(())) => Response::Ok {
                         message: format!("Switched to sink: {}", target.desc),
                     },
-                    Err(e) => Response::Error {
+                    Ok(Err(e)) => Response::Error {
                         message: format!(
                             "Failed to activate sink '{target_desc}': {e:#}",
                             target_desc = target.desc,
                             e = e
                         ),
+                    },
+                    Err(e) => Response::Error {
+                        message: format!("Internal error during sink activation: {e:#}"),
                     },
                 }
             } else {

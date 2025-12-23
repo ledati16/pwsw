@@ -1,7 +1,7 @@
 //! Compositor abstraction layer
 //!
 //! Provides window event streams from Wayland compositors using standard protocols:
-//! - wlr-foreign-toplevel-management (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire)
+//! - `wlr-foreign-toplevel-management` (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire)
 
 mod wlr_toplevel;
 
@@ -73,16 +73,16 @@ const WINDOW_EVENT_CHANNEL_CAPACITY: usize = 100;
 ///
 /// # Supported Compositors
 ///
-/// - **Sway** - wlr-foreign-toplevel
-/// - **Hyprland** - wlr-foreign-toplevel  
-/// - **Niri** - wlr-foreign-toplevel
-/// - **River** - wlr-foreign-toplevel
-/// - **Wayfire** - wlr-foreign-toplevel
-/// - **labwc** - wlr-foreign-toplevel
-/// - **dwl** - wlr-foreign-toplevel
-/// - **hikari** - wlr-foreign-toplevel
+/// - **Sway** - `wlr-foreign-toplevel`
+/// - **Hyprland** - `wlr-foreign-toplevel`
+/// - **Niri** - `wlr-foreign-toplevel`
+/// - **River** - `wlr-foreign-toplevel`
+/// - **Wayfire** - `wlr-foreign-toplevel`
+/// - **labwc** - `wlr-foreign-toplevel`
+/// - **dwl** - `wlr-foreign-toplevel`
+/// - **hikari** - `wlr-foreign-toplevel`
 ///
-/// **Note:** GNOME/Mutter and KDE Plasma do not expose window management protocols and are not supported.
+/// **Note:** GNOME/Mutter and KDE Plasma 6 do not expose window management protocols and are not supported.
 pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
     // Connect to Wayland display
     let conn = Connection::connect_to_env()
@@ -192,7 +192,7 @@ fn detect_available_protocol(conn: &Connection) -> Result<()> {
         "No supported window management protocol found.\n\
          \n\
          Supported protocols:\n\
-         - zwlr_foreign_toplevel_manager_v1 (Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari)\n\
+         - `zwlr_foreign_toplevel_manager_v1` (Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari)\n\
          \n\
          Unsupported compositors:\n\
          - GNOME/Mutter (no window management protocol exposed)\n\

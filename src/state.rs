@@ -5,6 +5,7 @@
 
 use color_eyre::eyre::{self, Result};
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -19,7 +20,7 @@ const BUG_NO_DEFAULT_SINK: &str =
 
 /// Main application state for daemon mode
 pub struct State {
-    pub config: Config,
+    pub config: Arc<Config>,
     pub current_sink_name: String,
     pub daemon_manager: crate::daemon_manager::DaemonManager,
     /// Tracks windows that matched rules. Entries are removed on window close.
@@ -51,7 +52,7 @@ impl State {
     /// # Panics
     /// Panics if no default sink is configured (should be prevented by config validation).
     pub fn new(
-        config: Config,
+        config: Arc<Config>,
         daemon_manager: crate::daemon_manager::DaemonManager,
     ) -> Result<Self> {
         let current_sink_name = PipeWire::get_default_sink_name().unwrap_or_else(|e| {
@@ -87,7 +88,7 @@ impl State {
 
     /// Create a State for testing without `PipeWire` dependency
     #[cfg(test)]
-    pub(crate) fn new_for_testing(config: Config, current_sink_name: String) -> Self {
+    pub(crate) fn new_for_testing(config: Arc<Config>, current_sink_name: String) -> Self {
         // Build sink lookup table for O(1) description retrieval
         let sink_lookup = config
             .sinks
@@ -105,9 +106,9 @@ impl State {
         }
     }
 
-    /// Reload configuration at runtime
-    pub fn reload_config(&mut self, new_config: Config) {
-        info!("Reloading configuration...");
+    /// Reload configuration
+    pub fn reload_config(&mut self, new_config: Arc<Config>) {
+        info!("Applying new configuration");
         self.config = new_config;
 
         // Rebuild sink lookup table
@@ -117,22 +118,12 @@ impl State {
             .iter()
             .map(|s| (s.name.clone(), s.desc.clone()))
             .collect();
-
-        info!(
-            "Configuration reloaded: {} sinks, {} rules",
-            self.config.sinks.len(),
-            self.config.rules.len()
-        );
     }
 
-    /// Re-evaluate all active windows against current rules after config reload
-    ///
-    /// This ensures that config changes take effect immediately rather than
-    /// waiting for the next window focus change. Windows that no longer match
-    /// rules will be untracked, and windows that now match will be tracked.
+    /// Re-evaluate all tracked windows against current rules
     ///
     /// # Errors
-    /// Returns an error if sink activation fails during re-evaluation.
+    /// Returns an error if any sink activation fails during re-evaluation.
     pub async fn reevaluate_all_windows(&mut self) -> Result<()> {
         debug!("Re-evaluating all active windows against new rules");
 
@@ -230,20 +221,18 @@ impl State {
         app_id: String,
         title: String,
     ) {
-        self.active_windows.insert(
-            id,
-            ActiveWindow {
-                sink_name,
-                trigger_desc,
-                opened_at: Instant::now(),
-                rule_index,
-                app_id,
-                title,
-            },
-        );
+        let window = ActiveWindow {
+            sink_name,
+            trigger_desc,
+            opened_at: Instant::now(),
+            rule_index,
+            app_id,
+            title,
+        };
+        self.active_windows.insert(id, window);
     }
 
-    /// Remove a tracked window, returning its info if it existed
+    /// Untrack a window
     pub fn untrack_window(&mut self, id: u64) -> Option<ActiveWindow> {
         self.active_windows.remove(&id)
     }
@@ -303,11 +292,56 @@ impl State {
         if let Some((sink_name, sink_desc, trigger_desc, rule_notify, rule_index)) = matched {
             // Update opened_at for new windows, preserve original time for existing
             if was_tracked {
-                // Window is already tracked and still matches - update app_id and title in case they changed
-                // but preserve opened_at to maintain priority ordering (no log spam on focus changes)
+                // Window is already tracked - check if the rule match has changed
                 if let Some(window) = self.active_windows.get_mut(&id) {
+                    let rule_changed =
+                        window.rule_index != rule_index || window.sink_name != sink_name;
+
+                    if rule_changed {
+                        debug!(
+                            "Rule changed for window {}: {} (rule {}) → {} (rule {})",
+                            id, window.sink_name, window.rule_index, sink_name, rule_index
+                        );
+                        window.sink_name.clone_from(&sink_name);
+                        window.rule_index = rule_index;
+                        window.trigger_desc.clone_from(&trigger_desc);
+                    }
+
+                    // Always update app_id and title in case they changed
                     window.app_id.clone_from(&app_id.to_string());
                     window.title.clone_from(&title.to_string());
+
+                    // If rule changed, re-evaluate target and potentially switch
+                    if rule_changed && self.should_switch_sink(&self.determine_target_sink()) {
+                        let target = self.determine_target_sink();
+                        let notify = rule_notify.unwrap_or(self.config.settings.notify_rules);
+                        let app_icon = get_app_icon(app_id);
+
+                        // Find target sink description for notification
+                        let target_sink = self.config.sinks.iter().find(|s| s.name == target);
+                        let desc = target_sink.map_or(target.as_str(), |s| s.desc.as_str());
+
+                        // Run blocking activation
+                        let target_clone = target.clone();
+                        let desc_clone = desc.to_string();
+                        let app_icon_clone = app_icon.clone();
+                        let trigger_desc_clone = trigger_desc.clone();
+
+                        let join = tokio::task::spawn_blocking(move || {
+                            crate::state::switch_audio_blocking(
+                                &target_clone,
+                                &desc_clone,
+                                Some(&trigger_desc_clone),
+                                Some(&app_icon_clone),
+                                notify,
+                            )
+                        });
+
+                        let inner = join.await.map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
+                        inner?;
+
+                        self.update_sink(target);
+                    }
                 }
             } else {
                 // New window match - log and track it, potentially switch sink
@@ -404,15 +438,6 @@ impl State {
             .collect()
     }
 
-    /// Get a list of ALL currently open windows (for test-rule command)
-    #[must_use]
-    pub fn get_all_windows(&self) -> Vec<(u64, String, String)> {
-        self.all_windows
-            .iter()
-            .map(|(id, (app_id, title))| (*id, app_id.clone(), title.clone()))
-            .collect()
-    }
-
     /// Get tracked windows with sink information (for `list-windows` command)
     #[must_use]
     pub fn get_tracked_windows_with_sinks(&self) -> Vec<(u64, String, String, String, String)> {
@@ -432,6 +457,15 @@ impl State {
                     sink_desc,
                 )
             })
+            .collect()
+    }
+
+    /// Get a list of ALL currently open windows (for test-rule command)
+    #[must_use]
+    pub fn get_all_windows(&self) -> Vec<(u64, String, String)> {
+        self.all_windows
+            .iter()
+            .map(|(id, (app_id, title))| (*id, app_id.clone(), title.clone()))
             .collect()
     }
 
@@ -520,7 +554,7 @@ mod tests {
             vec![make_sink("sink1", "Sink 1", true)],
             vec![make_rule(rule_app_id, rule_title, "sink1")],
         );
-        let state = State::new_for_testing(config, "sink1".to_string());
+        let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         let result = state.find_matching_rule(test_app_id, test_title);
         assert_eq!(result.is_some(), should_match);
@@ -535,7 +569,7 @@ mod tests {
                 make_rule("fire.*", None, "sink1"),
             ],
         );
-        let state = State::new_for_testing(config, "sink1".to_string());
+        let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         let result = state.find_matching_rule("firefox", "Title");
         assert!(result.is_some());
@@ -547,7 +581,7 @@ mod tests {
     #[test]
     fn test_should_switch_sink_different_returns_true() {
         let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-        let state = State::new_for_testing(config, "sink1".to_string());
+        let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         assert!(state.should_switch_sink("sink2"));
     }
@@ -555,7 +589,7 @@ mod tests {
     #[test]
     fn test_should_switch_sink_same_returns_false() {
         let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-        let state = State::new_for_testing(config, "sink1".to_string());
+        let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         assert!(!state.should_switch_sink("sink1"));
     }
@@ -570,7 +604,7 @@ mod tests {
             ],
             vec![],
         );
-        let state = State::new_for_testing(config, "default_sink".to_string());
+        let state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         assert_eq!(state.determine_target_sink(), "default_sink");
     }
@@ -584,7 +618,7 @@ mod tests {
             ],
             vec![make_rule("firefox", None, "firefox_sink")],
         );
-        let mut state = State::new_for_testing(config, "default_sink".to_string());
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         // Track a window
         state.track_window(
@@ -600,55 +634,123 @@ mod tests {
     }
 
     #[test]
-    fn test_determine_target_sink_most_recent_wins() {
+    fn test_determine_target_sink_priority_time() {
         let config = make_config(
             vec![
                 make_sink("default_sink", "Default", true),
-                make_sink("firefox_sink", "Firefox", false),
-                make_sink("mpv_sink", "MPV", false),
+                make_sink("sink1", "S1", false),
+                make_sink("sink2", "S2", false),
             ],
             vec![
-                make_rule("firefox", None, "firefox_sink"),
-                make_rule("mpv", None, "mpv_sink"),
+                make_rule("app1", None, "sink1"),
+                make_rule("app2", None, "sink2"),
             ],
         );
-        let mut state = State::new_for_testing(config, "default_sink".to_string());
-        state.config.settings.match_by_index = false;
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
-        // Track firefox first
+        // Track window 1
         state.track_window(
             1,
-            "firefox_sink".to_string(),
-            "Firefox".to_string(),
+            "sink1".to_string(),
+            "App 1".to_string(),
             0,
-            "firefox".to_string(),
-            "Browser".to_string(),
+            "app1".to_string(),
+            "T1".to_string(),
         );
-
-        // Sleep briefly to ensure different timestamps
-        std::thread::sleep(std::time::Duration::from_millis(10));
-
-        // Track mpv second (more recent)
+        // Track window 2 later
         state.track_window(
             2,
-            "mpv_sink".to_string(),
-            "MPV".to_string(),
+            "sink2".to_string(),
+            "App 2".to_string(),
             1,
-            "mpv".to_string(),
-            "Video".to_string(),
+            "app2".to_string(),
+            "T2".to_string(),
         );
 
-        // Most recent (mpv) should win
-        assert_eq!(state.determine_target_sink(), "mpv_sink");
+        // Most recent (window 2) wins
+        assert_eq!(state.determine_target_sink(), "sink2");
+    }
+
+    #[test]
+    fn test_determine_target_sink_priority_index() {
+        let mut config = make_config(
+            vec![
+                make_sink("default_sink", "Default", true),
+                make_sink("sink1", "S1", false),
+                make_sink("sink2", "S2", false),
+            ],
+            vec![
+                make_rule("app1", None, "sink1"),
+                make_rule("app2", None, "sink2"),
+            ],
+        );
+        config.settings.match_by_index = true;
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
+
+        // Track window 2 first
+        state.track_window(
+            2,
+            "sink2".to_string(),
+            "App 2".to_string(),
+            1,
+            "app2".to_string(),
+            "T2".to_string(),
+        );
+        // Track window 1 later (higher priority index 0)
+        state.track_window(
+            1,
+            "sink1".to_string(),
+            "App 1".to_string(),
+            0,
+            "app1".to_string(),
+            "T1".to_string(),
+        );
+
+        // Lower index (window 1) wins despite being older
+        assert_eq!(state.determine_target_sink(), "sink1");
+    }
+
+    #[test]
+    fn test_determine_target_sink_priority_index_tiebreaker() {
+        let mut config = make_config(
+            vec![
+                make_sink("default_sink", "Default", true),
+                make_sink("sink1", "S1", false),
+            ],
+            vec![make_rule("app", None, "sink1")],
+        );
+        config.settings.match_by_index = true;
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
+
+        // Two windows matching same rule (same index)
+        state.track_window(
+            1,
+            "sink1".to_string(),
+            "App A".to_string(),
+            0,
+            "app".to_string(),
+            "T1".to_string(),
+        );
+        state.track_window(
+            2,
+            "sink1".to_string(),
+            "App B".to_string(),
+            0,
+            "app".to_string(),
+            "T2".to_string(),
+        );
+
+        // Tied index, most recent (window 2) wins
+        assert_eq!(state.determine_target_sink(), "sink1");
     }
 
     #[tokio::test]
-    async fn test_all_windows_cleanup_on_close() {
+    async fn test_all_windows_tracking() {
         let config = make_config(
             vec![make_sink("default_sink", "Default", true)],
-            vec![make_rule("firefox", None, "default_sink")],
+            vec![make_rule(".*", None, "default_sink")],
         );
-        let mut state = State::new_for_testing(config, "default_sink".to_string());
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         // Add window to all_windows (happens during Opened event)
         state
@@ -674,7 +776,7 @@ mod tests {
             vec![make_sink("default_sink", "Default", true)],
             vec![make_rule(".*", None, "default_sink")],
         );
-        let mut state = State::new_for_testing(config, "default_sink".to_string());
+        let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         // Add multiple windows
         state
@@ -698,5 +800,60 @@ mod tests {
         assert!(state.all_windows.contains_key(&1));
         assert!(!state.all_windows.contains_key(&2));
         assert!(state.all_windows.contains_key(&3));
+    }
+
+    #[tokio::test]
+    async fn test_rule_metadata_update() {
+        let config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("headphones", "Headphones", false),
+            ],
+            vec![
+                make_rule("kitty", Some("Music"), "speakers"),
+                make_rule("kitty", None, "headphones"),
+            ],
+        );
+        let mut state = State::new_for_testing(Arc::new(config), "speakers".to_string());
+
+        // 1. Initial match (Rule 1: Headphones)
+        // We use track_window to avoid side effects of process_event
+        state.track_window(
+            1,
+            "headphones".to_string(),
+            "Kitty".to_string(),
+            1,
+            "kitty".to_string(),
+            "Shell".to_string(),
+        );
+
+        {
+            let window = state.active_windows.get(&1).unwrap();
+            assert_eq!(window.sink_name, "headphones");
+            assert_eq!(window.rule_index, 1);
+        }
+
+        // 2. Simulate property change by calling process_event
+        // To avoid real PipeWire calls, we'll set current_sink_name to what we expect it to become
+        // so should_switch_sink returns false.
+        state.current_sink_name = "speakers".to_string();
+
+        state
+            .process_event(WindowEvent::Changed {
+                id: 1,
+                app_id: "kitty".to_string(),
+                title: "Music".to_string(),
+            })
+            .await
+            .unwrap();
+
+        // 3. Verify metadata updated
+        let window = state.active_windows.get(&1).unwrap();
+        assert_eq!(
+            window.sink_name, "speakers",
+            "Sink name should update in metadata"
+        );
+        assert_eq!(window.rule_index, 0, "Rule index should update in metadata");
+        assert_eq!(window.title, "Music");
     }
 }

@@ -142,6 +142,8 @@ pub(crate) enum AppUpdate {
 #[derive(Debug)]
 pub(crate) enum BgCommand {
     DaemonAction(DaemonAction),
+    /// Request an atomic config save
+    SaveConfig(Config),
     /// Request a live-preview match for given patterns. Optionally include compiled regex caches.
     PreviewRequest {
         app_pattern: String,
@@ -323,6 +325,24 @@ impl App {
                 } else {
                     ScreenMode::List
                 }
+            }
+        }
+    }
+
+    /// Check if any text input field is currently focused
+    pub(crate) fn is_input_focused(&self) -> bool {
+        use super::screens::rules::RulesMode;
+        use super::screens::sinks::SinksMode;
+
+        match self.current_screen {
+            Screen::Dashboard | Screen::Settings => false,
+            Screen::Sinks => {
+                self.sinks_screen.mode == SinksMode::AddEdit
+                    && self.sinks_screen.editor.focused_field < 3 // name, desc, icon are inputs
+            }
+            Screen::Rules => {
+                self.rules_screen.mode == RulesMode::AddEdit
+                    && [0, 1, 3].contains(&self.rules_screen.editor.focused_field) // app_id, title, desc are inputs
             }
         }
     }

@@ -14,10 +14,14 @@ impl DaemonManager {
     pub async fn start(self) -> Result<String> {
         match self {
             DaemonManager::Systemd => {
-                let output = Command::new("systemctl")
-                    .args(["--user", "start", "pwsw.service"])
-                    .output()
-                    .context("Failed to execute systemctl start")?;
+                let output = tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "start", "pwsw.service"])
+                        .output()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to execute systemctl start")?;
 
                 if output.status.success() {
                     // With Type=notify, systemd waits for ready signal
@@ -29,16 +33,22 @@ impl DaemonManager {
             }
             DaemonManager::Direct => {
                 // Spawn daemon process in background
-                let pwsw_path =
-                    std::env::current_exe().context("Failed to get current executable path")?;
+                let pwsw_path = tokio::task::spawn_blocking(std::env::current_exe)
+                    .await
+                    .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                    .context("Failed to get current executable path")?;
 
-                Command::new(&pwsw_path)
-                    .arg("daemon")
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .context("Failed to spawn daemon process")?;
+                tokio::task::spawn_blocking(move || {
+                    Command::new(&pwsw_path)
+                        .arg("daemon")
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to spawn daemon process")?;
 
                 // Wait a moment for daemon to start
                 tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -54,10 +64,14 @@ impl DaemonManager {
     pub async fn stop(self) -> Result<String> {
         match self {
             DaemonManager::Systemd => {
-                let output = Command::new("systemctl")
-                    .args(["--user", "stop", "pwsw.service"])
-                    .output()
-                    .context("Failed to execute systemctl stop")?;
+                let output = tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "stop", "pwsw.service"])
+                        .output()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to execute systemctl stop")?;
 
                 if output.status.success() {
                     Ok("Daemon stopped via systemd".to_string())
@@ -83,10 +97,14 @@ impl DaemonManager {
     pub async fn restart(self) -> Result<String> {
         match self {
             DaemonManager::Systemd => {
-                let output = Command::new("systemctl")
-                    .args(["--user", "restart", "pwsw.service"])
-                    .output()
-                    .context("Failed to execute systemctl restart")?;
+                let output = tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "restart", "pwsw.service"])
+                        .output()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to execute systemctl restart")?;
 
                 if output.status.success() {
                     // With Type=notify, systemd waits for ready signal
@@ -116,12 +134,16 @@ impl DaemonManager {
         match self {
             DaemonManager::Systemd => {
                 // Check systemd service status
-                Command::new("systemctl")
-                    .args(["--user", "is-active", "pwsw.service"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
+                tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "is-active", "pwsw.service"])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .is_ok_and(|status| status.success())
+                })
+                .await
+                .unwrap_or(false)
             }
             DaemonManager::Direct => {
                 // Check via IPC
@@ -134,13 +156,17 @@ impl DaemonManager {
     ///
     /// # Errors
     /// Returns an error if the service fails to enable or if using direct mode.
-    pub fn enable(self) -> Result<String> {
+    pub async fn enable(self) -> Result<String> {
         match self {
             DaemonManager::Systemd => {
-                let output = Command::new("systemctl")
-                    .args(["--user", "enable", "pwsw.service"])
-                    .output()
-                    .context("Failed to execute systemctl enable")?;
+                let output = tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "enable", "pwsw.service"])
+                        .output()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to execute systemctl enable")?;
 
                 if output.status.success() {
                     Ok("Service enabled (will start on login)".to_string())
@@ -159,13 +185,17 @@ impl DaemonManager {
     ///
     /// # Errors
     /// Returns an error if the service fails to disable or if using direct mode.
-    pub fn disable(self) -> Result<String> {
+    pub async fn disable(self) -> Result<String> {
         match self {
             DaemonManager::Systemd => {
-                let output = Command::new("systemctl")
-                    .args(["--user", "disable", "pwsw.service"])
-                    .output()
-                    .context("Failed to execute systemctl disable")?;
+                let output = tokio::task::spawn_blocking(move || {
+                    Command::new("systemctl")
+                        .args(["--user", "disable", "pwsw.service"])
+                        .output()
+                })
+                .await
+                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .context("Failed to execute systemctl disable")?;
 
                 if output.status.success() {
                     Ok("Service disabled (won't start on login)".to_string())
@@ -181,15 +211,18 @@ impl DaemonManager {
     }
 
     /// Check if the daemon service is enabled (only for systemd)
-    #[must_use]
-    pub fn is_enabled(self) -> bool {
+    pub async fn is_enabled(self) -> bool {
         match self {
-            DaemonManager::Systemd => Command::new("systemctl")
-                .args(["--user", "is-enabled", "pwsw.service"])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .is_ok_and(|status| status.success()),
+            DaemonManager::Systemd => tokio::task::spawn_blocking(move || {
+                Command::new("systemctl")
+                    .args(["--user", "is-enabled", "pwsw.service"])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .await
+            .unwrap_or(false),
             DaemonManager::Direct => false,
         }
     }
