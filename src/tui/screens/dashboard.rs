@@ -16,7 +16,9 @@ use crate::tui::widgets::truncate_node_name;
 const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
     // Important events (bold)
     ("Rule matched:", colors::LOG_EVENT, true),
+    ("Rule unmatched:", colors::UI_WARNING, true),
     ("Switching:", colors::LOG_EVENT, true),
+    ("Switching profile:", colors::UI_HIGHLIGHT, true),
     ("Window opened:", colors::LOG_EVENT, true),
     ("Window closed:", colors::LOG_EVENT_CLOSE, true),
     ("Tracked window closed:", colors::LOG_EVENT_CLOSE, true),
