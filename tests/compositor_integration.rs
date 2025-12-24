@@ -11,8 +11,8 @@ use wayland_protocols_wlr::foreign_toplevel::v1::server::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };
 use wayland_server::{
-    Client, DataInit, Dispatch, Display, GlobalDispatch, DisplayHandle, ListeningSocket, New, Resource,
-    protocol::wl_output,
+    Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
+    Resource, protocol::wl_output,
 };
 
 // --- Mock Compositor Infrastructure ---
@@ -25,9 +25,19 @@ enum ProtocolMode {
 }
 
 enum ServerCommand {
-    CreateWindow { id: u32, title: String, app_id: String },
-    UpdateWindow { id: u32, title: Option<String>, app_id: Option<String> },
-    CloseWindow { id: u32 },
+    CreateWindow {
+        id: u32,
+        title: String,
+        app_id: String,
+    },
+    UpdateWindow {
+        id: u32,
+        title: Option<String>,
+        app_id: Option<String>,
+    },
+    CloseWindow {
+        id: u32,
+    },
     Stop,
 }
 
@@ -43,7 +53,7 @@ impl MockCompositor {
         let temp_dir = tempfile::tempdir().unwrap();
         let socket_name = "wayland-test-0";
         let socket_path = temp_dir.path().join(socket_name);
-        
+
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel();
         let socket_path_clone = socket_path.clone();
 
@@ -54,7 +64,10 @@ impl MockCompositor {
         // Wait for socket to be ready
         let start = std::time::Instant::now();
         while !socket_path.exists() {
-            assert!(start.elapsed() <= Duration::from_secs(1), "Timed out waiting for mock server socket");
+            assert!(
+                start.elapsed() <= Duration::from_secs(1),
+                "Timed out waiting for mock server socket"
+            );
             thread::sleep(Duration::from_millis(10));
         }
 
@@ -105,8 +118,14 @@ struct ServerState {
     wlr_managers: Vec<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1>,
     ext_lists: Vec<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
     // Track created window handles
-    wlr_handles: Vec<(u32, zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1)>,
-    ext_handles: Vec<(u32, ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1)>,
+    wlr_handles: Vec<(
+        u32,
+        zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+    )>,
+    ext_handles: Vec<(
+        u32,
+        ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+    )>,
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -151,7 +170,7 @@ fn run_server(
                         let resource = client
                             .create_resource::<_, _, ServerState>(&handle, 1, ())
                             .unwrap();
-                        
+
                         manager.toplevel(&resource);
                         resource.title(title.clone());
                         resource.app_id(app_id.clone());
@@ -166,7 +185,7 @@ fn run_server(
                         let resource = client
                             .create_resource::<_, _, ServerState>(&handle, 1, ())
                             .unwrap();
-                        
+
                         list.toplevel(&resource);
                         resource.title(title.clone());
                         resource.app_id(app_id.clone());
@@ -179,16 +198,24 @@ fn run_server(
                     // Update matching WLR handles
                     for (wid, handle) in &state.wlr_handles {
                         if *wid == id {
-                            if let Some(t) = &title { handle.title(t.clone()); }
-                            if let Some(a) = &app_id { handle.app_id(a.clone()); }
+                            if let Some(t) = &title {
+                                handle.title(t.clone());
+                            }
+                            if let Some(a) = &app_id {
+                                handle.app_id(a.clone());
+                            }
                             handle.done();
                         }
                     }
                     // Update matching Ext handles
                     for (wid, handle) in &state.ext_handles {
                         if *wid == id {
-                            if let Some(t) = &title { handle.title(t.clone()); }
-                            if let Some(a) = &app_id { handle.app_id(a.clone()); }
+                            if let Some(t) = &title {
+                                handle.title(t.clone());
+                            }
+                            if let Some(a) = &app_id {
+                                handle.app_id(a.clone());
+                            }
                             handle.done();
                         }
                     }
@@ -229,10 +256,13 @@ impl GlobalDispatch<wl_output::WlOutput, ()> for ServerState {
         _resource: New<wl_output::WlOutput>,
         _global_data: &(),
         _data_init: &mut DataInit<'_, Self>,
-    ) {}
+    ) {
+    }
 }
 
-impl GlobalDispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()> for ServerState {
+impl GlobalDispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()>
+    for ServerState
+{
     fn bind(
         state: &mut Self,
         _handle: &DisplayHandle,
@@ -254,7 +284,8 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
         _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
-    ) {}
+    ) {
+    }
 }
 
 impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> for ServerState {
@@ -266,7 +297,8 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()> 
         _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
-    ) {}
+    ) {
+    }
 }
 
 impl GlobalDispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for ServerState {
@@ -307,13 +339,19 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
         _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
-    ) {}
+    ) {
+    }
 }
 
 struct ClientData;
 impl wayland_server::backend::ClientData for ClientData {
     fn initialized(&self, _client_id: wayland_server::backend::ClientId) {}
-    fn disconnected(&self, _client_id: wayland_server::backend::ClientId, _reason: wayland_server::backend::DisconnectReason) {}
+    fn disconnected(
+        &self,
+        _client_id: wayland_server::backend::ClientId,
+        _reason: wayland_server::backend::DisconnectReason,
+    ) {
+    }
 }
 
 // --- Tests ---
@@ -324,7 +362,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 fn test_wlr_backend_lifecycle() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Wlr);
-    
+
     let socket_name = mock.socket_path.file_name().unwrap();
     let runtime_dir = mock.socket_path.parent().unwrap();
     unsafe {
@@ -332,11 +370,11 @@ fn test_wlr_backend_lifecycle() {
         std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
     }
 
-    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
-        .expect("Failed to spawn compositor thread");
+    let mut event_rx =
+        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100)); // Wait for bind
-    
+
     // 1. Open
     mock.create_window(101, "WLR Window", "wlr_app");
 
@@ -379,7 +417,7 @@ fn test_wlr_backend_lifecycle() {
 fn test_ext_backend_lifecycle() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Ext);
-    
+
     let socket_name = mock.socket_path.file_name().unwrap();
     let runtime_dir = mock.socket_path.parent().unwrap();
     unsafe {
@@ -387,11 +425,11 @@ fn test_ext_backend_lifecycle() {
         std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
     }
 
-    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
-        .expect("Failed to spawn compositor thread");
+    let mut event_rx =
+        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
-    
+
     // 1. Open
     mock.create_window(202, "Ext Window", "ext_app");
 
@@ -435,7 +473,7 @@ fn test_priority_selection() {
     let _guard = TEST_MUTEX.lock().unwrap();
     // Advertise BOTH protocols
     let mock = MockCompositor::new(ProtocolMode::Both);
-    
+
     let socket_name = mock.socket_path.file_name().unwrap();
     let runtime_dir = mock.socket_path.parent().unwrap();
     unsafe {
@@ -444,17 +482,21 @@ fn test_priority_selection() {
     }
 
     // Client should prefer Ext
-    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
-        .expect("Failed to spawn compositor thread");
+    let mut event_rx =
+        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
-    
+
     // Create window
     mock.create_window(303, "Priority Window", "both_protocols");
 
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
-        pwsw::compositor::WindowEvent::Opened { id: _, app_id, title } => {
+        pwsw::compositor::WindowEvent::Opened {
+            id: _,
+            app_id,
+            title,
+        } => {
             assert_eq!(app_id, "both_protocols");
             assert_eq!(title, "Priority Window");
         }
@@ -468,7 +510,7 @@ fn test_priority_selection() {
 fn test_ext_concurrent_windows() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Ext);
-    
+
     let socket_name = mock.socket_path.file_name().unwrap();
     let runtime_dir = mock.socket_path.parent().unwrap();
     unsafe {
@@ -476,8 +518,8 @@ fn test_ext_concurrent_windows() {
         std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
     }
 
-    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
-        .expect("Failed to spawn compositor thread");
+    let mut event_rx =
+        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 
@@ -550,7 +592,7 @@ fn test_ext_concurrent_windows() {
 fn test_wlr_concurrent_windows() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Wlr);
-    
+
     let socket_name = mock.socket_path.file_name().unwrap();
     let runtime_dir = mock.socket_path.parent().unwrap();
     unsafe {
@@ -558,8 +600,8 @@ fn test_wlr_concurrent_windows() {
         std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
     }
 
-    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
-        .expect("Failed to spawn compositor thread");
+    let mut event_rx =
+        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 

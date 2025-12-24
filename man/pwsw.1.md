@@ -31,13 +31,40 @@ It can also be used as a command-line client to query the daemon status, list wi
 :   List all currently open windows known to the compositor.
 
 **test-rule** *PATTERN*
-:   Test a regex pattern against current windows to see what would match.
+:   Test a regex pattern against current windows to see what would match. See **pwsw**(5) for details on regex syntax.
 
 **validate**
 :   Validate the configuration file syntax and sink references.
 
 **shutdown**
 :   Gracefully stop the running daemon.
+
+## COMPATIBILITY
+**pwsw** relies on standard Wayland protocols to monitor windows.
+
+**Supported:**
+*   **ext-foreign-toplevel-list-v1**: The official Wayland standard.
+*   **wlr-foreign-toplevel-management**: Used by Sway, Hyprland, River, Wayfire, and others.
+
+**Not Supported:**
+*   **GNOME / Mutter**: Does not expose window management protocols.
+*   **KDE Plasma 6**: Removed protocol support (pending standard implementation).
+
+## TUI KEYS
+The TUI supports mouse interaction and the following keybindings:
+
+**Global**
+:   `1-4`: Switch tabs (Dashboard, Sinks, Rules, Settings)
+:   `?` or `F1`: Show context-aware help
+:   `Ctrl+S`: Save configuration
+:   `q` or `Ctrl+C`: Quit
+
+**Navigation**
+:   `Arrow Keys`: Navigate lists
+:   `Shift+Up/Down`: Reorder items (Sinks/Rules)
+:   `Enter`: Select / Edit / Save
+:   `Space`: Toggle / Set Default
+:   `a` / `e` / `x`: Add / Edit / Delete items
 
 ## OPTIONS
 **-h**, **--help**
