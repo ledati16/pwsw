@@ -1123,16 +1123,16 @@ mod tests {
 
         for pattern in &dangerous {
             let result = Config::validate_regex_safe(pattern, "app_id", 1);
-        assert!(
-            result.is_err(),
-            "Pattern '{pattern}' should be rejected as potentially catastrophic"
-        );
+            assert!(
+                result.is_err(),
+                "Pattern '{pattern}' should be rejected as potentially catastrophic"
+            );
 
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("dangerous construct"),
-            "Error should mention dangerous constructs, got: {err}"
-        );
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("dangerous construct"),
+                "Error should mention dangerous constructs, got: {err}"
+            );
         }
     }
 

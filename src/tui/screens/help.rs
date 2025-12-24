@@ -303,7 +303,10 @@ fn build_help_rows(
         }
         lines.push(current_line);
 
-        (lines.join("\n"), u16::try_from(lines.len()).unwrap_or(u16::MAX))
+        (
+            lines.join("\n"),
+            u16::try_from(lines.len()).unwrap_or(u16::MAX),
+        )
     };
 
     // Helper to add a keybind row
