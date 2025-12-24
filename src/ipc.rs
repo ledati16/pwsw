@@ -252,6 +252,12 @@ const MAX_MESSAGE_SIZE: usize = 1024 * 1024; // 1MB max message size
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Read a length-prefixed JSON message from a stream
+///
+/// Wire Format:
+/// [ Length (4 bytes, u32 BE) ] [ JSON Payload (Length bytes) ]
+///
+/// Example:
+/// [ 0x00, 0x00, 0x00, 0x0D ] [ {"type":"Status"} ]
 async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T> {
     // Read 4-byte big-endian length prefix
     let mut len_buf = [0u8; 4];
@@ -281,6 +287,12 @@ async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> 
 }
 
 /// Write a length-prefixed JSON message to a stream
+///
+/// Wire Format:
+/// [ Length (4 bytes, u32 BE) ] [ JSON Payload (Length bytes) ]
+///
+/// Example:
+/// [ 0x00, 0x00, 0x00, 0x0D ] [ {"type":"Status"} ]
 async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Result<()> {
     // Serialize to JSON
     let json = serde_json::to_vec(message).context("Failed to serialize message")?;

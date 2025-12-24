@@ -584,6 +584,10 @@ impl PipeWire {
                 // If still over limit after cleanup, remove oldest 20% arbitrarily
                 // (since we can't tell which are "oldest" without timestamps)
                 if guard.len() >= MAX_DEVICE_LOCKS {
+                    // SAFETY: Removing an active lock entry here is safe because:
+                    // 1. The lock is only for serialization (UX), not memory safety.
+                    // 2. The worst case is two profile switches happening simultaneously on one device.
+                    // 3. One switch will likely fail with "Device busy" or "Timeout", which is handled gracefully.
                     let to_remove = guard.len() / 5; // Remove ~20%
                     let keys_to_remove: Vec<u32> = guard
                         .iter()

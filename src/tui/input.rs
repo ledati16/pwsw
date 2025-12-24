@@ -641,6 +641,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
 /// Handle sink editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
+        // --- Navigation (Field Switching) ---
         KeyCode::Up => {
             // Move focus to previous field in the editor (arrow up behaves like Shift+Tab)
             app.sinks_screen.editor.prev_field();
@@ -655,6 +656,8 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::BackTab => {
             app.sinks_screen.editor.prev_field();
         }
+
+        // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
             // If on name field, open sink selector; otherwise save
             if app.sinks_screen.editor.focused_field == 0 {
@@ -708,10 +711,10 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.sinks_screen.cancel();
         }
-        _ => {
-            let event = Event::Key(key);
-            match app.sinks_screen.editor.focused_field {
-                0 => {
+                        // --- Field Specific Input ---
+                        _ => {
+                            let event = Event::Key(key);
+                            match app.sinks_screen.editor.focused_field {                0 => {
                     app.sinks_screen.editor.name.input.handle_event(&event);
                 }
                 1 => {
@@ -844,8 +847,11 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 // Match arms handle conceptually different field types despite similar-looking actions
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     match key.code {
+        // --- Navigation (Field Switching) ---
         KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
         KeyCode::Down | KeyCode::Tab => app.rules_screen.editor.next_field(),
+
+        // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
             // If on sink field, open selector
             if app.rules_screen.editor.focused_field == 2 {
@@ -935,6 +941,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.rules_screen.cancel();
         }
+        // --- Field Specific Input ---
         _ => {
             // Forward other keys to inputs
             let event = Event::Key(key);

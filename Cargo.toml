@@ -65,8 +65,9 @@ users = "0.11"
 tempfile = "3"
 
 # Process management (Unix signals for PID file validation)
-[target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", features = ["signal"] }
+#[target.'cfg(unix)'.dependencies]
+# nix removed: PID check now uses /proc on Linux
+
 
 [profile.release]
 lto = "fat"         # Full link-time optimization for maximum performance
