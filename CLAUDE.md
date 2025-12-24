@@ -205,16 +205,13 @@ cargo clippy --all-targets
 cargo clippy --all-targets -- -W clippy::pedantic
 ```
 
-**Current Acceptable Pedantic Allows (25 total: 22 centralized, 2 in generated code, 1 in Cargo.toml):**
+**Current Acceptable Pedantic Allows (20 total: 18 centralized, 2 in generated code, 1 in Cargo.toml):**
 
-These suppressions are documented and justified (as of 2025-12-21 after Edition 2024 upgrade):
+These suppressions are documented and justified (as of 2025-12-24 after Code Quality Pass):
 
-**Centralized in Cargo.toml `[lints]` table (22 suppressions for 6 lint types):**
+**Centralized in Cargo.toml `[lints]` table (18 suppressions for 3 lint types):**
 - `struct_excessive_bools` (3×) → Config `Settings`, `SettingsFile`, and TUI `App` have independent boolean flags for different features (not state machines)
 - `too_many_lines` (14×) → Daemon event loop, TUI event loop, TUI screens, input handlers, commands - cohesive logic hard to split meaningfully
-- `items_after_statements` (2×) → Constants scoped in spawn blocks for clarity
-- `cast_possible_truncation` (3×) → IPC message length (u32), TUI help scroll arrow text length (very short strings < 10 chars)
-- `needless_pass_by_value` (1×) → Wayland `Connection` must be moved, not borrowed (protocol requirement)
 - `match_same_arms` (1×) → Rule editor input - conceptually different field types despite similar-looking actions
 
 **Local suppressions (2 in generated code, 1 in Cargo.toml `[lints]` table):**
@@ -225,6 +222,9 @@ These suppressions are documented and justified (as of 2025-12-21 after Edition 
 **Note:** The centralized `[lints]` table approach (Rust 1.74+) allows workspace-wide configuration while keeping generated code suppressions co-located with their source.
 
 **Recently Fixed (demonstrating thoughtful code quality decisions):**
+- `items_after_statements` → Fixed by moving constants to top of scope
+- `cast_possible_truncation` → Fixed by using `try_from` and `saturating_sub`
+- `needless_pass_by_value` → Fixed by passing `&Connection` instead of moving it
 - `too_many_arguments` → Fixed by bundling parameters into `RulesRenderContext` struct
 - `if_not_else` → Fixed by swapping branches (simple case first, complex logic in else)
 
