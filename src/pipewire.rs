@@ -872,166 +872,116 @@ mod tests {
     }
 
     #[test]
-    fn test_device_lock_serialization() {
-        // This test ensures per-device locks serialize profile switches for the same device.
-        // We'll simulate two concurrent activations that require profile switching by directly
-        // invoking activate_sink on a predicted name that requires a profile switch. Since
-        // activate_sink calls pw-dump and pw-cli, and we cannot run those here, we'll instead
-        // test the lock acquisition logic by having two threads attempt to lock the same device
-        // entry using the internal DEVICE_LOCKS structure.
-
-        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
-
-        // Simulate device id 123
-        let device_id = 123u32;
-
-        // Insert a lock for device
+    fn test_device_locks_logic() {
+        // Run lock tests sequentially to avoid fighting over the global DEVICE_LOCKS
+        
+        // 1. Serialization Test
         {
-            let mut guard = locks.lock().unwrap();
-            guard.insert(device_id, Arc::new(StdMutex::new(())));
+            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+            let device_id = 123u32;
+
+            // Clear any existing locks
+            {
+                let mut guard = locks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                guard.clear();
+                guard.insert(device_id, Arc::new(StdMutex::new(())));
+            }
+
+            let arc_lock = {
+                let guard = locks.lock().unwrap();
+                Arc::clone(guard.get(&device_id).unwrap())
+            };
+
+            let order = Arc::new(AtomicUsize::new(0));
+            let o1 = order.clone();
+            let l1 = arc_lock.clone();
+            let t1 = thread::spawn(move || {
+                let _g = l1.lock().unwrap();
+                o1.fetch_add(1, Ordering::SeqCst);
+                thread::sleep(Duration::from_millis(50));
+            });
+
+            thread::sleep(Duration::from_millis(10));
+
+            let o2 = order.clone();
+            let l2 = arc_lock.clone();
+            let t2 = thread::spawn(move || {
+                let _g = l2.lock().unwrap();
+                o2.fetch_add(10, Ordering::SeqCst);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert_eq!(order.load(Ordering::SeqCst), 11);
         }
 
-        let arc_lock = {
-            let guard = locks.lock().unwrap();
-            Arc::clone(guard.get(&device_id).unwrap())
-        };
-
-        // Shared state to track execution order
-        let order = Arc::new(AtomicUsize::new(0));
-
-        let o1 = order.clone();
-        let l1 = arc_lock.clone();
-        let t1 = thread::spawn(move || {
-            let _g = l1.lock().unwrap();
-            // Mark we have the lock
-            o1.fetch_add(1, Ordering::SeqCst);
-            // Hold the lock for a bit
-            thread::sleep(Duration::from_millis(50));
-        });
-
-        // Give first thread time to acquire lock
-        thread::sleep(Duration::from_millis(10));
-
-        let o2 = order.clone();
-        let l2 = arc_lock.clone();
-        let t2 = thread::spawn(move || {
-            let _g = l2.lock().unwrap();
-            // This should only run after t1 releases
-            o2.fetch_add(10, Ordering::SeqCst);
-        });
-
-        t1.join().unwrap();
-        t2.join().unwrap();
-
-        // After both have run, order should be 11 (1 from t1, 10 from t2)
-        assert_eq!(order.load(Ordering::SeqCst), 11);
-    }
-
-    #[test]
-    fn test_device_locks_cleanup_on_limit() {
-        // Test that DEVICE_LOCKS cleanup happens when MAX_DEVICE_LOCKS is reached
-        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
-
-        // Clear any existing locks from other tests
+        // 2. Cleanup on Limit Test
         {
-            let mut guard = locks.lock().unwrap();
-            guard.clear();
-        }
+            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+            
+            {
+                let mut guard = locks.lock().unwrap();
+                guard.clear();
+                for i in 0..MAX_DEVICE_LOCKS {
+                    guard.insert(u32::try_from(i).unwrap(), Arc::new(StdMutex::new(())));
+                }
+            }
 
-        // Add MAX_DEVICE_LOCKS entries
-        {
-            let mut guard = locks.lock().unwrap();
-            for i in 0..MAX_DEVICE_LOCKS {
-                guard.insert(u32::try_from(i).unwrap(), Arc::new(StdMutex::new(())));
+            {
+                let guard = locks.lock().unwrap();
+                assert_eq!(guard.len(), MAX_DEVICE_LOCKS);
+            }
+
+            {
+                let mut guard = locks.lock().unwrap();
+                // Simulate cleanup logic
+                if guard.len() >= MAX_DEVICE_LOCKS {
+                    guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
+                    // Force cleanup for test if retain didn't clear enough (it shouldn't here, all strong=1)
+                    if guard.len() >= MAX_DEVICE_LOCKS {
+                         let to_remove = guard.len() / 5;
+                         let keys: Vec<u32> = guard.keys().take(to_remove).copied().collect();
+                         for k in keys { guard.remove(&k); }
+                    }
+                }
+                assert!(guard.len() < MAX_DEVICE_LOCKS);
             }
         }
 
-        // Verify we have MAX_DEVICE_LOCKS entries
+        // 3. Preserves Active Locks Test
         {
-            let guard = locks.lock().unwrap();
-            assert_eq!(guard.len(), MAX_DEVICE_LOCKS);
-        }
+            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+            
+            {
+                let mut guard = locks.lock().unwrap();
+                guard.clear();
+            }
 
-        // Simulate the cleanup logic that happens during lock acquisition
-        // by adding one more entry (which should trigger cleanup)
-        {
-            let mut guard = locks.lock().unwrap();
-            let initial_count = guard.len();
-
-            // This mimics the cleanup in activate_sink
-            if guard.len() >= MAX_DEVICE_LOCKS {
-                guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
-
-                if guard.len() >= MAX_DEVICE_LOCKS {
-                    let to_remove = guard.len() / 5;
-                    let keys_to_remove: Vec<u32> = guard
-                        .iter()
-                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1)
-                        .take(to_remove)
-                        .map(|(id, _)| *id)
-                        .collect();
-
-                    for key in keys_to_remove {
-                        guard.remove(&key);
+            let mut held_arcs = Vec::new();
+            {
+                let mut guard = locks.lock().unwrap();
+                for i in 0..MAX_DEVICE_LOCKS {
+                    let arc = Arc::new(StdMutex::new(()));
+                    guard.insert(u32::try_from(i).unwrap(), arc.clone());
+                    if i < 10 {
+                        held_arcs.push(arc);
                     }
                 }
             }
 
-            // After cleanup, we should have removed some entries
-            // (all have strong_count == 1, so first retain removes all, then we'd add new entry)
-            assert!(
-                guard.len() < initial_count,
-                "Cleanup should have removed entries"
-            );
-        }
-    }
-
-    #[test]
-    fn test_device_locks_preserves_active_locks() {
-        // Test that cleanup doesn't remove locks that are actively held
-        let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
-
-        // Clear any existing locks
-        {
-            let mut guard = locks.lock().unwrap();
-            guard.clear();
-        }
-
-        // Add MAX_DEVICE_LOCKS entries
-        let mut held_arcs = Vec::new();
-        {
-            let mut guard = locks.lock().unwrap();
-            for i in 0..MAX_DEVICE_LOCKS {
-                let arc = Arc::new(StdMutex::new(()));
-                guard.insert(u32::try_from(i).unwrap(), arc.clone());
-
-                // Hold onto first 10 entries (simulating active profile switches)
-                if i < 10 {
-                    held_arcs.push(arc);
+            {
+                let mut guard = locks.lock().unwrap();
+                if guard.len() >= MAX_DEVICE_LOCKS {
+                    guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
+                }
+                assert_eq!(guard.len(), 10);
+                for (i, _) in held_arcs.iter().enumerate() {
+                    assert!(guard.contains_key(&u32::try_from(i).unwrap()));
                 }
             }
+            drop(held_arcs);
         }
-
-        // Trigger cleanup
-        {
-            let mut guard = locks.lock().unwrap();
-
-            if guard.len() >= MAX_DEVICE_LOCKS {
-                // Retain only locks with strong_count > 1 (held externally)
-                guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
-            }
-
-            // Should have kept the 10 we're holding + 1 in the HashMap = strong_count of 2
-            assert_eq!(guard.len(), 10);
-
-            // Verify the held locks are still present
-            for (i, _arc) in held_arcs.iter().enumerate() {
-                assert!(guard.contains_key(&u32::try_from(i).unwrap()));
-            }
-        }
-
-        // Clean up held references
-        drop(held_arcs);
     }
 
     #[test]

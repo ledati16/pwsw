@@ -14,6 +14,8 @@ The **[settings]** section controls global daemon behavior.
 
 **set_smart_toggle** (boolean)
 :   If true, calling `set-sink` on a sink that is already active will toggle back to the default sink.
+    
+    *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers").
 
 **notify_manual** (boolean)
 :   Show desktop notifications for manual sink switches and daemon events.
@@ -23,6 +25,8 @@ The **[settings]** section controls global daemon behavior.
 
 **match_by_index** (boolean)
 :   If true, the first matching rule in the list wins (priority by position). If false, the most recently focused window wins (priority by time).
+    
+    *Tip:* Rules can be reordered in the TUI using `Shift+Up/Down` to adjust priority.
 
 **log_level** (string)
 :   Verbosity of logging. Options: `error`, `warn`, `info`, `debug`, `trace`.
@@ -59,6 +63,28 @@ The **[[rules]]** list defines window-to-sink mappings.
 
 **notify** (boolean, optional)
 :   Override the global `notify_rules` setting for this specific rule.
+
+## REGEX SYNTAX
+PWSW uses the Rust **regex** crate, which prioritizes safety and performance.
+
+### Flavor
+The syntax is mostly compatible with Perl-style regular expressions but does **not** support features like lookaround or backreferences to ensure linear-time matching.
+
+### Common Patterns
+**Substring match** (default)
+:   `firefox` - matches any window containing "firefox" in its `app_id` or title.
+
+**Anchored match**
+:   `^steam$` - matches only if the string is exactly "steam".
+
+**Case-insensitive**
+:   `(?i)discord` - matches "Discord", "DISCORD", etc.
+
+**Alternation**
+:   `^(mpv|vlc)$` - matches exactly "mpv" or "vlc".
+
+**Catch-all**
+:   `.*` - matches any string.
 
 ## EXAMPLES
 ```toml
