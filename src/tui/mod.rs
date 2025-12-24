@@ -637,7 +637,9 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let context_height = if total_width == 0 {
         1
     } else {
-        u16::try_from(total_width).unwrap_or(u16::MAX).div_ceil(available_width)
+        u16::try_from(total_width)
+            .unwrap_or(u16::MAX)
+            .div_ceil(available_width)
     };
 
     // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
