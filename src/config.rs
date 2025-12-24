@@ -180,9 +180,9 @@ impl Config {
     pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let contents = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config: {}", path.display()))?;
+            .with_context(|| format!("Failed to read config: {path_display}", path_display = path.display()))?;
         let config_file: ConfigFile = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config: {}", path.display()))?;
+            .with_context(|| format!("Failed to parse config: {path_display}", path_display = path.display()))?;
         Self::from_config_file(config_file)
     }
 

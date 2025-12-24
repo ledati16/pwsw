@@ -329,23 +329,22 @@ fn render_settings_list(
                 .map_or(item.name(), String::as_str);
 
             // Apply color styling to boolean toggles
-            let value_span = match item {
-                SettingItem::LogLevel => Span::styled(value_text, style),
-                _ => {
-                    let enabled = match item {
-                        SettingItem::DefaultOnStartup => settings.default_on_startup,
-                        SettingItem::SetSmartToggle => settings.set_smart_toggle,
-                        SettingItem::NotifyManual => settings.notify_manual,
-                        SettingItem::NotifyRules => settings.notify_rules,
-                        SettingItem::MatchByIndex => settings.match_by_index,
-                        _ => false,
-                    };
-                    
-                    if enabled {
-                        Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                    } else {
-                        Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                    }
+            let value_span = if *item == SettingItem::LogLevel {
+                Span::styled(value_text, style)
+            } else {
+                let enabled = match item {
+                    SettingItem::DefaultOnStartup => settings.default_on_startup,
+                    SettingItem::SetSmartToggle => settings.set_smart_toggle,
+                    SettingItem::NotifyManual => settings.notify_manual,
+                    SettingItem::NotifyRules => settings.notify_rules,
+                    SettingItem::MatchByIndex => settings.match_by_index,
+                    SettingItem::LogLevel => false,
+                };
+                
+                if enabled {
+                    Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
+                } else {
+                    Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
                 }
             };
 
@@ -577,8 +576,8 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
         if line_width == 0 {
             total_visual_lines += 1;
         } else {
-            // Ceiling division: (num + divisor - 1) / divisor
-            total_visual_lines += (line_width + width - 1) / width;
+            // Ceiling division
+            total_visual_lines += line_width.div_ceil(width);
         }
     }
 
