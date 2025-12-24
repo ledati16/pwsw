@@ -942,7 +942,7 @@ mod tests {
         {
             let mut guard = locks.lock().unwrap();
             for i in 0..MAX_DEVICE_LOCKS {
-                guard.insert(i as u32, Arc::new(StdMutex::new(())));
+                guard.insert(u32::try_from(i).unwrap(), Arc::new(StdMutex::new(())));
             }
         }
 
@@ -1003,7 +1003,7 @@ mod tests {
             let mut guard = locks.lock().unwrap();
             for i in 0..MAX_DEVICE_LOCKS {
                 let arc = Arc::new(StdMutex::new(()));
-                guard.insert(i as u32, arc.clone());
+                guard.insert(u32::try_from(i).unwrap(), arc.clone());
 
                 // Hold onto first 10 entries (simulating active profile switches)
                 if i < 10 {
@@ -1026,7 +1026,7 @@ mod tests {
 
             // Verify the held locks are still present
             for (i, _arc) in held_arcs.iter().enumerate() {
-                assert!(guard.contains_key(&(i as u32)));
+                assert!(guard.contains_key(&u32::try_from(i).unwrap()));
             }
         }
 

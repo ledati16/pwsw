@@ -38,6 +38,8 @@ mod daemon_log_tests {
 
     #[test]
     fn test_daemon_logs_bounded_on_large_burst() {
+        const MAX_LOG_LINES: usize = 500;
+
         // Create a minimal config for App
         let config = Config {
             sinks: vec![],
@@ -57,7 +59,6 @@ mod daemon_log_tests {
         let burst: Vec<String> = (0..1000).map(|i| format!("line {i}")).collect();
 
         // Apply the bounding logic from mod.rs:578-593
-        const MAX_LOG_LINES: usize = 500;
         let available_space = MAX_LOG_LINES.saturating_sub(app.daemon_log_lines.len());
         let safe_new_lines = if burst.len() > available_space {
             // Take last N lines if burst is too large
@@ -83,6 +84,8 @@ mod daemon_log_tests {
 
     #[test]
     fn test_daemon_logs_incremental_growth() {
+        const MAX_LOG_LINES: usize = 500;
+
         let config = Config {
             sinks: vec![],
             rules: vec![],
@@ -96,8 +99,6 @@ mod daemon_log_tests {
             },
         };
         let mut app = App::with_config(config);
-
-        const MAX_LOG_LINES: usize = 500;
 
         // Add 300 lines
         for i in 0..300 {

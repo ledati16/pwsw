@@ -1,6 +1,6 @@
 [package]
 name = "pwsw"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.92"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
@@ -100,18 +100,6 @@ struct_excessive_bools = "allow"
 # === Cohesion Over Line Limits (14 instances) ===
 # Event loops, TUI screens, input handlers - cohesive logic hard to split
 too_many_lines = "allow"
-
-# === Safe Numeric Conversions (3 instances) ===
-# IPC message length (u32), TUI scroll indicators (very short strings < 10 chars)
-cast_possible_truncation = "allow"
-
-# === Code Organization (2 instances) ===
-# Constants scoped in spawn blocks for clarity
-items_after_statements = "allow"
-
-# === Protocol Requirements (1 instance) ===
-# Wayland Connection must be moved, not borrowed (protocol constraint)
-needless_pass_by_value = "allow"
 
 # === Semantic Differences (1 instance) ===
 # Rule editor - conceptually different field types despite similar code

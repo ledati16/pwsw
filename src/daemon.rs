@@ -226,6 +226,8 @@ struct IpcContext {
 /// Returns `Ok(())` on successful daemon shutdown.
 // Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
 pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
+    const CONFIG_DEBOUNCE_MS: u64 = 250;
+
     use std::process::Command;
     use std::time::Duration;
     // Check if a daemon is already running BEFORE any initialization
@@ -252,6 +254,11 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     // Background mode: spawn detached process and wait for successful startup
     if !foreground && std::env::var("PWSW_DAEMON_CHILD").is_err() {
+        // Wait for daemon to initialize by checking if it's responding to IPC
+        // Try for up to 2 seconds (20 attempts * 100ms)
+        const MAX_ATTEMPTS: u32 = 20;
+        const RETRY_DELAY_MS: u64 = 100;
+
         // We're the initial process - spawn a background child
         let exe = std::env::current_exe()?;
 
@@ -277,11 +284,6 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
         let pid = child.id();
         println!("Starting daemon (PID: {})...", pid.to_string().technical());
-
-        // Wait for daemon to initialize by checking if it's responding to IPC
-        // Try for up to 2 seconds (20 attempts * 100ms)
-        const MAX_ATTEMPTS: u32 = 20;
-        const RETRY_DELAY_MS: u64 = 100;
 
         for attempt in 1..=MAX_ATTEMPTS {
             tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
@@ -487,7 +489,6 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     info!("Daemon initialization complete, entering event loop");
 
     let mut last_config_reload = Instant::now();
-    const CONFIG_DEBOUNCE_MS: u64 = 250;
 
     // Main event loop
     loop {
