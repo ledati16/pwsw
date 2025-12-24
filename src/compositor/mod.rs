@@ -1,14 +1,25 @@
 //! Compositor abstraction layer
 //!
 //! Provides window event streams from Wayland compositors using standard protocols:
-//! - `wlr-foreign-toplevel-management` (Sway, Hyprland, Niri, River, labwc, dwl, hikari, Wayfire)
+//! - `ext-foreign-toplevel-list-v1` (Standard, preferred)
+//! - `wlr-foreign-toplevel-management` (Legacy/wlroots-specific: Sway, Hyprland, etc.)
 
+mod ext_toplevel;
 mod wlr_toplevel;
 
 use color_eyre::eyre::{self, Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info};
 use wayland_client::{Connection, protocol::wl_registry};
+
+/// Supported window management protocols
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Protocol {
+    /// ext-foreign-toplevel-list-v1 (Standard)
+    Ext,
+    /// wlr-foreign-toplevel-management (Legacy/wlroots)
+    Wlr,
+}
 
 /// Window event from a compositor
 #[derive(Debug, Clone)]
@@ -71,16 +82,10 @@ const WINDOW_EVENT_CHANNEL_CAPACITY: usize = 100;
 /// Callers should handle channel closure gracefully by breaking out of
 /// their event loop and performing cleanup.
 ///
-/// # Supported Compositors
+/// # Supported Protocols
 ///
-/// - **Sway** - `wlr-foreign-toplevel`
-/// - **Hyprland** - `wlr-foreign-toplevel`
-/// - **Niri** - `wlr-foreign-toplevel`
-/// - **River** - `wlr-foreign-toplevel`
-/// - **Wayfire** - `wlr-foreign-toplevel`
-/// - **labwc** - `wlr-foreign-toplevel`
-/// - **dwl** - `wlr-foreign-toplevel`
-/// - **hikari** - `wlr-foreign-toplevel`
+/// 1. **ext-foreign-toplevel-list-v1** (Standard, preferred)
+/// 2. **wlr-foreign-toplevel-management** (Legacy/wlroots)
 ///
 /// **Note:** GNOME/Mutter and KDE Plasma 6 do not expose window management protocols and are not supported.
 pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
@@ -91,7 +96,7 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
     info!("Connected to Wayland display");
 
     // Pre-detect available protocols by checking the registry
-    detect_available_protocol(&conn)?;
+    let protocol = detect_available_protocol(&conn)?;
 
     // Create bounded channel for sending events from Wayland thread to tokio runtime
     // This prevents unbounded growth if the main loop is slow
@@ -99,11 +104,12 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 
     // Spawn dedicated thread for Wayland event loop
     std::thread::spawn(move || {
-        info!("Using wlr-foreign-toplevel-management protocol");
+        info!("Using {:?} protocol", protocol);
 
         // Catch panics to avoid silent thread death
-        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            wlr_toplevel::run_event_loop(conn, tx)
+        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match protocol {
+            Protocol::Ext => ext_toplevel::run_event_loop(conn, tx),
+            Protocol::Wlr => wlr_toplevel::run_event_loop(conn, tx),
         }));
 
         match panic_result {
@@ -131,9 +137,9 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 
 /// Detect which window management protocol is available on this compositor
 ///
-/// This function queries the Wayland registry to check if the wlr-foreign-toplevel-management
-/// protocol is advertised by the compositor.
-fn detect_available_protocol(conn: &Connection) -> Result<()> {
+/// This function queries the Wayland registry to check if supported protocols are advertised.
+/// It prioritizes the standard `ext` protocol over the legacy `wlr` protocol.
+fn detect_available_protocol(conn: &Connection) -> Result<Protocol> {
     use tracing::debug;
     use wayland_client::globals::{GlobalListContents, registry_queue_init};
 
@@ -168,7 +174,8 @@ fn detect_available_protocol(conn: &Connection) -> Result<()> {
 
     // Check the GlobalList for available protocols
     let contents = globals.contents();
-    let mut has_wlr_foreign_toplevel = false;
+    let mut has_ext = false;
+    let mut has_wlr = false;
 
     contents.with_list(|list| {
         for global in list {
@@ -176,15 +183,22 @@ fn detect_available_protocol(conn: &Connection) -> Result<()> {
                 "Found global: {} (version {})",
                 global.interface, global.version
             );
-            if global.interface.as_str() == "zwlr_foreign_toplevel_manager_v1" {
-                has_wlr_foreign_toplevel = true;
+            if global.interface.as_str() == "ext_foreign_toplevel_list_v1" {
+                has_ext = true;
+            } else if global.interface.as_str() == "zwlr_foreign_toplevel_manager_v1" {
+                has_wlr = true;
             }
         }
     });
 
-    // Check if protocol is available
-    if has_wlr_foreign_toplevel {
-        return Ok(());
+    if has_ext {
+        info!("Detected ext-foreign-toplevel-list-v1 protocol");
+        return Ok(Protocol::Ext);
+    }
+
+    if has_wlr {
+        info!("Detected zwlr-foreign-toplevel-management-v1 protocol");
+        return Ok(Protocol::Wlr);
     }
 
     // No supported protocol found
@@ -192,7 +206,8 @@ fn detect_available_protocol(conn: &Connection) -> Result<()> {
         "No supported window management protocol found.\n\
          \n\
          Supported protocols:\n\
-         - `zwlr_foreign_toplevel_manager_v1` (Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari)\n\
+         - `ext_foreign_toplevel_list_v1` (Standard)\n\
+         - `zwlr_foreign_toplevel_manager_v1` (Legacy: Sway, Hyprland, etc.)\n\
          \n\
          Unsupported compositors:\n\
          - GNOME/Mutter (no window management protocol exposed)\n\
