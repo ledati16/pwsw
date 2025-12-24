@@ -287,7 +287,7 @@ fn build_help_rows(
         for word in text.split_whitespace() {
             let word_len = word.len();
             // +1 for space if not at start of line
-            let space = if current_width == 0 { 0 } else { 1 };
+            let space = usize::from(current_width != 0);
             
             if current_width + space + word_len <= desc_width as usize {
                 if space > 0 {

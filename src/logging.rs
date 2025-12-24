@@ -30,11 +30,11 @@ impl RotatingFileAppender {
     /// # Arguments
     /// * `dir` - Directory to store logs in.
     /// * `filename` - Base filename (e.g., "daemon.log").
-    /// * `max_size_bytes` - Maximum size before rotation (e.g., 1_000_000 for 1MB).
+    /// * `max_size_bytes` - Maximum size before rotation (e.g., `1_000_000` for 1MB).
     pub fn new(dir: impl Into<PathBuf>, filename: &str, max_size_bytes: u64) -> Self {
         let dir = dir.into();
         let path = dir.join(filename);
-        let backup_path = dir.join(format!("{}.old", filename));
+        let backup_path = dir.join(format!("{filename}.old"));
 
         Self {
             path,
@@ -45,7 +45,7 @@ impl RotatingFileAppender {
     }
 
     /// Helper to open a file with secure permissions
-    fn open_secure(&self, path: &std::path::Path, append: bool) -> io::Result<File> {
+    fn open_secure(path: &std::path::Path, append: bool) -> io::Result<File> {
         let mut options = fs::OpenOptions::new();
         options.create(true).write(true);
         
@@ -77,7 +77,7 @@ impl RotatingFileAppender {
                 fs::create_dir_all(parent)?;
             }
 
-            let file = self.open_secure(&self.path, true)?;
+            let file = Self::open_secure(&self.path, true)?;
             *guard = Some(file);
         }
 
@@ -95,7 +95,7 @@ impl RotatingFileAppender {
         }
 
         // Create new empty file with secure permissions
-        let file = self.open_secure(&self.path, false)?;
+        let file = Self::open_secure(&self.path, false)?;
         *guard = Some(file);
 
         Ok(())
@@ -105,7 +105,7 @@ impl RotatingFileAppender {
 impl Write for RotatingFileAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut guard = self.file.lock().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Log mutex poisoned: {}", e))
+            io::Error::other(format!("Log mutex poisoned: {e}"))
         })?;
 
         // 1. Ensure file is open and check size
@@ -117,11 +117,9 @@ impl Write for RotatingFileAppender {
         };
 
         // 2. Rotate if needed
-        if current_size >= self.max_size_bytes {
-            if let Err(e) = self.rotate(&mut guard) {
-                // If rotation fails, try to continue with current file but log to stderr
-                eprintln!("Failed to rotate log file: {}", e);
-            }
+        if current_size >= self.max_size_bytes && let Err(e) = self.rotate(&mut guard) {
+            // If rotation fails, try to continue with current file but log to stderr
+            eprintln!("Failed to rotate log file: {e}");
         }
 
         // 3. Write to file (re-acquiring in case rotation happened)
@@ -134,7 +132,7 @@ impl Write for RotatingFileAppender {
 
     fn flush(&mut self) -> io::Result<()> {
         let mut guard = self.file.lock().map_err(|e| {
-            io::Error::new(io::ErrorKind::Other, format!("Log mutex poisoned: {}", e))
+            io::Error::other(format!("Log mutex poisoned: {e}"))
         })?;
         
         if let Some(file) = guard.as_mut() {

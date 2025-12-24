@@ -693,7 +693,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Calculate required lines based on wrapping behavior
     // We iterate through spans to calculate the total visual width accurately
     let mut total_width = 0;
-    for span in context_text.spans.iter() {
+    for span in &context_text.spans {
         total_width += span.width();
     }
     
@@ -701,11 +701,11 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let context_height = if total_width == 0 {
         1
     } else {
-        (total_width as u16 + available_width - 1) / available_width
+        (total_width as u16).div_ceil(available_width)
     };
     
     // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
-    let context_height = context_height.max(1).min(3);
+    let context_height = context_height.clamp(1, 3);
 
     // Create main layout: [Header (tabs) | Context Bar | Content | Footer (status)]
     let chunks = Layout::default()
