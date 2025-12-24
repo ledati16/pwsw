@@ -3,10 +3,13 @@
 //! Manages screen navigation, user input, and application state.
 
 use color_eyre::eyre::Result;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use throbber_widgets_tui::ThrobberState;
 
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::Config;
+use crate::style::colors;
 use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
@@ -434,5 +437,277 @@ impl App {
         self.config_dirty = false;
         self.set_status("Configuration saved successfully".to_string());
         Ok(())
+    }
+
+    /// Generate the context bar text based on current app state
+    pub(crate) fn context_bar_text(&self) -> Line<'static> {
+        use super::screens::rules::RulesMode;
+        use super::screens::sinks::SinksMode;
+
+        let mode = self.get_screen_mode();
+
+        match (self.current_screen, mode) {
+            (Screen::Dashboard, ScreenMode::List) => {
+                // Phase 9B: View-aware context bar for dashboard
+                use crate::tui::screens::DashboardView;
+                let mut spans = vec![
+                    Span::styled("[←→]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Select Action  "),
+                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                    Span::raw(" Execute  "),
+                ];
+
+                // Add view-specific scrolling hints
+                match self.dashboard_screen.current_view {
+                    DashboardView::Logs => {
+                        spans.push(Span::styled(
+                            "[↑↓/PgUp/PgDn]",
+                            Style::default().fg(colors::UI_HIGHLIGHT),
+                        ));
+                        spans.push(Span::raw(" Scroll Logs  "));
+                        spans.push(Span::styled(
+                            "[w]",
+                            Style::default().fg(colors::UI_HIGHLIGHT),
+                        ));
+                        spans.push(Span::raw(" View Windows"));
+                    }
+                    DashboardView::Windows => {
+                        spans.push(Span::styled(
+                            "[PgUp/PgDn]",
+                            Style::default().fg(colors::UI_HIGHLIGHT),
+                        ));
+                        spans.push(Span::raw(" Scroll Windows  "));
+                        spans.push(Span::styled(
+                            "[w]",
+                            Style::default().fg(colors::UI_HIGHLIGHT),
+                        ));
+                        spans.push(Span::raw(" View Logs"));
+                    }
+                }
+
+                Line::from(spans)
+            }
+            (Screen::Sinks, ScreenMode::List) => Line::from(vec![
+                Span::raw("↑↓ Navigate  "),
+                Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Reorder  "),
+                Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Add  "),
+                Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Edit  "),
+                Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Delete  "),
+                Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Default  "),
+                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Inspect"),
+            ]),
+            (Screen::Sinks, ScreenMode::Modal) => {
+                // Determine which modal we're in
+                match self.sinks_screen.mode {
+                    SinksMode::AddEdit => Line::from(vec![
+                        Span::raw("↑↓/"),
+                        Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Switch field  "),
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Save/Select  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ]),
+                    SinksMode::Delete => Line::from(vec![
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Confirm  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ]),
+                    SinksMode::SelectSink => Line::from(vec![
+                        Span::raw("↑↓ Navigate  "),
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Select  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ]),
+                    SinksMode::Inspect => Line::from(vec![
+                        Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Close Details"),
+                    ]),
+                    SinksMode::List => Line::from(""), // Should not happen in Modal mode
+                }
+            }
+            (Screen::Rules, ScreenMode::List) => Line::from(vec![
+                Span::raw("↑↓ Navigate  "),
+                Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Reorder  "),
+                Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Add  "),
+                Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Edit  "),
+                Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Delete  "),
+                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Inspect"),
+            ]),
+            (Screen::Rules, ScreenMode::Modal) => {
+                // Determine which modal we're in
+                match self.rules_screen.mode {
+                    RulesMode::AddEdit => {
+                        let mut spans = vec![
+                            Span::raw("↑↓/"),
+                            Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
+                            Span::raw(" Switch field  "),
+                            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                            Span::raw(" Save/Select  "),
+                            Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                            Span::raw(" Cancel"),
+                        ];
+                        // Show live preview indicator if preview is active
+                        if self.preview.is_some() {
+                            spans.push(Span::raw("  "));
+                            spans.push(Span::styled(
+                                "⚡ Live preview",
+                                Style::default().fg(colors::UI_SUCCESS),
+                            ));
+                        }
+                        Line::from(spans)
+                    }
+                    RulesMode::Delete => Line::from(vec![
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Confirm  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ]),
+                    RulesMode::SelectSink => Line::from(vec![
+                        Span::raw("↑↓ Navigate  "),
+                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Select  "),
+                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Cancel"),
+                    ]),
+                    RulesMode::Inspect => Line::from(vec![
+                        Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::raw(" Close Details"),
+                    ]),
+                    RulesMode::List => Line::from(""), // Should not happen in Modal mode
+                }
+            }
+            (Screen::Settings, ScreenMode::List) => Line::from(vec![
+                Span::raw("↑↓ Navigate  "),
+                Span::styled("[PgUp/PgDn]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Scroll Info  "),
+                Span::styled("[Enter/Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Toggle/Edit"),
+            ]),
+            (Screen::Settings, ScreenMode::Modal) => Line::from(vec![
+                Span::raw("↑↓ Navigate  "),
+                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Confirm  "),
+                Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Cancel"),
+            ]),
+            _ => Line::from(""),
+        }
+    }
+
+    /// Process a background update message
+    pub(crate) fn handle_update(&mut self, update: AppUpdate) {
+        match update {
+            AppUpdate::SinksData {
+                active,
+                profiles,
+                names,
+            } => {
+                self.active_sink_list = active;
+                self.profile_sink_list = profiles;
+                self.active_sinks = names;
+                self.dirty = true;
+            }
+            AppUpdate::DaemonState {
+                running,
+                windows,
+                daemon_manager,
+                service_enabled,
+            } => {
+                self.daemon_running = running;
+                self.window_count = windows.len();
+                self.windows = windows;
+                self.dashboard_screen.service_enabled = service_enabled;
+                // Update max actions if daemon manager changed (e.g., service installed/removed)
+                if let Some(dm) = daemon_manager {
+                    let is_systemd = dm == crate::daemon_manager::DaemonManager::Systemd;
+                    self.dashboard_screen.set_max_actions(is_systemd);
+                }
+                self.dirty = true;
+            }
+            AppUpdate::ActionResult(msg) => {
+                self.set_status(msg);
+                // Clear daemon action pending flag when an action completes
+                self.daemon_action_pending = false;
+                // set_status sets dirty already
+            }
+            AppUpdate::PreviewPending {
+                app_pattern,
+                title_pattern,
+            } => {
+                // Only mark pending if it matches current editor content
+                if self.rules_screen.editor.app_id_pattern.value() == app_pattern
+                    && self.rules_screen.editor.title_pattern.value()
+                        == title_pattern.clone().unwrap_or_default()
+                {
+                    // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
+                    self.set_preview(PreviewResult {
+                        app_pattern,
+                        title_pattern,
+                        matches: Vec::new(),
+                        timed_out: false,
+                        pending: true,
+                        regex_error: None,
+                    });
+                }
+            }
+            AppUpdate::PreviewMatches {
+                app_pattern,
+                title_pattern,
+                matches,
+                timed_out,
+                regex_error,
+            } => {
+                // Only apply preview if patterns match current editor content (avoid race)
+                if self.rules_screen.editor.app_id_pattern.value() == app_pattern
+                    && self.rules_screen.editor.title_pattern.value()
+                        == title_pattern.clone().unwrap_or_default()
+                {
+                    // Store preview in app.preview as a typed struct
+                    self.set_preview(PreviewResult {
+                        app_pattern,
+                        title_pattern,
+                        matches,
+                        timed_out,
+                        pending: false,
+                        regex_error,
+                    });
+                }
+            }
+            AppUpdate::DaemonLogs(new_lines) => {
+                // Limit burst size before extending to avoid temporary memory spikes
+                const MAX_LOG_LINES: usize = 500;
+                let available_space = MAX_LOG_LINES.saturating_sub(self.daemon_log_lines.len());
+                let safe_new_lines = if new_lines.len() > available_space {
+                    // Take last N lines if burst is too large
+                    &new_lines[new_lines.len().saturating_sub(MAX_LOG_LINES)..]
+                } else {
+                    &new_lines
+                };
+
+                // Append new log lines to the buffer
+                self.daemon_log_lines.extend_from_slice(safe_new_lines);
+
+                // Keep only last 500 lines to avoid unbounded growth (defensive)
+                if self.daemon_log_lines.len() > MAX_LOG_LINES {
+                    let excess = self.daemon_log_lines.len() - MAX_LOG_LINES;
+                    self.daemon_log_lines.drain(0..excess);
+                }
+                self.dirty = true;
+            }
+        }
     }
 }
