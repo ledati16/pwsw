@@ -108,7 +108,7 @@ pub(crate) fn render_help(
     // Draw top arrow if there's more above
     if has_above {
         let arrow_text = format!("↑{lines_above}");
-        let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
+        let arrow_width = u16::try_from(arrow_text.len()).unwrap_or(5); // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
             y: inner.y,
@@ -125,7 +125,7 @@ pub(crate) fn render_help(
     // Draw bottom arrow if there's more below
     if has_below {
         let arrow_text = format!("↓{lines_below}");
-        let arrow_width = arrow_text.len() as u16; // Safe: arrow text is very short (< 10 chars)
+        let arrow_width = u16::try_from(arrow_text.len()).unwrap_or(5); // Safe: arrow text is very short (< 10 chars)
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(arrow_width),
             y: inner.y + inner.height.saturating_sub(1),
@@ -303,7 +303,7 @@ fn build_help_rows(
         }
         lines.push(current_line);
 
-        (lines.join("\n"), lines.len() as u16)
+        (lines.join("\n"), u16::try_from(lines.len()).unwrap_or(u16::MAX))
     };
 
     // Helper to add a keybind row

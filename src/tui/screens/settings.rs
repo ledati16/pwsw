@@ -583,7 +583,7 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
     }
 
     // Determine max scroll
-    let max_scroll = total_visual_lines.saturating_sub(height) as u16;
+    let max_scroll = u16::try_from(total_visual_lines.saturating_sub(height)).unwrap_or(u16::MAX);
 
     // Clamp scroll state
     screen_state.desc_scroll = screen_state.desc_scroll.min(max_scroll);

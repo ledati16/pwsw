@@ -80,6 +80,18 @@ pub(crate) fn windows_fingerprint(windows: &[crate::ipc::WindowInfo]) -> u64 {
     hasher.finish()
 }
 
+// Terminal guard to ensure we restore terminal state on panic/return
+struct TerminalGuard;
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        // Best-effort restore; ignore errors here
+        let _ = disable_raw_mode();
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, LeaveAlternateScreen);
+        let _ = execute!(std::io::stdout(), Show);
+    }
+}
+
 /// Run the TUI application
 ///
 /// # Errors
@@ -128,17 +140,6 @@ pub async fn run() -> Result<()> {
     };
     app.dashboard_screen.set_max_actions(is_systemd);
 
-    // Terminal guard to ensure we restore terminal state on panic/return
-    struct TerminalGuard;
-    impl Drop for TerminalGuard {
-        fn drop(&mut self) {
-            // Best-effort restore; ignore errors here
-            let _ = disable_raw_mode();
-            let mut stdout = std::io::stdout();
-            let _ = execute!(stdout, LeaveAlternateScreen);
-            let _ = execute!(std::io::stdout(), Show);
-        }
-    }
     let _term_guard = TerminalGuard;
 
     // Setup background update channels and spawn worker
@@ -701,7 +702,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let context_height = if total_width == 0 {
         1
     } else {
-        (total_width as u16).div_ceil(available_width)
+        u16::try_from(total_width).unwrap_or(u16::MAX).div_ceil(available_width)
     };
 
     // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
