@@ -689,21 +689,21 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Calculate context bar content and required height first
     let context_text = get_context_bar_text(app);
     let available_width = size.width.max(1);
-    
+
     // Calculate required lines based on wrapping behavior
     // We iterate through spans to calculate the total visual width accurately
     let mut total_width = 0;
     for span in &context_text.spans {
         total_width += span.width();
     }
-    
+
     // Calculate required lines: ceil(total_width / available_width)
     let context_height = if total_width == 0 {
         1
     } else {
         (total_width as u16).div_ceil(available_width)
     };
-    
+
     // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
     let context_height = context_height.clamp(1, 3);
 
@@ -1073,8 +1073,8 @@ fn render_footer(
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(3), // Throbber/Dot area
-            Constraint::Min(0),    // Status message
+            Constraint::Length(3),  // Throbber/Dot area
+            Constraint::Min(0),     // Status message
             Constraint::Length(10), // Quit hint
         ])
         .split(area);
@@ -1097,7 +1097,10 @@ fn render_footer(
     frame.render_widget(Paragraph::new(status_text), chunks[1]);
 
     // 3. Quit Hint (Right-aligned)
-    let quit_hint = Paragraph::new(Span::styled("[q] Quit ", Style::default().fg(colors::UI_SECONDARY)))
-        .alignment(Alignment::Right);
+    let quit_hint = Paragraph::new(Span::styled(
+        "[q] Quit ",
+        Style::default().fg(colors::UI_SECONDARY),
+    ))
+    .alignment(Alignment::Right);
     frame.render_widget(quit_hint, chunks[2]);
 }

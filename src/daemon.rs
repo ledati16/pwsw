@@ -170,10 +170,12 @@ fn check_and_cleanup_stale_pid_file() -> Result<bool> {
         // Fallback for non-Linux unix-likes (unlikely for Wayland/PipeWire but good practice)
         // Without `nix` or `/proc`, we can't easily check. Assume stale if we can't lock?
         // For now, just warn and remove to be safe/aggressive about startup.
-        warn!("Cannot verify PID {} on non-Linux system, assuming stale", pid);
-        std::fs::remove_file(&pid_path).with_context(|| {
-            format!("Failed to remove PID file: {}", pid_path.display())
-        })?;
+        warn!(
+            "Cannot verify PID {} on non-Linux system, assuming stale",
+            pid
+        );
+        std::fs::remove_file(&pid_path)
+            .with_context(|| format!("Failed to remove PID file: {}", pid_path.display()))?;
         Ok(false)
     }
 }

@@ -282,7 +282,8 @@ pub(crate) fn render_settings(
     screen_state: &mut SettingsScreen,
 ) {
     // Calculate dynamic height: 40% of screen, but at least 14 lines
-    let desc_height = (area.height * DESCRIPTION_PANEL_PERCENT / 100).max(DESCRIPTION_PANEL_MIN_HEIGHT);
+    let desc_height =
+        (area.height * DESCRIPTION_PANEL_PERCENT / 100).max(DESCRIPTION_PANEL_MIN_HEIGHT);
 
     // Split into [settings list | description]
     let chunks = Layout::default()
@@ -340,7 +341,7 @@ fn render_settings_list(
                     SettingItem::MatchByIndex => settings.match_by_index,
                     SettingItem::LogLevel => false,
                 };
-                
+
                 if enabled {
                     Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
                 } else {

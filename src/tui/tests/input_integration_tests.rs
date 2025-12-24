@@ -4,8 +4,12 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 fn make_app_sinks() -> crate::tui::app::App {
     let temp_dir = tempfile::tempdir().expect("failed to create tempdir");
     let config_path = temp_dir.path().join("config.toml");
-    std::fs::write(&config_path, "[[sinks]]\nname=\"s1\"\ndesc=\"d1\"\ndefault=true\n").unwrap();
-    
+    std::fs::write(
+        &config_path,
+        "[[sinks]]\nname=\"s1\"\ndesc=\"d1\"\ndefault=true\n",
+    )
+    .unwrap();
+
     let config = crate::config::Config::load_from_path(&config_path).expect("Config::load failed");
     let mut app = crate::tui::app::App::with_config(config);
     app.current_screen = crate::tui::app::Screen::Sinks;
@@ -36,7 +40,11 @@ fn sinks_editor_input_wiring() {
 fn rules_editor_input_wiring() {
     let temp_dir = tempfile::tempdir().expect("failed to create tempdir");
     let config_path = temp_dir.path().join("config.toml");
-    std::fs::write(&config_path, "[[sinks]]\nname=\"s1\"\ndesc=\"d1\"\ndefault=true\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "[[sinks]]\nname=\"s1\"\ndesc=\"d1\"\ndefault=true\n",
+    )
+    .unwrap();
 
     let config = crate::config::Config::load_from_path(&config_path).expect("Config::load failed");
     let mut app = crate::tui::app::App::with_config(config);

@@ -279,16 +279,16 @@ fn build_help_rows(
         if text.is_empty() {
             return (String::new(), 1);
         }
-        
+
         let mut lines = Vec::new();
         let mut current_line = String::new();
         let mut current_width = 0;
-        
+
         for word in text.split_whitespace() {
             let word_len = word.len();
             // +1 for space if not at start of line
             let space = usize::from(current_width != 0);
-            
+
             if current_width + space + word_len <= desc_width as usize {
                 if space > 0 {
                     current_line.push(' ');
@@ -302,20 +302,23 @@ fn build_help_rows(
             }
         }
         lines.push(current_line);
-        
+
         (lines.join("\n"), lines.len() as u16)
     };
 
     // Helper to add a keybind row
     let add_keybind = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, key: &str, desc: &str| {
         let (wrapped_desc, height) = wrap_text(desc);
-        rows.push(Row::new(vec![
-            Cell::from(Span::styled(
-                key.to_string(),
-                Style::default().fg(colors::UI_SUCCESS),
-            )),
-            Cell::from(wrapped_desc),
-        ]).height(height));
+        rows.push(
+            Row::new(vec![
+                Cell::from(Span::styled(
+                    key.to_string(),
+                    Style::default().fg(colors::UI_SUCCESS),
+                )),
+                Cell::from(wrapped_desc),
+            ])
+            .height(height),
+        );
         meta.push(HelpRowMeta {
             is_section_header: false,
             section_name: None,
@@ -368,13 +371,16 @@ fn build_help_rows(
     // Helper to add compact hint text (for regex examples in Rules screen)
     let add_hint = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, text: &str| {
         let (wrapped_text, height) = wrap_text(text);
-        rows.push(Row::new(vec![
-            Cell::from(""),
-            Cell::from(Span::styled(
-                wrapped_text,
-                Style::default().fg(colors::UI_SECONDARY),
-            )),
-        ]).height(height));
+        rows.push(
+            Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    wrapped_text,
+                    Style::default().fg(colors::UI_SECONDARY),
+                )),
+            ])
+            .height(height),
+        );
         meta.push(HelpRowMeta {
             is_section_header: false,
             section_name: None,

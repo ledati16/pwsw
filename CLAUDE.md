@@ -10,6 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - DO NOT push to remote without explicit user approval
 
 **Recent Achievements:**
+- **Protocol Expansion (2025-12-24)**: Implemented `ext-foreign-toplevel-list-v1` support, providing a standardized, future-proof window monitoring backend.
 - **Edition 2024 Upgrade (2025-12-21)**: Rust 1.92 MSRV, Edition 2024 baseline, let_chains feature adoption (4 sites simplified)
 - Lint configuration centralized: 22 pedantic suppressions moved to `[lints]` table in Cargo.toml (2 remain in generated code)
 - Comprehensive refactoring completed: Modernized codebase using ecosystem crates (`tui-input`, `notify`, `color-eyre`)
@@ -24,7 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Mouse Support:** Enable mouse capture in TUI for tab clicking and list scrolling (supported by `ratatui`/`crossterm`).
 
 **Architecture Evolution:**
-- **Protocol Expansion:** Implement `ext-foreign-toplevel-list-v1` (future standard replacement for `wlr` protocol).
+- **Stability Tuning:** Continue monitoring `ext-foreign-toplevel-list-v1` adoption and stability.
 
 **Architecture Decisions:**
 - **PipeWire Integration:** Deliberately chose process isolation (shelling out to `pw-dump`/`pw-cli`) over native Rust bindings. The `pipewire` crate relies on unsafe FFI, lacks native async support (requires complex thread bridging), and could crash the daemon on library errors. The current CLI approach is robust, safe, and isolates failures. Native bindings are not recommended unless the ecosystem matures significantly.
@@ -1043,7 +1044,8 @@ cargo clippy --all-targets -- -W clippy::pedantic
 
 **Current Status:**
 - **Supported:** `zwlr_foreign_toplevel_manager_v1` (wlroots/Smithay compositors)
-- **Not Supported:** GNOME/Mutter, KDE Plasma 6
+- **Supported:** `ext_foreign_toplevel_list_v1` (Standard protocol, staging)
+- **Not Supported:** GNOME/Mutter, KDE Plasma 6 (until they implement `ext`)
 
 **Protocol History:**
 
@@ -1054,32 +1056,22 @@ cargo clippy --all-targets -- -W clippy::pedantic
 - Support was dropped after confirming Plasma 6 has no window management protocol
 - Removed files: `src/compositor/plasma.rs`, `wayland-protocols-plasma` dependency
 
-**Future Protocol Opportunities:**
+**Protocol Details:**
 
 *ext-foreign-toplevel-list v1:*
 - Part of official wayland-protocols (staging state)
-- Intended as standardized replacement for wlr-foreign-toplevel-management
-- **Key difference:** Read-only list of toplevels (no window control capabilities)
-- **For pwsw:** This limitation is acceptable - we only need to monitor windows, not control them
-- **Current adoption:** Minimal (as of December 2024)
-- **Potential benefit:** Could enable support for KDE Plasma 6 and other compositors if/when they implement it
-
-*Implementation considerations for ext-foreign-toplevel-list:*
-1. Add dependency: `wayland-protocols` with `staging` feature enabled
-2. Create new implementation: `src/compositor/ext_toplevel.rs`
-3. Update protocol detection priority: wlr → ext → (future protocols)
-4. Similar event model to wlr implementation (Opened, Changed, Closed events)
-5. May need to handle different window identification schemes
+- Standardized replacement for wlr-foreign-toplevel-management
+- **Implementation (2025-12-24):** Added as preferred backend in `src/compositor/ext_toplevel.rs`.
+- **Key difference:** Read-only list of toplevels (no window control capabilities). This is ideal for `pwsw`'s monitoring-only needs.
+- **Current adoption:** Growing. Enables broader compositor support as adoption increases.
 
 **Resources:**
 - wayland-protocols repository: https://gitlab.freedesktop.org/wayland/wayland-protocols
 - ext-foreign-toplevel spec: `staging/ext-foreign-toplevel-list/`
-- KDE Plasma 6 protocol status: Monitor KWin releases for protocol additions
 
 **Decision rationale:**
-- Hold implementation until ext-foreign-toplevel moves from staging to stable
-- Ensures protocol stability and wider compositor adoption before investing effort
-- Current wlr-based implementation covers majority of Wayland compositors in active use
+- Prioritize standard protocols (`ext`) over vendor-specific ones (`wlr`) while maintaining both for maximum compatibility.
+- Ensure the daemon remains lightweight by utilizing the read-only protocol where possible.
 
 ## Code Location Quick Reference
 

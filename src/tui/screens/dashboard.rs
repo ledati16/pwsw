@@ -291,7 +291,10 @@ fn render_daemon_section(
 
     // Append systemd status if available
     if let Some(enabled) = screen_state.service_enabled {
-        status_spans.push(Span::styled(" · ", Style::default().fg(colors::UI_SECONDARY)));
+        status_spans.push(Span::styled(
+            " · ",
+            Style::default().fg(colors::UI_SECONDARY),
+        ));
         let (unit_icon, unit_text, unit_color) = if enabled {
             ("✓", "enabled", colors::UI_SUCCESS)
         } else {
@@ -335,7 +338,7 @@ fn render_daemon_section(
     row1.extend(render_button("STOP", 1));
     row1.push(Span::raw("  "));
     row1.extend(render_button("RESTART", 2));
-    
+
     lines.push(Line::from(row1));
 
     // Row 2: Persistence actions (only if systemd available)

@@ -222,8 +222,8 @@ impl Dispatch<wl_output::WlOutput, ()> for WlrToplevelState {
 ///
 /// This function runs in a dedicated thread and dispatches `Wayland` events.
 // Connection must be moved, not borrowed (Wayland protocol requirement)
-pub fn run_event_loop(conn: Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
-    let (globals, mut event_queue) = registry_queue_init::<WlrToplevelState>(&conn)
+pub fn run_event_loop(conn: &Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
+    let (globals, mut event_queue) = registry_queue_init::<WlrToplevelState>(conn)
         .context("Failed to initialize Wayland registry")?;
 
     let qh = event_queue.handle();

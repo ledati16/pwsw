@@ -291,22 +291,29 @@ fn render_list(
             let app_id_cell = Cell::from(Span::styled(
                 rule.app_id_pattern.as_str(),
                 if is_selected {
-                    Style::default().fg(colors::UI_TEXT).add_modifier(Modifier::BOLD)
+                    Style::default()
+                        .fg(colors::UI_TEXT)
+                        .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(colors::UI_TEXT)
-                }
+                },
             ));
-            
+
             let title_cell = rule.title_pattern.as_ref().map_or_else(
                 || Cell::from(Span::styled("*", Style::default().fg(colors::UI_SECONDARY))),
-                |s| Cell::from(Span::styled(s.as_str(), Style::default().fg(colors::UI_SECONDARY))),
+                |s| {
+                    Cell::from(Span::styled(
+                        s.as_str(),
+                        Style::default().fg(colors::UI_SECONDARY),
+                    ))
+                },
             );
-            
+
             let sink_cell = Cell::from(Span::styled(
                 sink_display,
                 Style::default().fg(colors::UI_HIGHLIGHT),
             ));
-            
+
             let desc_cell = rule
                 .desc
                 .as_ref()
@@ -386,17 +393,12 @@ fn render_list(
 }
 
 /// Render inspect modal
-fn render_inspect_popup(
-    frame: &mut Frame,
-    area: Rect,
-    rules: &[Rule],
-    screen_state: &RulesScreen,
-) {
+fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_state: &RulesScreen) {
     if screen_state.selected >= rules.len() {
         return;
     }
     let rule = &rules[screen_state.selected];
-    
+
     let popup_area = centered_modal(modal_size::MEDIUM, area);
     frame.render_widget(Clear, popup_area);
 
@@ -410,18 +412,21 @@ fn render_inspect_popup(
     let inner = block.inner(popup_area);
 
     let mut lines = Vec::new();
-    
+
     // Helper for fields
     let mut add_field = |label: &str, value: &str| {
         lines.push(Line::from(vec![
-            Span::styled(format!("{}: ", label), Style::default().fg(colors::UI_SECONDARY)),
+            Span::styled(
+                format!("{label}: "),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
             Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
         ]));
         lines.push(Line::from(""));
     };
 
     add_field("App ID Pattern", &rule.app_id_pattern);
-    
+
     if let Some(title) = &rule.title_pattern {
         add_field("Title Pattern", title);
     } else {
@@ -445,13 +450,12 @@ fn render_inspect_popup(
     // Hint at bottom
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "Press [Enter] or [Esc] to close", 
-        Style::default().fg(colors::UI_HIGHLIGHT)
+        "Press [Enter] or [Esc] to close",
+        Style::default().fg(colors::UI_HIGHLIGHT),
     )));
 
-    let paragraph = Paragraph::new(lines)
-        .wrap(ratatui::widgets::Wrap { trim: false });
-        
+    let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
+
     frame.render_widget(paragraph, inner);
 }
 

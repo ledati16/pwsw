@@ -48,7 +48,7 @@ impl RotatingFileAppender {
     fn open_secure(path: &std::path::Path, append: bool) -> io::Result<File> {
         let mut options = fs::OpenOptions::new();
         options.create(true).write(true);
-        
+
         if append {
             options.append(true);
         } else {
@@ -104,9 +104,10 @@ impl RotatingFileAppender {
 
 impl Write for RotatingFileAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut guard = self.file.lock().map_err(|e| {
-            io::Error::other(format!("Log mutex poisoned: {e}"))
-        })?;
+        let mut guard = self
+            .file
+            .lock()
+            .map_err(|e| io::Error::other(format!("Log mutex poisoned: {e}")))?;
 
         // 1. Ensure file is open and check size
         // Note: get_file returns mutable reference, but for metadata we only need immutable access.
@@ -117,7 +118,9 @@ impl Write for RotatingFileAppender {
         };
 
         // 2. Rotate if needed
-        if current_size >= self.max_size_bytes && let Err(e) = self.rotate(&mut guard) {
+        if current_size >= self.max_size_bytes
+            && let Err(e) = self.rotate(&mut guard)
+        {
             // If rotation fails, try to continue with current file but log to stderr
             eprintln!("Failed to rotate log file: {e}");
         }
@@ -125,16 +128,17 @@ impl Write for RotatingFileAppender {
         // 3. Write to file (re-acquiring in case rotation happened)
         let file = self.get_file(&mut guard)?;
         file.write_all(buf)?;
-        
+
         // Return buf length to satisfy Write trait contract (we wrote everything)
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let mut guard = self.file.lock().map_err(|e| {
-            io::Error::other(format!("Log mutex poisoned: {e}"))
-        })?;
-        
+        let mut guard = self
+            .file
+            .lock()
+            .map_err(|e| io::Error::other(format!("Log mutex poisoned: {e}")))?;
+
         if let Some(file) = guard.as_mut() {
             file.flush()?;
         }

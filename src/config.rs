@@ -179,10 +179,18 @@ impl Config {
     /// Returns an error if the config file cannot be read, parsed, or if validation fails.
     pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("Failed to read config: {path_display}", path_display = path.display()))?;
-        let config_file: ConfigFile = toml::from_str(&contents)
-            .with_context(|| format!("Failed to parse config: {path_display}", path_display = path.display()))?;
+        let contents = fs::read_to_string(path).with_context(|| {
+            format!(
+                "Failed to read config: {path_display}",
+                path_display = path.display()
+            )
+        })?;
+        let config_file: ConfigFile = toml::from_str(&contents).with_context(|| {
+            format!(
+                "Failed to parse config: {path_display}",
+                path_display = path.display()
+            )
+        })?;
         Self::from_config_file(config_file)
     }
 
@@ -1115,17 +1123,16 @@ mod tests {
 
         for pattern in &dangerous {
             let result = Config::validate_regex_safe(pattern, "app_id", 1);
-            assert!(
-                result.is_err(),
-                "Pattern '{}' should be rejected as dangerous",
-                pattern
-            );
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("dangerous construct"),
-                "Error should mention dangerous construct: {}",
-                err
-            );
+        assert!(
+            result.is_err(),
+            "Pattern '{pattern}' should be rejected as potentially catastrophic"
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("dangerous construct"),
+            "Error should mention dangerous constructs, got: {err}"
+        );
         }
     }
 

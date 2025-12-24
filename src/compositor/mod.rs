@@ -107,10 +107,11 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
         info!("Using {:?} protocol", protocol);
 
         // Catch panics to avoid silent thread death
-        let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match protocol {
-            Protocol::Ext => ext_toplevel::run_event_loop(conn, tx),
-            Protocol::Wlr => wlr_toplevel::run_event_loop(conn, tx),
-        }));
+        let panic_result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match protocol {
+                Protocol::Ext => ext_toplevel::run_event_loop(&conn, tx),
+                Protocol::Wlr => wlr_toplevel::run_event_loop(&conn, tx),
+            }));
 
         match panic_result {
             Ok(Ok(())) => {
