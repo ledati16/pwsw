@@ -1,7 +1,7 @@
 //! ext-foreign-toplevel-list-v1 protocol implementation
 //!
 //! This is the standard protocol for listing toplevel windows.
-//! It provides read-only access to window metadata (title, app_id).
+//! It provides read-only access to window metadata (title, `app_id`).
 
 use color_eyre::eyre::{Context, Result};
 use std::collections::HashMap;
@@ -156,9 +156,6 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
                     }
                 }
             }
-            Event::Identifier { identifier: _ } => {
-                // We don't currently use the stable identifier
-            }
             _ => {}
         }
     }
@@ -190,8 +187,8 @@ impl Dispatch<wl_output::WlOutput, ()> for ExtToplevelState {
 }
 
 /// Run the `Wayland` event loop for `ext-foreign-toplevel-list-v1`
-pub fn run_event_loop(conn: Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
-    let (globals, mut event_queue) = registry_queue_init::<ExtToplevelState>(&conn)
+pub fn run_event_loop(conn: &Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
+    let (globals, mut event_queue) = registry_queue_init::<ExtToplevelState>(conn)
         .context("Failed to initialize Wayland registry")?;
 
     let qh = event_queue.handle();
@@ -221,3 +218,4 @@ pub fn run_event_loop(conn: Connection, tx: mpsc::Sender<WindowEvent>) -> Result
         }
     }
 }
+

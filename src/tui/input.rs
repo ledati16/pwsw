@@ -627,14 +627,12 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        SinksMode::Inspect => {
-            match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    app.sinks_screen.cancel();
-                }
-                _ => {}
+        SinksMode::Inspect => match key.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                app.sinks_screen.cancel();
             }
-        }
+            _ => {}
+        },
     }
 }
 
@@ -711,10 +709,11 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.sinks_screen.cancel();
         }
-                        // --- Field Specific Input ---
-                        _ => {
-                            let event = Event::Key(key);
-                            match app.sinks_screen.editor.focused_field {                0 => {
+        // --- Field Specific Input ---
+        _ => {
+            let event = Event::Key(key);
+            match app.sinks_screen.editor.focused_field {
+                0 => {
                     app.sinks_screen.editor.name.input.handle_event(&event);
                 }
                 1 => {
@@ -832,14 +831,12 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
             }
             _ => {}
         },
-        RulesMode::Inspect => {
-            match key.code {
-                KeyCode::Enter | KeyCode::Esc => {
-                    app.rules_screen.cancel();
-                }
-                _ => {}
+        RulesMode::Inspect => match key.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                app.rules_screen.cancel();
             }
-        }
+            _ => {}
+        },
     }
 }
 
