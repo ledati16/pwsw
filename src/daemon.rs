@@ -146,43 +146,34 @@ fn check_and_cleanup_stale_pid_file() -> Result<bool> {
         .parse()
         .with_context(|| format!("Invalid PID in file {}: '{}'", pid_path.display(), pid_str))?;
 
-    // Check if process is still running using kill(pid, 0) on Unix
-    #[cfg(unix)]
+    // Check if process is still running by checking /proc/{pid}
+    // This is Linux-specific, but PWSW is Linux-only (Wayland/PipeWire).
+    #[cfg(target_os = "linux")]
     {
-        use nix::sys::signal::kill;
-        use nix::unistd::Pid;
-
-        // Signal 0 is a special case: checks if process exists without sending a signal
-        #[allow(clippy::cast_possible_wrap)]
-        match kill(Pid::from_raw(pid as i32), None) {
-            Ok(()) => {
-                // Process exists
-                info!("Daemon already running with PID {}", pid);
-                Ok(true)
-            }
-            Err(nix::errno::Errno::ESRCH) => {
-                // Process does not exist - stale PID file
-                warn!("Stale PID file found (PID {} not running), removing", pid);
-                std::fs::remove_file(&pid_path).with_context(|| {
-                    format!("Failed to remove stale PID file: {}", pid_path.display())
-                })?;
-                Ok(false)
-            }
-            Err(e) => {
-                eyre::bail!("Failed to check if process {} exists: {}", pid, e);
-            }
+        let proc_path = std::path::Path::new("/proc").join(pid.to_string());
+        if proc_path.exists() {
+            // Process exists
+            info!("Daemon already running with PID {}", pid);
+            Ok(true)
+        } else {
+            // Process does not exist - stale PID file
+            warn!("Stale PID file found (PID {} not running), removing", pid);
+            std::fs::remove_file(&pid_path).with_context(|| {
+                format!("Failed to remove stale PID file: {}", pid_path.display())
+            })?;
+            Ok(false)
         }
     }
 
-    // On non-Unix, we can't reliably check if process exists, so assume it's stale if old enough
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
-        warn!(
-            "Cannot verify PID {} on non-Unix system, assuming stale",
-            pid
-        );
-        std::fs::remove_file(&pid_path)
-            .with_context(|| format!("Failed to remove PID file: {}", pid_path.display()))?;
+        // Fallback for non-Linux unix-likes (unlikely for Wayland/PipeWire but good practice)
+        // Without `nix` or `/proc`, we can't easily check. Assume stale if we can't lock?
+        // For now, just warn and remove to be safe/aggressive about startup.
+        warn!("Cannot verify PID {} on non-Linux system, assuming stale", pid);
+        std::fs::remove_file(&pid_path).with_context(|| {
+            format!("Failed to remove PID file: {}", pid_path.display())
+        })?;
         Ok(false)
     }
 }
