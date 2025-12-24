@@ -10,9 +10,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - DO NOT push to remote without explicit user approval
 
 **Recent Achievements:**
+- **Robust Integration Testing (2025-12-24)**: Added comprehensive mock compositor tests covering both `wlr` and `ext` backends, verifying detection, lifecycle events, and concurrent window tracking.
 - **Protocol Expansion (2025-12-24)**: Implemented `ext-foreign-toplevel-list-v1` support, providing a standardized, future-proof window monitoring backend.
 - **Edition 2024 Upgrade (2025-12-21)**: Rust 1.92 MSRV, Edition 2024 baseline, let_chains feature adoption (4 sites simplified)
-- Lint configuration centralized: 22 pedantic suppressions moved to `[lints]` table in Cargo.toml (2 remain in generated code)
+- **TUI Architecture Refactor (2025-12-24)**: Extracted event loop logic into `App::handle_update` and context bar logic, significantly reducing complexity in `mod.rs`.
+- **Lint configuration centralized**: 22 pedantic suppressions moved to `[lints]` table in Cargo.toml (2 remain in generated code)
 - Comprehensive refactoring completed: Modernized codebase using ecosystem crates (`tui-input`, `notify`, `color-eyre`)
 - Zero pedantic clippy warnings achieved (25 suppressions centralized)
 - Enhanced color system with semantic constants (magenta focus, validation feedback, accessibility features)
