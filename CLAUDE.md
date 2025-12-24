@@ -1105,6 +1105,7 @@ cargo clippy --all-targets -- -W clippy::pedantic
 
 ### Core Functionality
 - `wayland-client`: Handles Wayland protocol bindings (not async)
+- `wayland-protocols`: Standard protocol definitions (staging features used for `ext`)
 - `tokio`: Async runtime (minimal features: rt-multi-thread, net, io-util, signal, sync, time)
 - `regex`: Compiled once during config load, reused for all matching
 - `serde_json`: Used for pw-dump parsing, IPC protocol, and secure command construction
