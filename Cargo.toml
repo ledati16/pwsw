@@ -82,6 +82,7 @@ debug = true
 
 [build-dependencies]
 built = { version = "0.7", features = ["git2"] }
+mandown = "1.1.0"
 
 [dev-dependencies]
 tempfile = "3"
