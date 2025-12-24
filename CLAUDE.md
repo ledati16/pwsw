@@ -10,6 +10,7 @@ This file provides guidance to LLM-based coding assistants (Claude Code, Gemini,
 - DO NOT push to remote without explicit user approval
 
 **Recent Achievements:**
+- **Documentation & Standards (2025-12-24)**: Finalized `v0.4.2` release with inclusive agent guidelines, precise lint counts, and comprehensive architecture docs.
 - **Robust Integration Testing (2025-12-24)**: Added comprehensive mock compositor tests covering both `wlr` and `ext` backends, verifying detection, lifecycle events, and concurrent window tracking.
 - **Protocol Expansion (2025-12-24)**: Implemented `ext-foreign-toplevel-list-v1` support, providing a standardized, future-proof window monitoring backend.
 - **TUI Architecture Refactor (2025-12-24)**: Extracted event loop logic into `App::handle_update` and context bar logic, significantly reducing complexity in `mod.rs`.
