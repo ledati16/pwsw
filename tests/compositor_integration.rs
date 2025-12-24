@@ -54,9 +54,7 @@ impl MockCompositor {
         // Wait for socket to be ready
         let start = std::time::Instant::now();
         while !socket_path.exists() {
-            if start.elapsed() > Duration::from_secs(1) {
-                panic!("Timed out waiting for mock server socket");
-            }
+            assert!(start.elapsed() <= Duration::from_secs(1), "Timed out waiting for mock server socket");
             thread::sleep(Duration::from_millis(10));
         }
 
@@ -103,6 +101,7 @@ impl MockCompositor {
 // --- Server State & Logic ---
 
 struct ServerState {
+    #[allow(dead_code)]
     mode: ProtocolMode,
     // Track all bound manager resources (one per client bind)
     wlr_managers: Vec<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1>,
@@ -112,6 +111,7 @@ struct ServerState {
     ext_handles: Vec<(u32, ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1)>,
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn run_server(
     mode: ProtocolMode,
     socket_path: std::path::PathBuf,
@@ -148,10 +148,7 @@ fn run_server(
             match cmd {
                 ServerCommand::Stop => return,
                 ServerCommand::CreateWindow { id, title, app_id } => {
-                    // Always try to create both types of handles if managers are bound
-                    // The client might have bound one or both depending on its logic
-                    
-                    // 1. Create WLR handles
+                    // 1. Create WLR handles for any bound managers
                     for manager in &state.wlr_managers {
                         let client = manager.client().unwrap();
                         let resource = client
@@ -162,10 +159,11 @@ fn run_server(
                         resource.title(title.clone());
                         resource.app_id(app_id.clone());
                         resource.done();
+
                         state.wlr_handles.push((id, resource));
                     }
 
-                    // 2. Create Ext handles
+                    // 2. Create Ext handles for any bound lists
                     for list in &state.ext_lists {
                         let client = list.client().unwrap();
                         let resource = client
@@ -176,6 +174,7 @@ fn run_server(
                         resource.title(title.clone());
                         resource.app_id(app_id.clone());
                         resource.done();
+
                         state.ext_handles.push((id, resource));
                     }
                 }
@@ -291,12 +290,12 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for Se
         _state: &mut Self,
         _client: &Client,
         _resource: &ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
-        _request: ext_foreign_toplevel_list_v1::Request,
+        request: ext_foreign_toplevel_list_v1::Request,
         _data: &(),
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
-        if let ext_foreign_toplevel_list_v1::Request::Stop = _request {
+        if let ext_foreign_toplevel_list_v1::Request::Stop = request {
             // Client asked to stop
         }
     }
@@ -351,7 +350,7 @@ fn test_wlr_backend_lifecycle() {
             assert_eq!(title, "WLR Window");
             id
         }
-        _ => panic!("Expected Opened event, got {:?}", event),
+        _ => panic!("Expected Opened event, got {event:?}"),
     };
 
     // 2. Update
@@ -363,7 +362,7 @@ fn test_wlr_backend_lifecycle() {
             assert_eq!(title, "WLR Updated");
             assert_eq!(app_id, "wlr_app");
         }
-        _ => panic!("Expected Changed event, got {:?}", event),
+        _ => panic!("Expected Changed event, got {event:?}"),
     }
 
     // 3. Close
@@ -373,7 +372,7 @@ fn test_wlr_backend_lifecycle() {
         pwsw::compositor::WindowEvent::Closed { id } => {
             assert_eq!(id, window_id);
         }
-        _ => panic!("Expected Closed event, got {:?}", event),
+        _ => panic!("Expected Closed event, got {event:?}"),
     }
 
     mock.stop();
@@ -406,7 +405,7 @@ fn test_ext_backend_lifecycle() {
             assert_eq!(title, "Ext Window");
             id
         }
-        _ => panic!("Expected Opened event, got {:?}", event),
+        _ => panic!("Expected Opened event, got {event:?}"),
     };
 
     // 2. Update
@@ -418,7 +417,7 @@ fn test_ext_backend_lifecycle() {
             assert_eq!(app_id, "ext_app_updated");
             assert_eq!(title, "Ext Window");
         }
-        _ => panic!("Expected Changed event, got {:?}", event),
+        _ => panic!("Expected Changed event, got {event:?}"),
     }
 
     // 3. Close
@@ -428,7 +427,7 @@ fn test_ext_backend_lifecycle() {
         pwsw::compositor::WindowEvent::Closed { id } => {
             assert_eq!(id, window_id);
         }
-        _ => panic!("Expected Closed event, got {:?}", event),
+        _ => panic!("Expected Closed event, got {event:?}"),
     }
 
     mock.stop();
@@ -462,7 +461,7 @@ fn test_priority_selection() {
             assert_eq!(app_id, "both_protocols");
             assert_eq!(title, "Priority Window");
         }
-        _ => panic!("Expected Opened event"),
+        _ => panic!("Expected Opened event, got {event:?}"),
     }
 
     mock.stop();
@@ -493,7 +492,7 @@ fn test_ext_concurrent_windows() {
             assert_eq!(app_id, "app_a");
             id
         }
-        _ => panic!("Expected Opened A"),
+        _ => panic!("Expected Opened A, got {event:?}"),
     };
 
     // 2. Open Window B
@@ -504,7 +503,7 @@ fn test_ext_concurrent_windows() {
             assert_eq!(app_id, "app_b");
             id
         }
-        _ => panic!("Expected Opened B"),
+        _ => panic!("Expected Opened B, got {event:?}"),
     };
 
     assert_ne!(id_a, id_b, "Window IDs must be distinct");
@@ -517,7 +516,7 @@ fn test_ext_concurrent_windows() {
             assert_eq!(id, id_a);
             assert_eq!(title, "Window A Updated");
         }
-        _ => panic!("Expected Changed A"),
+        _ => panic!("Expected Changed A, got {event:?}"),
     }
 
     // 4. Update Window B
@@ -528,7 +527,7 @@ fn test_ext_concurrent_windows() {
             assert_eq!(id, id_b);
             assert_eq!(app_id, "app_b_updated");
         }
-        _ => panic!("Expected Changed B"),
+        _ => panic!("Expected Changed B, got {event:?}"),
     }
 
     // 5. Close A
@@ -536,7 +535,7 @@ fn test_ext_concurrent_windows() {
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
         pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_a),
-        _ => panic!("Expected Closed A"),
+        _ => panic!("Expected Closed A, got {event:?}"),
     }
 
     // 6. Close B
@@ -544,7 +543,7 @@ fn test_ext_concurrent_windows() {
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
         pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_b),
-        _ => panic!("Expected Closed B"),
+        _ => panic!("Expected Closed B, got {event:?}"),
     }
 
     mock.stop();
@@ -575,7 +574,7 @@ fn test_wlr_concurrent_windows() {
             assert_eq!(app_id, "app_a");
             id
         }
-        _ => panic!("Expected Opened A"),
+        _ => panic!("Expected Opened A, got {event:?}"),
     };
 
     // 2. Open Window B
@@ -586,7 +585,7 @@ fn test_wlr_concurrent_windows() {
             assert_eq!(app_id, "app_b");
             id
         }
-        _ => panic!("Expected Opened B"),
+        _ => panic!("Expected Opened B, got {event:?}"),
     };
 
     assert_ne!(id_a, id_b, "Window IDs must be distinct");
@@ -599,7 +598,7 @@ fn test_wlr_concurrent_windows() {
             assert_eq!(id, id_a);
             assert_eq!(title, "Window A Updated");
         }
-        _ => panic!("Expected Changed A"),
+        _ => panic!("Expected Changed A, got {event:?}"),
     }
 
     // 4. Update Window B
@@ -610,7 +609,7 @@ fn test_wlr_concurrent_windows() {
             assert_eq!(id, id_b);
             assert_eq!(app_id, "app_b_updated");
         }
-        _ => panic!("Expected Changed B"),
+        _ => panic!("Expected Changed B, got {event:?}"),
     }
 
     // 5. Close A
@@ -618,7 +617,7 @@ fn test_wlr_concurrent_windows() {
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
         pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_a),
-        _ => panic!("Expected Closed A"),
+        _ => panic!("Expected Closed A, got {event:?}"),
     }
 
     // 6. Close B
@@ -626,7 +625,7 @@ fn test_wlr_concurrent_windows() {
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
         pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_b),
-        _ => panic!("Expected Closed B"),
+        _ => panic!("Expected Closed B, got {event:?}"),
     }
 
     mock.stop();
