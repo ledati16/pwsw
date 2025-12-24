@@ -745,8 +745,11 @@ fn render_live_preview(
                 &matches_vec,
             ));
             if total > 5 {
+                let remaining = total - 5;
+                let mut text = String::with_capacity(12);
+                let _ = write!(text, "  ...and {remaining} more");
                 preview_lines.push(Line::from(vec![Span::styled(
-                    (total - 5).to_string(),
+                    text,
                     Style::default().fg(colors::UI_SECONDARY),
                 )]));
             }
