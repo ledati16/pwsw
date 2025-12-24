@@ -1,6 +1,6 @@
 [package]
 name = "pwsw"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.92"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
@@ -88,6 +88,9 @@ tempfile = "3"
 pretty_assertions = "1"
 rstest = "0.22"
 test-case = "3"
+wayland-server = "0.31"
+wayland-protocols = { version = "0.32", features = ["server", "staging"] }
+wayland-protocols-wlr = { version = "0.3", features = ["server", "client"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(test)'] }
