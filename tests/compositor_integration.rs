@@ -101,8 +101,6 @@ impl MockCompositor {
 // --- Server State & Logic ---
 
 struct ServerState {
-    #[allow(dead_code)]
-    mode: ProtocolMode,
     // Track all bound manager resources (one per client bind)
     wlr_managers: Vec<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1>,
     ext_lists: Vec<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
@@ -121,7 +119,6 @@ fn run_server(
     let mut handle = display.handle();
 
     let mut state = ServerState {
-        mode,
         wlr_managers: Vec::new(),
         ext_lists: Vec::new(),
         wlr_handles: Vec::new(),
