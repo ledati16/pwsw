@@ -469,7 +469,7 @@ fn test_priority_selection() {
 }
 
 #[test]
-fn test_concurrent_windows() {
+fn test_ext_concurrent_windows() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Ext);
     
@@ -510,6 +510,88 @@ fn test_concurrent_windows() {
     assert_ne!(id_a, id_b, "Window IDs must be distinct");
 
     // 3. Update Window A (verify it doesn't affect B)
+    mock.update_window(100, Some("Window A Updated"), None);
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    match event {
+        pwsw::compositor::WindowEvent::Changed { id, title, .. } => {
+            assert_eq!(id, id_a);
+            assert_eq!(title, "Window A Updated");
+        }
+        _ => panic!("Expected Changed A"),
+    }
+
+    // 4. Update Window B
+    mock.update_window(200, None, Some("app_b_updated"));
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    match event {
+        pwsw::compositor::WindowEvent::Changed { id, app_id, .. } => {
+            assert_eq!(id, id_b);
+            assert_eq!(app_id, "app_b_updated");
+        }
+        _ => panic!("Expected Changed B"),
+    }
+
+    // 5. Close A
+    mock.close_window(100);
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    match event {
+        pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_a),
+        _ => panic!("Expected Closed A"),
+    }
+
+    // 6. Close B
+    mock.close_window(200);
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    match event {
+        pwsw::compositor::WindowEvent::Closed { id } => assert_eq!(id, id_b),
+        _ => panic!("Expected Closed B"),
+    }
+
+    mock.stop();
+}
+
+#[test]
+fn test_wlr_concurrent_windows() {
+    let _guard = TEST_MUTEX.lock().unwrap();
+    let mock = MockCompositor::new(ProtocolMode::Wlr);
+    
+    let socket_name = mock.socket_path.file_name().unwrap();
+    let runtime_dir = mock.socket_path.parent().unwrap();
+    unsafe {
+        std::env::set_var("WAYLAND_DISPLAY", socket_name);
+        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
+    }
+
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread()
+        .expect("Failed to spawn compositor thread");
+
+    thread::sleep(Duration::from_millis(100));
+
+    // 1. Open Window A
+    mock.create_window(100, "Window A", "app_a");
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    let id_a = match event {
+        pwsw::compositor::WindowEvent::Opened { id, app_id, .. } => {
+            assert_eq!(app_id, "app_a");
+            id
+        }
+        _ => panic!("Expected Opened A"),
+    };
+
+    // 2. Open Window B
+    mock.create_window(200, "Window B", "app_b");
+    let event = event_rx.blocking_recv().expect("Stream closed");
+    let id_b = match event {
+        pwsw::compositor::WindowEvent::Opened { id, app_id, .. } => {
+            assert_eq!(app_id, "app_b");
+            id
+        }
+        _ => panic!("Expected Opened B"),
+    };
+
+    assert_ne!(id_a, id_b, "Window IDs must be distinct");
+
+    // 3. Update Window A
     mock.update_window(100, Some("Window A Updated"), None);
     let event = event_rx.blocking_recv().expect("Stream closed");
     match event {
