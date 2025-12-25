@@ -250,7 +250,8 @@ impl PipeWire {
             // Try to run the tool with --version or --help to check if it exists
             let result = Command::new(tool).arg("--version").status();
 
-            if result.is_err() || !result.unwrap().success() {
+            // Check if command executed successfully (both spawn and exit status)
+            if !result.is_ok_and(|status| status.success()) {
                 missing.push(*tool);
             }
         }
@@ -579,19 +580,17 @@ impl PipeWire {
             if guard.len() >= MAX_DEVICE_LOCKS {
                 // Remove locks that are only held by the HashMap (strong_count == 1)
                 // This clears stale entries without disrupting active profile switches
+                // SAFETY: Only unused locks are removed - active locks have strong_count > 1
                 guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
 
-                // If still over limit after cleanup, remove oldest 20% arbitrarily
-                // (since we can't tell which are "oldest" without timestamps)
+                // If still over limit after cleanup, remove ~20% of remaining unused locks
+                // Note: The filter ensures we ONLY remove unused locks (strong_count == 1)
+                // Active locks are never removed, so concurrent profile switches are unaffected
                 if guard.len() >= MAX_DEVICE_LOCKS {
-                    // SAFETY: Removing an active lock entry here is safe because:
-                    // 1. The lock is only for serialization (UX), not memory safety.
-                    // 2. The worst case is two profile switches happening simultaneously on one device.
-                    // 3. One switch will likely fail with "Device busy" or "Timeout", which is handled gracefully.
                     let to_remove = guard.len() / 5; // Remove ~20%
                     let keys_to_remove: Vec<u32> = guard
                         .iter()
-                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1)
+                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1) // Only unused locks
                         .take(to_remove)
                         .map(|(id, _)| *id)
                         .collect();
@@ -874,15 +873,18 @@ mod tests {
     #[test]
     fn test_device_locks_logic() {
         // Run lock tests sequentially to avoid fighting over the global DEVICE_LOCKS
-        
+
         // 1. Serialization Test
         {
-            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+            let locks =
+                DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
             let device_id = 123u32;
 
             // Clear any existing locks
             {
-                let mut guard = locks.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                let mut guard = locks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 guard.clear();
                 guard.insert(device_id, Arc::new(StdMutex::new(())));
             }
@@ -918,8 +920,9 @@ mod tests {
 
         // 2. Cleanup on Limit Test
         {
-            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
-            
+            let locks =
+                DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+
             {
                 let mut guard = locks.lock().unwrap();
                 guard.clear();
@@ -940,9 +943,11 @@ mod tests {
                     guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
                     // Force cleanup for test if retain didn't clear enough (it shouldn't here, all strong=1)
                     if guard.len() >= MAX_DEVICE_LOCKS {
-                         let to_remove = guard.len() / 5;
-                         let keys: Vec<u32> = guard.keys().take(to_remove).copied().collect();
-                         for k in keys { guard.remove(&k); }
+                        let to_remove = guard.len() / 5;
+                        let keys: Vec<u32> = guard.keys().take(to_remove).copied().collect();
+                        for k in keys {
+                            guard.remove(&k);
+                        }
                     }
                 }
                 assert!(guard.len() < MAX_DEVICE_LOCKS);
@@ -951,8 +956,9 @@ mod tests {
 
         // 3. Preserves Active Locks Test
         {
-            let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
-            
+            let locks =
+                DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
+
             {
                 let mut guard = locks.lock().unwrap();
                 guard.clear();
