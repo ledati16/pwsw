@@ -297,7 +297,7 @@ impl Config {
             }
         }
         let Some(mut tmp) = tmp else {
-            return Err(last_err.unwrap())
+            return Err(last_err.expect("last_err should be Some if tmp is None"))
                 .wrap_err("Failed to create temporary file for atomic config save");
         };
         tmp.as_file_mut()
@@ -354,19 +354,39 @@ impl Config {
                     use std::time::{SystemTime, UNIX_EPOCH};
                     if let Ok(n) = SystemTime::now().duration_since(UNIX_EPOCH) {
                         let bak_name = format!("config.toml.bak.{}", n.as_secs());
-                        let bak_path = config_path.parent().unwrap().join(bak_name);
+                        let bak_path = config_path
+                            .parent()
+                            .expect("XDG config path always has parent directory")
+                            .join(bak_name);
                         let _ = fs::copy(config_path, &bak_path);
                         // Best-effort: ignore copy errors but try to continue
                     }
                 }
 
-                // Logging: record attempted write details to a safe temp log
+                // Debug logging: record attempted write details
+                // Only enabled in debug builds to avoid security risks in production
+                #[cfg(debug_assertions)]
                 let _ = (|| -> std::io::Result<()> {
                     use std::io::Write as _;
+                    use users::get_current_uid;
+
+                    // Use user-specific path with proper permissions to prevent symlink attacks
+                    let log_path = format!("/tmp/pwsw-config-write-{}.log", get_current_uid());
                     let mut f = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
-                        .open("/tmp/pwsw-config-write.log")?;
+                        .open(&log_path)?;
+
+                    // Set user-only permissions (0o600) after creation
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        std::fs::set_permissions(
+                            &log_path,
+                            std::fs::Permissions::from_mode(0o600),
+                        )?;
+                    }
+
                     let pid = std::process::id();
                     let _ = writeln!(
                         f,
@@ -632,7 +652,22 @@ impl Config {
         let config_dir = dirs::config_dir()
             .context("Could not determine config directory")?
             .join("pwsw");
-        Ok(config_dir.join("config.toml"))
+
+        let config_path = config_dir.join("config.toml");
+
+        // Sanity check: Ensure the final path is still within the expected directory
+        // This validates that the dirs crate didn't return a malicious path
+        if !config_path.starts_with(&config_dir) {
+            eyre::bail!(
+                "Config path validation failed: path escapes config directory\n\
+                 Config dir: {}\n\
+                 Config path: {}",
+                config_dir.display(),
+                config_path.display()
+            );
+        }
+
+        Ok(config_path)
     }
 
     fn create_default_config(path: &PathBuf) -> Result<()> {

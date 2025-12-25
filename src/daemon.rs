@@ -230,11 +230,15 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     use std::process::Command;
     use std::time::Duration;
-    // Check if a daemon is already running BEFORE any initialization
-    if ipc::is_daemon_running().await {
+
+    // Check for running daemon BEFORE any initialization
+    // Order matters: Check PID file first (fast, local), then IPC socket (slow, network timeout)
+    // This minimizes TOCTOU race window compared to checking IPC first
+    if check_and_cleanup_stale_pid_file()? {
+        // Running daemon detected via PID file
         let socket_path = ipc::get_socket_path()?;
         eyre::bail!(
-            "Another PWSW daemon is already running.\n\
+            "Another PWSW daemon is already running (PID file check).\n\
              Socket: {}\n\n\
              To stop the existing daemon, run:\n  \
              pwsw shutdown",
@@ -242,13 +246,15 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         );
     }
 
-    // Check for stale PID file and clean it up if process is not running
-    // This must happen after IPC check to avoid race conditions
-    if check_and_cleanup_stale_pid_file()? {
-        // A running daemon was detected via PID file but not via IPC
-        // This shouldn't happen, but handle it gracefully
-        warn!(
-            "PID file indicates running daemon, but IPC check failed. Daemon may be starting up or in bad state."
+    // Double-check via IPC socket (catches edge case where PID check passed but daemon is running)
+    if ipc::is_daemon_running().await {
+        let socket_path = ipc::get_socket_path()?;
+        eyre::bail!(
+            "Another PWSW daemon is already running (IPC check).\n\
+             Socket: {}\n\n\
+             To stop the existing daemon, run:\n  \
+             pwsw shutdown",
+            socket_path.display()
         );
     }
 
@@ -439,11 +445,14 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // Setup config file watcher (hot-reload)
     let config_path = Config::get_config_path()?;
     let config_dir = config_path.parent().unwrap_or(&config_path);
-    let (config_tx, mut config_rx) = tokio::sync::mpsc::channel::<()>(1);
+
+    // Use unbounded channel to ensure no config reload events are lost
+    // Debouncing (250ms) in the main loop handles rapid successive saves
+    let (config_tx, mut config_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let config_tx_clone = config_tx.clone();
 
-    // Only notify reloads for changes to the exact config file and avoid blocking the
-    // watcher thread by using `try_send` (channel capacity 1 coalesces rapid events).
+    // Only notify reloads for changes to the exact config file
+    // Use unbounded send() instead of try_send() to never drop events
     let config_path_clone = config_path.clone();
     let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
         match res {
@@ -451,8 +460,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
                 if (event.kind.is_modify() || event.kind.is_create())
                     && event.paths.iter().any(|p| p == &config_path_clone)
                 {
-                    // Don't block the watcher thread; if the channel is full, drop the event
-                    let _ = config_tx_clone.try_send(());
+                    // Never drop config reload events - unbounded send always succeeds
+                    let _ = config_tx_clone.send(());
                 }
             }
             Err(e) => error!("Config watch error: {:?}", e),
