@@ -1673,7 +1673,7 @@ checksum = "007d8adb5ddab6f8e3f491ac63566a7d5002cc7ed73901f72057943fa71ae1ae"
 
 [[package]]
 name = "pwsw"
-version = "0.4.4"
+version = "0.4.5"
 dependencies = [
  "built",
  "clap",

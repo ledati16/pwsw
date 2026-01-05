@@ -217,16 +217,19 @@ pub(crate) fn render_selector_button(
 /// Truncate a description string to `max_width` characters, appending `...` when truncated.
 ///
 /// This is a visual truncation helper for UI rendering. It operates on character counts
-/// (not grapheme clusters) which is acceptable for ASCII-based sink descriptions used here.
+/// (not grapheme clusters) which is acceptable for typical sink descriptions.
+/// Uses character-based truncation (not byte-based) to safely handle UTF-8 strings.
 pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
     let max = max_width as usize;
-    if text.len() <= max {
+    let char_count = text.chars().count();
+    if char_count <= max {
         text.to_string()
     } else if max <= 3 {
-        text[..max].to_string()
+        text.chars().take(max).collect()
     } else {
         let take = max.saturating_sub(3);
-        format!("{}...", &text[..take])
+        let truncated: String = text.chars().take(take).collect();
+        format!("{}...", truncated)
     }
 }
 
@@ -271,7 +274,11 @@ pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
                 max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
 
             if available_for_suffix > 3 {
-                let truncated_suffix = &suffix[..available_for_suffix.min(suffix.len())];
+                let suffix_char_count = suffix.chars().count();
+                let truncated_suffix: String = suffix
+                    .chars()
+                    .take(available_for_suffix.min(suffix_char_count))
+                    .collect();
                 return format!("{prefix}...{truncated_suffix}...");
             }
 
@@ -454,5 +461,42 @@ mod tests {
         let result = truncate_node_name(other, 20);
         assert_eq!(result, "some_very_long_si...");
         assert!(result.len() <= 20);
+    }
+
+    #[test]
+    fn test_truncate_desc_utf8() {
+        // Test UTF-8 multibyte characters (emoji, special symbols)
+        // ✳ is 3 bytes, but 1 character
+        assert_eq!(truncate_desc("✳ sparkle", 10), "✳ sparkle");
+        assert_eq!(truncate_desc("✳ sparkle", 5), "✳ ...");  // max=5: take 2 chars + "..."
+
+        // Emoji test (4-byte characters)
+        assert_eq!(truncate_desc("🎵 music", 10), "🎵 music");
+        assert_eq!(truncate_desc("🎵 music", 4), "🎵...");
+
+        // Mixed ASCII and UTF-8
+        let mixed = "device ✓ ready";
+        assert_eq!(truncate_desc(mixed, 20), "device ✓ ready");
+        assert_eq!(truncate_desc(mixed, 10), "device ...");  // max=10: take 7 chars + "..." ("device " = 7 chars)
+
+        // Edge case: exactly at boundary
+        assert_eq!(truncate_desc("test✳", 5), "test✳");
+        assert_eq!(truncate_desc("test✳", 4), "t...");
+    }
+
+    #[test]
+    fn test_truncate_node_name_utf8() {
+        // Test ALSA node with UTF-8 in profile suffix (unlikely but possible)
+        // This tests the suffix truncation path with UTF-8
+        let alsa_utf8 = "alsa_output.device.test✓profile✳suffix";
+        let result = truncate_node_name(alsa_utf8, 20);
+        // Should use ALSA intelligent truncation
+        assert!(result.starts_with("alsa_output..."));
+        assert!(result.len() <= 20);
+
+        // Fallback path with UTF-8
+        let generic_utf8 = "device✳with✓special★chars";
+        let result = truncate_node_name(generic_utf8, 15);
+        assert_eq!(result, "device✳with✓...");
     }
 }
