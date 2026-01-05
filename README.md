@@ -2,7 +2,13 @@
 
 **Automatic audio output switching for Wayland + PipeWire**
 
-<img width="1643" height="1305" alt="image" src="https://github.com/user-attachments/assets/f9c56fe5-bd14-4633-aacd-ff4a8d1eb610" />
+<p align="center"><img width="400" height="300" alt="image" src="https://github.com/user-attachments/assets/80e06e92-52b1-4c2e-b29d-82c5aa0f827f" /><img width="400" height="300" alt="image" src="https://github.com/user-attachments/assets/660f5abb-29cb-4f02-92f6-65f0fb902e69" /></p>
+<p align="center"><img width="300" height="200" alt="image" src="https://github.com/user-attachments/assets/8dff3bce-64af-477b-bff3-67afb3f48ccd" />
+<img width="300" height="200" alt="image" src="https://github.com/user-attachments/assets/e5a4f0d6-722b-4794-b556-8ba0c2a274ad" />
+<img width="300" height="200" alt="image" src="https://github.com/user-attachments/assets/1cd9b6a4-bcbb-4270-a6df-efad5cc00f76" /></p>
+
+
+
 
 ## What is PWSW?
 
