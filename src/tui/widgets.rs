@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, block::BorderType},
+    widgets::{Block, BorderType, Borders, Paragraph},
 };
 use tui_input::Input;
 
