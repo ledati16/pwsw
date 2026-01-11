@@ -216,11 +216,8 @@ struct IpcContext {
 ///
 /// # Errors
 /// Returns an error if another daemon is running, initialization fails, compositor
-/// connection fails, or any critical component encounters an error.
-///
-/// # Panics
-/// Panics if the `SIGTERM` signal handler cannot be installed. This is a platform-level
-/// failure that prevents graceful shutdown handling.
+/// connection fails, `SIGTERM` signal handler cannot be installed, or any critical
+/// component encounters an error.
 ///
 /// # Returns
 /// Returns `Ok(())` on successful daemon shutdown.
@@ -481,7 +478,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     // Setup signal handlers for graceful shutdown
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .expect("Failed to install SIGTERM handler");
+        .context("Failed to install SIGTERM handler")?;
 
     // Notify systemd that daemon is ready
     #[cfg(unix)]

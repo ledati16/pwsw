@@ -30,20 +30,32 @@ const DEFAULT_PROFILE_SWITCH_DELAY_MS: u64 = 150;
 /// Override with `PROFILE_SWITCH_MAX_RETRIES` env var
 const DEFAULT_PROFILE_SWITCH_MAX_RETRIES: u32 = 5;
 
-/// Get profile switch delay from env var or default
+/// Maximum allowed profile switch delay (10 seconds)
+/// Prevents year-long sleeps from malicious/accidental extreme values
+const MAX_PROFILE_SWITCH_DELAY_MS: u64 = 10_000;
+
+/// Maximum allowed profile switch retries (100)
+/// Prevents excessive retries from malicious/accidental extreme values
+const MAX_PROFILE_SWITCH_RETRIES: u32 = 100;
+
+/// Get profile switch delay from env var or default (capped at 10 seconds)
 fn profile_switch_delay_ms() -> u64 {
     std::env::var("PROFILE_SWITCH_DELAY_MS")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PROFILE_SWITCH_DELAY_MS)
+        .map_or(DEFAULT_PROFILE_SWITCH_DELAY_MS, |v: u64| {
+            v.min(MAX_PROFILE_SWITCH_DELAY_MS)
+        })
 }
 
-/// Get profile switch max retries from env var or default
+/// Get profile switch max retries from env var or default (capped at 100)
 fn profile_switch_max_retries() -> u32 {
     std::env::var("PROFILE_SWITCH_MAX_RETRIES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PROFILE_SWITCH_MAX_RETRIES)
+        .map_or(DEFAULT_PROFILE_SWITCH_MAX_RETRIES, |v: u32| {
+            v.min(MAX_PROFILE_SWITCH_RETRIES)
+        })
 }
 
 // ============================================================================
@@ -315,11 +327,12 @@ impl PipeWire {
                     .clone()
                     .or_else(|| props.node_nick.clone())
                     .unwrap_or_else(|| name.clone());
+                let is_default = default_name.as_ref() == Some(&name);
 
                 Some(ActiveSink {
-                    name: name.clone(),
+                    name,
                     description,
-                    is_default: default_name.as_ref() == Some(&name),
+                    is_default,
                 })
             })
             .collect()
@@ -540,17 +553,13 @@ impl PipeWire {
     /// Activate a sink, switching profiles if necessary
     ///
     /// # Errors
-    /// Returns an error if the sink is not found, profile switching fails, or the sink
-    /// node does not appear after profile switch.
+    /// Returns an error if the sink is not found, profile switching fails, the sink
+    /// node does not appear after profile switch, or a device lock is poisoned
+    /// (previous profile switch panicked).
     ///
     /// # Concurrency
-    /// This function is not thread-safe for concurrent profile switches on the same device.
-    /// Callers should ensure only one profile switch occurs at a time per device.
-    /// # Panics
-    ///
-    /// This function uses `StdMutex::lock().unwrap()` when initializing per-device
-    /// locks; `unwrap()` may panic in out-of-memory or poisoned mutex scenarios.
-    /// Callers should assume this is unlikely in normal operation.
+    /// Uses per-device locking to serialize profile switches on the same device.
+    /// Concurrent switches on different devices are allowed.
     pub fn activate_sink(sink_name: &str) -> Result<()> {
         let objects = Self::dump()?;
 
@@ -574,38 +583,27 @@ impl PipeWire {
         // Acquire per-device lock to serialize profile switches
         let locks = DEVICE_LOCKS.get_or_init(|| StdMutex::new(std::collections::HashMap::new()));
         let device_mutex_arc = {
-            let mut guard = locks.lock().unwrap();
+            let mut guard = locks
+                .lock()
+                .map_err(|e| eyre::eyre!("Device locks mutex poisoned: {e}"))?;
 
             // Clean up old locks if we're accumulating too many (USB device churn)
             if guard.len() >= MAX_DEVICE_LOCKS {
+                let before_count = guard.len();
+
                 // Remove locks that are only held by the HashMap (strong_count == 1)
                 // This clears stale entries without disrupting active profile switches
                 // SAFETY: Only unused locks are removed - active locks have strong_count > 1
                 guard.retain(|_id, arc| Arc::strong_count(arc) > 1);
 
-                // If still over limit after cleanup, remove ~20% of remaining unused locks
-                // Note: The filter ensures we ONLY remove unused locks (strong_count == 1)
-                // Active locks are never removed, so concurrent profile switches are unaffected
-                if guard.len() >= MAX_DEVICE_LOCKS {
-                    let to_remove = guard.len() / 5; // Remove ~20%
-                    let keys_to_remove: Vec<u32> = guard
-                        .iter()
-                        .filter(|(_id, arc)| Arc::strong_count(arc) == 1) // Only unused locks
-                        .take(to_remove)
-                        .map(|(id, _)| *id)
-                        .collect();
-
-                    for key in keys_to_remove {
-                        guard.remove(&key);
-                    }
-
-                    if !guard.is_empty() {
-                        debug!(
-                            "Cleaned up device locks: {} → {} entries",
-                            guard.len() + to_remove,
-                            guard.len()
-                        );
-                    }
+                let removed = before_count - guard.len();
+                if removed > 0 {
+                    debug!(
+                        "Cleaned up device locks: {} → {} entries ({} removed)",
+                        before_count,
+                        guard.len(),
+                        removed
+                    );
                 }
             }
 
@@ -617,7 +615,9 @@ impl PipeWire {
         };
 
         // Lock the device mutex for the duration of profile switch + polling
-        let _device_guard = device_mutex_arc.lock().unwrap();
+        let _device_guard = device_mutex_arc
+            .lock()
+            .map_err(|e| eyre::eyre!("Device {} lock poisoned: {e}", profile_sink.device_id))?;
 
         Self::set_device_profile(profile_sink.device_id, profile_sink.profile_index)?;
 
@@ -1099,6 +1099,16 @@ mod tests {
 
         assert_eq!(profile_switch_delay_ms(), 150);
         assert_eq!(profile_switch_max_retries(), 5);
+
+        // Test extreme values are capped to maximums
+        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
+        unsafe {
+            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "999999999");
+            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "999999999");
+        }
+
+        assert_eq!(profile_switch_delay_ms(), MAX_PROFILE_SWITCH_DELAY_MS);
+        assert_eq!(profile_switch_max_retries(), MAX_PROFILE_SWITCH_RETRIES);
 
         // Cleanup
         // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
