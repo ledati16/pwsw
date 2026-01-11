@@ -19,7 +19,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Tabs, block::BorderType},
+    widgets::{Block, BorderType, Borders, Paragraph, Tabs},
 };
 use std::fmt::Write;
 use std::io;
@@ -520,7 +520,10 @@ pub async fn run() -> Result<()> {
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     use std::time::Instant;
 
     // Frame rate constants
@@ -771,7 +774,7 @@ fn render_header(
     // Build left title with optional styled [Ctrl+S] Save indicator
     let version = crate::version_string();
     let left_title = if config_dirty {
-        ratatui::widgets::block::Title::from(Line::from(vec![
+        Line::from(vec![
             Span::raw("PWSW "),
             Span::raw(&version),
             Span::raw(" "),
@@ -781,12 +784,9 @@ fn render_header(
                     .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
             ),
-        ]))
+        ])
     } else {
-        ratatui::widgets::block::Title::from(Line::from(vec![
-            Span::raw("PWSW "),
-            Span::raw(&version),
-        ]))
+        Line::from(vec![Span::raw("PWSW "), Span::raw(&version)])
     };
 
     // Minimal right title

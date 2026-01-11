@@ -6,8 +6,7 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState,
-        block::{BorderType, Padding},
+        Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState,
     },
 };
 

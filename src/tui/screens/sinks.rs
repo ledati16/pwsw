@@ -6,8 +6,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, ListItem, ListState, Paragraph, Row, Table, TableState,
-        block::{BorderType, Padding},
+        Block, BorderType, Borders, Cell, Clear, ListItem, ListState, Padding, Paragraph, Row,
+        Table, TableState,
     },
 };
 use std::fmt::Write;

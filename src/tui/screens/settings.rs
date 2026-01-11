@@ -5,10 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{
-        Block, Borders, List, ListItem, ListState, Paragraph,
-        block::{BorderType, Padding},
-    },
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
 
 use crate::config::Settings;

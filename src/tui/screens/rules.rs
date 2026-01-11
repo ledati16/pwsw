@@ -6,8 +6,8 @@ use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-        block::{BorderType, Padding},
+        Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph,
+        Row, Table, TableState,
     },
 };
 use throbber_widgets_tui::{Throbber, ThrobberState};
