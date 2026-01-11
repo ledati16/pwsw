@@ -22,10 +22,10 @@
   </defs>
 
   <!-- Circular background with shadow -->
-  <circle cx="64" cy="64" r="52" fill="#352a52" filter="url(#shadow)"/>
+  <circle cx="64" cy="64" r="52" fill="#1a1625" filter="url(#shadow)"/>
 
   <!-- PWSW text centered with shadow -->
   <text x="64" y="74" font-family="M+1Code Nerd Font" font-size="28" font-weight="bold" text-anchor="middle" filter="url(#textShadow)">
-    <tspan fill="#d8b4fe">«</tspan><tspan fill="#b794f6">PW</tspan><tspan fill="#d8b4fe">SW</tspan><tspan fill="#b794f6">»</tspan>
+    <tspan fill="#c4b5fd">«</tspan><tspan fill="#8b5cf6">PW</tspan><tspan fill="#c4b5fd">SW</tspan><tspan fill="#8b5cf6">»</tspan>
   </text>
 </svg>
