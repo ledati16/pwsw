@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=PWSW
+GenericName=Audio Sink Switcher
+Comment=Automatically switch PipeWire audio sinks based on active windows
+Exec=pwsw tui
+Icon=audio-card
+Terminal=true
+Type=Application
+Categories=Audio;AudioVideo;Settings;
+Keywords=pipewire;audio;sink;wayland;sound;switcher;routing;

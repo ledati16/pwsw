@@ -3,11 +3,12 @@ Description=PWSW - PipeWire Switcher daemon
 Documentation=https://github.com/ledati16/pwsw
 After=pipewire.service
 Requires=pipewire.service
+BindsTo=pipewire.service
 
 [Service]
 Type=notify
 NotifyAccess=main
-ExecStart=%h/.cargo/bin/pwsw daemon --foreground
+ExecStart=/usr/bin/pwsw daemon --foreground
 Restart=on-failure
 RestartSec=5s
 
@@ -16,11 +17,5 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=pwsw
 
-# Security hardening (optional but recommended)
-# ProtectSystem=strict
-# ProtectHome=read-only
-# PrivateTmp=yes
-# NoNewPrivileges=yes
-
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
