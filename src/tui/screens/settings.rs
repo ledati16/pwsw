@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph},
@@ -283,19 +283,17 @@ pub(crate) fn render_settings(
         (area.height * DESCRIPTION_PANEL_PERCENT / 100).max(DESCRIPTION_PANEL_MIN_HEIGHT);
 
     // Split into [settings list | description]
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(10),             // Settings list
-            Constraint::Length(desc_height), // Description (dynamic height)
-        ])
-        .split(area);
+    let [list_area, desc_area] = Layout::vertical([
+        Constraint::Min(10),             // Settings list
+        Constraint::Length(desc_height), // Description (dynamic height)
+    ])
+    .areas(area);
 
     // Render settings list
-    render_settings_list(frame, chunks[0], settings, screen_state);
+    render_settings_list(frame, list_area, settings, screen_state);
 
     // Render description
-    render_description(frame, chunks[1], screen_state);
+    render_description(frame, desc_area, screen_state);
 }
 
 /// Render the settings list
@@ -370,12 +368,14 @@ fn render_settings_list(
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Settings "),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title(" Settings "),
+        )
+        .scroll_padding(1);
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
@@ -463,14 +463,16 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
         })
         .collect();
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .padding(Padding::horizontal(1))
-            .title("Select Log Level")
-            .style(Style::default().bg(colors::UI_MODAL_BG)),
-    );
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .padding(Padding::horizontal(1))
+                .title("Select Log Level")
+                .style(Style::default().bg(colors::UI_MODAL_BG)),
+        )
+        .scroll_padding(1);
 
     frame.render_widget(list, popup_area);
 }

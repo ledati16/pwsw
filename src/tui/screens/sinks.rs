@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -386,16 +386,14 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Create modal in center
     let popup_area = centered_modal(modal_size::MEDIUM, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([
-            Constraint::Length(3), // Name field
-            Constraint::Length(3), // Desc field
-            Constraint::Length(3), // Icon field
-            Constraint::Length(3), // Default checkbox
-        ])
-        .split(popup_area);
+    let [name_area, desc_area, icon_area, default_area] = Layout::vertical([
+        Constraint::Length(3), // Name field
+        Constraint::Length(3), // Desc field
+        Constraint::Length(3), // Icon field
+        Constraint::Length(3), // Default checkbox
+    ])
+    .margin(2)
+    .areas(popup_area);
 
     // Background block
     let block = Block::default()
@@ -415,7 +413,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 
     crate::tui::widgets::render_selector_button(
         frame,
-        chunks[0],
+        name_area,
         "Node Name",
         name_display,
         screen_state.editor.focused_field == 0,
@@ -424,7 +422,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Desc field
     render_input(
         frame,
-        chunks[1],
+        desc_area,
         "Description:",
         &screen_state.editor.desc.input,
         screen_state.editor.focused_field == 1,
@@ -433,7 +431,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     // Icon field
     render_input(
         frame,
-        chunks[2],
+        icon_area,
         "Icon (optional):",
         &screen_state.editor.icon.input,
         screen_state.editor.focused_field == 2,
@@ -457,7 +455,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         .border_style(border_style);
 
     let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
-    frame.render_widget(checkbox, chunks[3]);
+    frame.render_widget(checkbox, default_area);
 }
 
 /// Render delete confirmation modal
@@ -634,7 +632,8 @@ fn render_sink_selector(
                 .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(" →");
+        .highlight_symbol(" →")
+        .scroll_padding(1);
 
     // Map our logical selector index (skipping headers) to the list item index
     let total_selectable = active_sinks.len() + profile_sinks.len();

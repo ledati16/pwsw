@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph},
@@ -182,56 +182,49 @@ pub(crate) struct DashboardRenderContext<'a> {
 /// Render the dashboard screen
 pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
     // Phase 9A/9B: Two-section layout (top section + toggleable bottom)
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(10), // Top section (daemon + sink + summary)
-            Constraint::Min(0),     // Bottom section (logs OR windows - toggleable)
-        ])
-        .split(area);
+    let [top_section, bottom_section] = Layout::vertical([
+        Constraint::Length(10), // Top section (daemon + sink + summary)
+        Constraint::Min(0),     // Bottom section (logs OR windows - toggleable)
+    ])
+    .areas(area);
 
     // Split top section horizontally (left: daemon+summary, right: sink+stats)
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[0]);
+    let [left_col, right_col] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .areas(top_section);
 
     // Split left column vertically (daemon above, summary below)
-    let left_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6), // Daemon control
-            Constraint::Length(4), // Window summary
-        ])
-        .split(top_chunks[0]);
+    let [daemon_area, summary_area] = Layout::vertical([
+        Constraint::Length(6), // Daemon control
+        Constraint::Length(4), // Window summary
+    ])
+    .areas(left_col);
 
     // Split right column vertically (sink above, stats below)
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(6), // Active sink details
-            Constraint::Length(4), // Statistics
-        ])
-        .split(top_chunks[1]);
+    let [sink_area, stats_area] = Layout::vertical([
+        Constraint::Length(6), // Active sink details
+        Constraint::Length(4), // Statistics
+    ])
+    .areas(right_col);
 
     // Render top section components
-    render_daemon_section(frame, left_chunks[0], ctx.screen_state, ctx.daemon_running);
+    render_daemon_section(frame, daemon_area, ctx.screen_state, ctx.daemon_running);
 
     // Calculate matched windows count
     let matched_count = ctx.windows.iter().filter(|w| w.tracked.is_some()).count();
 
     render_window_summary(
         frame,
-        left_chunks[1],
+        summary_area,
         ctx.window_count,
         matched_count,
         ctx.screen_state.current_view,
     );
 
-    render_sink_card(frame, right_chunks[0], ctx.config);
+    render_sink_card(frame, sink_area, ctx.config);
     render_statistics_card(
         frame,
-        right_chunks[1],
+        stats_area,
         ctx.config,
         matched_count,
         ctx.window_count,
@@ -242,7 +235,7 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
         DashboardView::Logs => {
             render_log_viewer(
                 frame,
-                chunks[1],
+                bottom_section,
                 ctx.daemon_logs,
                 ctx.daemon_running,
                 ctx.screen_state.log_scroll_offset,
@@ -251,7 +244,7 @@ pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRen
         DashboardView::Windows => {
             render_window_tracking(
                 frame,
-                chunks[1],
+                bottom_section,
                 ctx.windows,
                 matched_count,
                 ctx.screen_state.window_scroll_offset,

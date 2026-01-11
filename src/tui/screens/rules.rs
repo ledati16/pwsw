@@ -2,7 +2,7 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{
@@ -478,10 +478,8 @@ fn render_editor(
 
     let popup_area = centered_modal(modal_size::LARGE, area);
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(2)
-        .constraints([
+    let [app_id_area, title_area, sink_area, desc_area, notify_area, preview_area] =
+        Layout::vertical([
             Constraint::Length(3), // App ID pattern
             Constraint::Length(3), // Title pattern
             Constraint::Length(3), // Sink selector
@@ -489,7 +487,8 @@ fn render_editor(
             Constraint::Length(3), // Notify toggle
             Constraint::Min(6),    // Live preview
         ])
-        .split(popup_area);
+        .margin(2)
+        .areas(popup_area);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -510,7 +509,7 @@ fn render_editor(
 
     render_validated_input(
         frame,
-        chunks[0],
+        app_id_area,
         "App ID Pattern (regex):",
         &screen_state.editor.app_id_pattern.input,
         screen_state.editor.focused_field == 0,
@@ -528,7 +527,7 @@ fn render_editor(
 
     render_validated_input(
         frame,
-        chunks[1],
+        title_area,
         "Title Pattern (optional regex):",
         &screen_state.editor.title_pattern.input,
         screen_state.editor.focused_field == 1,
@@ -550,7 +549,7 @@ fn render_editor(
 
     crate::tui::widgets::render_selector_button(
         frame,
-        chunks[2],
+        sink_area,
         "Target Sink",
         sink_display,
         screen_state.editor.focused_field == 2,
@@ -559,7 +558,7 @@ fn render_editor(
     // Description field
     render_input(
         frame,
-        chunks[3],
+        desc_area,
         "Description (optional):",
         &screen_state.editor.desc.input,
         screen_state.editor.focused_field == 3,
@@ -593,12 +592,12 @@ fn render_editor(
         .border_style(border_style);
 
     let notify_widget = Paragraph::new(Line::from(notify_spans)).block(block);
-    frame.render_widget(notify_widget, chunks[4]);
+    frame.render_widget(notify_widget, notify_area);
 
     // Live preview panel
     render_live_preview(
         frame,
-        chunks[5],
+        preview_area,
         screen_state,
         windows,
         preview,
@@ -834,7 +833,8 @@ fn render_sink_selector(
                 .fg(colors::UI_HIGHLIGHT)
                 .add_modifier(Modifier::BOLD),
         )
-        .highlight_symbol(" →");
+        .highlight_symbol(" →")
+        .scroll_padding(1);
 
     // Sync state
     editor
