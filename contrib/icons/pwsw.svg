@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2" result="blur"/>
+      <feOffset in="blur" dx="0" dy="2" result="offsetBlur"/>
+      <feFlood flood-color="#000000" flood-opacity="0.6" result="shadowColor"/>
+      <feComposite in="shadowColor" in2="offsetBlur" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="textShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feOffset in="SourceAlpha" dx="1" dy="1" result="offsetAlpha"/>
+      <feFlood flood-color="#000000" flood-opacity="0.8" result="shadowColor"/>
+      <feComposite in="shadowColor" in2="offsetAlpha" operator="in" result="shadow"/>
+      <feMerge>
+        <feMergeNode in="shadow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Circular background with shadow -->
+  <circle cx="64" cy="64" r="52" fill="#352a52" filter="url(#shadow)"/>
+
+  <!-- PWSW text centered with shadow -->
+  <text x="64" y="74" font-family="M+1Code Nerd Font" font-size="28" font-weight="bold" text-anchor="middle" filter="url(#textShadow)">
+    <tspan fill="#d8b4fe">«</tspan><tspan fill="#b794f6">PW</tspan><tspan fill="#d8b4fe">SW</tspan><tspan fill="#b794f6">»</tspan>
+  </text>
+</svg>
