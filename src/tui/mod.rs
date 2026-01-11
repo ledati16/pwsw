@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Paragraph, Tabs},
@@ -649,21 +649,19 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let context_height = context_height.clamp(1, 3);
 
     // Create main layout: [Header (tabs) | Context Bar | Content | Footer (status)]
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),              // Header with tabs
-            Constraint::Length(context_height), // Context bar (dynamic fixed height)
-            Constraint::Min(0),                 // Content area
-            Constraint::Length(1),              // Footer
-        ])
-        .split(size);
+    let [header_area, ctx_bar_area, main_area, footer_area] = Layout::vertical([
+        Constraint::Length(3),              // Header with tabs
+        Constraint::Length(context_height), // Context bar (dynamic fixed height)
+        Constraint::Min(0),                 // Content area
+        Constraint::Length(1),              // Footer
+    ])
+    .areas(size);
 
     // Render header (tab bar)
-    render_header(frame, chunks[0], app.current_screen, app.config_dirty);
+    render_header(frame, header_area, app.current_screen, app.config_dirty);
 
     // Render context bar
-    render_context_bar_with_content(frame, chunks[1], context_text);
+    render_context_bar_with_content(frame, ctx_bar_area, context_text);
 
     // Render screen content
     match app.current_screen {
@@ -676,11 +674,11 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
                 daemon_logs: &app.daemon_log_lines,
                 windows: &app.windows,
             };
-            render_dashboard(frame, chunks[2], &ctx);
+            render_dashboard(frame, main_area, &ctx);
         }
         Screen::Sinks => render_sinks(
             frame,
-            chunks[2],
+            main_area,
             &app.config.sinks,
             &mut app.sinks_screen,
             &app.active_sinks,
@@ -702,7 +700,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
             render_rules(
                 frame,
-                chunks[2],
+                main_area,
                 &mut RulesRenderContext {
                     rules: &rules_snapshot,
                     sinks: &sinks_snapshot,
@@ -715,7 +713,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         }
         Screen::Settings => render_settings(
             frame,
-            chunks[2],
+            main_area,
             &app.config.settings,
             &mut app.settings_screen,
         ),
@@ -726,7 +724,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let status_clone = app.status_message().cloned();
     render_footer(
         frame,
-        chunks[3],
+        footer_area,
         status_clone.as_ref(),
         app.daemon_action_pending,
         app.throbber_state_mut(),
@@ -838,22 +836,20 @@ fn render_footer(
     use throbber_widgets_tui::Throbber;
 
     // Split footer: [Throbber (3) | Status (Min 0) | Quit (8)]
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(3),  // Throbber/Dot area
-            Constraint::Min(0),     // Status message
-            Constraint::Length(10), // Quit hint
-        ])
-        .split(area);
+    let [throbber_area, status_area, quit_area] = Layout::horizontal([
+        Constraint::Length(3),  // Throbber/Dot area
+        Constraint::Min(0),     // Status message
+        Constraint::Length(10), // Quit hint
+    ])
+    .areas(area);
 
     // 1. Throbber/Status Dot
     if daemon_action_pending {
         let throb = Throbber::default().style(Style::default().fg(colors::UI_WARNING));
-        frame.render_stateful_widget(throb, chunks[0], throbber_state);
+        frame.render_stateful_widget(throb, throbber_area, throbber_state);
     } else if status_message.is_some() {
         let dot = Paragraph::new(Span::styled("● ", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(dot, chunks[0]);
+        frame.render_widget(dot, throbber_area);
     }
 
     // 2. Status Message
@@ -862,7 +858,7 @@ fn render_footer(
     } else {
         Span::raw("")
     };
-    frame.render_widget(Paragraph::new(status_text), chunks[1]);
+    frame.render_widget(Paragraph::new(status_text), status_area);
 
     // 3. Quit Hint (Right-aligned)
     let quit_hint = Paragraph::new(Span::styled(
@@ -870,5 +866,5 @@ fn render_footer(
         Style::default().fg(colors::UI_SECONDARY),
     ))
     .alignment(Alignment::Right);
-    frame.render_widget(quit_hint, chunks[2]);
+    frame.render_widget(quit_hint, quit_area);
 }
