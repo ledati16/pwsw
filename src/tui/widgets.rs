@@ -229,7 +229,7 @@ pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
     } else {
         let take = max.saturating_sub(3);
         let truncated: String = text.chars().take(take).collect();
-        format!("{}...", truncated)
+        format!("{truncated}...")
     }
 }
 
@@ -468,7 +468,7 @@ mod tests {
         // Test UTF-8 multibyte characters (emoji, special symbols)
         // ✳ is 3 bytes, but 1 character
         assert_eq!(truncate_desc("✳ sparkle", 10), "✳ sparkle");
-        assert_eq!(truncate_desc("✳ sparkle", 5), "✳ ...");  // max=5: take 2 chars + "..."
+        assert_eq!(truncate_desc("✳ sparkle", 5), "✳ ..."); // max=5: take 2 chars + "..."
 
         // Emoji test (4-byte characters)
         assert_eq!(truncate_desc("🎵 music", 10), "🎵 music");
@@ -477,7 +477,7 @@ mod tests {
         // Mixed ASCII and UTF-8
         let mixed = "device ✓ ready";
         assert_eq!(truncate_desc(mixed, 20), "device ✓ ready");
-        assert_eq!(truncate_desc(mixed, 10), "device ...");  // max=10: take 7 chars + "..." ("device " = 7 chars)
+        assert_eq!(truncate_desc(mixed, 10), "device ..."); // max=10: take 7 chars + "..." ("device " = 7 chars)
 
         // Edge case: exactly at boundary
         assert_eq!(truncate_desc("test✳", 5), "test✳");

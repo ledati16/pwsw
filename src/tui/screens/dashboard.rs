@@ -165,7 +165,7 @@ fn truncate(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
-        format!("{}…", truncated)
+        format!("{truncated}…")
     }
 }
 
@@ -975,24 +975,30 @@ mod tests {
 
         // Test UTF-8 multibyte characters in window titles
         // ✳ is 3 bytes, but 1 character
-        assert_eq!(truncate("sparkling-crab | ✳ Git Commit", 30), "sparkling-crab | ✳ Git Commit");
-        assert_eq!(truncate("sparkling-crab | ✳ Git Commit", 20), "sparkling-crab | ✳ …");  // 19 chars + ellipsis
+        assert_eq!(
+            truncate("sparkling-crab | ✳ Git Commit", 30),
+            "sparkling-crab | ✳ Git Commit"
+        );
+        assert_eq!(
+            truncate("sparkling-crab | ✳ Git Commit", 20),
+            "sparkling-crab | ✳ …"
+        ); // 19 chars + ellipsis
 
         // Emoji test (4-byte characters)
         assert_eq!(truncate("🎵 Music Player", 20), "🎵 Music Player");
-        assert_eq!(truncate("🎵 Music Player", 10), "🎵 Music P…");  // 9 chars: "🎵 Music P" + ellipsis
+        assert_eq!(truncate("🎵 Music Player", 10), "🎵 Music P…"); // 9 chars: "🎵 Music P" + ellipsis
 
         // Mixed ASCII and UTF-8 (this was the crash scenario)
         let window_title = "browser | ✓ Logged In";
         assert_eq!(truncate(window_title, 25), "browser | ✓ Logged In");
-        assert_eq!(truncate(window_title, 15), "browser | ✓ Lo…");  // 14 chars + ellipsis
+        assert_eq!(truncate(window_title, 15), "browser | ✓ Lo…"); // 14 chars + ellipsis
 
         // Edge case: exactly at character boundary
         assert_eq!(truncate("test✳", 5), "test✳");
-        assert_eq!(truncate("test✳", 4), "tes…");  // 3 chars + ellipsis
+        assert_eq!(truncate("test✳", 4), "tes…"); // 3 chars + ellipsis
 
         // Multiple emoji
         assert_eq!(truncate("🎮 Game | 🎯 Target", 20), "🎮 Game | 🎯 Target");
-        assert_eq!(truncate("🎮 Game | 🎯 Target", 12), "🎮 Game | 🎯 …");  // 11 chars: "🎮 Game | 🎯 " + ellipsis
+        assert_eq!(truncate("🎮 Game | 🎯 Target", 12), "🎮 Game | 🎯 …"); // 11 chars: "🎮 Game | 🎯 " + ellipsis
     }
 }
