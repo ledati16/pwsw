@@ -606,9 +606,25 @@ where
 fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let size = frame.area();
 
+    // Cap TUI width for better proportions on wide screens
+    // This prevents content from stretching excessively and looking lost
+    const MAX_TUI_WIDTH: u16 = 180;
+
+    let content_area = if size.width > MAX_TUI_WIDTH {
+        let margin = (size.width - MAX_TUI_WIDTH) / 2;
+        Rect {
+            x: size.x + margin,
+            y: size.y,
+            width: MAX_TUI_WIDTH,
+            height: size.height,
+        }
+    } else {
+        size
+    };
+
     // Calculate context bar content and required height first
     let context_text = app.context_bar_text();
-    let available_width = size.width.max(1);
+    let available_width = content_area.width.max(1);
 
     // Calculate required lines based on wrapping behavior
     // We iterate through spans to calculate the total visual width accurately
@@ -636,7 +652,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         Constraint::Min(0),                 // Content area
         Constraint::Length(1),              // Footer
     ])
-    .areas(size);
+    .areas(content_area);
 
     // Render header (tab bar)
     render_header(frame, header_area, app.current_screen, app.config_dirty);
@@ -715,7 +731,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     if app.show_help {
         render_help(
             frame,
-            size,
+            content_area,
             app.current_screen,
             &mut app.help_scroll_state,
             &mut app.help_viewport_height,
