@@ -12,4 +12,4 @@ pub(crate) use dashboard::{
 pub(crate) use help::render_help;
 pub(crate) use rules::{RulesRenderContext, RulesScreen, render_rules};
 pub(crate) use settings::{SettingsScreen, render_settings};
-pub(crate) use sinks::{SinksScreen, render_sinks};
+pub(crate) use sinks::{SinksRenderContext, SinksScreen, render_sinks};
