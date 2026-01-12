@@ -181,7 +181,7 @@ pub(crate) struct DashboardRenderContext<'a> {
 
 /// Render the dashboard screen
 pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
-    // Phase 9A/9B: Two-section layout (top section + toggleable bottom)
+    // Two-section layout (top section + toggleable bottom)
     let [top_section, bottom_section] = Layout::vertical([
         Constraint::Length(10), // Top section (daemon + sink + summary)
         Constraint::Min(0),     // Bottom section (logs OR windows - toggleable)
