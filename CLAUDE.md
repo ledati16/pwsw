@@ -850,6 +850,14 @@ See `contrib/systemd/README.md` for complete installation, management, and troub
 - May fail silently if no notification daemon available
 - Used for manual switches and rule-based switches (configurable)
 
+**Logging (`logging.rs`, `tui/log_tailer.rs`)**
+- **Daemon writes** to `~/.local/share/pwsw/daemon.log` via `RotatingFileAppender`
+- **Rotation**: At 1MB, renames to `daemon.log.old` (keeps 1 backup)
+- **Non-blocking**: Uses `tracing_appender::non_blocking` with worker thread
+- **TUI reads** via `LogTailer` which watches the file with `notify` crate
+- **Rotation recovery**: TUI detects rotation (file size decreased) and reads any missed lines from `daemon.log.old` before continuing with the new file
+- **Buffer limits**: LogTailer keeps 1000 lines internally, App displays last 500 lines
+
 ### Data Flow
 
 1. **Window Event Flow**:
@@ -883,12 +891,18 @@ See `contrib/systemd/README.md` for complete installation, management, and troub
    - Validate new config before signaling daemon
    - Daemon reloads config but does not auto-restart (requires manual restart for changes to take effect)
 
+5. **Logging Flow**:
+   - Daemon: `tracing` macros → `tracing_subscriber::fmt` → `non_blocking` channel → worker thread → `RotatingFileAppender` → `daemon.log`
+   - TUI: `LogTailer` watches directory → file change detected → read from `last_position` → send `AppUpdate::DaemonLogs` → App buffer (500 lines) → render
+   - On rotation: TUI detects file shrunk → reads remaining lines from `daemon.log.old` → resets position → continues with new file
+
 ### Threading Model
 
 - **Main Tokio Runtime**: Runs daemon event loop, IPC server, signal handlers, config watcher
 - **Wayland Thread**: Dedicated `std::thread` for Wayland event loop (blocking, not async)
 - **IPC Handler Tasks**: Spawned tokio tasks for each IPC connection (non-blocking)
 - **Blocking Workers**: `spawn_blocking` tasks for PipeWire operations (pool managed by tokio)
+- **Log Writer Thread**: `tracing_appender::non_blocking` spawns a dedicated thread that receives log messages via channel and writes to `RotatingFileAppender`
 
 State is owned by the main loop. IPC handlers clone only what they need (uptime, current_sink_name, tracked windows list) to avoid shared mutable state. Per-device profile locks use `std::sync::Mutex` (safe in `spawn_blocking`).
 
@@ -1104,6 +1118,11 @@ cargo clippy --all-targets -- -W clippy::pedantic
 - Rule matching preview: `src/tui/preview.rs`
 - Shared widgets: `src/tui/widgets.rs`
 - Screens: `src/tui/screens/` (rules, sinks, settings, help)
+
+**Logging:**
+- Rotating file appender: `src/logging.rs`
+- TUI log tailer: `src/tui/log_tailer.rs`
+- Log rendering: `src/tui/screens/dashboard.rs` (`style_log_line`, `highlight_message`)
 
 **Utilities:**
 - Terminal styling: `src/style.rs`

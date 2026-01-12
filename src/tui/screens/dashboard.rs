@@ -994,4 +994,129 @@ mod tests {
         assert_eq!(truncate("🎮 Game | 🎯 Target", 20), "🎮 Game | 🎯 Target");
         assert_eq!(truncate("🎮 Game | 🎯 Target", 12), "🎮 Game | 🎯 …"); // 11 chars: "🎮 Game | 🎯 " + ellipsis
     }
+
+    // ============================================================================
+    // Log Parsing Tests
+    // ============================================================================
+
+    #[test]
+    fn test_style_log_line_valid_format() {
+        use super::style_log_line;
+
+        // Standard log format: "TIMESTAMP LEVEL message"
+        let line = style_log_line("2025-12-17T10:00:00.123456Z INFO Starting daemon");
+        let spans: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
+
+        // Should extract timestamp (time only), level, and message
+        assert!(spans[0].contains("10:00:00"), "Expected time extraction");
+        assert!(spans[2].contains("INFO"), "Expected level");
+        // Message spans come after level
+        assert!(
+            spans.iter().any(|s| s.contains("Starting")),
+            "Expected message content"
+        );
+    }
+
+    #[test]
+    fn test_style_log_line_malformed() {
+        use super::style_log_line;
+
+        // Less than 3 parts after split
+        let line = style_log_line("malformed log");
+        // Should return as-is without crashing
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(line.spans[0].content, "malformed log");
+
+        // Single word
+        let single = style_log_line("WARN");
+        assert_eq!(single.spans.len(), 1);
+        assert_eq!(single.spans[0].content, "WARN");
+
+        // Empty string
+        let empty = style_log_line("");
+        assert_eq!(empty.spans.len(), 1);
+    }
+
+    #[test]
+    fn test_style_log_line_timestamp_formats() {
+        use super::style_log_line;
+
+        // Standard ISO 8601 with microseconds
+        let line1 = style_log_line("2025-12-17T14:30:45.123456Z INFO test");
+        let spans1: Vec<_> = line1.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(spans1[0], "14:30:45", "Should extract HH:MM:SS");
+
+        // Without microseconds
+        let line2 = style_log_line("2025-12-17T14:30:45Z INFO test");
+        let spans2: Vec<_> = line2.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(spans2[0], "14:30:45", "Should extract HH:MM:SS");
+
+        // Without 'T' separator (fallback to full timestamp)
+        let line3 = style_log_line("20251217 INFO test");
+        let spans3: Vec<_> = line3.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(
+            spans3[0], "20251217",
+            "Should use full timestamp as fallback"
+        );
+    }
+
+    #[test]
+    fn test_highlight_message_patterns() {
+        use super::highlight_message;
+
+        // Test pattern highlighting
+        let spans = highlight_message("Rule matched: firefox -> headphones");
+        // Should have highlighted "Rule matched:" portion
+        assert!(
+            spans.len() > 1,
+            "Should split message into highlighted parts"
+        );
+
+        // Test multiple patterns in one message
+        let spans2 = highlight_message("Window opened: app_id=firefox title=Browser");
+        // Should highlight "Window opened:", "app_id=", and "title="
+        assert!(
+            spans2.len() >= 3,
+            "Should have multiple highlighted segments"
+        );
+    }
+
+    #[test]
+    fn test_highlight_message_no_patterns() {
+        use super::highlight_message;
+
+        // Message with no highlight patterns
+        let spans = highlight_message("Just a plain message");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "Just a plain message");
+    }
+
+    #[test]
+    fn test_highlight_message_overlapping_patterns() {
+        use super::highlight_message;
+
+        // "Loaded" and "rules" are both patterns - they shouldn't overlap
+        let spans = highlight_message("Loaded 5 sinks, 3 rules");
+        // Should handle without crashing
+        assert!(!spans.is_empty());
+        // The full message content should be preserved
+        let full: String = spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(full, "Loaded 5 sinks, 3 rules");
+    }
+
+    #[test]
+    fn test_style_log_line_all_levels() {
+        use super::style_log_line;
+
+        // Test all log levels are parsed correctly
+        for level in &["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] {
+            let log_str = format!("2025-01-01T00:00:00Z {level} test");
+            let line = style_log_line(&log_str);
+            let spans: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
+            assert!(
+                spans.iter().any(|s| s.trim() == *level),
+                "Level {level} should be parsed"
+            );
+        }
+    }
 }

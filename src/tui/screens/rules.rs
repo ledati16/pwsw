@@ -478,17 +478,23 @@ fn render_editor(
 
     let popup_area = centered_modal(modal_size::LARGE, area);
 
-    let [app_id_area, title_area, sink_area, desc_area, notify_area, preview_area] =
-        Layout::vertical([
-            Constraint::Length(3), // App ID pattern
-            Constraint::Length(3), // Title pattern
-            Constraint::Length(3), // Sink selector
-            Constraint::Length(3), // Description
-            Constraint::Length(3), // Notify toggle
-            Constraint::Min(6),    // Live preview
-        ])
-        .margin(2)
-        .areas(popup_area);
+    let [
+        app_id_area,
+        title_area,
+        sink_area,
+        desc_area,
+        notify_area,
+        preview_area,
+    ] = Layout::vertical([
+        Constraint::Length(3), // App ID pattern
+        Constraint::Length(3), // Title pattern
+        Constraint::Length(3), // Sink selector
+        Constraint::Length(3), // Description
+        Constraint::Length(3), // Notify toggle
+        Constraint::Min(6),    // Live preview
+    ])
+    .margin(2)
+    .areas(popup_area);
 
     let block = Block::default()
         .borders(Borders::ALL)
