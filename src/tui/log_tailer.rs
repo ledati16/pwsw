@@ -12,7 +12,7 @@
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -80,16 +80,17 @@ impl LogTailer {
         let file = File::open(&self.log_path)
             .with_context(|| format!("Failed to open log file: {}", self.log_path.display()))?;
 
-        let reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.lines().collect::<std::io::Result<_>>()?;
+        // Use by_ref() so we can get the file handle back to check position
+        let mut reader = BufReader::new(file);
+        let all_lines: Vec<String> = reader.by_ref().lines().collect::<std::io::Result<_>>()?;
 
         // Keep only last N lines
         let start = all_lines.len().saturating_sub(max_lines);
         self.lines = all_lines.into_iter().skip(start).collect();
 
-        // Update position to end of file
-        let file = File::open(&self.log_path)?;
-        self.last_position = file.metadata()?.len();
+        // Update position to actual EOF after reading (handles race with concurrent writes)
+        let mut file = reader.into_inner();
+        self.last_position = file.stream_position()?;
 
         Ok(())
     }
@@ -145,11 +146,15 @@ impl LogTailer {
         // Seek to last read position in current file
         file.seek(SeekFrom::Start(self.last_position))?;
 
-        let reader = BufReader::new(file);
-        new_lines.extend(reader.lines().collect::<std::io::Result<Vec<_>>>()?);
+        // Use by_ref() to borrow the reader so we can get the file handle back after
+        let mut reader = BufReader::new(file);
+        new_lines.extend(reader.by_ref().lines().collect::<std::io::Result<Vec<_>>>()?);
 
-        // Update position
-        self.last_position = current_size;
+        // Update position to actual EOF after reading (not the size captured earlier)
+        // This handles the race where more data is written between capturing current_size
+        // and finishing our read - BufReader reads to actual EOF, so we must track that.
+        let mut file = reader.into_inner();
+        self.last_position = file.stream_position()?;
 
         // Add new lines to buffer
         self.lines.extend(new_lines.iter().cloned());
