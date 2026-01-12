@@ -346,21 +346,19 @@ impl Config {
         if let Some(home_dir) = dirs::home_dir() {
             let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
             if config_path == home_cfg {
-                // Create a timestamped backup of the existing file if present
+                // Create a single backup of the existing file if present.
+                // Only one backup is kept (overwrites previous) since atomic writes
+                // already prevent corruption - this is just for user recovery ("undo").
                 if config_path.exists()
                     && let Ok(metadata) = fs::metadata(config_path)
                     && metadata.is_file()
                 {
-                    use std::time::{SystemTime, UNIX_EPOCH};
-                    if let Ok(n) = SystemTime::now().duration_since(UNIX_EPOCH) {
-                        let bak_name = format!("config.toml.bak.{}", n.as_secs());
-                        let bak_path = config_path
-                            .parent()
-                            .expect("XDG config path always has parent directory")
-                            .join(bak_name);
-                        let _ = fs::copy(config_path, &bak_path);
-                        // Best-effort: ignore copy errors but try to continue
-                    }
+                    let bak_path = config_path
+                        .parent()
+                        .expect("XDG config path always has parent directory")
+                        .join("config.toml.bak");
+                    let _ = fs::copy(config_path, &bak_path);
+                    // Best-effort: ignore copy errors but try to continue
                 }
 
                 // Debug logging: record attempted write details
