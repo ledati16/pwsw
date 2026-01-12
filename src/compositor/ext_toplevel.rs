@@ -50,9 +50,11 @@ impl ExtToplevelState {
     /// Send a window event to the daemon
     fn send_event(&self, event: WindowEvent) {
         // Use blocking_send since we're in a dedicated thread (not async context)
+        // This will block if the channel is full, which is intentional to apply backpressure
         match self.tx.blocking_send(event) {
             Ok(()) => {}
             Err(e) => {
+                // Channel closed means daemon shut down
                 warn!("Failed to send window event (receiver dropped): {}", e);
             }
         }
@@ -158,7 +160,10 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
                         debug!("Window closed: id={}", window.id);
                         state.send_event(WindowEvent::Closed { id: window.id });
                     } else {
-                        debug!("Window {} closed before initial done event", handle_id);
+                        debug!(
+                            "Window {} closed before initial done event, not emitting Closed",
+                            handle_id
+                        );
                     }
                 }
             }
