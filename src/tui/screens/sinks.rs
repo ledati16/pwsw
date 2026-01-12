@@ -157,28 +157,39 @@ impl SinksScreen {
     }
 }
 
+/// Context for rendering the sinks screen (bundles related parameters)
+pub(crate) struct SinksRenderContext<'a> {
+    pub sinks: &'a [SinkConfig],
+    pub screen_state: &'a mut SinksScreen,
+    pub active_sinks: &'a [String],
+    pub active_sink_list: &'a [crate::pipewire::ActiveSink],
+    pub profile_sink_list: &'a [crate::pipewire::ProfileSink],
+    pub pipewire_available: bool,
+}
+
 /// Render the sinks screen
-pub(crate) fn render_sinks(
-    frame: &mut Frame,
-    area: Rect,
-    sinks: &[SinkConfig],
-    screen_state: &mut SinksScreen,
-    active_sinks: &[String],
-    active_sink_list: &[crate::pipewire::ActiveSink],
-    profile_sink_list: &[crate::pipewire::ProfileSink],
-) {
-    match screen_state.mode {
-        SinksMode::List => render_list(frame, area, sinks, screen_state, active_sinks),
-        SinksMode::AddEdit => render_editor(frame, area, screen_state),
-        SinksMode::Delete => render_delete_confirmation(frame, area, sinks, screen_state),
+pub(crate) fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
+    match ctx.screen_state.mode {
+        SinksMode::List => {
+            render_list(
+                frame,
+                area,
+                ctx.sinks,
+                ctx.screen_state,
+                ctx.active_sinks,
+                ctx.pipewire_available,
+            );
+        }
+        SinksMode::AddEdit => render_editor(frame, area, ctx.screen_state),
+        SinksMode::Delete => render_delete_confirmation(frame, area, ctx.sinks, ctx.screen_state),
         SinksMode::SelectSink => render_sink_selector(
             frame,
             area,
-            active_sink_list,
-            profile_sink_list,
-            screen_state,
+            ctx.active_sink_list,
+            ctx.profile_sink_list,
+            ctx.screen_state,
         ),
-        SinksMode::Inspect => render_inspect_popup(frame, area, sinks, screen_state),
+        SinksMode::Inspect => render_inspect_popup(frame, area, ctx.sinks, ctx.screen_state),
     }
 }
 
@@ -189,7 +200,28 @@ fn render_list(
     sinks: &[SinkConfig],
     screen_state: &mut SinksScreen,
     active_sinks: &[String],
+    pipewire_available: bool,
 ) {
+    // If PipeWire is unavailable, show warning and adjust area for table
+    let table_area = if pipewire_available {
+        area
+    } else {
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let warning = Paragraph::new(Line::from(vec![
+            Span::styled("⚠ ", Style::default().fg(colors::UI_WARNING)),
+            Span::styled(
+                "PipeWire unavailable",
+                Style::default().fg(colors::UI_WARNING),
+            ),
+            Span::styled(
+                " - sink status may be stale",
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]));
+        frame.render_widget(warning, chunks[0]);
+        chunks[1]
+    };
+
     let rows: Vec<Row> = sinks
         .iter()
         .enumerate()
@@ -286,10 +318,10 @@ fn render_list(
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
-    frame.render_stateful_widget(table, area, &mut screen_state.state);
+    frame.render_stateful_widget(table, table_area, &mut screen_state.state);
 
     // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin {
+    let inner = table_area.inner(ratatui::layout::Margin {
         vertical: 1,
         horizontal: 0,
     });

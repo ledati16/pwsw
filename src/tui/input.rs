@@ -72,7 +72,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
     // Help overlay input (blocks everything else)
     if app.show_help {
-        // Fix: handled in specific block
+        const HELP_PAGE_SIZE: usize = 15;
         match key.code {
             KeyCode::Esc | KeyCode::Char('?' | 'q') => {
                 app.show_help = false;
@@ -163,11 +163,11 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::PageUp => {
                 let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                let new_selected = current_selected.saturating_sub(15);
+                let new_selected = current_selected.saturating_sub(HELP_PAGE_SIZE);
                 app.help_scroll_state.select(Some(new_selected));
 
                 let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_sub(15);
+                let new_offset = current_offset.saturating_sub(HELP_PAGE_SIZE);
                 *app.help_scroll_state.offset_mut() = new_offset;
             }
             KeyCode::PageDown => {
@@ -177,7 +177,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 );
                 let current_selected = app.help_scroll_state.selected().unwrap_or(0);
                 let new_selected = current_selected
-                    .saturating_add(15)
+                    .saturating_add(HELP_PAGE_SIZE)
                     .min(row_count.saturating_sub(1));
                 app.help_scroll_state.select(Some(new_selected));
 
@@ -187,7 +187,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                     app.help_viewport_height,
                 );
                 let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_add(15).min(max_offset);
+                let new_offset = current_offset.saturating_add(HELP_PAGE_SIZE).min(max_offset);
                 *app.help_scroll_state.offset_mut() = new_offset;
             }
             _ => {}

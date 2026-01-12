@@ -101,6 +101,11 @@ pub(crate) enum AppUpdate {
         profiles: Vec<crate::pipewire::ProfileSink>,
         names: Vec<String>, // For backwards compat
     },
+    /// PipeWire is unavailable (pw-dump failed)
+    ///
+    /// Sent by background poller when `PipeWire::dump()` fails.
+    /// UI should show a warning that sink status may be stale.
+    PipeWireUnavailable,
     /// Daemon state snapshot including running status, tracked windows, and manager info
     ///
     /// Sent by background poller every 1s and immediately after daemon control actions
@@ -222,6 +227,8 @@ pub(crate) struct App {
     pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
     pub(crate) profile_sink_list: Vec<crate::pipewire::ProfileSink>,
+    /// Whether PipeWire is available (last poll succeeded)
+    pub(crate) pipewire_available: bool,
     /// Daemon log lines (tailed from log file)
     pub(crate) daemon_log_lines: Vec<String>,
 
@@ -273,6 +280,7 @@ impl App {
             active_sinks: Vec::new(),
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
+            pipewire_available: true, // Optimistic default until first poll
             daemon_action_pending: false,
             daemon_log_lines: Vec::new(),
 
@@ -625,6 +633,11 @@ impl App {
                 self.active_sink_list = active;
                 self.profile_sink_list = profiles;
                 self.active_sinks = names;
+                self.pipewire_available = true;
+                self.dirty = true;
+            }
+            AppUpdate::PipeWireUnavailable => {
+                self.pipewire_available = false;
                 self.dirty = true;
             }
             AppUpdate::DaemonState {

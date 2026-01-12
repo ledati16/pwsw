@@ -40,7 +40,8 @@ mod tests;
 use app::{App, Screen};
 use input::handle_event;
 use screens::{
-    RulesRenderContext, render_dashboard, render_help, render_rules, render_settings, render_sinks,
+    RulesRenderContext, SinksRenderContext, render_dashboard, render_help, render_rules,
+    render_settings, render_sinks,
 };
 // Import type aliases from app module to avoid duplication
 use app::{CompiledRegex, PreviewInMsg};
@@ -321,15 +322,21 @@ pub async fn run() -> Result<()> {
             // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
             let pipewire_tx = bg_tx.clone();
             let _ = tokio::task::spawn_blocking(move || {
-                if let Ok(objects) = crate::pipewire::PipeWire::dump() {
-                    let active = crate::pipewire::PipeWire::get_active_sinks(&objects);
-                    let profiles = crate::pipewire::PipeWire::get_profile_sinks(&objects, &active);
-                    let names = active.iter().map(|s| s.name.clone()).collect();
-                    let _ = pipewire_tx.send(AppUpdate::SinksData {
-                        active,
-                        profiles,
-                        names,
-                    });
+                match crate::pipewire::PipeWire::dump() {
+                    Ok(objects) => {
+                        let active = crate::pipewire::PipeWire::get_active_sinks(&objects);
+                        let profiles =
+                            crate::pipewire::PipeWire::get_profile_sinks(&objects, &active);
+                        let names = active.iter().map(|s| s.name.clone()).collect();
+                        let _ = pipewire_tx.send(AppUpdate::SinksData {
+                            active,
+                            profiles,
+                            names,
+                        });
+                    }
+                    Err(_) => {
+                        let _ = pipewire_tx.send(AppUpdate::PipeWireUnavailable);
+                    }
                 }
             })
             .await;
@@ -676,11 +683,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         Screen::Sinks => render_sinks(
             frame,
             main_area,
-            &app.config.sinks,
-            &mut app.sinks_screen,
-            &app.active_sinks,
-            &app.active_sink_list,
-            &app.profile_sink_list,
+            &mut SinksRenderContext {
+                sinks: &app.config.sinks,
+                screen_state: &mut app.sinks_screen,
+                active_sinks: &app.active_sinks,
+                active_sink_list: &app.active_sink_list,
+                profile_sink_list: &app.profile_sink_list,
+                pipewire_available: app.pipewire_available,
+            },
         ),
         Screen::Rules => {
             // Snapshot read-only items so we can take mutable borrows later (throbber, screen state)
