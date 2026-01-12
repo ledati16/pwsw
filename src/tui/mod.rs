@@ -61,6 +61,49 @@ struct PreviewExec {
     compiled_title: Option<CompiledRegex>,
 }
 
+/// Spawn a background task to execute preview matching and send results
+///
+/// Sends `PreviewPending` immediately, then spawns an async task that runs
+/// `execute_preview` with a 200ms timeout and sends `PreviewMatches` with results.
+fn spawn_preview_task(
+    tx: tokio::sync::mpsc::UnboundedSender<AppUpdate>,
+    windows: Vec<crate::ipc::WindowInfo>,
+    app_pattern: String,
+    title_pattern: Option<String>,
+    compiled_app: Option<CompiledRegex>,
+    compiled_title: Option<CompiledRegex>,
+) {
+    // Send pending update so UI can show spinner
+    let _ = tx.send(AppUpdate::PreviewPending {
+        app_pattern: app_pattern.clone(),
+        title_pattern: title_pattern.clone(),
+    });
+
+    tokio::spawn(async move {
+        use std::time::Duration;
+        let timeout = Duration::from_millis(200);
+
+        let (matches_out, timed_out, regex_error) = crate::tui::preview::execute_preview(
+            app_pattern.clone(),
+            title_pattern.clone(),
+            windows,
+            100,
+            timeout,
+            compiled_app,
+            compiled_title,
+        )
+        .await;
+
+        let _ = tx.send(AppUpdate::PreviewMatches {
+            app_pattern,
+            title_pattern,
+            matches: matches_out.into_iter().take(10).collect(),
+            timed_out,
+            regex_error,
+        });
+    });
+}
+
 /// Compute a hash fingerprint for a window list snapshot
 ///
 /// Used to detect when the window list has changed, triggering preview re-runs
@@ -379,55 +422,23 @@ pub async fn run() -> Result<()> {
                 // Clear last request before running to avoid races
                 last_preview_req = None;
 
-                let tx = bg_tx.clone();
-                let windows_clone = windows.clone();
-
-                // Send pending update so UI can show spinner after a short visual delay
-                let _ = tx.send(AppUpdate::PreviewPending {
-                    app_pattern: req.app_pattern.clone(),
-                    title_pattern: req.title_pattern.clone(),
-                });
-
-                // Clone patterns and compiled caches for the closure and for the message
-                let app_pat_send = req.app_pattern.clone();
-                let title_pat_send = req.title_pattern.clone();
-                let compiled_app_send = req.compiled_app.clone();
-                let compiled_title_send = req.compiled_title.clone();
-
                 // Record this as the last executed preview (for auto re-run on window changes)
                 last_executed_preview = Some(PreviewExec {
-                    app_pattern: app_pat_send.clone(),
-                    title_pattern: title_pat_send.clone(),
-                    compiled_app: compiled_app_send.clone(),
-                    compiled_title: compiled_title_send.clone(),
+                    app_pattern: req.app_pattern.clone(),
+                    title_pattern: req.title_pattern.clone(),
+                    compiled_app: req.compiled_app.clone(),
+                    compiled_title: req.compiled_title.clone(),
                 });
                 last_windows_fp = Some(current_fp);
 
-                tokio::spawn(async move {
-                    use std::time::Duration;
-                    let timeout = Duration::from_millis(200);
-
-                    // Use the new execute_preview helper which handles spawn_blocking + timeout and accepts optional compiled regexes
-                    let (matches_out, timed_out, regex_error) =
-                        crate::tui::preview::execute_preview(
-                            app_pat_send.clone(),
-                            title_pat_send.clone(),
-                            windows_clone,
-                            100,
-                            timeout,
-                            compiled_app_send,
-                            compiled_title_send,
-                        )
-                        .await;
-
-                    let _ = tx.send(AppUpdate::PreviewMatches {
-                        app_pattern: app_pat_send.clone(),
-                        title_pattern: title_pat_send.clone(),
-                        matches: matches_out.into_iter().take(10).collect(),
-                        timed_out,
-                        regex_error,
-                    });
-                });
+                spawn_preview_task(
+                    bg_tx.clone(),
+                    windows.clone(),
+                    req.app_pattern,
+                    req.title_pattern,
+                    req.compiled_app,
+                    req.compiled_title,
+                );
             }
 
             // Auto-retrigger previews when window snapshot changes and no user preview pending
@@ -439,44 +450,14 @@ pub async fn run() -> Result<()> {
                 if last_preview_req.is_none()
                     && let Some(exec) = last_executed_preview.clone()
                 {
-                    let tx = bg_tx.clone();
-                    let windows_clone = windows.clone();
-
-                    // Send pending update so UI can show spinner
-                    let _ = tx.send(AppUpdate::PreviewPending {
-                        app_pattern: exec.app_pattern.clone(),
-                        title_pattern: exec.title_pattern.clone(),
-                    });
-
-                    let app_pat_send = exec.app_pattern.clone();
-                    let title_pat_send = exec.title_pattern.clone();
-                    let compiled_app_send = exec.compiled_app.clone();
-                    let compiled_title_send = exec.compiled_title.clone();
-
-                    tokio::spawn(async move {
-                        // use std::time::Duration; (moved to module imports)
-                        let timeout = Duration::from_millis(200);
-
-                        let (matches_out, timed_out, regex_error) =
-                            crate::tui::preview::execute_preview(
-                                app_pat_send.clone(),
-                                title_pat_send.clone(),
-                                windows_clone,
-                                100,
-                                timeout,
-                                compiled_app_send,
-                                compiled_title_send,
-                            )
-                            .await;
-
-                        let _ = tx.send(AppUpdate::PreviewMatches {
-                            app_pattern: app_pat_send.clone(),
-                            title_pattern: title_pat_send.clone(),
-                            matches: matches_out.into_iter().take(10).collect(),
-                            timed_out,
-                            regex_error,
-                        });
-                    });
+                    spawn_preview_task(
+                        bg_tx.clone(),
+                        windows.clone(),
+                        exec.app_pattern,
+                        exec.title_pattern,
+                        exec.compiled_app,
+                        exec.compiled_title,
+                    );
                 }
             }
 

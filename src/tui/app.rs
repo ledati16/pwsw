@@ -422,6 +422,12 @@ impl App {
         self.dirty = true;
     }
 
+    /// Reset help overlay scroll position to top
+    pub(crate) fn reset_help_scroll(&mut self) {
+        self.help_scroll_state.select(Some(0));
+        *self.help_scroll_state.offset_mut() = 0;
+    }
+
     /// Mark config as modified
     pub(crate) fn mark_dirty(&mut self) {
         self.config_dirty = true;

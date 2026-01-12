@@ -129,8 +129,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Home => {
                 // Jump to first section header (row 0)
-                app.help_scroll_state.select(Some(0));
-                *app.help_scroll_state.offset_mut() = 0;
+                app.reset_help_scroll();
             }
             KeyCode::End => {
                 let row_count = crate::tui::screens::help::get_help_row_count(
@@ -213,8 +212,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             // F1: Toggle help overlay (global)
             KeyCode::F(1) => {
                 app.show_help = true;
-                app.help_scroll_state.select(Some(0));
-                *app.help_scroll_state.offset_mut() = 0;
+                app.reset_help_scroll();
                 return;
             }
             // Help toggle is handled in global section below if no modal,
@@ -223,9 +221,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             // Let's allow ? to open help even over a modal, but ONLY if not in input
             KeyCode::Char('?') if !app.is_input_focused() => {
                 app.show_help = true;
-                // Reset cursor and scroll to top when opening help
-                app.help_scroll_state.select(Some(0));
-                *app.help_scroll_state.offset_mut() = 0;
+                app.reset_help_scroll();
                 return;
             }
             _ => {
@@ -284,8 +280,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // F1: Always toggle help overlay (global)
         (KeyCode::F(1), _) => {
             app.show_help = true;
-            app.help_scroll_state.select(Some(0));
-            *app.help_scroll_state.offset_mut() = 0;
+            app.reset_help_scroll();
         }
 
         // ?: Toggle help overlay (only if no input focused)
@@ -293,9 +288,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             if !app.is_input_focused() =>
         {
             app.show_help = true;
-            // Reset cursor and scroll to top when opening help
-            app.help_scroll_state.select(Some(0));
-            *app.help_scroll_state.offset_mut() = 0;
+            app.reset_help_scroll();
         }
 
         // Screen-specific input
