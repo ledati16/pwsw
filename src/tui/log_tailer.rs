@@ -1,6 +1,13 @@
 //! Log file tailer for displaying daemon logs in TUI
 //!
-//! Reads and tails the daemon log file located at `~/.local/share/pwsw/daemon.log`
+//! Reads and tails the daemon log file located at `~/.local/share/pwsw/daemon.log`.
+//!
+//! ## Log Rotation Handling
+//!
+//! The daemon uses a `RotatingFileAppender` that renames `daemon.log` to `daemon.log.old`
+//! when the file exceeds 1MB. This tailer detects rotation by checking if the file size
+//! decreased since the last read, and recovers any unread lines from the old file before
+//! continuing with the new file.
 
 use color_eyre::eyre::{Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
@@ -9,7 +16,11 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-/// Maximum number of log lines to keep in memory
+/// Maximum number of log lines to keep in the tailer's internal buffer.
+///
+/// Note: The TUI's App state uses a smaller buffer (500 lines) for display.
+/// This larger buffer allows the tailer to maintain more history for its
+/// internal `get_lines()` method while the App controls what's shown.
 const MAX_LOG_LINES: usize = 1000;
 
 /// Log tailer that reads daemon log file
@@ -83,7 +94,22 @@ impl LogTailer {
         Ok(())
     }
 
+    /// Get the backup log file path (daemon.log.old)
+    ///
+    /// This matches the path used by `RotatingFileAppender` in logging.rs.
+    fn backup_path(&self) -> PathBuf {
+        let filename = self
+            .log_path
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string())
+            .unwrap_or_else(|| "daemon.log".to_string());
+        self.log_path.with_file_name(format!("{filename}.old"))
+    }
+
     /// Check for new log lines since last read
+    ///
+    /// Handles log rotation gracefully by reading any unread lines from the
+    /// rotated-out file (`daemon.log.old`) before continuing with the new file.
     ///
     /// # Errors
     /// Returns an error if the file cannot be read
@@ -96,18 +122,31 @@ impl LogTailer {
             .with_context(|| format!("Failed to open log file: {}", self.log_path.display()))?;
 
         let current_size = file.metadata()?.len();
+        let mut new_lines = Vec::new();
 
         // Handle log rotation (file got smaller)
         if current_size < self.last_position {
+            // Read any remaining lines from the rotated-out file before it's overwritten
+            // by the next rotation. Our last_position was in what is now daemon.log.old.
+            let backup = self.backup_path();
+            if backup.exists()
+                && let Ok(mut old_file) = File::open(&backup)
+                && old_file.seek(SeekFrom::Start(self.last_position)).is_ok()
+            {
+                let reader = BufReader::new(old_file);
+                // Use map_while to gracefully handle any I/O errors on individual lines
+                // (e.g., if the file was truncated mid-line during rotation)
+                new_lines.extend(reader.lines().map_while(Result::ok));
+            }
+            // Reset position for the new file
             self.last_position = 0;
-            self.lines.clear();
         }
 
-        // Seek to last read position
+        // Seek to last read position in current file
         file.seek(SeekFrom::Start(self.last_position))?;
 
         let reader = BufReader::new(file);
-        let new_lines: Vec<String> = reader.lines().collect::<std::io::Result<_>>()?;
+        new_lines.extend(reader.lines().collect::<std::io::Result<Vec<_>>>()?);
 
         // Update position
         self.last_position = current_size;
@@ -220,5 +259,74 @@ mod tests {
         let new_lines = tailer.read_new_lines().unwrap();
         assert_eq!(new_lines.len(), 2);
         assert_eq!(tailer.get_lines().len(), 3);
+    }
+
+    #[test]
+    fn test_log_tailer_handles_rotation() {
+        use tempfile::TempDir;
+
+        // Create a temp directory to simulate log rotation
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join("daemon.log");
+        let backup_path = temp_dir.path().join("daemon.log.old");
+
+        // Create initial log file with some lines
+        {
+            let mut file = File::create(&log_path).unwrap();
+            writeln!(file, "line 1").unwrap();
+            writeln!(file, "line 2").unwrap();
+            file.flush().unwrap();
+        }
+
+        let mut tailer = create_test_tailer(log_path.clone());
+
+        // Read initial content (only line 1)
+        tailer.read_initial(100).unwrap();
+        assert_eq!(tailer.get_lines().len(), 2);
+        // last_position is now at end of file
+
+        // Simulate more writes before rotation
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log_path)
+                .unwrap();
+            writeln!(file, "line 3").unwrap();
+            writeln!(file, "line 4").unwrap();
+            file.flush().unwrap();
+        }
+
+        // Simulate log rotation: rename current -> old, create new
+        std::fs::rename(&log_path, &backup_path).unwrap();
+        {
+            let mut file = File::create(&log_path).unwrap();
+            writeln!(file, "line 5").unwrap();
+            file.flush().unwrap();
+        }
+
+        // Now read - should detect rotation and recover lines 3,4 from old file
+        let new_lines = tailer.read_new_lines().unwrap();
+
+        // Should have read lines 3, 4 from old file, and line 5 from new file
+        assert_eq!(
+            new_lines.len(),
+            3,
+            "Expected 3 new lines (2 from old + 1 from new)"
+        );
+        assert_eq!(new_lines[0], "line 3");
+        assert_eq!(new_lines[1], "line 4");
+        assert_eq!(new_lines[2], "line 5");
+
+        // Total buffer should have all 5 lines
+        assert_eq!(tailer.get_lines().len(), 5);
+    }
+
+    #[test]
+    fn test_backup_path_generation() {
+        let tailer = create_test_tailer(PathBuf::from("/var/log/pwsw/daemon.log"));
+        assert_eq!(
+            tailer.backup_path(),
+            PathBuf::from("/var/log/pwsw/daemon.log.old")
+        );
     }
 }
