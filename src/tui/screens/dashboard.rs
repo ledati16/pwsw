@@ -571,13 +571,13 @@ fn render_window_tracking(
         window_lines.push(Line::from(spans));
     }
 
-    // Add unmatched windows (use UI_UNMATCHED color - dark gray)
+    // Add unmatched windows (dim bullet, readable text)
     for win in windows.iter().filter(|w| w.tracked.is_none()) {
         let mut spans = vec![
             Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
             Span::styled(
                 truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
-                Style::default().fg(colors::UI_UNMATCHED),
+                Style::default().fg(colors::UI_SECONDARY),
             ),
         ];
 
@@ -586,7 +586,7 @@ fn render_window_tracking(
             spans.push(Span::raw(" | "));
             spans.push(Span::styled(
                 truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
-                Style::default().fg(colors::UI_UNMATCHED),
+                Style::default().fg(colors::UI_SECONDARY),
             ));
         }
 
