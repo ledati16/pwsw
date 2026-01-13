@@ -24,7 +24,7 @@ fn test_windows_fingerprint_deterministic_and_sensitive() {
     assert_eq!(windows_fingerprint(&v1), windows_fingerprint(&v2));
 
     // Different order -> likely different fingerprint
-    let v3 = vec![b.clone(), a.clone()];
+    let v3 = vec![b, a];
     assert_ne!(windows_fingerprint(&v1), windows_fingerprint(&v3));
 
     // Content change -> different

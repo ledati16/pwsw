@@ -483,11 +483,11 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // Notify systemd that daemon is ready
     #[cfg(unix)]
     {
-        if let Ok(true) = sd_notify::booted()
+        if matches!(sd_notify::booted(), Ok(true))
             && let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready])
         {
             warn!("Failed to notify systemd: {}", e);
-        } else if let Ok(true) = sd_notify::booted() {
+        } else if matches!(sd_notify::booted(), Ok(true)) {
             info!("Notified systemd that daemon is ready");
         }
     }

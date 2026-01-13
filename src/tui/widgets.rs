@@ -41,11 +41,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 /// Standard modal sizes (width%, height%)
 pub mod modal_size {
     /// Small modals - confirmations (50%x40%)
-    pub(crate) const SMALL: (u16, u16) = (50, 40);
-    pub(crate) const MEDIUM: (u16, u16) = (70, 65);
-    pub(crate) const LARGE: (u16, u16) = (80, 85);
-    pub(crate) const DROPDOWN: (u16, u16) = (40, 50);
-    pub(crate) const HELP: (u16, u16) = (90, 80);
+    pub const SMALL: (u16, u16) = (50, 40);
+    pub const MEDIUM: (u16, u16) = (70, 65);
+    pub const LARGE: (u16, u16) = (80, 85);
+    pub const DROPDOWN: (u16, u16) = (40, 50);
+    pub const HELP: (u16, u16) = (90, 80);
 }
 
 /// Helper to create centered modal with standard size
@@ -53,7 +53,7 @@ pub mod modal_size {
 /// Returns the calculated `Rect` for the modal area. Callers must use this rect
 /// to render the modal widget.
 #[must_use]
-pub(crate) fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
+pub fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
     centered_rect(size.0, size.1, r)
 }
 
@@ -61,7 +61,7 @@ pub(crate) fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
 ///
 /// Returns magenta (bold) border for focused elements, gray for unfocused.
 /// This provides consistent visual feedback across all TUI widgets.
-pub(crate) const fn focus_border_style(focused: bool) -> Style {
+pub const fn focus_border_style(focused: bool) -> Style {
     if focused {
         Style::new().fg(colors::UI_FOCUS)
     } else {
@@ -71,7 +71,7 @@ pub(crate) const fn focus_border_style(focused: bool) -> Style {
 
 /// Validation state for input fields
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ValidationState {
+pub enum ValidationState {
     /// Input is valid
     Valid,
     /// Input is invalid
@@ -84,7 +84,7 @@ pub(crate) enum ValidationState {
 ///
 /// Shows green border for valid input, red for invalid, magenta for focused.
 /// If not focused and validation state is provided, shows green/red for valid/invalid.
-pub(crate) fn render_validated_input(
+pub fn render_validated_input(
     frame: &mut Frame,
     area: Rect,
     title: &str,
@@ -131,13 +131,7 @@ pub(crate) fn render_validated_input(
 }
 
 /// Render a text input field with a block and correct scrolling/cursor
-pub(crate) fn render_input(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    input: &Input,
-    focused: bool,
-) {
+pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
     render_validated_input(frame, area, title, input, focused, ValidationState::Neutral);
 }
 
@@ -152,7 +146,7 @@ pub(crate) fn render_input(
 /// * `label` - Field label (e.g., "Target Sink")
 /// * `value` - Current value, or None to show "Select..."
 /// * `focused` - Whether this widget is currently focused
-pub(crate) fn render_selector_button(
+pub fn render_selector_button(
     frame: &mut Frame,
     area: Rect,
     label: &str,
@@ -217,7 +211,7 @@ pub(crate) fn render_selector_button(
 /// This is a visual truncation helper for UI rendering. It operates on character counts
 /// (not grapheme clusters) which is acceptable for typical sink descriptions.
 /// Uses character-based truncation (not byte-based) to safely handle UTF-8 strings.
-pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
+pub fn truncate_desc(text: &str, max_width: u16) -> String {
     let max = max_width as usize;
     let char_count = text.chars().count();
     if char_count <= max {
@@ -244,7 +238,7 @@ pub(crate) fn truncate_desc(text: &str, max_width: u16) -> String {
 /// - Format: `{prefix}...{last_2_mac_octets}.{device_num}`
 ///
 /// **Other nodes**: Uses simple truncation with ellipsis.
-pub(crate) fn truncate_node_name(text: &str, max_width: u16) -> String {
+pub fn truncate_node_name(text: &str, max_width: u16) -> String {
     let max_len = max_width as usize;
 
     if text.len() <= max_len {
@@ -333,7 +327,7 @@ fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usi
 
 /// Compute whether there is content above/below the current viewport
 /// for a list of visual items that may wrap at `content_width`.
-pub(crate) fn compute_has_above_below(
+pub fn compute_has_above_below(
     items: &[String],
     content_width: usize,
     offset: usize,
@@ -351,12 +345,7 @@ pub(crate) fn compute_has_above_below(
 }
 
 /// Render small up/down arrows at the right edge of `inner` to indicate scroll.
-pub(crate) fn render_scroll_arrows(
-    frame: &mut Frame,
-    inner: Rect,
-    has_above: bool,
-    has_below: bool,
-) {
+pub fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
     if has_above {
         let r = Rect {
             x: inner.x + inner.width.saturating_sub(2),

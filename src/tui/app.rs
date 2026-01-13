@@ -13,8 +13,8 @@ use crate::style::colors;
 use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
-pub(crate) type CompiledRegex = Arc<regex::Regex>;
-pub(crate) type PreviewInMsg = (
+pub type CompiledRegex = Arc<regex::Regex>;
+pub type PreviewInMsg = (
     String,
     Option<String>,
     Option<CompiledRegex>,
@@ -23,7 +23,7 @@ pub(crate) type PreviewInMsg = (
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Screen {
+pub enum Screen {
     Dashboard,
     Sinks,
     Rules,
@@ -32,7 +32,7 @@ pub(crate) enum Screen {
 
 /// Screen mode for context-aware UI elements
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ScreenMode {
+pub enum ScreenMode {
     /// Normal list/view mode
     List,
     /// Modal/dialog/editor mode
@@ -41,58 +41,53 @@ pub(crate) enum ScreenMode {
 
 impl Screen {
     /// Get all available screens in display order
-    pub(crate) fn all() -> &'static [Screen] {
-        &[
-            Screen::Dashboard,
-            Screen::Sinks,
-            Screen::Rules,
-            Screen::Settings,
-        ]
+    pub(crate) const fn all() -> &'static [Self] {
+        &[Self::Dashboard, Self::Sinks, Self::Rules, Self::Settings]
     }
 
     /// Get the display name for this screen
     pub(crate) const fn name(self) -> &'static str {
         match self {
-            Screen::Dashboard => "Dashboard",
-            Screen::Sinks => "Sinks",
-            Screen::Rules => "Rules",
-            Screen::Settings => "Settings",
+            Self::Dashboard => "Dashboard",
+            Self::Sinks => "Sinks",
+            Self::Rules => "Rules",
+            Self::Settings => "Settings",
         }
     }
 
     /// Get the keyboard shortcut key for this screen
     pub(crate) const fn key(self) -> char {
         match self {
-            Screen::Dashboard => '1',
-            Screen::Sinks => '2',
-            Screen::Rules => '3',
-            Screen::Settings => '4',
+            Self::Dashboard => '1',
+            Self::Sinks => '2',
+            Self::Rules => '3',
+            Self::Settings => '4',
         }
     }
 
     /// Get the next screen in the cycle
-    pub(crate) fn next(self) -> Self {
+    pub(crate) const fn next(self) -> Self {
         match self {
-            Screen::Dashboard => Screen::Sinks,
-            Screen::Sinks => Screen::Rules,
-            Screen::Rules => Screen::Settings,
-            Screen::Settings => Screen::Dashboard,
+            Self::Dashboard => Self::Sinks,
+            Self::Sinks => Self::Rules,
+            Self::Rules => Self::Settings,
+            Self::Settings => Self::Dashboard,
         }
     }
 
     /// Get the previous screen in the cycle
-    pub(crate) fn prev(self) -> Self {
+    pub(crate) const fn prev(self) -> Self {
         match self {
-            Screen::Dashboard => Screen::Settings,
-            Screen::Sinks => Screen::Dashboard,
-            Screen::Rules => Screen::Sinks,
-            Screen::Settings => Screen::Rules,
+            Self::Dashboard => Self::Settings,
+            Self::Sinks => Self::Dashboard,
+            Self::Rules => Self::Sinks,
+            Self::Settings => Self::Rules,
         }
     }
 }
 
 /// Messages sent from background worker to UI
-pub(crate) enum AppUpdate {
+pub enum AppUpdate {
     /// Full sink data including active and profile sinks
     ///
     /// Sent by background poller every 1s with current `PipeWire` state snapshot.
@@ -153,7 +148,7 @@ pub(crate) enum AppUpdate {
 
 /// Commands sent from UI to background worker
 #[derive(Debug)]
-pub(crate) enum BgCommand {
+pub enum BgCommand {
     DaemonAction(DaemonAction),
     /// Request an atomic config save
     SaveConfig(Config),
@@ -168,7 +163,7 @@ pub(crate) enum BgCommand {
 
 /// Preview result stored in app state
 #[derive(Clone)]
-pub(crate) struct PreviewResult {
+pub struct PreviewResult {
     pub(crate) app_pattern: String,
     pub(crate) title_pattern: Option<String>,
     pub(crate) matches: Vec<String>,
@@ -178,7 +173,7 @@ pub(crate) struct PreviewResult {
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
-pub(crate) struct App {
+pub struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
     pub(crate) bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
     /// Channel receiver to accept background updates (set by `run()`)
@@ -245,7 +240,7 @@ pub(crate) struct App {
 
 /// Daemon control action to execute
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum DaemonAction {
+pub enum DaemonAction {
     Start,
     Stop,
     Restart,
@@ -381,7 +376,7 @@ impl App {
     }
 
     /// Read-only accessor for status message
-    pub(crate) fn status_message(&self) -> Option<&String> {
+    pub(crate) const fn status_message(&self) -> Option<&String> {
         self.status_message.as_ref()
     }
 
@@ -389,7 +384,7 @@ impl App {
     ///
     /// # Panics
     /// Never panics - returns mutable reference to owned field
-    pub(crate) fn throbber_state_mut(&mut self) -> &mut ThrobberState {
+    pub(crate) const fn throbber_state_mut(&mut self) -> &mut ThrobberState {
         &mut self.throbber_state
     }
 
@@ -400,7 +395,9 @@ impl App {
     ///
     /// # Panics
     /// Never panics - returns mutable references to owned fields
-    pub(crate) fn borrow_rules_and_throbber(&mut self) -> (&mut RulesScreen, &mut ThrobberState) {
+    pub(crate) const fn borrow_rules_and_throbber(
+        &mut self,
+    ) -> (&mut RulesScreen, &mut ThrobberState) {
         (&mut self.rules_screen, &mut self.throbber_state)
     }
 
@@ -411,7 +408,7 @@ impl App {
     }
 
     /// Request application quit
-    pub(crate) fn quit(&mut self) {
+    pub(crate) const fn quit(&mut self) {
         self.should_quit = true;
         self.dirty = true;
     }
@@ -428,7 +425,7 @@ impl App {
     }
 
     /// Confirm quit (when user presses 'q' again)
-    pub(crate) fn confirm_quit_action(&mut self) {
+    pub(crate) const fn confirm_quit_action(&mut self) {
         self.should_quit = true;
         self.dirty = true;
     }
@@ -441,7 +438,7 @@ impl App {
     }
 
     /// Reset help overlay scroll position to top
-    pub(crate) fn reset_help_scroll(&mut self) {
+    pub(crate) const fn reset_help_scroll(&mut self) {
         self.help_scroll_state.select(Some(0));
         *self.help_scroll_state.offset_mut() = 0;
     }

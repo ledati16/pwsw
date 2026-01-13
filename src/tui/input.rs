@@ -13,7 +13,7 @@ use regex::Regex;
 ///
 /// Sets `app.dirty = true` to trigger a redraw. Delegates to `handle_key_event` for
 /// keyboard input and handles terminal resize events.
-pub(crate) fn handle_event(app: &mut App, event: &Event) {
+pub fn handle_event(app: &mut App, event: &Event) {
     if let Event::Key(key_event) = event {
         handle_key_event(app, *key_event);
         app.dirty = true;
@@ -24,7 +24,7 @@ pub(crate) fn handle_event(app: &mut App, event: &Event) {
 }
 
 #[cfg(test)]
-pub(crate) fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event::KeyEvent) {
+pub fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event::KeyEvent) {
     handle_key_event(app, key);
 }
 /// Check if any modal or editor is currently active

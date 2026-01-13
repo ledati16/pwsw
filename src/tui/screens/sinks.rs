@@ -19,7 +19,7 @@ use crate::tui::widgets::{centered_modal, modal_size, render_input};
 
 /// Sinks screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SinksMode {
+pub enum SinksMode {
     #[default]
     List,
     AddEdit,
@@ -29,7 +29,7 @@ pub(crate) enum SinksMode {
 }
 
 /// Editor state for add/edit modal
-pub(crate) struct SinkEditor {
+pub struct SinkEditor {
     pub name: EditorState,
     pub desc: EditorState,
     pub icon: EditorState,
@@ -58,13 +58,13 @@ impl SinkEditor {
         }
     }
 
-    pub(crate) fn next_field(&mut self) {
+    pub(crate) const fn next_field(&mut self) {
         if self.focused_field < 3 {
             self.focused_field += 1;
         }
     }
 
-    pub(crate) fn prev_field(&mut self) {
+    pub(crate) const fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
         }
@@ -72,7 +72,7 @@ impl SinkEditor {
 }
 
 /// Sinks screen state
-pub(crate) struct SinksScreen {
+pub struct SinksScreen {
     pub mode: SinksMode,
     pub selected: usize,
     pub editor: SinkEditor,
@@ -118,13 +118,13 @@ impl SinksScreen {
         }
     }
 
-    pub(crate) fn select_previous(&mut self, sink_count: usize) {
+    pub(crate) const fn select_previous(&mut self, sink_count: usize) {
         if sink_count > 0 && self.selected > 0 {
             self.selected -= 1;
         }
     }
 
-    pub(crate) fn select_next(&mut self, sink_count: usize) {
+    pub(crate) const fn select_next(&mut self, sink_count: usize) {
         if sink_count > 0 && self.selected < sink_count - 1 {
             self.selected += 1;
         }
@@ -144,21 +144,21 @@ impl SinksScreen {
         }
     }
 
-    pub(crate) fn start_delete(&mut self) {
+    pub(crate) const fn start_delete(&mut self) {
         self.mode = SinksMode::Delete;
     }
 
-    pub(crate) fn start_inspect(&mut self) {
+    pub(crate) const fn start_inspect(&mut self) {
         self.mode = SinksMode::Inspect;
     }
 
-    pub(crate) fn cancel(&mut self) {
+    pub(crate) const fn cancel(&mut self) {
         self.mode = SinksMode::List;
     }
 }
 
 /// Context for rendering the sinks screen (bundles related parameters)
-pub(crate) struct SinksRenderContext<'a> {
+pub struct SinksRenderContext<'a> {
     pub sinks: &'a [SinkConfig],
     pub screen_state: &'a mut SinksScreen,
     pub active_sinks: &'a [String],
@@ -168,7 +168,7 @@ pub(crate) struct SinksRenderContext<'a> {
 }
 
 /// Render the sinks screen
-pub(crate) fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
+pub fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
     // Always render the list first as background
     render_list(
         frame,

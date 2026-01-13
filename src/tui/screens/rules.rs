@@ -23,7 +23,7 @@ use std::fmt::Write;
 
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum RulesMode {
+pub enum RulesMode {
     #[default]
     List,
     AddEdit,
@@ -34,7 +34,7 @@ pub(crate) enum RulesMode {
 
 /// Editor state for add/edit modal
 #[derive(Debug, Clone)]
-pub(crate) struct RuleEditor {
+pub struct RuleEditor {
     pub app_id_pattern: EditorState,
     pub title_pattern: EditorState,
     pub sink_ref: String,
@@ -95,13 +95,13 @@ impl RuleEditor {
         }
     }
 
-    pub(crate) fn next_field(&mut self) {
+    pub(crate) const fn next_field(&mut self) {
         if self.focused_field < 4 {
             self.focused_field += 1;
         }
     }
 
-    pub(crate) fn prev_field(&mut self) {
+    pub(crate) const fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
         }
@@ -146,7 +146,7 @@ impl RuleEditor {
 }
 
 /// Rules screen state
-pub(crate) struct RulesScreen {
+pub struct RulesScreen {
     pub mode: RulesMode,
     pub selected: usize,
     pub editor: RuleEditor,
@@ -166,13 +166,13 @@ impl RulesScreen {
         }
     }
 
-    pub(crate) fn select_previous(&mut self, rule_count: usize) {
+    pub(crate) const fn select_previous(&mut self, rule_count: usize) {
         if rule_count > 0 && self.selected > 0 {
             self.selected -= 1;
         }
     }
 
-    pub(crate) fn select_next(&mut self, rule_count: usize) {
+    pub(crate) const fn select_next(&mut self, rule_count: usize) {
         if rule_count > 0 && self.selected < rule_count - 1 {
             self.selected += 1;
         }
@@ -192,25 +192,25 @@ impl RulesScreen {
         }
     }
 
-    pub(crate) fn start_delete(&mut self) {
+    pub(crate) const fn start_delete(&mut self) {
         self.mode = RulesMode::Delete;
     }
 
-    pub(crate) fn open_sink_selector(&mut self) {
+    pub(crate) const fn open_sink_selector(&mut self) {
         self.mode = RulesMode::SelectSink;
     }
 
-    pub(crate) fn start_inspect(&mut self) {
+    pub(crate) const fn start_inspect(&mut self) {
         self.mode = RulesMode::Inspect;
     }
 
-    pub(crate) fn cancel(&mut self) {
+    pub(crate) const fn cancel(&mut self) {
         self.mode = RulesMode::List;
     }
 }
 
 /// Context for rendering the rules screen (bundles related parameters)
-pub(crate) struct RulesRenderContext<'a> {
+pub struct RulesRenderContext<'a> {
     pub rules: &'a [Rule],
     pub sinks: &'a [SinkConfig],
     pub screen_state: &'a mut RulesScreen,
@@ -220,7 +220,7 @@ pub(crate) struct RulesRenderContext<'a> {
 }
 
 /// Render the rules screen
-pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext) {
+pub fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext) {
     // Always render the list first as background
     render_list(frame, area, ctx.rules, ctx.sinks, ctx.screen_state);
 

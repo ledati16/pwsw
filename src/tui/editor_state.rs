@@ -13,7 +13,7 @@ use tui_input::Input;
 /// for the TUI's text input needs. It supports creation from empty state or existing
 /// strings, and exposes the underlying `Input` for event handling in input widgets.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct EditorState {
+pub struct EditorState {
     pub(crate) input: Input,
 }
 

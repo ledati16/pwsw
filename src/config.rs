@@ -29,7 +29,7 @@ pub struct Config {
 
 /// Global settings
 // Multiple independent boolean flags for different features (not a state machine)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     pub default_on_startup: bool,
     pub set_smart_toggle: bool,
@@ -40,7 +40,7 @@ pub struct Settings {
 }
 
 /// Audio sink configuration
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkConfig {
     /// `PipeWire` node name
     /// - ALSA: `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`
@@ -133,7 +133,7 @@ struct RuleConfigFile {
     notify: Option<bool>,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -249,7 +249,7 @@ impl Config {
             })
             .collect();
 
-        let config = Config {
+        let config = Self {
             settings,
             sinks,
             rules,
