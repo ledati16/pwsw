@@ -415,11 +415,13 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
                 )
             })
         })
-        .unwrap_or((
-            "Unknown Sink".to_string(),
-            "?".to_string(),
-            "unknown".to_string(),
-        ));
+        .unwrap_or_else(|| {
+            (
+                "Unknown Sink".to_string(),
+                "?".to_string(),
+                "unknown".to_string(),
+            )
+        });
 
     let text = vec![
         Line::from(vec![
