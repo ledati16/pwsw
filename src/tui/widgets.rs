@@ -144,7 +144,7 @@ pub(crate) fn render_input(
 /// Render a button-like selector widget
 ///
 /// Creates a bordered widget that looks clickable with clear selection state.
-/// When focused, shows cyan border and "(Enter to select)" hint.
+/// When focused, shows cyan border and "(Space to select)" hint.
 ///
 /// # Arguments
 /// * `frame` - Frame to render into
@@ -187,7 +187,7 @@ pub(crate) fn render_selector_button(
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            " ◄ Enter to select",
+            " ◄ Space to select",
             Style::default().fg(colors::UI_WARNING),
         ));
     } else {
