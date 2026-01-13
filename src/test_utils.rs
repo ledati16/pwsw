@@ -57,20 +57,6 @@ impl Drop for XdgTemp {
     }
 }
 
-#[cfg(not(test))]
-/// Placeholder for non-test builds to keep API stable.
-pub struct XdgTemp;
-
-#[cfg(not(test))]
-impl XdgTemp {
-    pub fn new() -> Self {
-        Self
-    }
-    pub fn path(&self) -> &std::path::Path {
-        std::path::Path::new("")
-    }
-}
-
 /// Shared test fixtures for building test data structures.
 ///
 /// These helpers provide a consistent way to construct `Config`, `SinkConfig`, and `Rule`
