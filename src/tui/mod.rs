@@ -642,7 +642,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     .areas(content_area);
 
     // Render header (tab bar)
-    render_header(frame, header_area, app.current_screen, app.config_dirty);
+    render_header(frame, header_area, app.current_screen);
 
     // Render context bar (at bottom, with border)
     render_context_bar(frame, ctx_bar_area, context_text);
@@ -731,12 +731,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 }
 
 /// Render the header with tab navigation
-fn render_header(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    current_screen: Screen,
-    config_dirty: bool,
-) {
+fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen) {
     let titles: Vec<_> = Screen::all()
         .iter()
         .map(|s| {
@@ -756,23 +751,9 @@ fn render_header(
         .position(|&s| s == current_screen)
         .unwrap_or(0);
 
-    // Build left title with optional styled [Ctrl+S] Save indicator
+    // Build left title (version only - save indicator moved to context bar)
     let version = crate::version_string();
-    let left_title = if config_dirty {
-        Line::from(vec![
-            Span::raw("PWSW "),
-            Span::raw(&version),
-            Span::raw(" "),
-            Span::styled(
-                "[Ctrl+S] Save",
-                Style::default()
-                    .fg(colors::UI_WARNING)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ])
-    } else {
-        Line::from(vec![Span::raw("PWSW "), Span::raw(&version)])
-    };
+    let left_title = Line::from(vec![Span::raw("PWSW "), Span::raw(&version)]);
 
     // Minimal right title
     let right_title = Line::from(vec![

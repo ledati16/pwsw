@@ -3,7 +3,7 @@
 //! Manages screen navigation, user input, and application state.
 
 use color_eyre::eyre::Result;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use throbber_widgets_tui::ThrobberState;
 
@@ -460,7 +460,8 @@ impl App {
 
         let mode = self.get_screen_mode();
 
-        match (self.current_screen, mode) {
+        // Build screen-specific content
+        let base_line = match (self.current_screen, mode) {
             (Screen::Dashboard, ScreenMode::List) => {
                 // Phase 9B: View-aware context bar for dashboard
                 use crate::tui::screens::DashboardView;
@@ -619,6 +620,22 @@ impl App {
                 Span::raw(" Cancel"),
             ]),
             _ => Line::from(""),
+        };
+
+        // Append save indicator if config has unsaved changes
+        if self.config_dirty {
+            let mut spans = base_line.spans;
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                "[Ctrl+S]",
+                Style::default()
+                    .fg(colors::UI_WARNING)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(" Save", Style::default().fg(colors::UI_WARNING)));
+            Line::from(spans)
+        } else {
+            base_line
         }
     }
 
