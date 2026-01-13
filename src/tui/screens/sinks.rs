@@ -169,17 +169,19 @@ pub(crate) struct SinksRenderContext<'a> {
 
 /// Render the sinks screen
 pub(crate) fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
+    // Always render the list first as background
+    render_list(
+        frame,
+        area,
+        ctx.sinks,
+        ctx.screen_state,
+        ctx.active_sinks,
+        ctx.pipewire_available,
+    );
+
+    // Overlay modal on top if active
     match ctx.screen_state.mode {
-        SinksMode::List => {
-            render_list(
-                frame,
-                area,
-                ctx.sinks,
-                ctx.screen_state,
-                ctx.active_sinks,
-                ctx.pipewire_available,
-            );
-        }
+        SinksMode::List => {}
         SinksMode::AddEdit => render_editor(frame, area, ctx.screen_state),
         SinksMode::Delete => render_delete_confirmation(frame, area, ctx.sinks, ctx.screen_state),
         SinksMode::SelectSink => render_sink_selector(
@@ -417,6 +419,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 
     // Create modal in center
     let popup_area = centered_modal(modal_size::MEDIUM, area);
+    frame.render_widget(Clear, popup_area);
 
     let [name_area, desc_area, icon_area, default_area] = Layout::vertical([
         Constraint::Length(3), // Name field
@@ -503,6 +506,7 @@ fn render_delete_confirmation(
 
     let sink = &sinks[screen_state.selected];
     let popup_area = centered_modal(modal_size::SMALL, area);
+    frame.render_widget(Clear, popup_area);
 
     let text = vec![
         Line::from(""),
