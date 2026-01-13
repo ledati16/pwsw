@@ -1,7 +1,6 @@
 # <p align="center">PWSW - PipeWire Switcher</p>
 
-<p align="center"><img width="350" height="250" alt="image" src="https://github.com/user-attachments/assets/80e06e92-52b1-4c2e-b29d-82c5aa0f827f" /><img width="350" height="250" alt="image" src="https://github.com/user-attachments/assets/660f5abb-29cb-4f02-92f6-65f0fb902e69" /></p>
-<p align="center"><img width="350" height="250" alt="image" src="https://github.com/user-attachments/assets/e5a4f0d6-722b-4794-b556-8ba0c2a274ad" /><img width="350" height="250" alt="image" src="https://github.com/user-attachments/assets/1cd9b6a4-bcbb-4270-a6df-efad5cc00f76" /></p>
+<p align="center"><img width="700" alt="PWSW Dashboard" src="contrib/dashboard.png" /></p>
 
 ## What is PWSW?
 
