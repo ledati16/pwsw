@@ -117,8 +117,8 @@ pub fn get_socket_path() -> Result<PathBuf> {
     } else {
         // Fallback to /tmp with UID for consistent, secure location
         // Using UID instead of USER env var prevents potential symlink attacks
-        use users::get_current_uid;
-        let uid = get_current_uid();
+        use rustix::process::getuid;
+        let uid = getuid().as_raw();
         Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.sock")))
     }
 }
@@ -157,8 +157,8 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
     // On Unix: verify the file is actually a socket and owned by the current user
     #[cfg(unix)]
     {
+        use rustix::process::getuid;
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
-        use users::get_current_uid;
 
         let metadata = std::fs::metadata(socket_path)
             .with_context(|| format!("Failed to stat socket: {}", socket_path.display()))?;
@@ -180,7 +180,7 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
         }
 
         let owner_uid = metadata.uid();
-        let current_uid = get_current_uid();
+        let current_uid = getuid().as_raw();
         debug!(
             "cleanup_stale_socket: owner_uid={}, current_uid={}",
             owner_uid, current_uid

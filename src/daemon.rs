@@ -51,8 +51,8 @@ pub fn get_pid_file_path() -> Result<PathBuf> {
     } else {
         // Fallback to /tmp with UID for consistent, secure location
         // Using UID instead of USER env var prevents potential symlink attacks
-        use users::get_current_uid;
-        let uid = get_current_uid();
+        use rustix::process::getuid;
+        let uid = getuid().as_raw();
         Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.pid")))
     }
 }

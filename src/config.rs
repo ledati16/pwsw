@@ -382,11 +382,11 @@ impl Config {
                 // Only enabled in debug builds to avoid security risks in production
                 #[cfg(debug_assertions)]
                 let _ = (|| -> std::io::Result<()> {
+                    use rustix::process::getuid;
                     use std::io::Write as _;
-                    use users::get_current_uid;
 
                     // Use user-specific path with proper permissions to prevent symlink attacks
-                    let log_path = format!("/tmp/pwsw-config-write-{}.log", get_current_uid());
+                    let log_path = format!("/tmp/pwsw-config-write-{}.log", getuid().as_raw());
                     let mut f = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)

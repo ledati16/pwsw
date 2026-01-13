@@ -130,12 +130,12 @@ if socket_path.exists() {
 **✅ Solution:** Verify file type and ownership before deletion
 ```rust
 // ✅ GOOD: Validates before deletion
+use rustix::process::getuid;
 use std::os::unix::fs::MetadataExt;
-use users::get_current_uid;
 
 if socket_path.exists() {
     let meta = fs::metadata(&socket_path)?;
-    if meta.file_type().is_socket() && meta.uid() == get_current_uid() {
+    if meta.file_type().is_socket() && meta.uid() == getuid().as_raw() {
         fs::remove_file(&socket_path)?;
     } else {
         warn!("Refusing to delete socket: ownership/type mismatch");
@@ -368,7 +368,7 @@ pub async fn activate_sink(&self, sink_name: &str) -> Result<()> {
 **File Operations:**
 - Use `path.display()` instead of Debug formatting (`{:?}`) in user-facing messages
 - Set explicit permissions on created files/sockets: `fs::Permissions::from_mode(0o600)`
-- Verify ownership before deleting: `metadata.uid() == users::get_current_uid()`
+- Verify ownership before deleting: `metadata.uid() == rustix::process::getuid().as_raw()`
 - Verify file type before operations: `metadata.file_type().is_socket()`
 - Clean up stale files before binding sockets
 - Use atomic writes (temp file + rename) for important files like configs
