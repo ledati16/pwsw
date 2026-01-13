@@ -238,14 +238,14 @@ fn render_list(
                 Span::styled("○", Style::default().fg(colors::UI_SECONDARY))
             };
 
-            let status_cell = if is_selected {
-                Cell::from(Line::from(vec![
-                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)),
-                    status_span,
-                ]))
-            } else {
-                Cell::from(status_span)
-            };
+            let status_cell = Cell::from(Line::from(vec![
+                if is_selected {
+                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT))
+                } else {
+                    Span::raw(" ")
+                },
+                status_span,
+            ]));
 
             // Description Cell (with icon if present)
             let mut desc_text = sink.desc.clone();
