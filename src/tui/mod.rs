@@ -796,7 +796,7 @@ fn render_header(
 
     // Minimal right title
     let right_title = Line::from(vec![
-        Span::styled("[F11/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
+        Span::styled("[F1/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
         Span::raw(" Help "),
     ])
     .alignment(Alignment::Right);

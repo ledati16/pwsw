@@ -74,7 +74,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     if app.show_help {
         const HELP_PAGE_SIZE: usize = 15;
         match key.code {
-            KeyCode::Esc | KeyCode::Char('?' | 'q') => {
+            KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?' | 'q') => {
                 app.show_help = false;
             }
             KeyCode::Char(' ') => {
