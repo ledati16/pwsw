@@ -99,11 +99,10 @@ impl LogTailer {
     ///
     /// This matches the path used by `RotatingFileAppender` in logging.rs.
     fn backup_path(&self) -> PathBuf {
-        let filename = self
-            .log_path
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or_else(|| "daemon.log".to_string());
+        let filename = self.log_path.file_name().map_or_else(
+            || "daemon.log".to_string(),
+            |f| f.to_string_lossy().to_string(),
+        );
         self.log_path.with_file_name(format!("{filename}.old"))
     }
 
@@ -148,7 +147,12 @@ impl LogTailer {
 
         // Use by_ref() to borrow the reader so we can get the file handle back after
         let mut reader = BufReader::new(file);
-        new_lines.extend(reader.by_ref().lines().collect::<std::io::Result<Vec<_>>>()?);
+        new_lines.extend(
+            reader
+                .by_ref()
+                .lines()
+                .collect::<std::io::Result<Vec<_>>>()?,
+        );
 
         // Update position to actual EOF after reading (not the size captured earlier)
         // This handles the race where more data is written between capturing current_size

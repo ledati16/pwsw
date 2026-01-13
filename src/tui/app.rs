@@ -101,7 +101,7 @@ pub(crate) enum AppUpdate {
         profiles: Vec<crate::pipewire::ProfileSink>,
         names: Vec<String>, // For backwards compat
     },
-    /// PipeWire is unavailable (pw-dump failed)
+    /// `PipeWire` is unavailable (pw-dump failed)
     ///
     /// Sent by background poller when `PipeWire::dump()` fails.
     /// UI should show a warning that sink status may be stale.
@@ -234,7 +234,7 @@ pub(crate) struct App {
     pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
     pub(crate) profile_sink_list: Vec<crate::pipewire::ProfileSink>,
-    /// Whether PipeWire is available (last poll succeeded)
+    /// Whether `PipeWire` is available (last poll succeeded)
     pub(crate) pipewire_available: bool,
     /// Daemon log lines (tailed from log file)
     pub(crate) daemon_log_lines: Vec<String>,
@@ -647,7 +647,10 @@ impl App {
                     .fg(colors::UI_WARNING)
                     .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(" Save", Style::default().fg(colors::UI_WARNING)));
+            spans.push(Span::styled(
+                " Save",
+                Style::default().fg(colors::UI_WARNING),
+            ));
             Line::from(spans)
         } else {
             base_line
