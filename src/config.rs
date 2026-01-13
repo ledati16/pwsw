@@ -563,8 +563,16 @@ impl Config {
             }
         }
 
-        // All rule sinks must exist
+        // All rule sinks must exist and patterns must be non-empty
         for (i, rule) in self.rules.iter().enumerate() {
+            // Empty app_id pattern would match everything - require explicit `.*` for that
+            if rule.app_id_pattern.is_empty() {
+                eyre::bail!(
+                    "Rule {} has empty app_id pattern. Use '.*' to match all windows.",
+                    i + 1
+                );
+            }
+
             if self.resolve_sink(&rule.sink_ref).is_none() {
                 let available: Vec<_> = self
                     .sinks
@@ -953,6 +961,11 @@ mod tests {
            vec![],
            Some("invalid"),
            "log_level")]
+    #[case("empty_app_id_pattern",
+           vec![make_sink("sink1", "Sink 1", true)],
+           vec![make_rule("", None, "sink1")],
+           None,
+           "empty app_id pattern")]
     fn test_validate_rejection_cases(
         #[case] name: &str,
         #[case] sinks: Vec<SinkConfig>,

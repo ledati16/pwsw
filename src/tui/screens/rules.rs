@@ -639,6 +639,23 @@ fn render_live_preview(
     preview: Option<&crate::tui::app::PreviewResult>,
     throbber_state: &mut ThrobberState,
 ) {
+    // Empty pattern means "nothing entered yet" - always show prompt regardless of cached preview.
+    // Users who want to match all windows should use `.*` explicitly.
+    if screen_state.editor.app_id_pattern.value().is_empty() {
+        let preview_widget = Paragraph::new(vec![Line::from(vec![Span::styled(
+            "  Enter app_id pattern to see preview",
+            Style::default().fg(colors::UI_SECONDARY),
+        )])])
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .title("Matching Windows"),
+        );
+        frame.render_widget(preview_widget, area);
+        return;
+    }
+
     if let Some(res) = preview {
         // Ensure preview corresponds to current editor content
         if res.app_pattern == screen_state.editor.app_id_pattern.value()
@@ -781,15 +798,11 @@ fn render_live_preview(
                 )]));
             }
         }
-    } else if !screen_state.editor.app_id_pattern.value().is_empty() {
+    } else {
+        // Pattern is non-empty (we return early for empty) but no compiled regex exists
         preview_lines.push(Line::from(vec![Span::styled(
             "  Invalid regex pattern",
             Style::default().fg(colors::UI_ERROR),
-        )]));
-    } else {
-        preview_lines.push(Line::from(vec![Span::styled(
-            "  Enter app_id pattern to see preview",
-            Style::default().fg(colors::UI_SECONDARY),
         )]));
     }
 
