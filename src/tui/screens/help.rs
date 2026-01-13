@@ -224,8 +224,8 @@ pub(crate) fn get_section_at_row(
                 }
             }
             Screen::Rules => {
-                // 9 keybinds + 2 hints (empty + "Regex Examples:") + 4 regex examples = 15
-                for _ in 0..15 {
+                // 9 keybinds + 2 hints (empty + "Regex Examples:") + 6 regex examples = 17
+                for _ in 0..17 {
                     add_meta_keybind(&mut metadata);
                 }
             }
@@ -474,7 +474,9 @@ fn build_help_rows(
                     "Matches anywhere in text",
                 );
                 add_keybind(&mut rows, &mut metadata, "^steam$", "Exact match only");
+                add_keybind(&mut rows, &mut metadata, "^chrome", "Starts with chrome");
                 add_keybind(&mut rows, &mut metadata, "^(mpv|vlc)$", "Match mpv OR vlc");
+                add_keybind(&mut rows, &mut metadata, ".*", "Match all windows");
                 add_keybind(&mut rows, &mut metadata, "(?i)discord", "Case-insensitive");
             }
             Screen::Settings => {
