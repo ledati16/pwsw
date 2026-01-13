@@ -54,8 +54,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             if app.config_dirty {
                 if let Some(tx) = &app.bg_cmd_tx {
                     let _ = tx.try_send(crate::tui::app::BgCommand::SaveConfig(app.config.clone()));
-                    // Clear dirty flag and set status immediately (optimistic)
-                    app.config_dirty = false;
+                    // Don't clear config_dirty - wait for ConfigSaved result
                     app.set_status("Saving configuration...".to_string());
                 } else {
                     // Fallback to blocking save if background worker not available

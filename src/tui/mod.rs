@@ -388,19 +388,22 @@ pub async fn run() -> Result<()> {
                         let join = tokio::task::spawn_blocking(move || config.save());
                         match join.await {
                             Ok(Ok(())) => {
-                                let _ = bg_tx.send(AppUpdate::ActionResult(
-                                    "Configuration saved successfully".to_string(),
-                                ));
+                                let _ = bg_tx.send(AppUpdate::ConfigSaved {
+                                    success: true,
+                                    message: "Configuration saved successfully".to_string(),
+                                });
                             }
                             Ok(Err(e)) => {
-                                let _ = bg_tx.send(AppUpdate::ActionResult(format!(
-                                    "Failed to save config: {e}"
-                                )));
+                                let _ = bg_tx.send(AppUpdate::ConfigSaved {
+                                    success: false,
+                                    message: format!("Failed to save config: {e}"),
+                                });
                             }
                             Err(e) => {
-                                let _ = bg_tx.send(AppUpdate::ActionResult(format!(
-                                    "Internal error saving config: {e}"
-                                )));
+                                let _ = bg_tx.send(AppUpdate::ConfigSaved {
+                                    success: false,
+                                    message: format!("Internal error saving config: {e}"),
+                                });
                             }
                         }
                     }
