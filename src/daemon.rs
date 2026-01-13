@@ -41,19 +41,19 @@ pub fn get_log_file_path() -> Result<PathBuf> {
 
 /// Get the daemon PID file path
 ///
-/// Returns `$XDG_RUNTIME_DIR/pwsw.pid` or `/tmp/pwsw-$USER.pid` as fallback
+/// Returns `$XDG_RUNTIME_DIR/pwsw.pid` or `/tmp/pwsw-{uid}.pid` as fallback
 ///
-/// # Errors
-/// Returns an error if the runtime directory cannot be determined and temp fallback fails.
+/// The fallback uses the numeric UID rather than the `USER` environment variable
+/// to prevent potential symlink attacks from manipulated environment variables.
 pub fn get_pid_file_path() -> Result<PathBuf> {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").ok();
-
-    if let Some(dir) = runtime_dir {
-        Ok(PathBuf::from(dir).join("pwsw.pid"))
+    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
+        Ok(PathBuf::from(runtime_dir).join("pwsw.pid"))
     } else {
-        // Fallback to /tmp with username suffix for multi-user safety
-        let user = std::env::var("USER").unwrap_or_else(|_| "unknown".to_string());
-        Ok(PathBuf::from("/tmp").join(format!("pwsw-{user}.pid")))
+        // Fallback to /tmp with UID for consistent, secure location
+        // Using UID instead of USER env var prevents potential symlink attacks
+        use users::get_current_uid;
+        let uid = get_current_uid();
+        Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.pid")))
     }
 }
 

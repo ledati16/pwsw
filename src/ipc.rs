@@ -5,7 +5,6 @@
 
 use color_eyre::eyre::{self, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -108,28 +107,19 @@ pub struct TrackedInfo {
 // ============================================================================
 
 /// Get the `IPC` socket path
-/// Prefers `$XDG_RUNTIME_DIR/pwsw.sock`, falls back to `/tmp/pwsw-$USER.sock`
+/// Prefers `$XDG_RUNTIME_DIR/pwsw.sock`, falls back to `/tmp/pwsw-{uid}.sock`
 ///
-/// # Errors
-/// Returns an error if both `XDG_RUNTIME_DIR` and `USER` environment variables are unset.
+/// The fallback uses the numeric UID rather than the `USER` environment variable
+/// to prevent potential symlink attacks from manipulated environment variables.
 pub fn get_socket_path() -> Result<PathBuf> {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
         Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
-    } else if let Ok(user) = std::env::var("USER") {
-        // Fallback to /tmp with username for consistent location
-        Ok(PathBuf::from({
-            let mut s = String::with_capacity(12 + user.len());
-            let _ = write!(s, "/tmp/pwsw-{user}.sock");
-            s
-        }))
     } else {
-        // Cannot determine a consistent socket path
-        eyre::bail!(
-            "Cannot determine IPC socket path: Both `XDG_RUNTIME_DIR` and `USER` environment variables are unset.\n\
-             \n\
-             This is unusual - please ensure your environment is set up correctly.\n\
-             You can manually set `XDG_RUNTIME_DIR` to a user-specific directory like `/run/user/$UID`"
-        )
+        // Fallback to /tmp with UID for consistent, secure location
+        // Using UID instead of USER env var prevents potential symlink attacks
+        use users::get_current_uid;
+        let uid = get_current_uid();
+        Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.sock")))
     }
 }
 
