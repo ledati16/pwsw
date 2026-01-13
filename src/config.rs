@@ -701,7 +701,7 @@ impl Config {
 # Supports profile switching for analog/digital outputs.
 
 [settings]
-default_on_startup = true  # Switch to default sink on daemon start
+default_on_startup = false # Switch to default sink on daemon start (disabled until you configure real sinks)
 set_smart_toggle = true    # set-sink toggles back to default if already active
 notify_manual = true       # Desktop notifications: Daemon start/stop + manual set-sink/next-sink/prev-sink
 notify_rules = true        # Desktop notifications: Rule-triggered switches (default, override per-rule)
@@ -776,15 +776,24 @@ desc = "Steam Big Picture" # Custom name for notifications
         eprintln!();
         eprintln!("{}", "Next steps:".header());
         eprintln!(
-            "  1. Run {} to see available audio outputs",
+            "  Run {} for interactive setup (recommended)",
+            "pwsw tui".technical()
+        );
+        eprintln!();
+        eprintln!("  Or configure manually:");
+        eprintln!(
+            "    {}  - discover audio outputs",
             "pwsw list-sinks".technical()
         );
-        eprintln!("  2. Edit the config file to customize sinks and rules");
+        eprintln!("    Edit config file - add sinks and rules");
         eprintln!(
-            "  3. Run {} to check your config",
+            "    {}     - check config",
             "pwsw validate".technical()
         );
-        eprintln!("  4. Run {} to start", "pwsw daemon".technical());
+        eprintln!(
+            "    {}        - start the daemon",
+            "pwsw daemon".technical()
+        );
         eprintln!();
 
         Ok(())
