@@ -369,8 +369,13 @@ impl Config {
                         .parent()
                         .expect("XDG config path always has parent directory")
                         .join("config.toml.bak");
-                    let _ = fs::copy(config_path, &bak_path);
-                    // Best-effort: ignore copy errors but try to continue
+                    if let Err(e) = fs::copy(config_path, &bak_path) {
+                        warn!(
+                            "Failed to create config backup at {}: {}",
+                            bak_path.display(),
+                            e
+                        );
+                    }
                 }
 
                 // Debug logging: record attempted write details
