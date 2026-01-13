@@ -283,14 +283,14 @@ fn render_list(
             // Prepare cells
             // Add selection indicator to index
             let index_val = (i + 1).to_string();
-            let index_cell = if is_selected {
-                Cell::from(Line::from(vec![
-                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)),
-                    Span::raw(index_val),
-                ]))
-            } else {
-                Cell::from(index_val)
-            };
+            let index_cell = Cell::from(Line::from(vec![
+                if is_selected {
+                    Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT))
+                } else {
+                    Span::raw(" ")
+                },
+                Span::raw(index_val),
+            ]));
 
             let app_id_cell = Cell::from(Span::styled(
                 rule.app_id_pattern.as_str(),
