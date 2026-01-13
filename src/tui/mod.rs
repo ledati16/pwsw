@@ -629,43 +629,23 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         size
     };
 
-    // Calculate context bar content and required height first
+    // Get context bar content
     let context_text = app.context_bar_text();
-    let available_width = content_area.width.max(1);
 
-    // Calculate required lines based on wrapping behavior
-    // We iterate through spans to calculate the total visual width accurately
-    let mut total_width = 0;
-    for span in &context_text.spans {
-        total_width += span.width();
-    }
-
-    // Calculate required lines: ceil(total_width / available_width)
-    let context_height = if total_width == 0 {
-        1
-    } else {
-        u16::try_from(total_width)
-            .unwrap_or(u16::MAX)
-            .div_ceil(available_width)
-    };
-
-    // Limit context height to reasonable max (e.g. 3 lines) to prevent it eating the screen on tiny terminals
-    let context_height = context_height.clamp(1, 3);
-
-    // Create main layout: [Header (tabs) | Context Bar | Content | Footer (status)]
-    let [header_area, ctx_bar_area, main_area, footer_area] = Layout::vertical([
-        Constraint::Length(3),              // Header with tabs
-        Constraint::Length(context_height), // Context bar (dynamic fixed height)
-        Constraint::Min(0),                 // Content area
-        Constraint::Length(1),              // Footer
+    // Create main layout: [Header (tabs) | Content | Context Bar | Footer (status)]
+    let [header_area, main_area, ctx_bar_area, footer_area] = Layout::vertical([
+        Constraint::Length(3), // Header with tabs
+        Constraint::Min(0),    // Content area (now gets more space)
+        Constraint::Length(3), // Context bar with border (fixed 3 lines)
+        Constraint::Length(1), // Footer (temporary, for status - Phase 1 only)
     ])
     .areas(content_area);
 
     // Render header (tab bar)
     render_header(frame, header_area, app.current_screen, app.config_dirty);
 
-    // Render context bar
-    render_context_bar_with_content(frame, ctx_bar_area, context_text);
+    // Render context bar (at bottom, with border)
+    render_context_bar(frame, ctx_bar_area, context_text);
 
     // Render screen content
     match app.current_screen {
@@ -820,19 +800,27 @@ fn render_header(
     frame.render_widget(tabs, area);
 }
 
-/// Render the context bar with pre-calculated content
-fn render_context_bar_with_content(frame: &mut Frame, area: Rect, content: Line) {
+/// Render the context bar with border at bottom of screen
+fn render_context_bar(frame: &mut Frame, area: Rect, content: Line) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title_bottom(
+            Line::from(vec![
+                Span::styled("[q]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" Quit "),
+            ])
+            .alignment(Alignment::Right),
+        );
+
     let paragraph = Paragraph::new(content)
-        .style(
-            Style::default()
-                .fg(colors::UI_SECONDARY)
-                .bg(ratatui::style::Color::Black),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: false });
+        .block(block)
+        .style(Style::default().fg(colors::UI_SECONDARY));
+
     frame.render_widget(paragraph, area);
 }
 
-/// Render the footer with keyboard shortcuts and status
+/// Render the footer with status message (Phase 1: simplified, quit hint moved to context bar)
 fn render_footer(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -842,11 +830,10 @@ fn render_footer(
 ) {
     use throbber_widgets_tui::Throbber;
 
-    // Split footer: [Throbber (3) | Status (Min 0) | Quit (8)]
-    let [throbber_area, status_area, quit_area] = Layout::horizontal([
-        Constraint::Length(3),  // Throbber/Dot area
-        Constraint::Min(0),     // Status message
-        Constraint::Length(10), // Quit hint
+    // Split footer: [Throbber (3) | Status (Min 0)]
+    let [throbber_area, status_area] = Layout::horizontal([
+        Constraint::Length(3), // Throbber/Dot area
+        Constraint::Min(0),    // Status message
     ])
     .areas(area);
 
@@ -866,12 +853,4 @@ fn render_footer(
         Span::raw("")
     };
     frame.render_widget(Paragraph::new(status_text), status_area);
-
-    // 3. Quit Hint (Right-aligned)
-    let quit_hint = Paragraph::new(Span::styled(
-        "[q] Quit ",
-        Style::default().fg(colors::UI_SECONDARY),
-    ))
-    .alignment(Alignment::Right);
-    frame.render_widget(quit_hint, quit_area);
 }
