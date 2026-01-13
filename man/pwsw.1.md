@@ -18,7 +18,7 @@ It can also be used as a command-line client to query the daemon status, list wi
     **--foreground**
     :   Run in the foreground (useful for systemd or debugging).
 
-**status**
+**status** [*--json*]
 :   Query and display the current daemon status, active sink, and tracked windows.
 
 **tui**
@@ -30,11 +30,20 @@ It can also be used as a command-line client to query the daemon status, list wi
 **list-windows** [*--json*]
 :   List all currently open windows known to the compositor.
 
-**test-rule** *PATTERN*
+**test-rule** *PATTERN* [*--json*]
 :   Test a regex pattern against current windows to see what would match. See **pwsw**(5) for details on regex syntax.
 
 **validate**
 :   Validate the configuration file syntax and sink references.
+
+**set-sink** *SINK*
+:   Set audio output by description, node name, or 1-indexed position (e.g., "1", "2"). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink.
+
+**next-sink**
+:   Cycle to the next configured sink (wraps around).
+
+**prev-sink**
+:   Cycle to the previous configured sink (wraps around).
 
 **shutdown**
 :   Gracefully stop the running daemon.

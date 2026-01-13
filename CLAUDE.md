@@ -955,10 +955,9 @@ pwsw tui  # Rules tab has live preview of matches
 ### Sink Icon Auto-detection
 
 Icons are auto-detected from sink descriptions:
-- "HDMI" → video-display
-- "headphone" → audio-headphones
-- "speaker" → audio-speakers
-- "analog" → audio-card
+- "HDMI" / "TV" / "display" → video-display
+- "headphone" / "headset" / "bluetooth" → audio-headphones
+- Everything else (including analog, optical, digital) → audio-speakers
 - Override with explicit `icon = "..."` in config
 
 ### Environment Variables
