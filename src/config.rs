@@ -96,7 +96,7 @@ struct ConfigFile {
 // TOML serialization format - mirrors Settings structure with serde defaults
 #[derive(Debug, Deserialize, Serialize)]
 struct SettingsFile {
-    #[serde(default = "default_true")]
+    #[serde(default)] // false - safer for new users with example sink names
     default_on_startup: bool,
     #[serde(default = "default_true")]
     set_smart_toggle: bool,
@@ -144,7 +144,7 @@ fn default_log_level() -> String {
 impl Default for SettingsFile {
     fn default() -> Self {
         Self {
-            default_on_startup: true,
+            default_on_startup: false,
             set_smart_toggle: true,
             notify_manual: true,
             notify_rules: true,

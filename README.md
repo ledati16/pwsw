@@ -107,7 +107,7 @@ pwsw list-sinks
 
 ```toml
 [settings]
-default_on_startup = true
+default_on_startup = false
 set_smart_toggle = true
 notify_manual = true
 notify_rules = true
@@ -116,7 +116,7 @@ log_level = "info"
 ```
 
 **Options:**
-- `default_on_startup`: Switch to default sink on daemon start
+- `default_on_startup`: Switch to default sink on daemon start (default: false)
 - `set_smart_toggle`: set-sink toggles back to default if already active
 - `notify_manual`: Desktop notifications for manual switches
 - `notify_rules`: Desktop notifications for rule-triggered switches
@@ -202,7 +202,7 @@ sink = "Speakers"
 
 ```toml
 [settings]
-default_on_startup = true
+default_on_startup = false
 set_smart_toggle = true
 notify_manual = true
 notify_rules = true
