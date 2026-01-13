@@ -75,57 +75,44 @@ pub fn get_app_icon(app_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // Helper to create test sink
-    fn make_test_sink(desc: &str, name: &str, icon: Option<String>) -> SinkConfig {
-        SinkConfig {
-            name: name.to_string(),
-            desc: desc.to_string(),
-            icon,
-            default: false,
-        }
-    }
+    use crate::test_utils::fixtures::{make_sink, make_sink_with_icon};
 
     #[test]
     fn test_get_sink_icon_custom_override() {
-        let sink = make_test_sink(
-            "Test Speakers",
-            "test.sink",
-            Some("custom-icon".to_string()),
-        );
+        let sink = make_sink_with_icon("test.sink", "Test Speakers", false, "custom-icon");
         assert_eq!(get_sink_icon(&sink), "custom-icon");
     }
 
     #[test]
     fn test_get_sink_icon_hdmi_detection() {
-        let sink = make_test_sink("HDMI Output", "test.hdmi", None);
+        let sink = make_sink("test.hdmi", "HDMI Output", false);
         assert_eq!(get_sink_icon(&sink), "video-display");
 
-        let sink2 = make_test_sink("Test TV", "test.sink", None);
+        let sink2 = make_sink("test.sink", "Test TV", false);
         assert_eq!(get_sink_icon(&sink2), "video-display");
 
-        let sink3 = make_test_sink("Test", "alsa.hdmi.stereo", None);
+        let sink3 = make_sink("alsa.hdmi.stereo", "Test", false);
         assert_eq!(get_sink_icon(&sink3), "video-display");
     }
 
     #[test]
     fn test_get_sink_icon_headphone_detection() {
-        let sink = make_test_sink("Headphones", "test.headphones", None);
+        let sink = make_sink("test.headphones", "Headphones", false);
         assert_eq!(get_sink_icon(&sink), "audio-headphones");
 
-        let sink2 = make_test_sink("Bluetooth Headset", "test.bt", None);
+        let sink2 = make_sink("test.bt", "Bluetooth Headset", false);
         assert_eq!(get_sink_icon(&sink2), "audio-headphones");
 
-        let sink3 = make_test_sink("Test", "bluez.sink", None);
+        let sink3 = make_sink("bluez.sink", "Test", false);
         assert_eq!(get_sink_icon(&sink3), "audio-headphones");
     }
 
     #[test]
     fn test_get_sink_icon_default_speakers() {
-        let sink = make_test_sink("Analog Stereo", "test.analog", None);
+        let sink = make_sink("test.analog", "Analog Stereo", false);
         assert_eq!(get_sink_icon(&sink), "audio-speakers");
 
-        let sink2 = make_test_sink("Digital Output", "test.digital", None);
+        let sink2 = make_sink("test.digital", "Digital Output", false);
         assert_eq!(get_sink_icon(&sink2), "audio-speakers");
     }
 
