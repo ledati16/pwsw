@@ -647,16 +647,32 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             app.sinks_screen.editor.prev_field();
         }
 
+        // --- Field Actions (Space) ---
+        KeyCode::Char(' ') => {
+            match app.sinks_screen.editor.focused_field {
+                0 => {
+                    // Open sink selector modal when on Name field
+                    app.sinks_screen.mode = SinksMode::SelectSink;
+                    app.sinks_screen.sink_selector_index = 0;
+                }
+                3 => {
+                    // Toggle default checkbox
+                    app.sinks_screen.editor.default = !app.sinks_screen.editor.default;
+                }
+                _ => {
+                    // For text fields (desc, icon), type a space
+                    let event = Event::Key(key);
+                    match app.sinks_screen.editor.focused_field {
+                        1 => app.sinks_screen.editor.desc.input.handle_event(&event),
+                        2 => app.sinks_screen.editor.icon.input.handle_event(&event),
+                        _ => None,
+                    };
+                }
+            }
+        }
+
         // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
-            // If on name field, open sink selector; otherwise save
-            if app.sinks_screen.editor.focused_field == 0 {
-                // Open sink selector modal
-                app.sinks_screen.mode = SinksMode::SelectSink;
-                app.sinks_screen.sink_selector_index = 0; // Reset to first item
-                return;
-            }
-
             // Save the sink
             if app.sinks_screen.editor.name.value().is_empty()
                 || app.sinks_screen.editor.desc.value().is_empty()
@@ -714,12 +730,7 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 2 => {
                     app.sinks_screen.editor.icon.input.handle_event(&event);
                 }
-                3 => {
-                    // Toggle default checkbox with space
-                    if key.code == KeyCode::Char(' ') {
-                        app.sinks_screen.editor.default = !app.sinks_screen.editor.default;
-                    }
-                }
+                // Field 3 (default) only responds to Space, handled above
                 _ => {}
             }
         }
@@ -840,15 +851,107 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
         KeyCode::Down | KeyCode::Tab => app.rules_screen.editor.next_field(),
 
+        // --- Field Actions (Space) ---
+        KeyCode::Char(' ') => {
+            match app.rules_screen.editor.focused_field {
+                2 => {
+                    // Open sink selector when on Sink field
+                    app.rules_screen.open_sink_selector();
+                }
+                4 => {
+                    // Cycle notify setting: None -> Some(true) -> Some(false) -> None
+                    app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
+                        None => Some(true),
+                        Some(true) => Some(false),
+                        Some(false) => None,
+                    };
+                }
+                _ => {
+                    // For text fields (app_id, title, desc), type a space
+                    let event = Event::Key(key);
+                    match app.rules_screen.editor.focused_field {
+                        0 => {
+                            if app
+                                .rules_screen
+                                .editor
+                                .app_id_pattern
+                                .input
+                                .handle_event(&event)
+                                .is_some()
+                            {
+                                app.rules_screen.editor.ensure_compiled();
+                                if let Some(tx) = &app.preview_in_tx {
+                                    let compiled_app =
+                                        app.rules_screen.editor.compiled_app_id.clone();
+                                    let compiled_title =
+                                        app.rules_screen.editor.compiled_title.clone();
+                                    let app_pattern =
+                                        app.rules_screen.editor.app_id_pattern.value().to_string();
+                                    let title_pattern =
+                                        if app.rules_screen.editor.title_pattern.value().is_empty()
+                                        {
+                                            None
+                                        } else {
+                                            Some(
+                                                app.rules_screen
+                                                    .editor
+                                                    .title_pattern
+                                                    .value()
+                                                    .to_string(),
+                                            )
+                                        };
+                                    let _ = tx
+                                        .send((app_pattern, title_pattern, compiled_app, compiled_title));
+                                }
+                            }
+                        }
+                        1 => {
+                            if app
+                                .rules_screen
+                                .editor
+                                .title_pattern
+                                .input
+                                .handle_event(&event)
+                                .is_some()
+                            {
+                                app.rules_screen.editor.ensure_compiled();
+                                if let Some(tx) = &app.preview_in_tx {
+                                    let compiled_app =
+                                        app.rules_screen.editor.compiled_app_id.clone();
+                                    let compiled_title =
+                                        app.rules_screen.editor.compiled_title.clone();
+                                    let app_pattern =
+                                        app.rules_screen.editor.app_id_pattern.value().to_string();
+                                    let title_pattern =
+                                        if app.rules_screen.editor.title_pattern.value().is_empty()
+                                        {
+                                            None
+                                        } else {
+                                            Some(
+                                                app.rules_screen
+                                                    .editor
+                                                    .title_pattern
+                                                    .value()
+                                                    .to_string(),
+                                            )
+                                        };
+                                    let _ = tx
+                                        .send((app_pattern, title_pattern, compiled_app, compiled_title));
+                                }
+                            }
+                        }
+                        3 => {
+                            app.rules_screen.editor.desc.input.handle_event(&event);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
-            // If on sink field, open selector
-            if app.rules_screen.editor.focused_field == 2 {
-                app.rules_screen.open_sink_selector();
-                return;
-            }
-
-            // Otherwise, save the rule
+            // Save the rule
             if app.rules_screen.editor.app_id_pattern.value().is_empty() {
                 app.set_status("App ID pattern is required".to_string());
                 return;
@@ -967,16 +1070,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     // desc
                     app.rules_screen.editor.desc.input.handle_event(&event);
                 }
-                4 => {
-                    // notify
-                    if key.code == KeyCode::Char(' ') {
-                        app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
-                            None => Some(true),
-                            Some(true) => Some(false),
-                            Some(false) => None,
-                        };
-                    }
-                }
+                // Fields 2 (sink) and 4 (notify) only respond to Space, handled above
                 _ => {}
             }
 

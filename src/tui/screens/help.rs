@@ -430,19 +430,19 @@ fn build_help_rows(
                 add_keybind(&mut rows, &mut metadata, "a", "Add new sink");
                 add_keybind(&mut rows, &mut metadata, "e", "Edit selected sink");
                 add_keybind(&mut rows, &mut metadata, "x", "Delete selected sink");
-                add_keybind(&mut rows, &mut metadata, "Space", "Set as default sink");
+                add_keybind(
+                    &mut rows,
+                    &mut metadata,
+                    "Space",
+                    "Set default / Open node selector",
+                );
                 add_keybind(
                     &mut rows,
                     &mut metadata,
                     "Tab/Shift+Tab",
                     "Switch field (in editor)",
                 );
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Enter",
-                    "Save / Open node selector",
-                );
+                add_keybind(&mut rows, &mut metadata, "Enter", "Save sink / Inspect");
                 add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
             }
             Screen::Rules => {
@@ -460,10 +460,10 @@ fn build_help_rows(
                 add_keybind(
                     &mut rows,
                     &mut metadata,
-                    "Enter",
-                    "Save / Open sink selector",
+                    "Space",
+                    "Open sink selector / Cycle notify",
                 );
-                add_keybind(&mut rows, &mut metadata, "Space", "Cycle notify setting");
+                add_keybind(&mut rows, &mut metadata, "Enter", "Save rule / Inspect");
                 add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
                 add_hint(&mut rows, &mut metadata, "");
                 add_hint(&mut rows, &mut metadata, "Regex Examples:");
