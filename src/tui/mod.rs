@@ -735,7 +735,8 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
 
 /// Render the header with tab navigation
 fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen) {
-    let titles: Vec<_> = Screen::all()
+    // Build tab titles with gray styling (highlight_style will override for selected)
+    let titles: Vec<Line> = Screen::all()
         .iter()
         .map(|s| {
             let name = s.name();
@@ -745,7 +746,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
             t.push(']');
             t.push(' '); // Add space
             t.push_str(name);
-            t
+            Line::styled(t, Style::default().fg(colors::UI_SECONDARY))
         })
         .collect();
 
@@ -775,7 +776,6 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
         )
         .select(selected)
         .divider(Span::styled("·", Style::default().add_modifier(Modifier::DIM)))
-        .style(Style::default().fg(colors::UI_TEXT))
         .highlight_style(
             Style::default()
                 .fg(colors::UI_FOCUS)
