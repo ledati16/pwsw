@@ -62,8 +62,10 @@ color-eyre = "0.6.5"
 notify = "8.2.0"
 serde_regex = "1.1.0"
 futures-util = "0.3.31"
-users = "0.11"
 tempfile = "3"
+
+# Unix UID lookup (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
+rustix = { version = "1", default-features = false, features = ["process"] }
 
 # Process management (Unix signals for PID file validation)
 #[target.'cfg(unix)'.dependencies]
