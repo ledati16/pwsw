@@ -9,7 +9,7 @@ PWSW uses a TOML configuration file located at *~/.config/pwsw/config.toml*. The
 ## SETTINGS
 The **[settings]** section controls global daemon behavior.
 
-**default_on_startup** (boolean)
+**default_on_startup** (boolean, default: false)
 :   Whether to switch to the default sink when the daemon starts.
 
 **set_smart_toggle** (boolean)
