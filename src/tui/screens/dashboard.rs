@@ -555,7 +555,7 @@ fn render_window_tracking(
 
         // Add title inline if present
         if !win.title.is_empty() {
-            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(" · ", Style::default().add_modifier(Modifier::DIM)));
             spans.push(Span::styled(
                 truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
                 Style::default().fg(colors::UI_SECONDARY),
@@ -583,7 +583,7 @@ fn render_window_tracking(
 
         // Add title inline if present
         if !win.title.is_empty() {
-            spans.push(Span::raw(" | "));
+            spans.push(Span::styled(" · ", Style::default().add_modifier(Modifier::DIM)));
             spans.push(Span::styled(
                 truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
                 Style::default().fg(colors::UI_SECONDARY),

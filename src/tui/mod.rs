@@ -774,6 +774,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
                 .title_top(right_title),
         )
         .select(selected)
+        .divider(Span::styled("·", Style::default().add_modifier(Modifier::DIM)))
         .style(Style::default().fg(colors::UI_SECONDARY))
         .highlight_style(
             Style::default()
