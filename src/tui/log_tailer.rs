@@ -182,7 +182,7 @@ impl LogTailer {
     ///
     /// Drains all pending file watch events and returns true if the log file was modified.
     #[must_use]
-    pub fn has_file_changed(&mut self) -> bool {
+    pub fn has_file_changed(&self) -> bool {
         let mut changed = false;
         let log_file_name = self.log_path.file_name();
 
