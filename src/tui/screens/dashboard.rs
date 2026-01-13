@@ -49,13 +49,13 @@ const WINDOW_TITLE_MAX_WIDTH: usize = 20;
 
 /// Dashboard view mode (toggle between Logs and Windows)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DashboardView {
+pub enum DashboardView {
     Logs,
     Windows,
 }
 
 /// Dashboard screen state
-pub(crate) struct DashboardScreen {
+pub struct DashboardScreen {
     pub selected_action: usize,   // 0-4: start, stop, restart, enable, disable
     pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
     pub window_scroll_offset: usize, // Window list scroll offset
@@ -65,7 +65,7 @@ pub(crate) struct DashboardScreen {
 }
 
 impl DashboardScreen {
-    pub(crate) fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             selected_action: 0,
             log_scroll_offset: 0,
@@ -77,7 +77,7 @@ impl DashboardScreen {
     }
 
     /// Update max action index based on daemon manager type
-    pub(crate) fn set_max_actions(&mut self, is_systemd: bool) {
+    pub(crate) const fn set_max_actions(&mut self, is_systemd: bool) {
         self.max_action_index = if is_systemd { 4 } else { 2 };
         // Clamp current selection if it's out of range
         if self.selected_action > self.max_action_index {
@@ -85,7 +85,7 @@ impl DashboardScreen {
         }
     }
 
-    pub(crate) fn select_next(&mut self) {
+    pub(crate) const fn select_next(&mut self) {
         if self.selected_action < self.max_action_index {
             self.selected_action += 1;
         } else {
@@ -93,7 +93,7 @@ impl DashboardScreen {
         }
     }
 
-    pub(crate) fn select_previous(&mut self) {
+    pub(crate) const fn select_previous(&mut self) {
         if self.selected_action > 0 {
             self.selected_action -= 1;
         } else {
@@ -102,7 +102,7 @@ impl DashboardScreen {
     }
 
     /// Toggle between logs and windows view
-    pub(crate) fn toggle_view(&mut self) {
+    pub(crate) const fn toggle_view(&mut self) {
         self.current_view = match self.current_view {
             DashboardView::Logs => DashboardView::Windows,
             DashboardView::Windows => DashboardView::Logs,
@@ -116,7 +116,7 @@ impl DashboardScreen {
     }
 
     /// Scroll logs down (show newer logs)
-    pub(crate) fn scroll_logs_down(&mut self) {
+    pub(crate) const fn scroll_logs_down(&mut self) {
         self.log_scroll_offset = self.log_scroll_offset.saturating_sub(1);
     }
 
@@ -127,12 +127,12 @@ impl DashboardScreen {
     }
 
     /// Scroll logs down by page
-    pub(crate) fn scroll_logs_page_down(&mut self, visible_lines: usize) {
+    pub(crate) const fn scroll_logs_page_down(&mut self, visible_lines: usize) {
         self.log_scroll_offset = self.log_scroll_offset.saturating_sub(visible_lines);
     }
 
     /// Reset scroll to show latest logs
-    pub(crate) fn scroll_logs_to_bottom(&mut self) {
+    pub(crate) const fn scroll_logs_to_bottom(&mut self) {
         self.log_scroll_offset = 0;
     }
 
@@ -143,12 +143,12 @@ impl DashboardScreen {
     }
 
     /// Scroll windows down by page
-    pub(crate) fn scroll_windows_page_down(&mut self, page_size: usize) {
+    pub(crate) const fn scroll_windows_page_down(&mut self, page_size: usize) {
         self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
     }
 
     /// Reset scroll to show top of window list
-    pub(crate) fn scroll_windows_to_top(&mut self) {
+    pub(crate) const fn scroll_windows_to_top(&mut self) {
         self.window_scroll_offset = 0;
     }
 }
@@ -170,7 +170,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 /// Context for rendering the dashboard screen
-pub(crate) struct DashboardRenderContext<'a> {
+pub struct DashboardRenderContext<'a> {
     pub config: &'a Config,
     pub screen_state: &'a DashboardScreen,
     pub daemon_running: bool,
@@ -180,7 +180,7 @@ pub(crate) struct DashboardRenderContext<'a> {
 }
 
 /// Render the dashboard screen
-pub(crate) fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
+pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
     // Two-section layout (top section + toggleable bottom)
     let [top_section, bottom_section] = Layout::vertical([
         Constraint::Length(10), // Top section (daemon + sink + summary)

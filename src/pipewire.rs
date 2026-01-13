@@ -906,7 +906,7 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
 
             let o2 = order.clone();
-            let l2 = arc_lock.clone();
+            let l2 = arc_lock;
             let t2 = thread::spawn(move || {
                 let _g = l2.lock().unwrap();
                 o2.fetch_add(10, Ordering::SeqCst);

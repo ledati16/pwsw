@@ -13,7 +13,7 @@ impl DaemonManager {
     /// Returns an error if the daemon fails to start.
     pub async fn start(self) -> Result<String> {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 let output = tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
                         .args(["--user", "start", "pwsw.service"])
@@ -31,7 +31,7 @@ impl DaemonManager {
                     eyre::bail!("systemctl start failed: {stderr}");
                 }
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 // Spawn daemon process in background
                 let pwsw_path = tokio::task::spawn_blocking(std::env::current_exe)
                     .await
@@ -63,7 +63,7 @@ impl DaemonManager {
     /// Returns an error if the daemon fails to stop.
     pub async fn stop(self) -> Result<String> {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 let output = tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
                         .args(["--user", "stop", "pwsw.service"])
@@ -80,7 +80,7 @@ impl DaemonManager {
                     eyre::bail!("systemctl stop failed: {stderr}");
                 }
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 // Send shutdown request via IPC
                 match ipc::send_request(ipc::Request::Shutdown).await {
                     Ok(_) => Ok("Daemon shutdown requested".to_string()),
@@ -96,7 +96,7 @@ impl DaemonManager {
     /// Returns an error if the daemon fails to restart.
     pub async fn restart(self) -> Result<String> {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 let output = tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
                         .args(["--user", "restart", "pwsw.service"])
@@ -114,7 +114,7 @@ impl DaemonManager {
                     eyre::bail!("systemctl restart failed: {stderr}");
                 }
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 // Stop then start
                 self.stop().await?;
                 tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -132,7 +132,7 @@ impl DaemonManager {
     /// Returns `true` if the socket exists and responds to a status query within timeout.
     pub async fn is_running(self) -> bool {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 // Check systemd service status
                 tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
@@ -145,7 +145,7 @@ impl DaemonManager {
                 .await
                 .unwrap_or(false)
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 // Check via IPC
                 ipc::is_daemon_running().await
             }
@@ -158,7 +158,7 @@ impl DaemonManager {
     /// Returns an error if the service fails to enable or if using direct mode.
     pub async fn enable(self) -> Result<String> {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 let output = tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
                         .args(["--user", "enable", "pwsw.service"])
@@ -175,7 +175,7 @@ impl DaemonManager {
                     eyre::bail!("systemctl enable failed: {stderr}");
                 }
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 eyre::bail!("Enable/disable only supported with systemd service")
             }
         }
@@ -187,7 +187,7 @@ impl DaemonManager {
     /// Returns an error if the service fails to disable or if using direct mode.
     pub async fn disable(self) -> Result<String> {
         match self {
-            DaemonManager::Systemd => {
+            Self::Systemd => {
                 let output = tokio::task::spawn_blocking(move || {
                     Command::new("systemctl")
                         .args(["--user", "disable", "pwsw.service"])
@@ -204,7 +204,7 @@ impl DaemonManager {
                     eyre::bail!("systemctl disable failed: {stderr}");
                 }
             }
-            DaemonManager::Direct => {
+            Self::Direct => {
                 eyre::bail!("Enable/disable only supported with systemd service")
             }
         }
@@ -213,7 +213,7 @@ impl DaemonManager {
     /// Check if the daemon service is enabled (only for systemd)
     pub async fn is_enabled(self) -> bool {
         match self {
-            DaemonManager::Systemd => tokio::task::spawn_blocking(move || {
+            Self::Systemd => tokio::task::spawn_blocking(move || {
                 Command::new("systemctl")
                     .args(["--user", "is-enabled", "pwsw.service"])
                     .stdout(Stdio::null())
@@ -223,7 +223,7 @@ impl DaemonManager {
             })
             .await
             .unwrap_or(false),
-            DaemonManager::Direct => false,
+            Self::Direct => false,
         }
     }
 }

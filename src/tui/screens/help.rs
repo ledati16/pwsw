@@ -15,7 +15,7 @@ use crate::tui::app::Screen;
 use crate::tui::widgets::{centered_modal, modal_size};
 
 /// Get the number of rows in the help content for a given screen
-pub(crate) fn get_help_row_count(
+pub fn get_help_row_count(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
 ) -> usize {
@@ -24,7 +24,7 @@ pub(crate) fn get_help_row_count(
 }
 
 /// Get the maximum scroll offset for the help screen given viewport height
-pub(crate) fn get_help_max_offset(
+pub fn get_help_max_offset(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
     viewport_height: usize,
@@ -34,7 +34,7 @@ pub(crate) fn get_help_max_offset(
 }
 
 /// Render help overlay on top of the current screen
-pub(crate) fn render_help(
+pub fn render_help(
     frame: &mut Frame,
     area: Rect,
     current_screen: Screen,
@@ -147,7 +147,7 @@ struct HelpRowMeta {
 }
 
 /// Find the next section header row index starting from current row
-pub(crate) fn find_next_section_header(
+pub fn find_next_section_header(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
     current_row: usize,
@@ -159,7 +159,7 @@ pub(crate) fn find_next_section_header(
 }
 
 /// Find the previous section header row index starting from current row
-pub(crate) fn find_prev_section_header(
+pub fn find_prev_section_header(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
     current_row: usize,
@@ -174,7 +174,7 @@ pub(crate) fn find_prev_section_header(
 }
 
 /// Get the section name at a given row index if it's a section header
-pub(crate) fn get_section_at_row(
+pub fn get_section_at_row(
     current_screen: Screen,
     collapsed_sections: &std::collections::HashSet<String>,
     row_index: usize,

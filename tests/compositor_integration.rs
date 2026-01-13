@@ -324,7 +324,7 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for Se
         _dhandle: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
-        if let ext_foreign_toplevel_list_v1::Request::Stop = request {
+        if matches!(request, ext_foreign_toplevel_list_v1::Request::Stop) {
             // Client asked to stop
         }
     }

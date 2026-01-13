@@ -24,7 +24,7 @@ use std::sync::mpsc;
 const MAX_LOG_LINES: usize = 1000;
 
 /// Log tailer that reads daemon log file
-pub(crate) struct LogTailer {
+pub struct LogTailer {
     log_path: PathBuf,
     lines: Vec<String>,
     last_position: u64,

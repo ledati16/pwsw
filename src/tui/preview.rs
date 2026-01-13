@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 ///
 /// Returns `Ok(Vec<String>)` containing formatted "`app_id` | title" lines up to `max_results`.
 /// Returns `Err(String)` if either regex fails to compile.
-pub(crate) fn match_windows(
+pub fn match_windows(
     app_pattern: &str,
     title_pattern: Option<&str>,
     windows: &[WindowInfo],
@@ -70,7 +70,7 @@ where
 ///
 /// When timeout occurs, returned vector will be empty and timeout flag will be `true`.
 /// When regex is invalid, returned vector will be empty and error message will be `Some(...)`.
-pub(crate) async fn execute_preview(
+pub async fn execute_preview(
     app_pattern: String,
     title_pattern: Option<String>,
     windows: Vec<WindowInfo>,
@@ -141,7 +141,7 @@ pub(crate) async fn execute_preview(
 /// Returns formatted `Line` values up to `max_results`. This helper is intended to be used by
 /// renderers to convert `execute_preview`/`match_windows` output into `ratatui::text::Line` for
 /// direct rendering.
-pub(crate) fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>> {
+pub fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>> {
     use crate::style::colors;
     use ratatui::style::Style;
 
@@ -161,7 +161,7 @@ pub(crate) fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'
 ///
 /// Returns a tuple `(Vec<String>, usize)` where the `Vec` contains up to `max_results`
 /// formatted "`app_id` | title" strings, and the `usize` is the total number of matches found.
-pub(crate) fn match_windows_with_compiled_count(
+pub fn match_windows_with_compiled_count(
     app_re: Option<&regex::Regex>,
     title_re: Option<&regex::Regex>,
     windows: &[WindowInfo],

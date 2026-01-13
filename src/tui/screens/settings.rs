@@ -20,7 +20,7 @@ const DESCRIPTION_PANEL_PERCENT: u16 = 40;
 
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SettingItem {
+pub enum SettingItem {
     DefaultOnStartup,
     SetSmartToggle,
     NotifyManual,
@@ -31,45 +31,45 @@ pub(crate) enum SettingItem {
 
 impl SettingItem {
     /// Get all settings in display order
-    pub(crate) const fn all() -> &'static [SettingItem] {
+    pub(crate) const fn all() -> &'static [Self] {
         &[
-            SettingItem::DefaultOnStartup,
-            SettingItem::SetSmartToggle,
-            SettingItem::NotifyManual,
-            SettingItem::NotifyRules,
-            SettingItem::MatchByIndex,
-            SettingItem::LogLevel,
+            Self::DefaultOnStartup,
+            Self::SetSmartToggle,
+            Self::NotifyManual,
+            Self::NotifyRules,
+            Self::MatchByIndex,
+            Self::LogLevel,
         ]
     }
 
     /// Get the display name for this setting
     pub(crate) const fn name(self) -> &'static str {
         match self {
-            SettingItem::DefaultOnStartup => "Default on Startup",
-            SettingItem::SetSmartToggle => "Smart Toggle",
-            SettingItem::NotifyManual => "Manual Switch Notifications",
-            SettingItem::NotifyRules => "Rule-Based Notifications",
-            SettingItem::MatchByIndex => "Match by Rule Index",
-            SettingItem::LogLevel => "Log Level",
+            Self::DefaultOnStartup => "Default on Startup",
+            Self::SetSmartToggle => "Smart Toggle",
+            Self::NotifyManual => "Manual Switch Notifications",
+            Self::NotifyRules => "Rule-Based Notifications",
+            Self::MatchByIndex => "Match by Rule Index",
+            Self::LogLevel => "Log Level",
         }
     }
 
     /// Get short description for this setting
     pub(crate) const fn description(self) -> &'static str {
         match self {
-            SettingItem::DefaultOnStartup => "Switch to default sink when daemon starts",
-            SettingItem::SetSmartToggle => "Intelligent toggling for manual sink switches",
-            SettingItem::NotifyManual => "Show notifications for manual sink switches",
-            SettingItem::NotifyRules => "Show notifications for rule-triggered switches",
-            SettingItem::MatchByIndex => "Rule priority strategy for window matching",
-            SettingItem::LogLevel => "Logging verbosity level",
+            Self::DefaultOnStartup => "Switch to default sink when daemon starts",
+            Self::SetSmartToggle => "Intelligent toggling for manual sink switches",
+            Self::NotifyManual => "Show notifications for manual sink switches",
+            Self::NotifyRules => "Show notifications for rule-triggered switches",
+            Self::MatchByIndex => "Rule priority strategy for window matching",
+            Self::LogLevel => "Logging verbosity level",
         }
     }
 
     /// Get detailed description with examples for this setting
     pub(crate) const fn detailed_description(self) -> &'static str {
         match self {
-            SettingItem::DefaultOnStartup => {
+            Self::DefaultOnStartup => {
                 "Automatically switches to the configured default sink when the daemon starts.\n\
                  \n\
                  When enabled: Daemon activates default sink on startup.\n\
@@ -79,7 +79,7 @@ impl SettingItem {
                  \n\
                  Default: disabled"
             }
-            SettingItem::SetSmartToggle => {
+            Self::SetSmartToggle => {
                 "Intelligent toggling behavior for manual sink switches via CLI.\n\
                  \n\
                  When enabled: Running 'pwsw set-sink <name>' toggles back to default\n\
@@ -92,7 +92,7 @@ impl SettingItem {
                  \n\
                  Default: disabled"
             }
-            SettingItem::NotifyManual => {
+            Self::NotifyManual => {
                 "Desktop notifications for manual sink switches and daemon lifecycle events.\n\
                  \n\
                  When enabled: Shows notifications for:\n\
@@ -106,7 +106,7 @@ impl SettingItem {
                  \n\
                  Default: enabled"
             }
-            SettingItem::NotifyRules => {
+            Self::NotifyRules => {
                 "Desktop notifications for automatic rule-triggered sink switches.\n\
                  \n\
                  When enabled: Shows notification when daemon switches sink due to a\n\
@@ -117,7 +117,7 @@ impl SettingItem {
                  \n\
                  Default: enabled"
             }
-            SettingItem::MatchByIndex => {
+            Self::MatchByIndex => {
                 "Rule priority strategy when multiple windows match different rules.\n\
                  \n\
                  When enabled: Uses rule priority - higher priority rules always win.\n\
@@ -132,7 +132,7 @@ impl SettingItem {
                  \n\
                  Default: disabled (most recent window)"
             }
-            SettingItem::LogLevel => {
+            Self::LogLevel => {
                 "Logging verbosity level for daemon output.\n\
                  \n\
                  Levels (from least to most verbose):\n\
@@ -152,12 +152,12 @@ impl SettingItem {
 
     /// Check if this setting requires daemon restart to take effect
     pub(crate) const fn requires_restart(self) -> bool {
-        matches!(self, SettingItem::MatchByIndex | SettingItem::LogLevel)
+        matches!(self, Self::MatchByIndex | Self::LogLevel)
     }
 }
 
 /// Settings screen state
-pub(crate) struct SettingsScreen {
+pub struct SettingsScreen {
     /// Currently selected item
     pub selected: usize,
     /// Whether we're editing the log level (dropdown open)
@@ -205,7 +205,7 @@ impl SettingsScreen {
     }
 
     /// Move selection up
-    pub(crate) fn select_previous(&mut self) {
+    pub(crate) const fn select_previous(&mut self) {
         if self.selected > 0 {
             self.selected -= 1;
             self.desc_scroll = 0; // Reset description scroll on selection change
@@ -213,7 +213,7 @@ impl SettingsScreen {
     }
 
     /// Move selection down
-    pub(crate) fn select_next(&mut self) {
+    pub(crate) const fn select_next(&mut self) {
         if self.selected < SettingItem::all().len() - 1 {
             self.selected += 1;
             self.desc_scroll = 0; // Reset description scroll on selection change
@@ -221,12 +221,12 @@ impl SettingsScreen {
     }
 
     /// Scroll description up
-    pub(crate) fn scroll_desc_up(&mut self) {
+    pub(crate) const fn scroll_desc_up(&mut self) {
         self.desc_scroll = self.desc_scroll.saturating_sub(1);
     }
 
     /// Scroll description down
-    pub(crate) fn scroll_desc_down(&mut self) {
+    pub(crate) const fn scroll_desc_down(&mut self) {
         self.desc_scroll = self.desc_scroll.saturating_add(1);
     }
 
@@ -272,7 +272,7 @@ impl SettingsScreen {
 }
 
 /// Render the settings screen
-pub(crate) fn render_settings(
+pub fn render_settings(
     frame: &mut Frame,
     area: Rect,
     settings: &Settings,
