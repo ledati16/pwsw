@@ -221,8 +221,12 @@ pub(crate) struct RulesRenderContext<'a> {
 
 /// Render the rules screen
 pub(crate) fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext) {
+    // Always render the list first as background
+    render_list(frame, area, ctx.rules, ctx.sinks, ctx.screen_state);
+
+    // Overlay modal on top if active
     match ctx.screen_state.mode {
-        RulesMode::List => render_list(frame, area, ctx.rules, ctx.sinks, ctx.screen_state),
+        RulesMode::List => {}
         RulesMode::AddEdit => render_editor(
             frame,
             area,
@@ -477,6 +481,7 @@ fn render_editor(
     };
 
     let popup_area = centered_modal(modal_size::LARGE, area);
+    frame.render_widget(Clear, popup_area);
 
     let [
         app_id_area,
@@ -794,6 +799,7 @@ fn render_sink_selector(
     editor: &mut RuleEditor,
 ) {
     let popup_area = centered_modal(modal_size::DROPDOWN, area);
+    frame.render_widget(Clear, popup_area);
 
     // Use truncation helpers to avoid overly long sink descriptions/names
     let inner = popup_area.inner(ratatui::layout::Margin {
@@ -898,6 +904,7 @@ fn render_delete_confirmation(
 
     let rule = &rules[screen_state.selected];
     let popup_area = centered_modal(modal_size::SMALL, area);
+    frame.render_widget(Clear, popup_area);
 
     let title_line = if let Some(ref title) = rule.title_pattern {
         Line::from(vec![
