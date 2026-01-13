@@ -403,7 +403,7 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_st
     }
     let rule = &rules[screen_state.selected];
 
-    let popup_area = centered_modal(modal_size::MEDIUM, area);
+    let popup_area = centered_modal(modal_size::SMALL, area);
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
@@ -417,8 +417,8 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_st
 
     let mut lines = Vec::new();
 
-    // Helper for fields
-    let mut add_field = |label: &str, value: &str| {
+    // Helper for fields with regular values
+    let add_field = |lines: &mut Vec<Line>, label: &str, value: &str| {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{label}: "),
@@ -426,36 +426,49 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_st
             ),
             Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
         ]));
-        lines.push(Line::from(""));
     };
 
-    add_field("App ID Pattern", &rule.app_id_pattern);
+    // Helper for fields with placeholder/auto values
+    let add_field_placeholder = |lines: &mut Vec<Line>, label: &str, value: &str| {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{label}: "),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+            Span::styled(
+                value.to_string(),
+                Style::default()
+                    .fg(colors::UI_SECONDARY)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    };
+
+    add_field(&mut lines, "App ID Pattern", &rule.app_id_pattern);
 
     if let Some(title) = &rule.title_pattern {
-        add_field("Title Pattern", title);
+        add_field(&mut lines, "Title Pattern", title);
     } else {
-        add_field("Title Pattern", "(any title)");
+        add_field_placeholder(&mut lines, "Title Pattern", "(any title)");
     }
 
-    add_field("Target Sink", &rule.sink_ref);
+    add_field(&mut lines, "Target Sink", &rule.sink_ref);
 
     if let Some(desc) = &rule.desc {
-        add_field("Description", desc);
+        add_field(&mut lines, "Description", desc);
     }
 
-    // Notify status
-    let notify_status = match rule.notify {
-        Some(true) => "Enabled (override)",
-        Some(false) => "Disabled (override)",
-        None => "Default (use global setting)",
-    };
-    add_field("Notifications", notify_status);
+    lines.push(Line::from("")); // Space before notify status
 
-    // Hint at bottom
-    lines.push(Line::from(""));
+    // Notify status with icon
+    let (notify_icon, notify_text, notify_color) = match rule.notify {
+        Some(true) => ("✓", "Notifications enabled", colors::UI_SUCCESS),
+        Some(false) => ("✗", "Notifications disabled", colors::UI_ERROR),
+        None => ("○", "Notifications: default", colors::UI_SECONDARY),
+    };
     lines.push(Line::from(Span::styled(
-        "Press [Enter] or [Esc] to close",
-        Style::default().fg(colors::UI_HIGHLIGHT),
+        format!("{notify_icon} {notify_text}"),
+        Style::default().fg(notify_color),
     )));
 
     let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });

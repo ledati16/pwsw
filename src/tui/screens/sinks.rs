@@ -350,7 +350,7 @@ fn render_inspect_popup(
     }
     let sink = &sinks[screen_state.selected];
 
-    let popup_area = centered_modal(modal_size::MEDIUM, area);
+    let popup_area = centered_modal(modal_size::SMALL, area);
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
@@ -364,8 +364,8 @@ fn render_inspect_popup(
 
     let mut lines = Vec::new();
 
-    // Helper for fields
-    let mut add_field = |label: &str, value: &str| {
+    // Helper for fields with regular values
+    let add_field = |lines: &mut Vec<Line>, label: &str, value: &str| {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{label}: "),
@@ -373,17 +373,34 @@ fn render_inspect_popup(
             ),
             Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
         ]));
-        lines.push(Line::from(""));
     };
 
-    add_field("Name", &sink.name);
-    add_field("Description", &sink.desc);
+    // Helper for fields with placeholder/auto values
+    let add_field_placeholder = |lines: &mut Vec<Line>, label: &str, value: &str| {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("{label}: "),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+            Span::styled(
+                value.to_string(),
+                Style::default()
+                    .fg(colors::UI_SECONDARY)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    };
+
+    add_field(&mut lines, "Name", &sink.name);
+    add_field(&mut lines, "Description", &sink.desc);
 
     if let Some(icon) = &sink.icon {
-        add_field("Icon", icon);
+        add_field(&mut lines, "Icon", icon);
     } else {
-        add_field("Icon", "(auto-detected)");
+        add_field_placeholder(&mut lines, "Icon", "(auto-detected)");
     }
+
+    lines.push(Line::from("")); // Space before status
 
     if sink.default {
         lines.push(Line::from(Span::styled(
@@ -392,17 +409,10 @@ fn render_inspect_popup(
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "✗ Not Default",
+            "○ Not Default",
             Style::default().fg(colors::UI_SECONDARY),
         )));
     }
-
-    // Hint at bottom
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Press [Enter] or [Esc] to close",
-        Style::default().fg(colors::UI_HIGHLIGHT),
-    )));
 
     let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
 
