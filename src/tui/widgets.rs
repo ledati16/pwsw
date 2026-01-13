@@ -324,7 +324,8 @@ fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usi
     let mut per_row_lines: Vec<usize> = Vec::with_capacity(items.len());
     for s in items {
         let w = content_width.max(1);
-        let lines = (s.len().saturating_add(w - 1)) / w;
+        let char_count = s.chars().count();
+        let lines = (char_count.saturating_add(w - 1)) / w;
         per_row_lines.push(lines.max(1));
     }
     per_row_lines

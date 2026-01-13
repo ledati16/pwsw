@@ -392,7 +392,6 @@ fn render_list(
     let has_below = raw_offset + view_height < total;
 
     // Render scroll arrows using helper
-    let (has_above, has_below) = (has_above, has_below);
     crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
@@ -888,7 +887,6 @@ fn render_sink_selector(
     let view_height = inner.height as usize;
 
     let raw_offset = editor.sink_selector_state.offset();
-    let _total = sinks.len();
 
     // Build visual_items to account for wrapping like in the selector rendering
     let mut visual_items: Vec<String> = Vec::new();
