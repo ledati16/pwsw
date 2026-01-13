@@ -322,7 +322,7 @@ fn render_daemon_section(
             spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
         } else {
             spans.push(Span::raw(" "));
-            spans.push(Span::styled(label, Style::default().fg(colors::UI_TEXT)));
+            spans.push(Span::styled(label, Style::default().fg(colors::UI_SECONDARY)));
             spans.push(Span::raw(" "));
         }
         spans
