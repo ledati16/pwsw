@@ -775,7 +775,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
         )
         .select(selected)
         .divider(Span::styled("·", Style::default().add_modifier(Modifier::DIM)))
-        .style(Style::default().fg(colors::UI_SECONDARY))
+        .style(Style::default().fg(colors::UI_TEXT))
         .highlight_style(
             Style::default()
                 .fg(colors::UI_FOCUS)
@@ -800,7 +800,7 @@ fn render_context_bar(frame: &mut Frame, area: Rect, content: Line) {
 
     let paragraph = Paragraph::new(content)
         .block(block)
-        .style(Style::default().fg(colors::UI_SECONDARY));
+        .style(Style::default().fg(colors::UI_TEXT));
 
     frame.render_widget(paragraph, area);
 }
