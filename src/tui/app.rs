@@ -120,6 +120,11 @@ pub(crate) enum AppUpdate {
     ///
     /// Sent immediately after a daemon action completes, containing success or error message.
     ActionResult(String),
+    /// Config save result (success or failure with message)
+    ///
+    /// Sent by background worker after `SaveConfig` command completes.
+    /// On success, App updates `original_config` to match current config.
+    ConfigSaved { success: bool, message: String },
     /// Live-preview started (pending)
     ///
     /// Sent by background preview worker when a new preview request begins execution.
@@ -187,6 +192,8 @@ pub(crate) struct App {
     pub(crate) should_quit: bool,
     /// Configuration (loaded at startup, editable in TUI)
     pub(crate) config: Config,
+    /// Snapshot of config at last save (for dirty comparison)
+    original_config: Config,
     /// Status message to display (errors, confirmations)
     status_message: Option<String>,
     /// Last preview results from background worker
@@ -257,10 +264,13 @@ impl App {
         let rules_screen = RulesScreen::new();
         // Initialize sinks display cache from loaded config
         sinks_screen.update_display_descs(&config.sinks);
+        // Clone config for original_config before moving it
+        let original_config = config.clone();
         Self {
             current_screen: Screen::Dashboard,
             should_quit: false,
             config,
+            original_config,
             status_message: None,
             preview: None,
             throbber_state: ThrobberState::default(),
@@ -436,9 +446,9 @@ impl App {
         *self.help_scroll_state.offset_mut() = 0;
     }
 
-    /// Mark config as modified
+    /// Mark config as potentially modified (compares to original)
     pub(crate) fn mark_dirty(&mut self) {
-        self.config_dirty = true;
+        self.config_dirty = self.config != self.original_config;
         self.dirty = true;
     }
 
@@ -448,6 +458,7 @@ impl App {
     /// Returns an error if config save fails.
     pub(crate) fn save_config(&mut self) -> Result<()> {
         self.config.save()?;
+        self.original_config.clone_from(&self.config);
         self.config_dirty = false;
         self.set_status("Configuration saved successfully".to_string());
         Ok(())
@@ -679,6 +690,14 @@ impl App {
                 // Clear daemon action pending flag when an action completes
                 self.daemon_action_pending = false;
                 // set_status sets dirty already
+            }
+            AppUpdate::ConfigSaved { success, message } => {
+                self.set_status(message);
+                if success {
+                    self.original_config.clone_from(&self.config);
+                    self.config_dirty = false;
+                }
+                // On failure: dirty flag stays true - user still sees save indicator
             }
             AppUpdate::PreviewPending {
                 app_pattern,

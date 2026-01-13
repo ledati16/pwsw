@@ -20,7 +20,7 @@ use crate::style::PwswStyle;
 // ============================================================================
 
 /// Main configuration structure
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub settings: Settings,
     pub sinks: Vec<SinkConfig>,
@@ -29,7 +29,7 @@ pub struct Config {
 
 /// Global settings
 // Multiple independent boolean flags for different features (not a state machine)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Settings {
     pub default_on_startup: bool,
     pub set_smart_toggle: bool,
@@ -40,7 +40,7 @@ pub struct Settings {
 }
 
 /// Audio sink configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SinkConfig {
     /// `PipeWire` node name
     /// - ALSA: `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`
@@ -65,6 +65,18 @@ pub struct Rule {
     // Original patterns for display
     pub app_id_pattern: String,
     pub title_pattern: Option<String>,
+}
+
+impl PartialEq for Rule {
+    fn eq(&self, other: &Self) -> bool {
+        // Compare pattern strings instead of compiled Regex (which doesn't impl PartialEq).
+        // The patterns are the source of truth; compiled regexes are derived from them.
+        self.app_id_pattern == other.app_id_pattern
+            && self.title_pattern == other.title_pattern
+            && self.sink_ref == other.sink_ref
+            && self.desc == other.desc
+            && self.notify == other.notify
+    }
 }
 
 // ============================================================================
