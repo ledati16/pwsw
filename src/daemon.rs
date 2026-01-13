@@ -45,15 +45,16 @@ pub fn get_log_file_path() -> Result<PathBuf> {
 ///
 /// The fallback uses the numeric UID rather than the `USER` environment variable
 /// to prevent potential symlink attacks from manipulated environment variables.
-pub fn get_pid_file_path() -> Result<PathBuf> {
+#[must_use]
+pub fn get_pid_file_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        Ok(PathBuf::from(runtime_dir).join("pwsw.pid"))
+        PathBuf::from(runtime_dir).join("pwsw.pid")
     } else {
         // Fallback to /tmp with UID for consistent, secure location
         // Using UID instead of USER env var prevents potential symlink attacks
         use rustix::process::getuid;
         let uid = getuid().as_raw();
-        Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.pid")))
+        PathBuf::from(format!("/tmp/pwsw-{uid}.pid"))
     }
 }
 
@@ -64,7 +65,7 @@ pub fn get_pid_file_path() -> Result<PathBuf> {
 /// # Errors
 /// Returns an error if the PID file cannot be written or permissions cannot be set.
 fn write_pid_file() -> Result<()> {
-    let pid_path = get_pid_file_path()?;
+    let pid_path = get_pid_file_path();
     let pid = std::process::id();
 
     let dir = pid_path
@@ -113,9 +114,8 @@ fn write_pid_file() -> Result<()> {
 /// Attempts to remove the PID file. Logs warnings on failure but does not return errors
 /// since cleanup failure is not critical during shutdown.
 fn remove_pid_file() {
-    if let Ok(pid_path) = get_pid_file_path()
-        && pid_path.exists()
-    {
+    let pid_path = get_pid_file_path();
+    if pid_path.exists() {
         if let Err(e) = std::fs::remove_file(&pid_path) {
             warn!("Failed to remove PID file {}: {}", pid_path.display(), e);
         } else {
@@ -131,7 +131,7 @@ fn remove_pid_file() {
 /// # Errors
 /// Returns an error if PID file reading fails or process checking encounters errors.
 fn check_and_cleanup_stale_pid_file() -> Result<bool> {
-    let pid_path = get_pid_file_path()?;
+    let pid_path = get_pid_file_path();
 
     if !pid_path.exists() {
         return Ok(false);
@@ -233,7 +233,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // This minimizes TOCTOU race window compared to checking IPC first
     if check_and_cleanup_stale_pid_file()? {
         // Running daemon detected via PID file
-        let socket_path = ipc::get_socket_path()?;
+        let socket_path = ipc::get_socket_path();
         eyre::bail!(
             "Another PWSW daemon is already running (PID file check).\n\
              Socket: {}\n\n\
@@ -245,7 +245,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     // Double-check via IPC socket (catches edge case where PID check passed but daemon is running)
     if ipc::is_daemon_running().await {
-        let socket_path = ipc::get_socket_path()?;
+        let socket_path = ipc::get_socket_path();
         eyre::bail!(
             "Another PWSW daemon is already running (IPC check).\n\
              Socket: {}\n\n\
@@ -327,7 +327,10 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     }
 
     // Validate required `PipeWire` tools are available
-    PipeWire::validate_tools().context("`PipeWire` tools validation failed")?;
+    // Run in spawn_blocking to avoid blocking the tokio runtime during startup
+    tokio::task::spawn_blocking(PipeWire::validate_tools)
+        .await
+        .map_err(|e| eyre::eyre!("Join error during tool validation: {e:#}"))??;
 
     // Initialize logging with config log_level
     // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level

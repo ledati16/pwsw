@@ -111,24 +111,23 @@ pub struct TrackedInfo {
 ///
 /// The fallback uses the numeric UID rather than the `USER` environment variable
 /// to prevent potential symlink attacks from manipulated environment variables.
-pub fn get_socket_path() -> Result<PathBuf> {
+#[must_use]
+pub fn get_socket_path() -> PathBuf {
     if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        Ok(PathBuf::from(runtime_dir).join("pwsw.sock"))
+        PathBuf::from(runtime_dir).join("pwsw.sock")
     } else {
         // Fallback to /tmp with UID for consistent, secure location
         // Using UID instead of USER env var prevents potential symlink attacks
         use rustix::process::getuid;
         let uid = getuid().as_raw();
-        Ok(PathBuf::from(format!("/tmp/pwsw-{uid}.sock")))
+        PathBuf::from(format!("/tmp/pwsw-{uid}.sock"))
     }
 }
 
 /// Check if a daemon is currently running
 /// Returns true if a daemon is active (socket exists and accepts connections)
 pub async fn is_daemon_running() -> bool {
-    let Ok(socket_path) = get_socket_path() else {
-        return false;
-    };
+    let socket_path = get_socket_path();
 
     if !socket_path.exists() {
         return false;
@@ -228,9 +227,9 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
 /// Clean up any stale socket at the default IPC path.
 ///
 /// # Errors
-/// Returns an error if the socket path cannot be determined or removal fails.
+/// Returns an error if socket removal fails.
 pub async fn cleanup_stale_socket() -> Result<()> {
-    let socket_path = get_socket_path()?;
+    let socket_path = get_socket_path();
     cleanup_stale_socket_at(&socket_path).await
 }
 
@@ -323,9 +322,9 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
 /// Send a request to the daemon and wait for response
 ///
 /// # Errors
-/// Returns an error if socket path cannot be determined, connection fails, or IPC communication fails.
+/// Returns an error if connection fails or IPC communication fails.
 pub async fn send_request(request: Request) -> Result<Response> {
-    let socket_path = get_socket_path()?;
+    let socket_path = get_socket_path();
 
     // Connect to daemon (longer timeout for actual client requests)
     let mut stream = tokio::time::timeout(
@@ -366,9 +365,9 @@ impl IpcServer {
     /// Create and bind a new IPC server
     ///
     /// # Errors
-    /// Returns an error if socket path cannot be determined or socket binding fails.
+    /// Returns an error if socket binding fails.
     pub async fn bind() -> Result<Self> {
-        let socket_path = get_socket_path()?;
+        let socket_path = get_socket_path();
 
         // Clean up any stale socket
         cleanup_stale_socket().await?;
