@@ -81,7 +81,9 @@ impl RotatingFileAppender {
             *guard = Some(file);
         }
 
-        Ok(guard.as_mut().unwrap())
+        Ok(guard
+            .as_mut()
+            .expect("guard was set to Some(file) above when it was None"))
     }
 
     /// Rotate the log file: current -> backup, create new current.
