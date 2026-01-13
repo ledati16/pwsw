@@ -8,7 +8,7 @@
 //! - Profile switching for analog/digital outputs on the same card
 //! - Status bar integration with `JSON` output
 //! - Smart toggle between configured sinks
-//! - Multi-compositor support via Wayland protocols (`wlr-foreign-toplevel`)
+//! - Multi-compositor support via Wayland protocols (`ext-foreign-toplevel-list-v1`, `wlr-foreign-toplevel`)
 //!
 //! # Supported Compositors
 //! - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (via `wlr-foreign-toplevel`)
