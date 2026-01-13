@@ -321,22 +321,19 @@ pub async fn run() -> Result<()> {
 
             // Poll PipeWire sinks snapshot using spawn_blocking to avoid blocking the tokio worker
             let pipewire_tx = bg_tx.clone();
-            let _ = tokio::task::spawn_blocking(move || {
-                match crate::pipewire::PipeWire::dump() {
-                    Ok(objects) => {
-                        let active = crate::pipewire::PipeWire::get_active_sinks(&objects);
-                        let profiles =
-                            crate::pipewire::PipeWire::get_profile_sinks(&objects, &active);
-                        let names = active.iter().map(|s| s.name.clone()).collect();
-                        let _ = pipewire_tx.send(AppUpdate::SinksData {
-                            active,
-                            profiles,
-                            names,
-                        });
-                    }
-                    Err(_) => {
-                        let _ = pipewire_tx.send(AppUpdate::PipeWireUnavailable);
-                    }
+            let _ = tokio::task::spawn_blocking(move || match crate::pipewire::PipeWire::dump() {
+                Ok(objects) => {
+                    let active = crate::pipewire::PipeWire::get_active_sinks(&objects);
+                    let profiles = crate::pipewire::PipeWire::get_profile_sinks(&objects, &active);
+                    let names = active.iter().map(|s| s.name.clone()).collect();
+                    let _ = pipewire_tx.send(AppUpdate::SinksData {
+                        active,
+                        profiles,
+                        names,
+                    });
+                }
+                Err(_) => {
+                    let _ = pipewire_tx.send(AppUpdate::PipeWireUnavailable);
                 }
             })
             .await;
@@ -614,12 +611,11 @@ where
 
 /// Render the complete UI
 fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
-    let size = frame.area();
-
     // Cap TUI width for better proportions on wide screens
     // This prevents content from stretching excessively and looking lost
     const MAX_TUI_WIDTH: u16 = 180;
 
+    let size = frame.area();
     let content_area = if size.width > MAX_TUI_WIDTH {
         let margin = (size.width - MAX_TUI_WIDTH) / 2;
         Rect {
@@ -775,7 +771,10 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
                 .title_top(right_title),
         )
         .select(selected)
-        .divider(Span::styled("·", Style::default().add_modifier(Modifier::DIM)))
+        .divider(Span::styled(
+            "·",
+            Style::default().add_modifier(Modifier::DIM),
+        ))
         .highlight_style(
             Style::default()
                 .fg(colors::UI_FOCUS)

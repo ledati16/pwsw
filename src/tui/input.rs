@@ -186,7 +186,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                     app.help_viewport_height,
                 );
                 let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_add(HELP_PAGE_SIZE).min(max_offset);
+                let new_offset = current_offset
+                    .saturating_add(HELP_PAGE_SIZE)
+                    .min(max_offset);
                 *app.help_scroll_state.offset_mut() = new_offset;
             }
             _ => {}
@@ -900,8 +902,12 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                                                     .to_string(),
                                             )
                                         };
-                                    let _ = tx
-                                        .send((app_pattern, title_pattern, compiled_app, compiled_title));
+                                    let _ = tx.send((
+                                        app_pattern,
+                                        title_pattern,
+                                        compiled_app,
+                                        compiled_title,
+                                    ));
                                 }
                             }
                         }
@@ -935,8 +941,12 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                                                     .to_string(),
                                             )
                                         };
-                                    let _ = tx
-                                        .send((app_pattern, title_pattern, compiled_app, compiled_title));
+                                    let _ = tx.send((
+                                        app_pattern,
+                                        title_pattern,
+                                        compiled_app,
+                                        compiled_title,
+                                    ));
                                 }
                             }
                         }
