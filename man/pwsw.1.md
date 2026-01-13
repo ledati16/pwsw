@@ -51,20 +51,34 @@ It can also be used as a command-line client to query the daemon status, list wi
 *   **KDE Plasma 6**: Removed protocol support (pending standard implementation).
 
 ## TUI KEYS
-The TUI supports mouse interaction and the following keybindings:
+The TUI supports mouse interaction and the following keybindings. Press `?` or `F1` within the TUI for comprehensive context-sensitive help.
 
 **Global**
-:   `1-4`: Switch tabs (Dashboard, Sinks, Rules, Settings)
-:   `?` or `F1`: Show context-aware help
+:   `Tab` / `Shift+Tab`: Next / Previous screen
+:   `1-4`: Jump to screen (Dashboard, Sinks, Rules, Settings)
+:   `?` or `F1`: Toggle context-aware help overlay
 :   `Ctrl+S`: Save configuration
+:   `Esc`: Clear status message / Cancel action
 :   `q` or `Ctrl+C`: Quit
 
-**Navigation**
-:   `Arrow Keys`: Navigate lists
-:   `Shift+Up/Down`: Reorder items (Sinks/Rules)
-:   `Enter`: Select / Edit / Save
-:   `Space`: Toggle / Set Default
-:   `a` / `e` / `x`: Add / Edit / Delete items
+**Lists (Sinks/Rules)**
+:   `↑/↓`: Navigate items
+:   `Shift+↑/↓`: Reorder items
+:   `a` / `e` / `x`: Add / Edit / Delete
+:   `Enter`: Inspect selected item
+:   `Space`: Set default (Sinks) / Quick actions
+
+**Editors**
+:   `Tab` / `Shift+Tab`: Switch between fields
+:   `Space`: Open selector dropdown
+:   `Enter`: Save changes
+:   `Esc`: Cancel editing
+
+**Dashboard**
+:   `←/→`: Navigate daemon actions (Start/Stop/Restart/Enable/Disable)
+:   `Enter`: Execute selected action
+:   `w`: Toggle between Logs and Windows view
+:   `↑/↓` / `PageUp/PageDown`: Scroll logs
 
 ## OPTIONS
 **-h**, **--help**
