@@ -547,7 +547,7 @@ impl App {
                     ]),
                     SinksMode::SelectSink => Line::from(vec![
                         Span::raw("↑↓ Navigate  "),
-                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Select  "),
                         Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Cancel"),
@@ -605,7 +605,7 @@ impl App {
                     ]),
                     RulesMode::SelectSink => Line::from(vec![
                         Span::raw("↑↓ Navigate  "),
-                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Select  "),
                         Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Cancel"),
