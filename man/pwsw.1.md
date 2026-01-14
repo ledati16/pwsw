@@ -79,9 +79,9 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 
 **Editors**
 :   `Tab` / `Shift+Tab`: Switch between fields
-:   `Space`: Open selector dropdown
+:   `Space`: Open selector dropdown / Select from dropdown
 :   `Enter`: Save changes
-:   `Esc`: Cancel editing
+:   `Esc`: Cancel editing / Close dropdown
 
 **Dashboard**
 :   `←/→`: Navigate daemon actions (Start/Stop/Restart/Enable/Disable)

@@ -590,7 +590,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         app.sinks_screen.sink_selector_index += 1;
                     }
                 }
-                KeyCode::Enter => {
+                KeyCode::Char(' ') => {
                     // Select the chosen sink and populate editor fields
                     let idx = app.sinks_screen.sink_selector_index;
 
@@ -861,7 +861,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                     app.rules_screen.editor.sink_dropdown_index += 1;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Char(' ') => {
                 let idx = app.rules_screen.editor.sink_dropdown_index;
                 if idx < app.config.sinks.len() {
                     app.rules_screen.editor.sink_ref = app.config.sinks[idx].desc.clone();
