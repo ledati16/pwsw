@@ -10,6 +10,7 @@ This file provides guidance to LLM-based coding assistants (Claude Code, Gemini,
 - DO NOT push to remote without explicit user approval
 
 **Recent Achievements:**
+- **First-Run UX Improvements (2026-01-14)**: Default config now ships with no sinks (only commented examples). TUI guides new users, first sink auto-defaults, validation split between config-time and daemon-time.
 - **Modern Man Pages (2025-12-24)**: Implemented a Markdown-to-groff documentation system using `mandown`, providing high-quality `pwsw(1)` and `pwsw(5)` manual pages.
 - **Documentation & Standards (2025-12-24)**: Enhanced documentation, inclusive agent guidelines, and robust concurrent test fixes.
 - **Robust Integration Testing (2025-12-24)**: Added comprehensive mock compositor tests covering both `wlr` and `ext` backends, verifying detection, lifecycle events, and concurrent window tracking.
@@ -922,6 +923,31 @@ State is owned by the main loop. IPC handlers clone only what they need (uptime,
 
 ## Configuration Notes
 
+### First-Run Experience & Empty Sinks
+
+The default config ships with no sinks or rules (only commented examples). This improves first-run UX:
+
+**Validation behavior:**
+- Empty sinks list is valid at config level (TUI and `pwsw validate` work)
+- If sinks exist, exactly one must be marked `default = true`
+- Rules cannot exist without sinks (validation rejects this)
+
+**Daemon behavior:**
+- Daemon refuses to start with empty sinks (helpful error with guidance)
+- Hot-reload rejects config changes that would leave sinks empty
+- CLI commands (`set-sink`, `next-sink`, `prev-sink`) require configured sinks
+
+**TUI behavior:**
+- Sinks screen shows guidance text when no sinks configured
+- First sink added automatically becomes the default
+- Cannot remove the last sink if rules exist (would break rule references)
+- Cannot add/edit rules when no sinks exist
+
+**Default sink invariant:**
+- Exactly one default required when sinks exist
+- When editing a sink to be default, others are automatically un-defaulted
+- Safety net: if somehow no default exists, first sink becomes default on save
+
 ### Finding Window App IDs and Titles
 
 Different compositors provide different tools:
@@ -1032,7 +1058,7 @@ cargo clippy --all-targets -- -W clippy::pedantic
 
 4. **Regex validation**: Config validation compiles all regexes at load time. If a rule has invalid regex, daemon won't start. Be aware of catastrophic backtracking with complex patterns. Test patterns with `pwsw test-rule` before adding to config.
 
-5. **Default sink requirement**: Config must have exactly one sink with `default = true`. Daemon will fail to start otherwise. This is enforced at config validation time.
+5. **Default sink requirement**: When sinks are configured, exactly one must have `default = true`. Empty sinks is valid at config level (TUI works), but daemon requires sinks to start. See "First-Run Experience & Empty Sinks" section above.
 
 6. **Unsupported compositors**:
    - GNOME/Mutter doesn't expose window management protocols

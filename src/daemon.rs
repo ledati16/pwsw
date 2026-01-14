@@ -557,6 +557,17 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
                     info!("Config file changed, attempting reload...");
                     match Config::load() {
                         Ok(new_config) => {
+                            // Daemon requires sinks to operate - reject config with no sinks
+                            if new_config.sinks.is_empty() {
+                                warn!("Config reload rejected: no sinks configured. Keeping previous config.");
+                                if state.config.settings.notify_manual {
+                                    let _ = send_notification("Reload Rejected", "Config has no sinks - keeping previous", None);
+                                }
+                                // Drain pending events
+                                while config_rx.try_recv().is_ok() {}
+                                continue;
+                            }
+
                             let notify_enabled = state.config.settings.notify_manual;
                             state.reload_config(Arc::new(new_config));
 
