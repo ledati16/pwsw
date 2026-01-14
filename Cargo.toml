@@ -111,6 +111,7 @@ too_many_lines = "allow"
 # Rule editor - conceptually different field types despite similar code
 match_same_arms = "allow"
 
-# Note: Generated code suppressions (needless_raw_string_hashes, doc_markdown)
-# kept in src/lib.rs as #[allow] to keep them local to generated code
+# === Generated Code (2 instances in src/lib.rs) ===
+# needless_raw_string_hashes, doc_markdown - kept as local #[allow] attributes
+# Total: 20 pedantic allows (18 here + 2 in lib.rs)
 
