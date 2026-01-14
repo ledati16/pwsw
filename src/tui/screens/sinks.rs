@@ -204,6 +204,37 @@ fn render_list(
     active_sinks: &[String],
     pipewire_available: bool,
 ) {
+    // Empty state: show guidance when no sinks configured
+    if sinks.is_empty() {
+        let guidance = Paragraph::new(vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "No sinks configured",
+                Style::default()
+                    .fg(colors::UI_TEXT)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(vec![
+                Span::raw("Press "),
+                Span::styled("a", Style::default().fg(colors::UI_HIGHLIGHT)),
+                Span::raw(" to add your first sink."),
+            ]),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Tip: Run 'pwsw list-sinks' in another terminal",
+                Style::default().fg(colors::UI_SECONDARY),
+            )),
+            Line::from(Span::styled(
+                "to discover available audio outputs.",
+                Style::default().fg(colors::UI_SECONDARY),
+            )),
+        ])
+        .alignment(ratatui::layout::Alignment::Center);
+        frame.render_widget(guidance, area);
+        return;
+    }
+
     // If PipeWire is unavailable, show warning and adjust area for table
     let table_area = if pipewire_available {
         area

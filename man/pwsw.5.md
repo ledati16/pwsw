@@ -41,7 +41,7 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage.
 :   A friendly description for the sink used in rules and notifications.
 
 **default** (boolean)
-:   Whether this is the fallback sink. Exactly one sink must be marked as default.
+:   Whether this is the fallback sink. When sinks are configured, exactly one must be marked as default. The first sink added via TUI is automatically set as default.
 
 **icon** (string, optional)
 :   The name of the icon to use in notifications.

@@ -207,9 +207,8 @@ impl Config {
     }
 
     fn from_config_file(config_file: ConfigFile) -> Result<Self> {
-        if config_file.sinks.is_empty() {
-            eyre::bail!("No sinks defined. Add at least one [[sinks]] section to config.");
-        }
+        // Note: Empty sinks is allowed at config level (TUI can work with it).
+        // Daemon startup will check for sinks before running.
 
         let settings = Settings {
             default_on_startup: config_file.settings.default_on_startup,
@@ -541,12 +540,22 @@ impl Config {
             ),
         }
 
-        // Exactly one default sink
-        let default_count = self.sinks.iter().filter(|s| s.default).count();
-        match default_count {
-            0 => eyre::bail!("No default sink. Mark one sink with 'default = true'"),
-            1 => {}
-            n => eyre::bail!("{n} default sinks found. Only one allowed."),
+        // If sinks exist, exactly one must be default
+        // (Empty sinks is valid at config level - daemon will check at startup)
+        if !self.sinks.is_empty() {
+            let default_count = self.sinks.iter().filter(|s| s.default).count();
+            match default_count {
+                0 => eyre::bail!(
+                    "Sinks configured but none marked as default. Add 'default = true' to one sink."
+                ),
+                1 => {}
+                n => eyre::bail!("{n} default sinks found. Only one allowed."),
+            }
+        }
+
+        // Rules require sinks to resolve against
+        if self.sinks.is_empty() && !self.rules.is_empty() {
+            eyre::bail!("Rules defined but no sinks configured. Add sinks or remove rules.");
         }
 
         // No duplicate descriptions or names
@@ -696,67 +705,50 @@ impl Config {
     fn create_default_config(path: &PathBuf) -> Result<()> {
         let default_config = r#"# PWSW (PipeWire Switcher) Configuration
 #
-# Automatically switches audio sinks based on active windows.
-# Uses PipeWire native tools for audio control.
-# Supports profile switching for analog/digital outputs.
+# Run `pwsw tui` for interactive setup, or configure manually below.
+# Find available sinks with: pwsw list-sinks
 
 [settings]
-default_on_startup = false # Switch to default sink on daemon start (disabled until you configure real sinks)
+default_on_startup = false # Switch to default sink on daemon start
 set_smart_toggle = true    # set-sink toggles back to default if already active
-notify_manual = true       # Desktop notifications: Daemon start/stop + manual set-sink/next-sink/prev-sink
-notify_rules = true        # Desktop notifications: Rule-triggered switches (default, override per-rule)
-match_by_index = false     # Prioritize matches by [[rule]] position (true) or most recent window (false)
+notify_manual = true       # Desktop notifications for manual switches
+notify_rules = true        # Desktop notifications for rule-triggered switches
+match_by_index = false     # Priority: false = recent window, true = rule order
 log_level = "info"         # error, warn, info, debug, trace
 
-# Audio sinks
+# Audio sinks - add at least one with default = true before starting daemon
 # Find available sinks with: pwsw list-sinks
+# Icons are auto-detected from description (e.g., "HDMI" → video-display)
 #
-# Icons are auto-detected from sink description (e.g., "HDMI" → video-display).
-# Set 'icon' to override with any icon name your system supports.
-
-[[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"
-desc = "Optical Out"
-default = true
-
-[[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
-desc = "Headphones"
-# icon = "audio-headphones"  # Optional: override auto-detected icon
-
-# Window rules
-# Find app_id and title:
-#   pwsw list-windows    # Show all open windows (requires daemon running)
-#   pwsw test-rule ".*"  # Test pattern matching - .* shows all windows (requires daemon running)
+# Example:
 #
-# Compositor-specific alternatives:
-#   Sway/River: swaymsg -t get_tree
-#   Hyprland: hyprctl clients
-#   Niri: niri msg windows
+# [[sinks]]
+# name = "alsa_output.pci-0000_00_1f.3.analog-stereo"  # from pwsw list-sinks
+# desc = "Speakers"
+# default = true
 #
-# Regex patterns (for app_id and title fields):
-#   ".*"          - matches any window (useful for testing)
+# [[sinks]]
+# name = "alsa_output.pci-0000_00_1f.3.hdmi-stereo"
+# desc = "HDMI"
+# icon = "video-display"  # Optional: override auto-detected icon
+
+# Window rules - match windows to sinks
+# Find app_id and title with: pwsw list-windows (requires running daemon)
+# Or use compositor tools: swaymsg -t get_tree, hyprctl clients, niri msg windows
+#
+# Regex patterns:
 #   "firefox"     - matches anywhere in string
 #   "^steam$"     - exact match only
 #   "^(mpv|vlc)$" - matches mpv OR vlc
 #   "(?i)discord" - case insensitive
 #
-# Title-only matching:
-#   To match only by title (ignoring app_id), use app_id = ".*"
-#   Example: Match any window with "YouTube" in title
-#     app_id = ".*"
-#     title = "YouTube"
-
-[[rules]]
-app_id = "^steam$"
-title = "^Steam Big Picture Mode$"
-sink = "Optical Out"       # Reference by: desc, name, or position (1, 2)
-desc = "Steam Big Picture" # Custom name for notifications
-# notify = false           # Optional: override notify_rules for this specific rule
-
+# Example:
+#
 # [[rules]]
-# app_id = "^mpv$"
-# sink = 2
+# app_id = "^steam$"
+# title = "^Steam Big Picture"  # Optional: also match window title
+# sink = "HDMI"                 # Reference by desc, name, or position (1, 2)
+# desc = "Steam Gaming"         # Optional: custom notification text
 "#;
         // Ensure parent directory exists (tests may set a temp XDG_CONFIG_HOME)
         if let Some(parent) = path.parent() {
@@ -786,14 +778,8 @@ desc = "Steam Big Picture" # Custom name for notifications
             "pwsw list-sinks".technical()
         );
         eprintln!("    Edit config file - add sinks and rules");
-        eprintln!(
-            "    {}     - check config",
-            "pwsw validate".technical()
-        );
-        eprintln!(
-            "    {}        - start the daemon",
-            "pwsw daemon".technical()
-        );
+        eprintln!("    {}    - check config", "pwsw validate".technical());
+        eprintln!("    {}      - start the daemon", "pwsw daemon".technical());
         eprintln!();
 
         Ok(())
@@ -943,13 +929,23 @@ mod tests {
         assert!(config.validate().is_ok());
     }
 
+    /// Empty sinks is valid at config level (TUI can work with it, daemon checks at startup)
+    #[test]
+    fn test_validate_accepts_empty_sinks() {
+        let config = make_config(vec![], vec![]);
+        assert!(
+            config.validate().is_ok(),
+            "Config with no sinks and no rules should be valid"
+        );
+    }
+
     /// Parameterized test for validation rejection cases
     #[rstest]
-    #[case("no_default",
+    #[case("sinks_but_no_default",
            vec![make_sink("sink1", "Sink 1", false), make_sink("sink2", "Sink 2", false)],
            vec![],
            None,
-           "default sink")]
+           "none marked as default")]
     #[case("multiple_defaults",
            vec![make_sink("sink1", "Sink 1", true), make_sink("sink2", "Sink 2", true)],
            vec![],
@@ -980,6 +976,11 @@ mod tests {
            vec![make_rule("", None, "sink1")],
            None,
            "empty app_id pattern")]
+    #[case("rules_without_sinks",
+           vec![],
+           vec![make_rule("firefox", None, "nonexistent")],
+           None,
+           "no sinks configured")]
     fn test_validate_rejection_cases(
         #[case] name: &str,
         #[case] sinks: Vec<SinkConfig>,

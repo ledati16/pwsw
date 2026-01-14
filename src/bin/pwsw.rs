@@ -3,7 +3,7 @@
 //! Dispatches to daemon mode or subcommands based on CLI arguments.
 
 use clap::Parser;
-use color_eyre::eyre::Result;
+use color_eyre::eyre::{self, Result};
 use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
 
 use std::sync::Arc;
@@ -54,6 +54,19 @@ async fn main() -> Result<()> {
             // Daemon handles its own logging initialization (file vs stdout)
             // But we need to load config first
             let config = Config::load()?;
+
+            // Daemon requires at least one sink to operate
+            if config.sinks.is_empty() {
+                eyre::bail!(
+                    "No sinks configured. The daemon cannot start without sinks.\n\n\
+                     Add sinks via:\n  \
+                     pwsw tui        (interactive setup)\n  \
+                     pwsw list-sinks (discover available sinks)\n\n\
+                     Or edit: {}",
+                    Config::get_config_path()?.display()
+                );
+            }
+
             daemon::run(Arc::new(config), foreground).await
         }
 
@@ -82,6 +95,17 @@ async fn main() -> Result<()> {
         Some(Command::Validate) => {
             init_logging(false);
             let config = Config::load()?;
+
+            // Warn if no sinks configured (daemon won't start)
+            if config.sinks.is_empty() {
+                use crossterm::style::Stylize;
+                eprintln!(
+                    "{} {}\n",
+                    "⚠".yellow(),
+                    "No sinks configured - daemon will not start".yellow()
+                );
+            }
+
             config.print_summary();
             Ok(())
         }
@@ -89,18 +113,27 @@ async fn main() -> Result<()> {
         Some(Command::SetSink { sink }) => {
             init_logging(false);
             let config = Config::load()?;
+            if config.sinks.is_empty() {
+                eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
+            }
             commands::set_sink_smart(&config, &sink)
         }
 
         Some(Command::NextSink) => {
             init_logging(false);
             let config = Config::load()?;
+            if config.sinks.is_empty() {
+                eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
+            }
             commands::cycle_sink(&config, commands::Direction::Next)
         }
 
         Some(Command::PrevSink) => {
             init_logging(false);
             let config = Config::load()?;
+            if config.sinks.is_empty() {
+                eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
+            }
             commands::cycle_sink(&config, commands::Direction::Prev)
         }
 

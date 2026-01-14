@@ -140,7 +140,7 @@ desc = "Headphones"
 **Fields:**
 - `name`: PipeWire node name (find with `pwsw list-sinks`)
 - `desc`: Human-readable label
-- `default`: Fallback sink (exactly one required)
+- `default`: Fallback sink (exactly one required when sinks exist)
 - `icon`: Optional notification icon override
 
 **Auto-detected icons:**

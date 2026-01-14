@@ -539,6 +539,13 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     // Confirm deletion
                     let idx = app.sinks_screen.selected;
                     if idx < app.config.sinks.len() {
+                        // Prevent deleting last sink if rules exist (rules need sinks to resolve)
+                        if app.config.sinks.len() == 1 && !app.config.rules.is_empty() {
+                            app.set_status("Cannot delete last sink while rules exist".to_string());
+                            app.sinks_screen.cancel();
+                            return;
+                        }
+
                         let was_default = app.config.sinks[idx].default;
                         app.config.sinks.remove(idx);
 
@@ -683,7 +690,7 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 return;
             }
 
-            let new_sink = SinkConfig {
+            let mut new_sink = SinkConfig {
                 name: app.sinks_screen.editor.name.value().to_string(),
                 desc: app.sinks_screen.editor.desc.value().to_string(),
                 icon: if app.sinks_screen.editor.icon.value().is_empty() {
@@ -694,13 +701,24 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 default: app.sinks_screen.editor.default,
             };
 
+            // Force first sink to be default (user doesn't need to think about it)
+            if app.config.sinks.is_empty() {
+                new_sink.default = true;
+            }
+
             if let Some(idx) = app.sinks_screen.editing_index {
-                // Editing existing
+                // Editing existing - clear other defaults if this becomes default
+                if new_sink.default {
+                    for (i, sink) in app.config.sinks.iter_mut().enumerate() {
+                        if i != idx {
+                            sink.default = false;
+                        }
+                    }
+                }
                 app.config.sinks[idx] = new_sink;
                 app.set_status("Sink updated".to_string());
             } else {
-                // Adding new
-                // If this is marked as default, clear other defaults
+                // Adding new - clear other defaults if this is default
                 if new_sink.default {
                     for sink in &mut app.config.sinks {
                         sink.default = false;
@@ -708,6 +726,12 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 }
                 app.config.sinks.push(new_sink);
                 app.set_status("Sink added".to_string());
+            }
+
+            // Ensure exactly one default exists (safety net for edge cases)
+            if !app.config.sinks.is_empty() && !app.config.sinks.iter().any(|s| s.default) {
+                app.config.sinks[0].default = true;
+                app.set_status("First sink set as default".to_string());
             }
 
             // Update cached display descriptions
@@ -769,9 +793,19 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                     }
                 }
                 (KeyCode::Char('a'), KeyModifiers::NONE) => {
+                    // Rules require sinks to reference
+                    if app.config.sinks.is_empty() {
+                        app.set_status("Add a sink first before creating rules".to_string());
+                        return;
+                    }
                     app.rules_screen.start_add();
                 }
                 (KeyCode::Char('e'), KeyModifiers::NONE) => {
+                    // Rules require sinks to reference
+                    if app.config.sinks.is_empty() {
+                        app.set_status("Add a sink first before editing rules".to_string());
+                        return;
+                    }
                     app.rules_screen.start_edit(&app.config.rules);
                 }
                 (KeyCode::Char('x'), KeyModifiers::NONE) => {
@@ -820,7 +854,10 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                 }
             }
             KeyCode::Down => {
-                if app.rules_screen.editor.sink_dropdown_index < app.config.sinks.len() - 1 {
+                // Use saturating_sub to prevent underflow when sinks is empty
+                // (shouldn't happen due to guards, but defensive)
+                let max_idx = app.config.sinks.len().saturating_sub(1);
+                if app.rules_screen.editor.sink_dropdown_index < max_idx {
                     app.rules_screen.editor.sink_dropdown_index += 1;
                 }
             }
