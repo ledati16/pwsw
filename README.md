@@ -3,9 +3,9 @@
 <p align="center">
   <a href="https://github.com/ledati16/pwsw/actions/workflows/ci.yml"><img src="https://github.com/ledati16/pwsw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
-  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.92+-orange.svg" alt="Rust: 1.92+"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.92-orange.svg" alt="Rust: 1.92"></a>
   <a href="Cargo.toml#L101-L116"><img src="https://img.shields.io/badge/Pedantic-20_allows-green?logo=rust&logoColor=white" alt="Clippy Pedantic: 20 allows"></a>
-  <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Ratatui-000?logo=ratatui&logoColor=fff" alt="Ratatui"></a>
+  <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Ratatui-0.30-000?logo=ratatui&logoColor=fff" alt="Ratatui 0.30"></a>
   <a href="#appendix-llm-generated-code"><img src="https://img.shields.io/badge/Vibe-Coded-blueviolet" alt="Vibe Coded"></a>
 </p>
 
