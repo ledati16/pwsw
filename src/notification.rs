@@ -49,6 +49,9 @@ pub fn get_sink_icon(sink: &SinkConfig) -> String {
     } else if desc_lower.contains("headphone")
         || desc_lower.contains("headset")
         || desc_lower.contains("bluetooth")
+        || desc_lower.contains("earbuds")
+        || desc_lower.contains("earphone")
+        || desc_lower.contains("airpods")
         || name_lower.contains("bluez")
     {
         "audio-headphones".to_string()
@@ -58,18 +61,44 @@ pub fn get_sink_icon(sink: &SinkConfig) -> String {
     }
 }
 
-/// Convert `app_id` to icon name (handles common `app_id` formats)
+/// Convert `app_id` to icon name
+///
+/// Handles reverse-DNS style `app_ids` by extracting the meaningful component.
+/// For example: `"org.mozilla.firefox"` → `"firefox"`, `"org.telegram.desktop"` → `"telegram"`.
 #[must_use]
 pub fn get_app_icon(app_id: &str) -> String {
-    // Handle common app_id patterns that don't directly match icon names
-    match app_id {
-        "org.mozilla.firefox" => "firefox".to_string(),
-        "org.mozilla.Thunderbird" => "thunderbird".to_string(),
-        "org.gnome.Nautilus" => "nautilus".to_string(),
-        "org.telegram.desktop" => "telegram".to_string(),
-        // Most app_ids can be used directly as icon names
-        _ => app_id.to_string(),
+    // Generic suffixes that aren't useful as icon names
+    const GENERIC_SUFFIXES: &[&str] = &[
+        "desktop",
+        "client",
+        "app",
+        "application",
+        "gui",
+        "gtk",
+        "gtk3",
+        "gtk4",
+        "qt",
+        "qt5",
+        "qt6",
+    ];
+
+    if app_id.is_empty() {
+        return String::new();
     }
+
+    // Split by dots and work backwards to find a meaningful name
+    let parts: Vec<&str> = app_id.split('.').collect();
+
+    for part in parts.iter().rev() {
+        let lower = part.to_lowercase();
+        // Skip empty parts and generic suffixes
+        if !lower.is_empty() && !GENERIC_SUFFIXES.contains(&lower.as_str()) {
+            return lower;
+        }
+    }
+
+    // Fallback: return the whole app_id lowercased
+    app_id.to_lowercase()
 }
 
 #[cfg(test)]
@@ -105,6 +134,16 @@ mod tests {
 
         let sink3 = make_sink("bluez.sink", "Test", false);
         assert_eq!(get_sink_icon(&sink3), "audio-headphones");
+
+        // New patterns
+        let sink4 = make_sink("test.sink", "Galaxy Buds Earbuds", false);
+        assert_eq!(get_sink_icon(&sink4), "audio-headphones");
+
+        let sink5 = make_sink("test.sink", "Earphone Jack", false);
+        assert_eq!(get_sink_icon(&sink5), "audio-headphones");
+
+        let sink6 = make_sink("test.sink", "AirPods Pro", false);
+        assert_eq!(get_sink_icon(&sink6), "audio-headphones");
     }
 
     #[test]
@@ -117,16 +156,44 @@ mod tests {
     }
 
     #[test]
-    fn test_get_app_icon_known_mapping() {
+    fn test_get_app_icon_reverse_dns() {
+        // Extracts last meaningful segment from reverse-DNS app_ids
         assert_eq!(get_app_icon("org.mozilla.firefox"), "firefox");
-        assert_eq!(get_app_icon("org.telegram.desktop"), "telegram");
         assert_eq!(get_app_icon("org.gnome.Nautilus"), "nautilus");
+        assert_eq!(get_app_icon("org.mozilla.Thunderbird"), "thunderbird");
+        assert_eq!(get_app_icon("org.videolan.VLC"), "vlc");
+        assert_eq!(get_app_icon("com.discordapp.Discord"), "discord");
+        assert_eq!(get_app_icon("io.mpv.Mpv"), "mpv");
     }
 
     #[test]
-    fn test_get_app_icon_passthrough() {
+    fn test_get_app_icon_skips_generic_suffixes() {
+        // Skips generic suffixes like "desktop", "client", "app"
+        assert_eq!(get_app_icon("org.telegram.desktop"), "telegram");
+        assert_eq!(get_app_icon("com.spotify.Client"), "spotify");
+        assert_eq!(get_app_icon("org.example.App"), "example");
+        assert_eq!(get_app_icon("com.example.Application"), "example");
+        assert_eq!(get_app_icon("org.kde.something.qt5"), "something");
+    }
+
+    #[test]
+    fn test_get_app_icon_simple_names() {
+        // Simple app_ids without dots pass through (lowercased)
         assert_eq!(get_app_icon("mpv"), "mpv");
         assert_eq!(get_app_icon("steam"), "steam");
-        assert_eq!(get_app_icon("unknown.app"), "unknown.app");
+        assert_eq!(get_app_icon("Firefox"), "firefox");
+        assert_eq!(get_app_icon("Steam"), "steam");
+    }
+
+    #[test]
+    fn test_get_app_icon_edge_cases() {
+        // Empty string
+        assert_eq!(get_app_icon(""), "");
+
+        // All generic suffixes - falls back to full string lowercased
+        assert_eq!(get_app_icon("desktop"), "desktop");
+
+        // Two-part with generic suffix
+        assert_eq!(get_app_icon("myapp.desktop"), "myapp");
     }
 }
