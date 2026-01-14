@@ -1,8 +1,10 @@
 # <p align="center">PWSW - PipeWire Switcher</p>
 
 <p align="center">
+  <a href="https://github.com/ledati16/pwsw/actions/workflows/ci.yml"><img src="https://github.com/ledati16/pwsw/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.92+-orange.svg" alt="Rust: 1.92+"></a>
+  <a href="CLAUDE.md#clippy-compliance"><img src="https://img.shields.io/badge/Clippy_Pedantic-20_allows-green" alt="Clippy Pedantic: 20 allows"></a>
   <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Ratatui-000?logo=ratatui&logoColor=fff" alt="Ratatui"></a>
   <a href="#appendix-llm-generated-code"><img src="https://img.shields.io/badge/Vibe-Coded-blueviolet" alt="Vibe Coded"></a>
 </p>
