@@ -1,5 +1,12 @@
 # <p align="center">PWSW - PipeWire Switcher</p>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.92+-orange.svg" alt="Rust: 1.92+"></a>
+  <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Ratatui-000?logo=ratatui&logoColor=fff" alt="Ratatui"></a>
+  <a href="#appendix-llm-generated-code"><img src="https://img.shields.io/badge/Vibe-Coded-blueviolet" alt="Vibe Coded"></a>
+</p>
+
 <p align="center"><img width="700" alt="PWSW Dashboard" src="contrib/dashboard.png" /></p>
 
 ## What is PWSW?
