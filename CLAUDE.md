@@ -16,7 +16,7 @@ This file provides guidance to LLM-based coding assistants (Claude Code, Gemini,
 - **Robust Integration Testing (2025-12-24)**: Added comprehensive mock compositor tests covering both `wlr` and `ext` backends, verifying detection, lifecycle events, and concurrent window tracking.
 - **Protocol Expansion (2025-12-24)**: Implemented `ext-foreign-toplevel-list-v1` support, providing a standardized, future-proof window monitoring backend.
 - **TUI Architecture Refactor (2025-12-24)**: Extracted event loop logic into `App::handle_update` and context bar logic, significantly reducing complexity in `mod.rs`.
-- **Edition 2024 Upgrade (2025-12-21)**: Rust 1.92 MSRV, Edition 2024 baseline, let_chains feature adoption (4 sites simplified)
+- **Edition 2024 Upgrade (2025-12-21)**: Rust 1.94 MSRV, Edition 2024 baseline, let_chains feature adoption (4 sites simplified)
 - **Zero pedantic clippy warnings achieved**: 18 suppressions centralized in `Cargo.toml`, all other issues fixed.
 - Enhanced color system with semantic constants (magenta focus, validation feedback, accessibility features)
 - TUI log highlighting and improved visual feedback
