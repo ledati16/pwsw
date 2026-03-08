@@ -2,7 +2,7 @@
 name = "pwsw"
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.94"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/pwsw"
@@ -11,7 +11,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
 default = ["tui"]
-tui = ["dep:ratatui"]
+tui = ["dep:ratatui", "dep:tui-input", "dep:throbber-widgets-tui", "dep:tui-logger", "dep:futures-util"]
 
 [dependencies]
 # CLI argument parsing
@@ -29,12 +29,13 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }      # wlr-fo
 toml = "0.9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+serde_regex = "1"
 
 # Pattern matching for window rules
 regex = "1"
 
-# Error handling with context - modern approach with better error display
-# anyhow removed in favor of color-eyre (eyre)
+# Error handling with rich context and backtraces
+color-eyre = "0.6"
 
 # Desktop notifications
 notify-rust = "4"
@@ -42,7 +43,7 @@ notify-rust = "4"
 # systemd notification protocol
 sd-notify = "0.4"
 
-# Terminal styling for CLI output (also used by future TUI)
+# Terminal styling for CLI and TUI output
 crossterm = { version = "0.29", features = ["event-stream"] }
 
 # Structured logging
@@ -53,24 +54,21 @@ tracing-appender = "0.2"
 # XDG config directory
 dirs = "6"
 
-# TUI framework (optional - enabled by default via "tui" feature)
-ratatui = { version = "0.30", optional = true, default-features = false, features = ["crossterm"] }
-tui-input = "0.15.0"
-throbber-widgets-tui = "0.10"
-tui-logger = { version = "0.18.0", features = ["tracing-support"] }
-color-eyre = "0.6.5"
-notify = "8.2.0"
-serde_regex = "1.1.0"
-futures-util = "0.3.31"
+# File system watching (config hot-reload, log tailing)
+notify = "8"
+
+# Atomic file writes
 tempfile = "3"
 
 # Unix UID lookup (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
 rustix = { version = "1", default-features = false, features = ["process"] }
 
-# Process management (Unix signals for PID file validation)
-#[target.'cfg(unix)'.dependencies]
-# nix removed: PID check now uses /proc on Linux
-
+# TUI dependencies (optional - enabled by default via "tui" feature)
+ratatui = { version = "0.30", optional = true, default-features = false, features = ["crossterm"] }
+tui-input = { version = "0.15", optional = true }
+throbber-widgets-tui = { version = "0.11", optional = true }
+tui-logger = { version = "0.18", optional = true, features = ["tracing-support"] }
+futures-util = { version = "0.3", optional = true }
 
 [profile.release]
 lto = "fat"         # Full link-time optimization for maximum performance
@@ -78,16 +76,11 @@ codegen-units = 1   # Single compilation unit for better optimization
 strip = true        # Remove debug symbols (smaller binary, no runtime cost)
 panic = "abort"     # Immediate termination on panic (systemd restarts daemon)
 
-[profile.dev]
-opt-level = 0
-debug = true
-
 [build-dependencies]
 built = { version = "0.8", features = ["git2"] }
-mandown = "1.1.0"
+mandown = "1"
 
 [dev-dependencies]
-tempfile = "3"
 pretty_assertions = "1"
 rstest = "0.26"
 test-case = "3"
@@ -114,4 +107,3 @@ match_same_arms = "allow"
 # === Generated Code (2 instances in src/lib.rs) ===
 # needless_raw_string_hashes, doc_markdown - kept as local #[allow] attributes
 # Total: 20 pedantic allows (18 here + 2 in lib.rs)
-

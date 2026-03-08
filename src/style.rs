@@ -245,7 +245,8 @@ impl<T: Stylize> PwswStyle for T {}
 // They mirror the semantic intent of the PwswStyle trait methods above but return
 // raw Color values instead of styled strings.
 
-/// Semantic color palette for TUI use with ratatui
+/// Semantic color palette for TUI use with `ratatui`
+#[cfg(feature = "tui")]
 pub mod colors {
     use ratatui::style::Color;
 
