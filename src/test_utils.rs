@@ -12,16 +12,14 @@
 /// minimize test boilerplate while allowing customization of relevant fields.
 #[cfg(test)]
 pub(crate) mod fixtures {
-    use regex::Regex;
-
-    use crate::config::{Config, Rule, Settings, SinkConfig};
+    use crate::config::{Config, Rule, Settings, SinkConfig, compile_rule_regex};
 
     /// Create a test `Config` with the given sinks and rules.
     ///
     /// Settings use standard test defaults (all features enabled, `log_level` = "info").
     pub fn make_config(sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Config {
-        Config {
-            settings: Settings {
+        Config::new(
+            Settings {
                 default_on_startup: true,
                 set_smart_toggle: true,
                 notify_manual: true,
@@ -31,7 +29,7 @@ pub(crate) mod fixtures {
             },
             sinks,
             rules,
-        }
+        )
     }
 
     /// Create a test `SinkConfig` with the given name, description, and default status.
@@ -67,8 +65,9 @@ pub(crate) mod fixtures {
     /// Panics if the `app_id` or title regex patterns are invalid.
     pub fn make_rule(app_id: &str, title: Option<&str>, sink_ref: &str) -> Rule {
         Rule {
-            app_id_regex: Regex::new(app_id).expect("Invalid app_id regex in test fixture"),
-            title_regex: title.map(|t| Regex::new(t).expect("Invalid title regex in test fixture")),
+            app_id_regex: compile_rule_regex(app_id).expect("Invalid app_id regex in test fixture"),
+            title_regex: title
+                .map(|t| compile_rule_regex(t).expect("Invalid title regex in test fixture")),
             sink_ref: sink_ref.to_string(),
             desc: None,
             notify: None,

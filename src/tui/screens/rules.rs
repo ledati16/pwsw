@@ -13,7 +13,7 @@ use ratatui::widgets::{
 use regex::Regex;
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
-use crate::config::{Rule, SinkConfig};
+use crate::config::{Rule, SinkConfig, compile_rule_regex};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{
@@ -70,11 +70,11 @@ impl RuleEditor {
     }
 
     pub(crate) fn from_rule(rule: &Rule) -> Self {
-        let compiled_app_id = Regex::new(&rule.app_id_pattern)
+        let compiled_app_id = compile_rule_regex(&rule.app_id_pattern)
             .ok()
             .map(std::sync::Arc::new);
         let compiled_title = match &rule.title_pattern {
-            Some(t) if !t.is_empty() => Regex::new(t).ok().map(std::sync::Arc::new),
+            Some(t) if !t.is_empty() => compile_rule_regex(t).ok().map(std::sync::Arc::new),
             _ => None,
         };
 
@@ -113,7 +113,7 @@ impl RuleEditor {
             self.compiled_app_id = None;
             self.compiled_app_id_for = None;
         } else if self.compiled_app_id_for.as_deref() != Some(self.app_id_pattern.value()) {
-            self.compiled_app_id = Regex::new(self.app_id_pattern.value())
+            self.compiled_app_id = compile_rule_regex(self.app_id_pattern.value())
                 .ok()
                 .map(std::sync::Arc::new);
             // Only cache the pattern string if compilation succeeded
@@ -130,7 +130,7 @@ impl RuleEditor {
             self.compiled_title = None;
             self.compiled_title_for = None;
         } else if self.compiled_title_for.as_deref() != Some(self.title_pattern.value()) {
-            self.compiled_title = Regex::new(self.title_pattern.value())
+            self.compiled_title = compile_rule_regex(self.title_pattern.value())
                 .ok()
                 .map(std::sync::Arc::new);
             // Only cache the pattern string if compilation succeeded

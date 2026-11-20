@@ -60,3 +60,30 @@ fn rules_editor_input_wiring() {
     simulate_key_event(&mut app, ke);
     assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "food");
 }
+
+#[test]
+fn sinks_delete_refuses_sink_used_by_rule() {
+    let temp_dir = tempfile::tempdir().expect("failed to create tempdir");
+    let config_path = temp_dir.path().join("config.toml");
+    std::fs::write(
+        &config_path,
+        "[[sinks]]\nname=\"s1\"\ndesc=\"d1\"\ndefault=true\n\n[[sinks]]\nname=\"s2\"\ndesc=\"d2\"\n\n\
+         [[rules]]\napp_id=\"foo\"\nsink=\"d2\"\n",
+    )
+    .unwrap();
+
+    let config = crate::config::Config::load_from_path(&config_path).expect("Config::load failed");
+    let mut app = crate::tui::app::App::with_config(config);
+    app.current_screen = crate::tui::app::Screen::Sinks;
+    app.sinks_screen.selected = 1;
+    app.sinks_screen.start_delete();
+    simulate_key_event(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+    assert_eq!(
+        app.config.sinks.len(),
+        2,
+        "referenced sink must not be removed"
+    );
+    let status = app.status_message().expect("refusal is reported");
+    assert!(status.contains("Cannot remove sink 'd2'"), "{status}");
+}

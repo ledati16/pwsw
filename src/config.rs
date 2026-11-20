@@ -1,18 +1,28 @@
 //! Configuration management
 //!
-//! Handles loading, parsing, and validating the TOML configuration file.
+//! Handles loading, parsing, validating and saving the TOML configuration file.
 //! Supports settings, sink definitions, and window matching rules.
+//!
+//! Saving is designed so the file can never be corrupted by `pwsw` itself:
+//! - every save validates the config and checks that the written text loads back to
+//!   the same config,
+//! - edits are applied into the document that was loaded (via `toml_edit`), so comments
+//!   and formatting of untouched entries survive,
+//! - the write is atomic (temp file + rename next to the real file, following symlinks),
+//!   keeps a single `.bak` copy, and refuses to clobber changes made on disk since load.
 
 use std::collections::HashSet;
-use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::{fmt, fs};
 
 use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use crossterm::style::Stylize;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
+use regex::{Regex, RegexBuilder};
+use serde::Deserialize;
+use serde::de::{self, Deserializer, Visitor};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use tracing::{info, warn};
 
 use crate::style::PwswStyle;
@@ -53,15 +63,110 @@ fn resolve_config_override(
 }
 
 // ============================================================================
+// Rule Regex Compilation
+// ============================================================================
+
+/// Upper bound on the compiled size of one rule regex (`regex` crate `size_limit`).
+///
+/// Rust's `regex` matches in linear time, so there is no catastrophic backtracking to
+/// guard against; the only cost a pattern can impose is its compiled size (for example
+/// huge counted repetitions such as `\w{100000}`), which this limit caps.
+pub const RULE_REGEX_SIZE_LIMIT: usize = 1 << 20;
+
+/// Cache budget of the lazy DFA used when matching one rule regex.
+pub const RULE_REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
+
+/// Compile a window rule pattern (`app_id`, title, or a `test-rule` pattern).
+///
+/// This is the single place rule regexes are built: config loading, the TUI rule
+/// editor and its live preview, and the daemon's `test-rule` handler all call it, so a
+/// pattern accepted in one place is accepted everywhere.
+///
+/// # Errors
+/// Returns the `regex` error if the pattern is invalid or its compiled form exceeds
+/// [`RULE_REGEX_SIZE_LIMIT`].
+pub fn compile_rule_regex(pattern: &str) -> std::result::Result<Regex, regex::Error> {
+    RegexBuilder::new(pattern)
+        .size_limit(RULE_REGEX_SIZE_LIMIT)
+        .dfa_size_limit(RULE_REGEX_DFA_SIZE_LIMIT)
+        .build()
+}
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/// The config file does not exist.
+///
+/// Returned (inside the `eyre` report) by [`Config::load`] and [`Config::load_from_path`];
+/// detect it with `report.downcast_ref::<ConfigNotFound>()`.
+#[derive(Debug, Clone)]
+pub struct ConfigNotFound {
+    /// The path that was looked up.
+    pub path: PathBuf,
+}
+
+impl fmt::Display for ConfigNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Config file not found: {}\n\nCreate one with:\n  pwsw init   (commented \
+             template)\n  pwsw tui    (interactive setup)",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for ConfigNotFound {}
+
+/// The config file changed on disk after it was loaded, so saving would discard
+/// those changes.
+///
+/// Returned by [`Config::save`] / [`Config::save_to`]; [`Config::save_force`] skips the
+/// check.
+#[derive(Debug, Clone)]
+pub struct ConfigModifiedOnDisk {
+    /// The file that changed.
+    pub path: PathBuf,
+}
+
+impl fmt::Display for ConfigModifiedOnDisk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Config file {} was changed on disk after it was loaded; refusing to overwrite \
+             those changes (reload the config, or force the save)",
+            self.path.display()
+        )
+    }
+}
+
+impl std::error::Error for ConfigModifiedOnDisk {}
+
+// ============================================================================
 // Public Configuration Types
 // ============================================================================
 
 /// Main configuration structure
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Besides the parsed values, a `Config` loaded from disk remembers the original
+/// document (to preserve comments on save) and what the file looked like at load (to
+/// detect external edits). Prefer the mutation methods ([`Config::add_sink`],
+/// [`Config::update_sink`], ...) over editing `sinks`/`rules` directly: they keep rule
+/// references pointing at the same sinks and let saves keep each entry's comments.
+#[derive(Debug, Clone)]
 pub struct Config {
     pub settings: Settings,
     pub sinks: Vec<SinkConfig>,
     pub rules: Vec<Rule>,
+    origin: Origin,
+}
+
+impl PartialEq for Config {
+    /// Compares the configuration values only (not where they were loaded from).
+    fn eq(&self, other: &Self) -> bool {
+        self.settings == other.settings && self.sinks == other.sinks && self.rules == other.rules
+    }
 }
 
 /// Global settings
@@ -74,6 +179,20 @@ pub struct Settings {
     pub notify_rules: bool,
     pub match_by_index: bool,
     pub log_level: String,
+}
+
+impl Default for Settings {
+    /// The values used for keys that are absent from the config file.
+    fn default() -> Self {
+        Self {
+            default_on_startup: false, // safer for new users with example sink names
+            set_smart_toggle: true,
+            notify_manual: true,
+            notify_rules: true,
+            match_by_index: false,
+            log_level: "info".to_string(),
+        }
+    }
 }
 
 /// Audio sink configuration
@@ -96,6 +215,8 @@ pub struct SinkConfig {
 pub struct Rule {
     pub app_id_regex: Regex,
     pub title_regex: Option<Regex>,
+    /// Sink reference: a sink `desc` (what the TUI writes), a node `name`, or a
+    /// deprecated 1-based position (`"2"`; an integer `sink = 2` in the file).
     pub sink_ref: String,
     pub desc: Option<String>,
     pub notify: Option<bool>,
@@ -116,11 +237,35 @@ impl PartialEq for Rule {
     }
 }
 
+/// Where a `Config` came from: the loaded document and the on-disk state.
+#[derive(Debug, Clone, Default)]
+struct Origin {
+    /// The document as loaded (`None` for configs built in memory). Saves apply the
+    /// current values into a copy of it, so it never changes after load.
+    doc: Option<Arc<DocumentMut>>,
+    /// For each entry of `Config::sinks`, the index of its `[[sinks]]` table in `doc`.
+    sink_slots: Vec<Option<usize>>,
+    /// For each entry of `Config::rules`, the index of its `[[rules]]` table in `doc`.
+    rule_slots: Vec<Option<usize>>,
+    /// What the file looked like when last loaded or saved. Shared between clones so a
+    /// save made through one clone (e.g. the TUI's background save) is seen by all.
+    disk: Arc<Mutex<Option<DiskSnapshot>>>,
+}
+
+#[derive(Debug, Clone)]
+struct DiskSnapshot {
+    /// Canonical (symlink-resolved) path of the file.
+    path: PathBuf,
+    /// Exact file contents.
+    contents: Vec<u8>,
+}
+
 // ============================================================================
 // Config File Deserialization (TOML)
 // ============================================================================
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ConfigFile {
     #[serde(default)]
     settings: SettingsFile,
@@ -130,8 +275,9 @@ struct ConfigFile {
     rules: Vec<RuleConfigFile>,
 }
 
-// TOML serialization format - mirrors Settings structure with serde defaults
-#[derive(Debug, Deserialize, Serialize)]
+// TOML file format - mirrors Settings with serde defaults
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SettingsFile {
     #[serde(default)] // false - safer for new users with example sink names
     default_on_startup: bool,
@@ -147,7 +293,8 @@ struct SettingsFile {
     log_level: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SinkConfigFile {
     name: String,
     desc: String,
@@ -157,12 +304,13 @@ struct SinkConfigFile {
     default: bool,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RuleConfigFile {
-    #[serde(with = "serde_regex")]
-    app_id: Regex,
-    #[serde(default, with = "serde_regex")]
-    title: Option<Regex>,
+    app_id: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(deserialize_with = "deserialize_sink_ref")]
     sink: String,
     #[serde(default)]
     desc: Option<String>,
@@ -180,59 +328,228 @@ fn default_log_level() -> String {
 
 impl Default for SettingsFile {
     fn default() -> Self {
+        let s = Settings::default();
         Self {
-            default_on_startup: false,
-            set_smart_toggle: true,
-            notify_manual: true,
-            notify_rules: true,
-            match_by_index: false,
-            log_level: "info".to_string(),
+            default_on_startup: s.default_on_startup,
+            set_smart_toggle: s.set_smart_toggle,
+            notify_manual: s.notify_manual,
+            notify_rules: s.notify_rules,
+            match_by_index: s.match_by_index,
+            log_level: s.log_level,
         }
     }
 }
+
+/// Accept a rule's `sink` as a string (`desc`/`name`/position) or an integer position.
+fn deserialize_sink_ref<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<String, D::Error> {
+    struct SinkRefVisitor;
+
+    impl Visitor<'_> for SinkRefVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a sink description, node name, or 1-based position")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<String, E> {
+            Ok(v)
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<String, E> {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<String, E> {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(SinkRefVisitor)
+}
+
+/// The 1-based position a sink reference names, if it is positional (`"2"` or `2`).
+fn positional_ref(sink_ref: &str) -> Option<usize> {
+    sink_ref.parse::<usize>().ok()
+}
+
+// ============================================================================
+// Default Config Template
+// ============================================================================
+
+/// The commented template written by `pwsw init` (and on first `pwsw tui`).
+const DEFAULT_CONFIG_TEMPLATE: &str = r#"# PWSW (PipeWire Switcher) Configuration
+#
+# Run `pwsw tui` for interactive setup, or configure manually below.
+# Find available sinks with: pwsw list-sinks
+# Comments in this file are kept when the TUI saves changes.
+
+[settings]
+default_on_startup = false # Switch to default sink on daemon start
+set_smart_toggle = true    # set-sink toggles back to default if already active
+notify_manual = true       # Desktop notifications for manual switches
+notify_rules = true        # Desktop notifications for rule-triggered switches
+match_by_index = false     # Priority: false = recent window, true = rule order
+log_level = "info"         # error, warn, info, debug, trace
+
+# Audio sinks - add at least one with default = true before starting daemon
+# Find available sinks with: pwsw list-sinks
+# Icons are auto-detected from description (e.g., "HDMI" → video-display)
+#
+# Example:
+#
+# [[sinks]]
+# name = "alsa_output.pci-0000_00_1f.3.analog-stereo"  # from pwsw list-sinks
+# desc = "Speakers"
+# default = true
+#
+# [[sinks]]
+# name = "alsa_output.pci-0000_00_1f.3.hdmi-stereo"
+# desc = "HDMI"
+# icon = "video-display"  # Optional: override auto-detected icon
+
+# Window rules - match windows to sinks
+# Find app_id and title with: pwsw list-windows (requires running daemon)
+# Or use compositor tools: swaymsg -t get_tree, hyprctl clients, niri msg windows
+#
+# Regex patterns:
+#   "firefox"     - matches anywhere in string
+#   "^steam$"     - exact match only
+#   "^(mpv|vlc)$" - matches mpv OR vlc
+#   "(?i)discord" - case insensitive
+#
+# Example:
+#
+# [[rules]]
+# app_id = "^steam$"
+# title = "^Steam Big Picture"  # Optional: also match window title
+# sink = "HDMI"                 # The sink's desc (or its node name)
+# desc = "Steam Gaming"         # Optional: custom notification text
+"#;
 
 // ============================================================================
 // Config Implementation
 // ============================================================================
 
 impl Config {
+    /// Build a config in memory (not tied to any file).
+    ///
+    /// Saving it generates the file from scratch. No validation happens here; it runs
+    /// on save and in every mutation method.
+    #[must_use]
+    pub fn new(settings: Settings, sinks: Vec<SinkConfig>, rules: Vec<Rule>) -> Self {
+        let origin = Origin {
+            sink_slots: vec![None; sinks.len()],
+            rule_slots: vec![None; rules.len()],
+            ..Origin::default()
+        };
+        Self {
+            settings,
+            sinks,
+            rules,
+            origin,
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Loading
+    // ------------------------------------------------------------------------
+
     /// Load configuration from the active config path (see [`Config::get_config_path`]).
     ///
-    /// Creates a default config at that path if no file exists yet.
+    /// Never creates anything on disk.
     ///
     /// # Errors
-    /// Returns an error if the config path cannot be determined, or if the config file
-    /// cannot be created, read, parsed, or is invalid.
+    /// Returns [`ConfigNotFound`] (inside the report) if the file does not exist, or an
+    /// error if the config path cannot be determined or the file cannot be read, parsed,
+    /// or is invalid.
     pub fn load() -> Result<Self> {
         let config_path = Self::get_config_path()?;
-
-        if !config_path.exists() {
-            info!("Creating default config at {}", config_path.display());
-            Self::create_default_config(&config_path)?;
-        }
-
         Self::load_from_path(&config_path)
+    }
+
+    /// Load the config, first writing the commented default template if no file
+    /// exists yet. Only interactive setup (`pwsw tui`) should use this.
+    ///
+    /// # Errors
+    /// Returns an error if the template cannot be written, or if loading fails as in
+    /// [`Config::load`].
+    pub fn load_or_init() -> Result<Self> {
+        let config_path = Self::get_config_path()?;
+        match Self::load_from_path(&config_path) {
+            Err(e) if e.downcast_ref::<ConfigNotFound>().is_some() => {
+                info!("Creating default config at {}", config_path.display());
+                Self::init_at(&config_path, false)?;
+                Self::print_init_guidance(&config_path);
+                Self::load_from_path(&config_path)
+            }
+            other => other,
+        }
     }
 
     /// Load configuration from a specific path. Useful for tests to avoid relying on XDG env.
     ///
+    /// Logs one deprecation warning if any rule references a sink by position.
+    ///
     /// # Errors
-    /// Returns an error if the config file cannot be read, parsed, or if validation fails.
-    pub fn load_from_path<P: AsRef<std::path::Path>>(path: P) -> Result<Self> {
+    /// Returns [`ConfigNotFound`] (inside the report) if the file does not exist, or an
+    /// error if it cannot be read, parsed (including unknown keys), or validated.
+    pub fn load_from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let contents = fs::read_to_string(path).with_context(|| {
-            format!(
-                "Failed to read config: {path_display}",
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(eyre::Report::new(ConfigNotFound {
+                    path: path.to_path_buf(),
+                }));
+            }
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("Failed to read config: {}", path.display()));
+            }
+        };
+
+        let config = Self::parse_str(&contents, path)?;
+        config.warn_positional_refs();
+
+        let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        *config
+            .origin
+            .disk
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(DiskSnapshot {
+            path: canonical,
+            contents: contents.into_bytes(),
+        });
+        Ok(config)
+    }
+
+    /// Parse and validate config text. `path` is only used in error messages.
+    fn parse_str(contents: &str, path: &Path) -> Result<Self> {
+        let config_file: ConfigFile = toml::from_str(contents).map_err(|e| {
+            eyre::eyre!(
+                "Failed to parse config: {path_display}\n{e}",
                 path_display = path.display()
             )
         })?;
-        let config_file: ConfigFile = toml::from_str(&contents).with_context(|| {
-            format!(
-                "Failed to parse config: {path_display}",
+        let doc: DocumentMut = contents.parse().map_err(|e| {
+            eyre::eyre!(
+                "Failed to parse config: {path_display}\n{e}",
                 path_display = path.display()
             )
         })?;
-        Self::from_config_file(config_file)
+
+        let mut config = Self::from_config_file(config_file)
+            .wrap_err_with(|| format!("Invalid config: {}", path.display()))?;
+        config.origin.sink_slots = (0..config.sinks.len()).map(Some).collect();
+        config.origin.rule_slots = (0..config.rules.len()).map(Some).collect();
+        config.origin.doc = Some(Arc::new(doc));
+        Ok(config)
     }
 
     fn from_config_file(config_file: ConfigFile) -> Result<Self> {
@@ -259,67 +576,246 @@ impl Config {
             })
             .collect();
 
-        let rules = config_file
-            .rules
-            .into_iter()
-            .map(|r| {
-                let app_id_pattern = r.app_id.as_str().to_string();
-                let title_pattern = r.title.as_ref().map(|t| t.as_str().to_string());
-                Rule {
-                    app_id_regex: r.app_id,
-                    title_regex: r.title,
-                    sink_ref: r.sink,
-                    desc: r.desc,
-                    notify: r.notify,
-                    app_id_pattern,
-                    title_pattern,
-                }
-            })
-            .collect();
+        let mut rules = Vec::with_capacity(config_file.rules.len());
+        for (i, r) in config_file.rules.into_iter().enumerate() {
+            let app_id_regex = compile_rule_regex(&r.app_id)
+                .map_err(|e| eyre::eyre!("Rule {}: invalid app_id regex: {e}", i + 1))?;
+            let title_regex = r
+                .title
+                .as_deref()
+                .map(compile_rule_regex)
+                .transpose()
+                .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+            rules.push(Rule {
+                app_id_regex,
+                title_regex,
+                sink_ref: r.sink,
+                desc: r.desc,
+                notify: r.notify,
+                app_id_pattern: r.app_id,
+                title_pattern: r.title,
+            });
+        }
 
-        let config = Self {
-            settings,
-            sinks,
-            rules,
-        };
+        let config = Self::new(settings, sinks, rules);
         config.validate()?;
         Ok(config)
     }
 
-    /// Save configuration to the default XDG config path
+    /// Log a single deprecation warning for rules that reference sinks by position.
+    fn warn_positional_refs(&self) {
+        let positional: Vec<String> = self
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| positional_ref(&r.sink_ref).is_some())
+            .map(|(i, _)| (i + 1).to_string())
+            .collect();
+        if !positional.is_empty() {
+            warn!(
+                "Rule(s) {} reference a sink by position; positional references are deprecated \
+                 (they silently retarget when sinks are reordered). Use the sink's desc instead.",
+                positional.join(", ")
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Creating the default config
+    // ------------------------------------------------------------------------
+
+    /// Write the commented default template to the active config path.
+    ///
+    /// Returns the path written.
     ///
     /// # Errors
-    /// Returns an error if the config cannot be serialized or written to disk.
-    /// # Panics
-    /// This function panics if the config path has no parent directory (should never happen).
-    pub fn save(&self) -> Result<()> {
-        let config_file = self.to_config_file();
-        let toml_str =
-            toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
-
+    /// Returns an error if a config already exists there and `force` is false, or if
+    /// the file cannot be written.
+    pub fn init(force: bool) -> Result<PathBuf> {
         let config_path = Self::get_config_path()?;
-        Self::save_to_path_str(&toml_str, &config_path)
+        Self::init_at(&config_path, force)?;
+        Ok(config_path)
+    }
+
+    /// Write the commented default template to `path` (atomically, mode `0600`).
+    ///
+    /// With `force`, an existing file is replaced and its old contents kept as
+    /// `<name>.bak`.
+    ///
+    /// # Errors
+    /// Returns an error if `path` exists and `force` is false, or if the file cannot be
+    /// written.
+    pub fn init_at(path: &Path, force: bool) -> Result<()> {
+        if !force && fs::symlink_metadata(path).is_ok() {
+            eyre::bail!(
+                "Config already exists: {}\nUse `pwsw init --force` to replace it (the old file \
+                 is kept as {}).",
+                path.display(),
+                backup_path(path).display()
+            );
+        }
+        let target = resolve_write_target(path)?;
+        Self::write_atomic(&target, DEFAULT_CONFIG_TEMPLATE, path)
+    }
+
+    /// Print the "created default config / next steps" message to stderr.
+    pub fn print_init_guidance(path: &Path) {
+        eprintln!(
+            "{} {}",
+            "✓".success(),
+            format!("Created default config at: {}", path.display()).success()
+        );
+        eprintln!();
+        eprintln!("{}", "Next steps:".header());
+        eprintln!(
+            "  Run {} for interactive setup (recommended)",
+            "pwsw tui".technical()
+        );
+        eprintln!();
+        eprintln!("  Or configure manually:");
+        eprintln!(
+            "    {}  - discover audio outputs",
+            "pwsw list-sinks".technical()
+        );
+        eprintln!("    Edit config file - add sinks and rules");
+        eprintln!("    {}    - check config", "pwsw validate".technical());
+        eprintln!("    {}      - start the daemon", "pwsw daemon".technical());
+        eprintln!();
+    }
+
+    // ------------------------------------------------------------------------
+    // Saving
+    // ------------------------------------------------------------------------
+
+    /// Save configuration to the active config path (see [`Config::get_config_path`]).
+    ///
+    /// # Errors
+    /// Returns an error if the config is invalid, if the file changed on disk since it
+    /// was loaded ([`ConfigModifiedOnDisk`]), or if it cannot be written.
+    pub fn save(&self) -> Result<()> {
+        let config_path = Self::get_config_path()?;
+        self.save_impl(&config_path, false)
+    }
+
+    /// Like [`Config::save`], but overwrite the file even if it changed on disk since it
+    /// was loaded.
+    ///
+    /// # Errors
+    /// Returns an error if the config is invalid or cannot be written.
+    pub fn save_force(&self) -> Result<()> {
+        let config_path = Self::get_config_path()?;
+        self.save_impl(&config_path, true)
     }
 
     /// Save configuration to the specified path (used by tests to avoid touching XDG paths)
     ///
     /// # Errors
-    /// Returns an error if serialization fails or if the config cannot be written to disk.
-    pub fn save_to<P: AsRef<std::path::Path>>(&self, path: P) -> Result<()> {
-        let config_file = self.to_config_file();
-        let toml_str =
-            toml::to_string_pretty(&config_file).context("Failed to serialize config to TOML")?;
-        Self::save_to_path_str(&toml_str, path.as_ref())
+    /// Returns an error if the config is invalid, if the file changed on disk since it
+    /// was loaded or last saved by this config ([`ConfigModifiedOnDisk`]), or if it
+    /// cannot be written.
+    pub fn save_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.save_impl(path.as_ref(), false)
+    }
+
+    fn save_impl(&self, path: &Path, force: bool) -> Result<()> {
+        self.validate()?;
+        self.validate_patterns()?;
+
+        let contents = self.render();
+
+        // Defensive: never write text that would not load back to this exact config.
+        let reparsed = Self::parse_str(&contents, path)
+            .wrap_err("Internal error: generated config does not load; refusing to save")?;
+        if reparsed != *self {
+            eyre::bail!("Internal error: generated config does not round-trip; refusing to save");
+        }
+
+        let target = resolve_write_target(path)?;
+
+        let mut disk = self
+            .origin
+            .disk
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !force
+            && let Some(snapshot) = disk.as_ref()
+            && snapshot.path == target
+        {
+            match fs::read(&target) {
+                Ok(current) if current != snapshot.contents => {
+                    return Err(eyre::Report::new(ConfigModifiedOnDisk {
+                        path: path.to_path_buf(),
+                    }));
+                }
+                // Unchanged, or deleted (nothing to clobber)
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e)
+                        .with_context(|| format!("Failed to read config: {}", target.display()));
+                }
+            }
+        }
+
+        Self::write_atomic(&target, &contents, path)?;
+
+        *disk = Some(DiskSnapshot {
+            path: fs::canonicalize(&target).unwrap_or(target),
+            contents: contents.into_bytes(),
+        });
+        Ok(())
+    }
+
+    /// Atomically replace `target` with `contents` (mode `0600`).
+    ///
+    /// `requested` is the path the caller asked for (may be a symlink to `target`); the
+    /// previous file content is copied to `<requested>.bak` first.
+    fn write_atomic(target: &Path, contents: &str, requested: &Path) -> Result<()> {
+        let dir = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        // Ensure the target directory exists (tests may create temp dirs but callers
+        // can race or remove them); create_dir_all is idempotent.
+        fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
+
+        let mut tmp = Self::write_temp_file_with_contents(dir, contents)?;
+
+        Self::ensure_not_empty_overwrite(&mut tmp, target)?;
+
+        // Ensure user-only permissions on Unix for the temp file
+        Self::ensure_unix_permissions(tmp.path())?;
+
+        Self::backup_existing(requested);
+
+        // Persist atomically
+        tmp.persist(target).with_context(|| {
+            format!(
+                "Failed to persist temporary config file to {}",
+                target.display()
+            )
+        })?;
+
+        // Ensure final permissions as well
+        Self::ensure_unix_permissions(target)?;
+
+        // Sync parent directory to ensure rename is durable
+        #[cfg(unix)]
+        if let Ok(dir_file) = std::fs::File::open(dir) {
+            dir_file
+                .sync_all()
+                .with_context(|| format!("Failed to sync directory: {}", dir.display()))?;
+        }
+
+        Ok(())
     }
 
     fn write_temp_file_with_contents(
-        dir: &std::path::Path,
+        dir: &Path,
         contents: &str,
     ) -> Result<tempfile::NamedTempFile> {
-        // Ensure dir exists right before creating the temp file to avoid races
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("Failed to create temp dir: {}", dir.display()))?;
-
         // Try creating the temp file with a small retry loop to tolerate transient races
         let mut last_err = None;
         let mut tmp = None;
@@ -354,7 +850,7 @@ impl Config {
 
     fn ensure_not_empty_overwrite(
         tmp: &mut tempfile::NamedTempFile,
-        config_path: &std::path::Path,
+        config_path: &Path,
     ) -> Result<()> {
         let written_len = tmp
             .as_file_mut()
@@ -362,7 +858,6 @@ impl Config {
             .context("Failed to stat temporary config file")?
             .len();
         if written_len == 0
-            && config_path.exists()
             && let Ok(meta) = fs::metadata(config_path)
             && meta.is_file()
             && meta.len() > 0
@@ -372,7 +867,7 @@ impl Config {
         Ok(())
     }
 
-    fn ensure_unix_permissions(path: &std::path::Path) -> Result<()> {
+    fn ensure_unix_permissions(path: &Path) -> Result<()> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -382,25 +877,17 @@ impl Config {
         Ok(())
     }
 
-    /// Keep a single `config.toml.bak` copy of the user's default config before overwriting it.
+    /// Keep a single `<name>.bak` copy of the file at `path` before it is overwritten.
     ///
     /// Only one backup is kept (overwrites previous) since atomic writes already prevent
     /// corruption - this is just for user recovery ("undo"). Backup failures are logged,
     /// never fatal.
-    fn backup_user_config(config_path: &std::path::Path) {
-        let Some(home_dir) = dirs::home_dir() else {
-            return;
-        };
-        let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
-        if config_path != home_cfg {
-            return;
-        }
-        if let Ok(metadata) = fs::metadata(config_path)
+    fn backup_existing(path: &Path) {
+        if let Ok(metadata) = fs::metadata(path)
             && metadata.is_file()
-            && let Some(parent) = config_path.parent()
         {
-            let bak_path = parent.join("config.toml.bak");
-            if let Err(e) = fs::copy(config_path, &bak_path) {
+            let bak_path = backup_path(path);
+            if let Err(e) = fs::copy(path, &bak_path) {
                 warn!(
                     "Failed to create config backup at {}: {}",
                     bak_path.display(),
@@ -410,95 +897,348 @@ impl Config {
         }
     }
 
-    fn save_to_path_str(path_str: &str, config_path: &std::path::Path) -> Result<()> {
-        let dir = config_path
-            .parent()
-            .expect("Config path must have a parent directory");
+    #[cfg(test)]
+    /// Test helper to call the private atomic write with a raw string
+    pub(crate) fn save_str_for_test(contents: &str, path: &Path) -> Result<()> {
+        Self::write_atomic(path, contents, path)
+    }
 
-        // Ensure the target directory exists (tests may create temp dirs but callers
-        // can race or remove them); create_dir_all is idempotent.
-        fs::create_dir_all(dir)
-            .with_context(|| format!("Failed to create config dir: {}", dir.display()))?;
+    // ------------------------------------------------------------------------
+    // Rendering (comment-preserving)
+    // ------------------------------------------------------------------------
 
-        let mut tmp = Self::write_temp_file_with_contents(dir, path_str)?;
+    /// Render the config as TOML, applying the current values into the loaded document
+    /// (or into an empty one for in-memory configs).
+    fn render(&self) -> String {
+        let fresh = self.origin.doc.is_none();
+        let mut doc = self
+            .origin
+            .doc
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(DocumentMut::new);
+        let (sink_slots, rule_slots) = self.effective_slots();
 
-        Self::ensure_not_empty_overwrite(&mut tmp, config_path)?;
+        apply_settings(&mut doc, &self.settings, fresh);
+        rebuild_array(&mut doc, "sinks", &self.sinks, &sink_slots, apply_sink);
+        rebuild_array(&mut doc, "rules", &self.rules, &rule_slots, apply_rule);
+        doc.to_string()
+    }
 
-        // Ensure user-only permissions on Unix for the temp file
-        Self::ensure_unix_permissions(tmp.path())?;
-
-        Self::backup_user_config(config_path);
-
-        // Persist atomically
-        tmp.persist(config_path).with_context(|| {
-            format!(
-                "Failed to persist temporary config file to {}",
-                config_path.display()
+    /// The document slot of every sink and rule.
+    ///
+    /// If `sinks`/`rules` were resized directly (bypassing the mutation methods), the
+    /// recorded slots no longer line up; entries are then matched to document tables by
+    /// node name (sinks) or patterns (rules), and unmatched ones are treated as new.
+    fn effective_slots(&self) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+        let doc = self.origin.doc.as_deref();
+        let sink_slots = if self.origin.sink_slots.len() == self.sinks.len() {
+            self.origin.sink_slots.clone()
+        } else {
+            let keys = doc_table_keys(doc, "sinks", |t| {
+                t.get("name").and_then(Item::as_str).map(str::to_string)
+            });
+            match_slots(&keys, self.sinks.iter().map(|s| s.name.clone()))
+        };
+        let rule_slots = if self.origin.rule_slots.len() == self.rules.len() {
+            self.origin.rule_slots.clone()
+        } else {
+            let keys = doc_table_keys(doc, "rules", |t| {
+                let app_id = t.get("app_id").and_then(Item::as_str)?;
+                let title = t.get("title").and_then(Item::as_str).unwrap_or_default();
+                Some(rule_key(app_id, title))
+            });
+            match_slots(
+                &keys,
+                self.rules.iter().map(|r| {
+                    rule_key(
+                        &r.app_id_pattern,
+                        r.title_pattern.as_deref().unwrap_or_default(),
+                    )
+                }),
             )
-        })?;
+        };
+        (sink_slots, rule_slots)
+    }
 
-        // Ensure final permissions as well
-        Self::ensure_unix_permissions(config_path)?;
+    // ------------------------------------------------------------------------
+    // Invariant-keeping mutations
+    // ------------------------------------------------------------------------
 
-        // Sync parent directory to ensure rename is durable
-        #[cfg(unix)]
-        if let Some(parent) = config_path.parent()
-            && let Ok(dir_file) = std::fs::File::open(parent)
-        {
-            dir_file
-                .sync_all()
-                .with_context(|| format!("Failed to sync directory: {}", parent.display()))?;
-        }
-
+    /// Apply `f` to a copy of the config, validate it, and only then commit.
+    fn transact(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
+        let mut next = self.clone();
+        let (sink_slots, rule_slots) = next.effective_slots();
+        next.origin.sink_slots = sink_slots;
+        next.origin.rule_slots = rule_slots;
+        f(&mut next)?;
+        next.validate()?;
+        *self = next;
         Ok(())
     }
 
-    #[cfg(test)]
-    /// Test helper to call the private save path function with raw string
-    pub(crate) fn save_str_for_test(path_str: &str, path: &std::path::Path) -> Result<()> {
-        Self::save_to_path_str(path_str, path)
-    }
-
-    /// Convert runtime `Config` back to serializable `ConfigFile` format
-    fn to_config_file(&self) -> ConfigFile {
-        let settings = SettingsFile {
-            default_on_startup: self.settings.default_on_startup,
-            set_smart_toggle: self.settings.set_smart_toggle,
-            notify_manual: self.settings.notify_manual,
-            notify_rules: self.settings.notify_rules,
-            match_by_index: self.settings.match_by_index,
-            log_level: self.settings.log_level.clone(),
-        };
-
-        let sinks = self
-            .sinks
-            .iter()
-            .map(|s| SinkConfigFile {
-                name: s.name.clone(),
-                desc: s.desc.clone(),
-                icon: s.icon.clone(),
-                default: s.default,
-            })
-            .collect();
-
-        let rules = self
+    /// Run a change to the sinks list while keeping positional rule references pointing
+    /// at the same sink: any positional reference whose sink moved is rewritten to that
+    /// sink's `desc`.
+    fn keeping_positional_targets(&mut self, f: impl FnOnce(&mut Self)) {
+        let targets: Vec<Option<(usize, String)>> = self
             .rules
             .iter()
-            .map(|r| RuleConfigFile {
-                app_id: r.app_id_regex.clone(),
-                title: r.title_regex.clone(),
-                sink: r.sink_ref.clone(),
-                desc: r.desc.clone(),
-                notify: r.notify,
+            .map(|r| {
+                let pos = positional_ref(&r.sink_ref)?;
+                let sink = self.sinks.get(pos.checked_sub(1)?)?;
+                Some((pos - 1, sink.name.clone()))
             })
             .collect();
-
-        ConfigFile {
-            settings,
-            sinks,
-            rules,
+        f(self);
+        for (rule, target) in self.rules.iter_mut().zip(targets) {
+            if let Some((old_index, name)) = target
+                && let Some(new_index) = self.sinks.iter().position(|s| s.name == name)
+                && new_index != old_index
+            {
+                rule.sink_ref.clone_from(&self.sinks[new_index].desc);
+            }
         }
     }
+
+    fn check_sink_unique(&self, sink: &SinkConfig, skip: Option<usize>) -> Result<()> {
+        for (i, other) in self.sinks.iter().enumerate() {
+            if Some(i) == skip {
+                continue;
+            }
+            if other.name == sink.name {
+                eyre::bail!(
+                    "Sink {} ('{}') already uses node name '{}'",
+                    i + 1,
+                    other.desc,
+                    sink.name
+                );
+            }
+            if other.desc == sink.desc {
+                eyre::bail!("Sink {} already uses description '{}'", i + 1, sink.desc);
+            }
+        }
+        Ok(())
+    }
+
+    /// Append a sink.
+    ///
+    /// The first sink always becomes the default; a new default sink un-defaults the
+    /// others.
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if another sink has the same node name or
+    /// description, or the result would be invalid (e.g. empty name).
+    pub fn add_sink(&mut self, mut sink: SinkConfig) -> Result<()> {
+        self.transact(|c| {
+            c.check_sink_unique(&sink, None)?;
+            if c.sinks.is_empty() {
+                sink.default = true;
+            }
+            if sink.default {
+                for s in &mut c.sinks {
+                    s.default = false;
+                }
+            }
+            c.sinks.push(sink);
+            c.origin.sink_slots.push(None);
+            Ok(())
+        })
+    }
+
+    /// Replace the sink at `index` (0-based).
+    ///
+    /// Rules that referenced the old `desc` or node name are updated to the new one. If
+    /// the sink becomes the default, the others are un-defaulted; if that would leave no
+    /// default, the first sink becomes the default.
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if `index` is out of range, another sink
+    /// has the same node name or description, or the result would be invalid.
+    pub fn update_sink(&mut self, index: usize, sink: SinkConfig) -> Result<()> {
+        self.transact(|c| {
+            let old = c
+                .sinks
+                .get(index)
+                .cloned()
+                .with_context(|| format!("No sink at position {}", index + 1))?;
+            c.check_sink_unique(&sink, Some(index))?;
+            for rule in &mut c.rules {
+                if rule.sink_ref == old.desc {
+                    rule.sink_ref.clone_from(&sink.desc);
+                } else if rule.sink_ref == old.name {
+                    rule.sink_ref.clone_from(&sink.name);
+                }
+            }
+            if sink.default {
+                for s in &mut c.sinks {
+                    s.default = false;
+                }
+            }
+            c.sinks[index] = sink;
+            if !c.sinks.iter().any(|s| s.default) {
+                c.sinks[0].default = true;
+            }
+            Ok(())
+        })
+    }
+
+    /// Make the sink at `index` (0-based) the only default sink.
+    ///
+    /// # Errors
+    /// Returns an error if `index` is out of range.
+    pub fn set_default_sink(&mut self, index: usize) -> Result<()> {
+        self.transact(|c| {
+            if index >= c.sinks.len() {
+                eyre::bail!("No sink at position {}", index + 1);
+            }
+            for (i, s) in c.sinks.iter_mut().enumerate() {
+                s.default = i == index;
+            }
+            Ok(())
+        })
+    }
+
+    /// Remove the sink at `index` (0-based).
+    ///
+    /// If it was the default, the first remaining sink becomes the default. Positional
+    /// references to sinks after it are rewritten so they keep their target.
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if `index` is out of range or any rule
+    /// references the sink (the message names those rules).
+    pub fn remove_sink(&mut self, index: usize) -> Result<()> {
+        self.transact(|c| {
+            let sink = c
+                .sinks
+                .get(index)
+                .cloned()
+                .with_context(|| format!("No sink at position {}", index + 1))?;
+            let users: Vec<String> = c
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| c.resolve_sink_index(&r.sink_ref) == Some(index))
+                .map(|(i, r)| format!("{} ({})", i + 1, r.app_id_pattern))
+                .collect();
+            if !users.is_empty() {
+                eyre::bail!(
+                    "Cannot remove sink '{}': used by rule {}. Retarget or delete those rules \
+                     first.",
+                    sink.desc,
+                    users.join(", ")
+                );
+            }
+            c.keeping_positional_targets(|c| {
+                c.sinks.remove(index);
+                c.origin.sink_slots.remove(index);
+            });
+            if sink.default
+                && let Some(first) = c.sinks.first_mut()
+            {
+                first.default = true;
+            }
+            Ok(())
+        })
+    }
+
+    /// Move the sink at `from` to position `to` (both 0-based).
+    ///
+    /// Positional rule references are rewritten so every rule still targets the same
+    /// sink.
+    ///
+    /// # Errors
+    /// Returns an error if either index is out of range.
+    pub fn move_sink(&mut self, from: usize, to: usize) -> Result<()> {
+        self.transact(|c| {
+            if from >= c.sinks.len() || to >= c.sinks.len() {
+                eyre::bail!("Sink position out of range");
+            }
+            c.keeping_positional_targets(|c| {
+                let sink = c.sinks.remove(from);
+                c.sinks.insert(to, sink);
+                let slot = c.origin.sink_slots.remove(from);
+                c.origin.sink_slots.insert(to, slot);
+            });
+            Ok(())
+        })
+    }
+
+    /// Rewrite a rule's sink reference to the target sink's `desc`.
+    fn canonicalize_rule_ref(&self, rule: &mut Rule) -> Result<()> {
+        let sink = self
+            .resolve_sink(&rule.sink_ref)
+            .with_context(|| format!("Rule references unknown sink '{}'", rule.sink_ref))?;
+        rule.sink_ref.clone_from(&sink.desc);
+        Ok(())
+    }
+
+    /// Append a rule. Its sink reference is stored as the target sink's `desc`.
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if the sink reference does not resolve or
+    /// the rule is invalid (e.g. empty `app_id` pattern).
+    pub fn add_rule(&mut self, mut rule: Rule) -> Result<()> {
+        self.transact(|c| {
+            c.canonicalize_rule_ref(&mut rule)?;
+            c.rules.push(rule);
+            c.origin.rule_slots.push(None);
+            Ok(())
+        })
+    }
+
+    /// Replace the rule at `index` (0-based). Its sink reference is stored as the
+    /// target sink's `desc`.
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if `index` is out of range, the sink
+    /// reference does not resolve, or the rule is invalid.
+    pub fn update_rule(&mut self, index: usize, mut rule: Rule) -> Result<()> {
+        self.transact(|c| {
+            if index >= c.rules.len() {
+                eyre::bail!("No rule at position {}", index + 1);
+            }
+            c.canonicalize_rule_ref(&mut rule)?;
+            c.rules[index] = rule;
+            Ok(())
+        })
+    }
+
+    /// Remove the rule at `index` (0-based).
+    ///
+    /// # Errors
+    /// Returns an error if `index` is out of range.
+    pub fn remove_rule(&mut self, index: usize) -> Result<()> {
+        self.transact(|c| {
+            if index >= c.rules.len() {
+                eyre::bail!("No rule at position {}", index + 1);
+            }
+            c.rules.remove(index);
+            c.origin.rule_slots.remove(index);
+            Ok(())
+        })
+    }
+
+    /// Move the rule at `from` to position `to` (both 0-based).
+    ///
+    /// # Errors
+    /// Returns an error if either index is out of range.
+    pub fn move_rule(&mut self, from: usize, to: usize) -> Result<()> {
+        self.transact(|c| {
+            if from >= c.rules.len() || to >= c.rules.len() {
+                eyre::bail!("Rule position out of range");
+            }
+            let rule = c.rules.remove(from);
+            c.rules.insert(to, rule);
+            let slot = c.origin.rule_slots.remove(from);
+            c.origin.rule_slots.insert(to, slot);
+            Ok(())
+        })
+    }
+
+    // ------------------------------------------------------------------------
+    // Validation
+    // ------------------------------------------------------------------------
 
     fn validate(&self) -> Result<()> {
         // Validate log level
@@ -507,6 +1247,24 @@ impl Config {
             level => eyre::bail!(
                 "Invalid log_level '{level}'. Must be: error, warn, info, debug, or trace"
             ),
+        }
+
+        for (i, sink) in self.sinks.iter().enumerate() {
+            if sink.name.trim().is_empty() {
+                eyre::bail!("Sink {} has an empty name", i + 1);
+            }
+            if sink.desc.trim().is_empty() {
+                eyre::bail!("Sink {} has an empty desc", i + 1);
+            }
+            // A numeric desc would be read as a position by rule references
+            if sink.desc.trim().parse::<i128>().is_ok() {
+                eyre::bail!(
+                    "Sink {} desc '{}' is a number; it would be read as a sink position. Use a \
+                     descriptive name.",
+                    i + 1,
+                    sink.desc
+                );
+            }
         }
 
         // If sinks exist, exactly one must be default
@@ -537,11 +1295,22 @@ impl Config {
             if !seen_names.insert(&sink.name) {
                 eyre::bail!("Duplicate sink name: '{}'", sink.name);
             }
-            // Validate name doesn't look like a position number
-            if sink.desc.parse::<usize>().is_ok() {
-                warn!(
-                    "Sink description '{}' looks like a number - this may cause confusion with position references",
-                    sink.desc
+        }
+
+        // A string that is one sink's name and another's desc makes references ambiguous
+        for (i, a) in self.sinks.iter().enumerate() {
+            if let Some(j) = self
+                .sinks
+                .iter()
+                .enumerate()
+                .position(|(j, b)| j != i && b.desc == a.name)
+            {
+                eyre::bail!(
+                    "'{}' is the name of sink {} and the desc of sink {}; rule references to it \
+                     would be ambiguous",
+                    a.name,
+                    i + 1,
+                    j + 1
                 );
             }
         }
@@ -554,6 +1323,10 @@ impl Config {
                     "Rule {} has empty app_id pattern. Use '.*' to match all windows.",
                     i + 1
                 );
+            }
+
+            if rule.sink_ref.trim().is_empty() {
+                eyre::bail!("Rule {} has an empty sink reference", i + 1);
             }
 
             if self.resolve_sink(&rule.sink_ref).is_none() {
@@ -570,67 +1343,27 @@ impl Config {
                     available.join(", ")
                 );
             }
-
-            // Validate regex patterns for catastrophic backtracking
-            Self::validate_regex_safe(&rule.app_id_pattern, "app_id", i + 1)?;
-            if let Some(ref title_pattern) = rule.title_pattern {
-                Self::validate_regex_safe(title_pattern, "title", i + 1)?;
-            }
         }
 
         Ok(())
     }
 
-    /// Validate that a regex pattern is safe from catastrophic backtracking
-    ///
-    /// Checks for known dangerous patterns that can cause exponential time complexity.
-    ///
-    /// # Errors
-    /// Returns an error if the pattern contains dangerous constructs.
-    fn validate_regex_safe(pattern: &str, field_name: &str, rule_num: usize) -> Result<()> {
-        // Check for known catastrophic backtracking patterns
-        let dangerous_patterns = [
-            ("(.*)*", "nested quantifiers on wildcard"),
-            ("(.*)+", "nested quantifiers on wildcard"),
-            ("(.+)+", "nested quantifiers on wildcard"),
-            ("(.+)*", "nested quantifiers on wildcard"),
-            ("([^x]*)*", "nested quantifiers on negated character class"),
-            ("([^x]+)+", "nested quantifiers on negated character class"),
-        ];
-
-        for (danger, reason) in &dangerous_patterns {
-            if pattern.contains(danger) {
-                eyre::bail!(
-                    "Rule {}: {} pattern '{}' contains dangerous construct '{}' ({})",
-                    rule_num,
-                    field_name,
-                    pattern,
-                    danger,
-                    reason
-                );
+    /// Check that every rule pattern compiles exactly as config loading would compile it.
+    fn validate_patterns(&self) -> Result<()> {
+        for (i, rule) in self.rules.iter().enumerate() {
+            compile_rule_regex(&rule.app_id_pattern)
+                .map_err(|e| eyre::eyre!("Rule {}: invalid app_id regex: {e}", i + 1))?;
+            if let Some(title) = &rule.title_pattern {
+                compile_rule_regex(title)
+                    .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
             }
         }
-
-        // Check for excessive alternations that might cause backtracking
-        let alternation_count = pattern.matches('|').count();
-        if alternation_count > 50 {
-            warn!(
-                "Rule {}: {} pattern has {} alternations - this may cause slow matching",
-                rule_num, field_name, alternation_count
-            );
-        }
-
-        // Check for excessive nested groups
-        let open_paren_count = pattern.matches('(').count();
-        if open_paren_count > 20 {
-            warn!(
-                "Rule {}: {} pattern has {} nested groups - this may cause slow compilation",
-                rule_num, field_name, open_paren_count
-            );
-        }
-
         Ok(())
     }
+
+    // ------------------------------------------------------------------------
+    // Paths
+    // ------------------------------------------------------------------------
 
     /// Get the active config file path without creating anything on disk.
     ///
@@ -708,88 +1441,9 @@ impl Config {
         Ok(config_path)
     }
 
-    fn create_default_config(path: &PathBuf) -> Result<()> {
-        let default_config = r#"# PWSW (PipeWire Switcher) Configuration
-#
-# Run `pwsw tui` for interactive setup, or configure manually below.
-# Find available sinks with: pwsw list-sinks
-
-[settings]
-default_on_startup = false # Switch to default sink on daemon start
-set_smart_toggle = true    # set-sink toggles back to default if already active
-notify_manual = true       # Desktop notifications for manual switches
-notify_rules = true        # Desktop notifications for rule-triggered switches
-match_by_index = false     # Priority: false = recent window, true = rule order
-log_level = "info"         # error, warn, info, debug, trace
-
-# Audio sinks - add at least one with default = true before starting daemon
-# Find available sinks with: pwsw list-sinks
-# Icons are auto-detected from description (e.g., "HDMI" → video-display)
-#
-# Example:
-#
-# [[sinks]]
-# name = "alsa_output.pci-0000_00_1f.3.analog-stereo"  # from pwsw list-sinks
-# desc = "Speakers"
-# default = true
-#
-# [[sinks]]
-# name = "alsa_output.pci-0000_00_1f.3.hdmi-stereo"
-# desc = "HDMI"
-# icon = "video-display"  # Optional: override auto-detected icon
-
-# Window rules - match windows to sinks
-# Find app_id and title with: pwsw list-windows (requires running daemon)
-# Or use compositor tools: swaymsg -t get_tree, hyprctl clients, niri msg windows
-#
-# Regex patterns:
-#   "firefox"     - matches anywhere in string
-#   "^steam$"     - exact match only
-#   "^(mpv|vlc)$" - matches mpv OR vlc
-#   "(?i)discord" - case insensitive
-#
-# Example:
-#
-# [[rules]]
-# app_id = "^steam$"
-# title = "^Steam Big Picture"  # Optional: also match window title
-# sink = "HDMI"                 # Reference by desc, name, or position (1, 2)
-# desc = "Steam Gaming"         # Optional: custom notification text
-"#;
-        // Ensure parent directory exists (tests may set a temp XDG_CONFIG_HOME)
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create config dir: {}", parent.display()))?;
-        }
-
-        fs::write(path, default_config)
-            .with_context(|| format!("Failed to write config: {}", path.display()))?;
-
-        // Inform user that we created the config
-        eprintln!(
-            "{} {}",
-            "✓".success(),
-            format!("Created default config at: {}", path.display()).success()
-        );
-        eprintln!();
-        eprintln!("{}", "Next steps:".header());
-        eprintln!(
-            "  Run {} for interactive setup (recommended)",
-            "pwsw tui".technical()
-        );
-        eprintln!();
-        eprintln!("  Or configure manually:");
-        eprintln!(
-            "    {}  - discover audio outputs",
-            "pwsw list-sinks".technical()
-        );
-        eprintln!("    Edit config file - add sinks and rules");
-        eprintln!("    {}    - check config", "pwsw validate".technical());
-        eprintln!("    {}      - start the daemon", "pwsw daemon".technical());
-        eprintln!();
-
-        Ok(())
-    }
+    // ------------------------------------------------------------------------
+    // Queries
+    // ------------------------------------------------------------------------
 
     /// Print a human-readable summary of the configuration
     pub fn print_summary(&self) {
@@ -889,21 +1543,22 @@ log_level = "info"         # error, warn, info, debug, trace
         }
     }
 
-    /// Resolve a sink reference (by position, desc, or name)
-    #[must_use]
-    pub fn resolve_sink(&self, sink_ref: &str) -> Option<&SinkConfig> {
+    /// Resolve a sink reference (by position, desc, or name) to its 0-based index.
+    fn resolve_sink_index(&self, sink_ref: &str) -> Option<usize> {
         // Try position first (1-indexed)
-        if let Ok(pos) = sink_ref.parse::<usize>() {
-            return if pos > 0 && pos <= self.sinks.len() {
-                Some(&self.sinks[pos - 1])
-            } else {
-                None
-            };
+        if let Some(pos) = positional_ref(sink_ref) {
+            return (pos > 0 && pos <= self.sinks.len()).then(|| pos - 1);
         }
         // Then try desc or name
         self.sinks
             .iter()
-            .find(|s| s.desc == sink_ref || s.name == sink_ref)
+            .position(|s| s.desc == sink_ref || s.name == sink_ref)
+    }
+
+    /// Resolve a sink reference (by position, desc, or name)
+    #[must_use]
+    pub fn resolve_sink(&self, sink_ref: &str) -> Option<&SinkConfig> {
+        self.resolve_sink_index(sink_ref).map(|i| &self.sinks[i])
     }
 
     /// Get the configured default sink
@@ -913,6 +1568,238 @@ log_level = "info"         # error, warn, info, debug, trace
     #[must_use]
     pub fn get_default_sink(&self) -> Option<&SinkConfig> {
         self.sinks.iter().find(|s| s.default)
+    }
+}
+
+// ============================================================================
+// File helpers
+// ============================================================================
+
+/// `<path>.bak` (e.g. `config.toml.bak`), next to `path`.
+fn backup_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".bak");
+    path.with_file_name(name)
+}
+
+/// The file a save to `path` must replace: the symlink-resolved path when it exists
+/// (so a symlinked config stays a symlink), else `path` itself.
+fn resolve_write_target(path: &Path) -> Result<PathBuf> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => fs::canonicalize(path).with_context(|| {
+            format!(
+                "Cannot resolve config path {} (dangling symlink?)",
+                path.display()
+            )
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
+        Err(e) => Err(e).with_context(|| format!("Failed to stat config: {}", path.display())),
+    }
+}
+
+// ============================================================================
+// Document editing helpers (`toml_edit`)
+// ============================================================================
+
+fn rule_key(app_id: &str, title: &str) -> String {
+    format!("{app_id}\u{0}{title}")
+}
+
+/// A matching key for every table of the array `key` in `doc`.
+fn doc_table_keys(
+    doc: Option<&DocumentMut>,
+    key: &str,
+    extract: impl Fn(&Table) -> Option<String>,
+) -> Vec<Option<String>> {
+    doc.and_then(|d| d.get(key))
+        .and_then(Item::as_array_of_tables)
+        .map_or_default(|a| a.iter().map(&extract).collect())
+}
+
+/// Match items to document tables by key; each table is used at most once.
+fn match_slots(
+    doc_keys: &[Option<String>],
+    items: impl Iterator<Item = String>,
+) -> Vec<Option<usize>> {
+    let mut used = vec![false; doc_keys.len()];
+    items
+        .map(|key| {
+            let slot = doc_keys
+                .iter()
+                .enumerate()
+                .position(|(i, k)| !used[i] && k.as_deref() == Some(key.as_str()));
+            if let Some(i) = slot {
+                used[i] = true;
+            }
+            slot
+        })
+        .collect()
+}
+
+fn same_value(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::String(x), Value::String(y)) => x.value() == y.value(),
+        (Value::Boolean(x), Value::Boolean(y)) => x.value() == y.value(),
+        (Value::Integer(x), Value::Integer(y)) => x.value() == y.value(),
+        _ => false,
+    }
+}
+
+/// Set `key` to `value`, leaving it untouched if it already holds that value and
+/// keeping the old value's surrounding whitespace and trailing comment otherwise.
+fn set_value<T: TableLike + ?Sized>(table: &mut T, key: &str, value: impl Into<Value>) {
+    let value = value.into();
+    if let Some(Item::Value(old)) = table.get_mut(key) {
+        if same_value(old, &value) {
+            return;
+        }
+        let decor = old.decor().clone();
+        *old = value;
+        *old.decor_mut() = decor;
+    } else {
+        table.insert(key, Item::Value(value));
+    }
+}
+
+/// Set `key` to `value`, or remove it for `None`.
+fn set_optional<T: TableLike + ?Sized>(table: &mut T, key: &str, value: Option<&str>) {
+    match value {
+        Some(v) => set_value(table, key, v),
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+/// Write a setting, omitting keys that are absent and still at their default.
+fn sync_setting<T: TableLike + ?Sized>(
+    table: &mut T,
+    key: &str,
+    value: impl Into<Value>,
+    is_default: bool,
+    write_all: bool,
+) {
+    if !write_all && is_default && table.get(key).is_none() {
+        return;
+    }
+    set_value(table, key, value);
+}
+
+fn apply_settings(doc: &mut DocumentMut, s: &Settings, write_all: bool) {
+    let d = Settings::default();
+    if doc.get("settings").is_none() {
+        if !write_all && *s == d {
+            return;
+        }
+        // Place a new [settings] table before every other table
+        let first = doc
+            .iter()
+            .flat_map(|(_, item)| match item {
+                Item::Table(t) => vec![t.position()],
+                Item::ArrayOfTables(a) => a.iter().map(Table::position).collect(),
+                _ => Vec::new(),
+            })
+            .flatten()
+            .min();
+        let mut table = Table::new();
+        table.set_position(first.map(|p| p - 1));
+        doc.insert("settings", Item::Table(table));
+    }
+    let Some(table) = doc.get_mut("settings").and_then(Item::as_table_like_mut) else {
+        return;
+    };
+    let w = write_all;
+    let b = |value: bool, default: bool| (value, value == default);
+    for (key, (value, is_default)) in [
+        (
+            "default_on_startup",
+            b(s.default_on_startup, d.default_on_startup),
+        ),
+        (
+            "set_smart_toggle",
+            b(s.set_smart_toggle, d.set_smart_toggle),
+        ),
+        ("notify_manual", b(s.notify_manual, d.notify_manual)),
+        ("notify_rules", b(s.notify_rules, d.notify_rules)),
+        ("match_by_index", b(s.match_by_index, d.match_by_index)),
+    ] {
+        sync_setting(table, key, value, is_default, w);
+    }
+    sync_setting(
+        table,
+        "log_level",
+        s.log_level.as_str(),
+        s.log_level == d.log_level,
+        w,
+    );
+}
+
+fn apply_sink(table: &mut Table, sink: &SinkConfig) {
+    set_value(table, "name", sink.name.as_str());
+    set_value(table, "desc", sink.desc.as_str());
+    set_optional(table, "icon", sink.icon.as_deref());
+    if sink.default || table.contains_key("default") {
+        set_value(table, "default", sink.default);
+    }
+}
+
+fn apply_rule(table: &mut Table, rule: &Rule) {
+    set_value(table, "app_id", rule.app_id_pattern.as_str());
+    set_optional(table, "title", rule.title_pattern.as_deref());
+    // Keep an integer position as written if it still says the same thing
+    let unchanged_int = table
+        .get("sink")
+        .and_then(Item::as_integer)
+        .is_some_and(|n| n.to_string() == rule.sink_ref);
+    if !unchanged_int {
+        set_value(table, "sink", rule.sink_ref.as_str());
+    }
+    set_optional(table, "desc", rule.desc.as_deref());
+    match rule.notify {
+        Some(notify) => set_value(table, "notify", notify),
+        None => {
+            table.remove("notify");
+        }
+    }
+}
+
+/// Rebuild the array of tables `key` from `items`.
+///
+/// Each item reuses its original table (`slots[i]`), so the comments above it and on its
+/// lines move with it; new items get fresh tables; tables of removed items are dropped.
+fn rebuild_array<T>(
+    doc: &mut DocumentMut,
+    key: &str,
+    items: &[T],
+    slots: &[Option<usize>],
+    apply: fn(&mut Table, &T),
+) {
+    let originals: Vec<Table> = doc
+        .get(key)
+        .and_then(Item::as_array_of_tables)
+        .map_or_default(|a| a.iter().cloned().collect());
+    // All entries share the first original position so they render in array order
+    let position = originals.iter().filter_map(Table::position).min();
+
+    let mut array = ArrayOfTables::new();
+    for (item, slot) in items.iter().zip(slots) {
+        let mut table = slot
+            .and_then(|i| originals.get(i))
+            .cloned()
+            .unwrap_or_default();
+        apply(&mut table, item);
+        if position.is_some() {
+            table.set_position(position);
+        }
+        array.push(table);
+    }
+
+    if array.is_empty() {
+        doc.remove(key);
+    } else if let Some(existing) = doc.get_mut(key) {
+        *existing = Item::ArrayOfTables(array);
+    } else {
+        doc.insert(key, Item::ArrayOfTables(array));
     }
 }
 
@@ -988,6 +1875,36 @@ mod tests {
            vec![make_rule("firefox", None, "nonexistent")],
            None,
            "no sinks configured")]
+    #[case("empty_sink_name",
+           vec![make_sink("", "Sink 1", true)],
+           vec![],
+           None,
+           "empty name")]
+    #[case("empty_sink_desc",
+           vec![make_sink("sink1", " ", true)],
+           vec![],
+           None,
+           "empty desc")]
+    #[case("numeric_sink_desc",
+           vec![make_sink("sink1", "2", true)],
+           vec![],
+           None,
+           "is a number")]
+    #[case("empty_rule_sink_ref",
+           vec![make_sink("sink1", "Sink 1", true)],
+           vec![make_rule("firefox", None, "")],
+           None,
+           "empty sink reference")]
+    #[case("name_desc_ambiguity",
+           vec![make_sink("alpha", "Speakers", true), make_sink("beta", "alpha", false)],
+           vec![],
+           None,
+           "ambiguous")]
+    #[case("positional_out_of_range",
+           vec![make_sink("sink1", "Sink 1", true)],
+           vec![make_rule("firefox", None, "3")],
+           None,
+           "unknown sink '3'")]
     fn test_validate_rejection_cases(
         #[case] name: &str,
         #[case] sinks: Vec<SinkConfig>,
@@ -1022,6 +1939,12 @@ mod tests {
                 "Log level '{level}' should be valid"
             );
         }
+    }
+
+    #[test]
+    fn test_validate_allows_name_equal_to_own_desc() {
+        let config = make_config(vec![make_sink("same", "same", true)], vec![]);
+        assert!(config.validate().is_ok());
     }
 
     // resolve_sink() tests
@@ -1154,9 +2077,7 @@ mod tests {
             cfg.save_to(&path).unwrap();
 
             let loaded = Config::load_from_path(&path).unwrap();
-            assert_eq!(loaded.sinks.len(), 2);
-            assert!(loaded.resolve_sink("Sink 1").is_some());
-            assert_eq!(loaded.rules.len(), 1);
+            assert_eq!(loaded, cfg);
             assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
         }
         drop(dir);
@@ -1216,75 +2137,539 @@ mod tests {
         assert!(r.is_err());
     }
 
-    // Regex validation tests
-    #[test]
-    fn test_validate_regex_safe_accepts_normal_patterns() {
-        let result = Config::validate_regex_safe("^firefox$", "app_id", 1);
-        assert!(result.is_ok());
+    // ------------------------------------------------------------------------
+    // Regex compilation
+    // ------------------------------------------------------------------------
 
-        let result = Config::validate_regex_safe("(mpv|vlc)", "app_id", 1);
-        assert!(result.is_ok());
-
-        let result = Config::validate_regex_safe(".*steam.*", "title", 1);
-        assert!(result.is_ok());
+    #[rstest]
+    #[case("^firefox$")]
+    #[case("(mpv|vlc)")]
+    #[case("^(.+)+-beta$")]
+    #[case("(.*)*")]
+    #[case("(?i)discord")]
+    fn test_compile_rule_regex_accepts_valid_patterns(#[case] pattern: &str) {
+        assert!(
+            compile_rule_regex(pattern).is_ok(),
+            "{pattern} should compile"
+        );
     }
 
     #[test]
-    fn test_validate_regex_safe_rejects_catastrophic_backtracking() {
-        // Test all dangerous patterns
-        let dangerous = ["(.*)*", "(.*)+", "(.+)+", "(.+)*", "([^x]*)*", "([^x]+)+"];
+    fn test_compile_rule_regex_rejects_oversized_pattern() {
+        let err = compile_rule_regex(r"\w{50000}").expect_err("huge repetition must be rejected");
+        assert!(err.to_string().contains("size limit"), "got: {err}");
+    }
 
-        for pattern in &dangerous {
-            let result = Config::validate_regex_safe(pattern, "app_id", 1);
-            assert!(
-                result.is_err(),
-                "Pattern '{pattern}' should be rejected as potentially catastrophic"
-            );
+    #[test]
+    fn test_load_rejects_oversized_regex_naming_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "c.toml",
+            "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n\n[[rules]]\napp_id = \
+             '\\w{50000}'\nsink = \"A\"\n",
+        );
+        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        assert!(err.contains("Rule 1: invalid app_id regex"), "got: {err}");
+    }
 
-            let err = result.unwrap_err().to_string();
-            assert!(
-                err.contains("dangerous construct"),
-                "Error should mention dangerous constructs, got: {err}"
-            );
+    #[test]
+    fn test_save_rejects_pattern_load_would_reject() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rule = make_rule("firefox", None, "A");
+        // Simulate an editor that compiled with a laxer builder
+        rule.app_id_pattern = r"\w{50000}".to_string();
+        let cfg = make_config(vec![make_sink("a", "A", true)], vec![rule]);
+        let path = dir.path().join("c.toml");
+        assert!(cfg.save_to(&path).is_err());
+        assert!(!path.exists());
+    }
+
+    // ------------------------------------------------------------------------
+    // Parsing: sink refs, unknown fields
+    // ------------------------------------------------------------------------
+
+    fn write(dir: &tempfile::TempDir, name: &str, contents: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        std::fs::write(&path, contents).expect("write test config");
+        path
+    }
+
+    const TWO_SINKS: &str = r#"[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.hdmi"
+desc = "HDMI"
+"#;
+
+    #[test]
+    fn test_sink_ref_accepts_integer_and_strings() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{TWO_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = 2\n\n[[rules]]\napp_id = \"b\"\nsink \
+             = \"1\"\n\n[[rules]]\napp_id = \"c\"\nsink = \"HDMI\"\n\n[[rules]]\napp_id = \
+             \"d\"\nsink = \"alsa_output.speakers\"\n"
+        );
+        let path = write(&dir, "c.toml", &contents);
+        let cfg = Config::load_from_path(&path).expect("int and string refs should load");
+        let refs: Vec<_> = cfg.rules.iter().map(|r| r.sink_ref.as_str()).collect();
+        assert_eq!(refs, ["2", "1", "HDMI", "alsa_output.speakers"]);
+        let targets: Vec<_> = cfg
+            .rules
+            .iter()
+            .map(|r| cfg.resolve_sink(&r.sink_ref).unwrap().desc.as_str())
+            .collect();
+        assert_eq!(targets, ["HDMI", "Speakers", "HDMI", "Speakers"]);
+    }
+
+    #[test]
+    fn test_sink_ref_rejects_other_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{TWO_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = true\n");
+        let path = write(&dir, "c.toml", &contents);
+        let err = Config::load_from_path(&path).unwrap_err().to_string();
+        assert!(
+            err.contains("sink description, node name, or 1-based position"),
+            "{err}"
+        );
+    }
+
+    #[rstest]
+    #[case("[settings]\ncolour = true\n", "colour")]
+    #[case("[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefualt = true\n", "defualt")]
+    #[case(
+        "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n[[rules]]\napp_id = \"x\"\nsink = \
+         \"A\"\ntitel = \"y\"\n",
+        "titel"
+    )]
+    #[case("[setting]\nlog_level = \"info\"\n", "setting")]
+    fn test_unknown_fields_rejected_with_key_and_path(#[case] contents: &str, #[case] key: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "typo.toml", contents);
+        let err = Config::load_from_path(&path).unwrap_err().to_string();
+        assert!(err.contains(&format!("unknown field `{key}`")), "{err}");
+        assert!(err.contains(&path.display().to_string()), "{err}");
+    }
+
+    #[test]
+    fn test_load_missing_file_errors_without_creating() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pwsw").join("config.toml");
+        let err = Config::load_from_path(&path).unwrap_err();
+        assert!(err.downcast_ref::<ConfigNotFound>().is_some());
+        assert!(err.to_string().contains("pwsw init"), "{err}");
+        assert!(!path.exists());
+        assert!(!dir.path().join("pwsw").exists());
+    }
+
+    #[test]
+    fn test_default_template_loads_and_init_refuses_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pwsw").join("config.toml");
+        Config::init_at(&path, false).expect("init into empty dir");
+        let cfg = Config::load_from_path(&path).expect("template must load");
+        assert_eq!(cfg.sinks, Vec::<SinkConfig>::new());
+        assert_eq!(cfg.settings, Settings::default());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        std::fs::write(&path, "# mine\n").unwrap();
+        assert!(Config::init_at(&path, false).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
+        Config::init_at(&path, true).expect("forced init");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("pwsw").join("config.toml.bak")).unwrap(),
+            "# mine\n"
+        );
+    }
+
+    // ------------------------------------------------------------------------
+    // Mutation methods
+    // ------------------------------------------------------------------------
+
+    fn three_sinks() -> Config {
+        make_config(
+            vec![
+                make_sink("n.speakers", "Speakers", true),
+                make_sink("n.hdmi", "HDMI", false),
+                make_sink("n.phones", "Headphones", false),
+            ],
+            vec![
+                make_rule("by_desc", None, "HDMI"),
+                make_rule("by_name", None, "n.hdmi"),
+                make_rule("by_pos", None, "3"),
+            ],
+        )
+    }
+
+    #[test]
+    fn test_add_sink_rejects_duplicates_and_defaults_first() {
+        let mut cfg = make_config(vec![], vec![]);
+        cfg.add_sink(make_sink("n.a", "A", false)).unwrap();
+        assert!(cfg.sinks[0].default, "first sink becomes default");
+
+        let err = cfg.add_sink(make_sink("n.a", "Other", false)).unwrap_err();
+        assert!(err.to_string().contains("node name 'n.a'"), "{err}");
+        let err = cfg.add_sink(make_sink("n.b", "A", false)).unwrap_err();
+        assert!(err.to_string().contains("description 'A'"), "{err}");
+        assert_eq!(cfg.sinks.len(), 1, "rejected adds change nothing");
+
+        cfg.add_sink(make_sink("n.b", "B", true)).unwrap();
+        assert!(!cfg.sinks[0].default && cfg.sinks[1].default);
+    }
+
+    #[test]
+    fn test_add_sink_rejects_ambiguous_name() {
+        let mut cfg = make_config(vec![make_sink("n.a", "A", true)], vec![]);
+        let err = cfg.add_sink(make_sink("A", "B", false)).unwrap_err();
+        assert!(err.to_string().contains("ambiguous"), "{err}");
+        assert_eq!(cfg.sinks.len(), 1);
+    }
+
+    #[test]
+    fn test_update_sink_cascades_renames_into_rules() {
+        let mut cfg = three_sinks();
+        let mut hdmi = cfg.sinks[1].clone();
+        hdmi.desc = "Television".to_string();
+        hdmi.name = "n.tv".to_string();
+        cfg.update_sink(1, hdmi).unwrap();
+
+        let refs: Vec<_> = cfg.rules.iter().map(|r| r.sink_ref.as_str()).collect();
+        assert_eq!(refs, ["Television", "n.tv", "3"]);
+        for rule in &cfg.rules[..2] {
+            assert_eq!(cfg.resolve_sink(&rule.sink_ref).unwrap().name, "n.tv");
         }
     }
 
     #[test]
-    fn test_validate_regex_safe_embedded_in_larger_pattern() {
-        // Dangerous pattern embedded in larger context should still be caught
-        let result = Config::validate_regex_safe("^firefox(.*)*$", "app_id", 1);
-        assert!(result.is_err());
+    fn test_update_sink_keeps_exactly_one_default() {
+        let mut cfg = three_sinks();
+        let mut phones = cfg.sinks[2].clone();
+        phones.default = true;
+        cfg.update_sink(2, phones).unwrap();
+        let defaults: Vec<_> = cfg.sinks.iter().map(|s| s.default).collect();
+        assert_eq!(defaults, [false, false, true]);
 
-        let result = Config::validate_regex_safe("steam|(.+)+|mpv", "app_id", 1);
-        assert!(result.is_err());
+        // Un-defaulting the default falls back to the first sink
+        let mut phones = cfg.sinks[2].clone();
+        phones.default = false;
+        cfg.update_sink(2, phones).unwrap();
+        let defaults: Vec<_> = cfg.sinks.iter().map(|s| s.default).collect();
+        assert_eq!(defaults, [true, false, false]);
     }
 
     #[test]
-    fn test_validate_with_catastrophic_regex() {
-        // Integration test: config validation should reject catastrophic patterns
-        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![make_rule(
-            "(.*)*", None, "sink1",
-        )]);
-
-        let result = config.validate();
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("dangerous"));
+    fn test_update_sink_rejects_duplicate() {
+        let mut cfg = three_sinks();
+        let mut hdmi = cfg.sinks[1].clone();
+        hdmi.desc = "Speakers".to_string();
+        assert!(cfg.update_sink(1, hdmi).is_err());
+        assert_eq!(cfg.sinks[1].desc, "HDMI");
     }
 
     #[test]
-    fn test_validate_catastrophic_in_title_pattern() {
-        // Test that title patterns are also validated
-        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![make_rule(
-            "firefox",
-            Some("(.+)+"),
-            "sink1",
-        )]);
+    fn test_remove_sink_refuses_when_referenced() {
+        let mut cfg = three_sinks();
+        let err = cfg.remove_sink(1).unwrap_err().to_string();
+        assert!(err.contains("Cannot remove sink 'HDMI'"), "{err}");
+        assert!(
+            err.contains("1 (by_desc)") && err.contains("2 (by_name)"),
+            "{err}"
+        );
+        let err = cfg.remove_sink(2).unwrap_err().to_string();
+        assert!(err.contains("3 (by_pos)"), "{err}");
+        assert_eq!(cfg.sinks.len(), 3);
+    }
 
-        let result = config.validate();
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("dangerous"));
-        assert!(err.contains("title"));
+    #[test]
+    fn test_remove_sink_rewrites_shifted_positional_refs() {
+        let mut cfg = three_sinks();
+        cfg.rules.clear();
+        cfg.add_rule(make_rule("p", None, "n.phones")).unwrap();
+        // Positional ref to the last sink, which shifts when the first is removed
+        cfg.rules[0].sink_ref = "3".to_string();
+        cfg.remove_sink(0).unwrap();
+        assert_eq!(cfg.rules[0].sink_ref, "Headphones");
+        assert!(
+            cfg.sinks[0].default,
+            "removing the default promotes the first sink"
+        );
+    }
+
+    #[test]
+    fn test_move_sink_rewrites_positional_refs() {
+        let mut cfg = three_sinks();
+        cfg.rules.push(make_rule("first", None, "1"));
+        cfg.move_sink(2, 0).unwrap();
+        let names: Vec<_> = cfg.sinks.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["n.phones", "n.speakers", "n.hdmi"]);
+        let targets: Vec<_> = cfg
+            .rules
+            .iter()
+            .map(|r| cfg.resolve_sink(&r.sink_ref).unwrap().name.as_str())
+            .collect();
+        assert_eq!(targets, ["n.hdmi", "n.hdmi", "n.phones", "n.speakers"]);
+        assert_eq!(cfg.rules[2].sink_ref, "Headphones");
+        assert_eq!(cfg.rules[3].sink_ref, "Speakers");
+    }
+
+    #[test]
+    fn test_rule_methods_store_desc_refs() {
+        let mut cfg = three_sinks();
+        cfg.add_rule(make_rule("new", None, "n.phones")).unwrap();
+        assert_eq!(cfg.rules[3].sink_ref, "Headphones");
+        cfg.update_rule(2, make_rule("by_pos", None, "2")).unwrap();
+        assert_eq!(cfg.rules[2].sink_ref, "HDMI");
+        assert!(cfg.add_rule(make_rule("x", None, "nope")).is_err());
+        assert!(cfg.add_rule(make_rule("", None, "HDMI")).is_err());
+        assert_eq!(cfg.rules.len(), 4);
+
+        cfg.move_rule(3, 0).unwrap();
+        assert_eq!(cfg.rules[0].app_id_pattern, "new");
+        cfg.remove_rule(0).unwrap();
+        assert_eq!(cfg.rules.len(), 3);
+        assert!(cfg.remove_rule(9).is_err());
+    }
+
+    #[test]
+    fn test_set_default_sink() {
+        let mut cfg = three_sinks();
+        cfg.set_default_sink(1).unwrap();
+        assert_eq!(cfg.get_default_sink().unwrap().name, "n.hdmi");
+        assert!(cfg.set_default_sink(7).is_err());
+    }
+
+    // ------------------------------------------------------------------------
+    // Saving: validation, comments, symlinks, backups, external edits
+    // ------------------------------------------------------------------------
+
+    #[test]
+    fn test_save_refuses_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        let cfg = make_config(
+            vec![make_sink("a", "A", true), make_sink("b", "B", true)],
+            vec![],
+        );
+        let err = cfg.save_to(&path).unwrap_err().to_string();
+        assert!(err.contains("default sinks found"), "{err}");
+        assert!(!path.exists());
+    }
+
+    const COMMENTED: &str = r#"# My pwsw config
+# (hand written)
+
+[settings]
+notify_manual = false # I find these noisy
+log_level = "debug"
+
+# --- outputs ---
+[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers" # desk speakers
+default = true
+
+# the TV
+[[sinks]]
+name = "alsa_output.hdmi"
+desc = "HDMI"
+
+# --- rules ---
+[[rules]]
+app_id = "^mpv$" # video player
+sink = 2
+
+# games
+[[rules]]
+app_id = "^steam$"
+sink = "HDMI"
+
+# trailing notes survive too
+"#;
+
+    #[test]
+    fn test_save_unchanged_is_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", COMMENTED);
+        let cfg = Config::load_from_path(&path).unwrap();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED);
+    }
+
+    #[test]
+    fn test_save_preserves_comments_through_edits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", COMMENTED);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+
+        cfg.settings.notify_manual = true;
+        cfg.settings.match_by_index = true;
+        let mut hdmi = cfg.sinks[1].clone();
+        hdmi.desc = "Television".to_string();
+        cfg.update_sink(1, hdmi).unwrap();
+        cfg.add_sink(make_sink("bluez_output.phones", "Headphones", false))
+            .unwrap();
+        cfg.add_rule(make_rule("^spotify$", None, "Headphones"))
+            .unwrap();
+        cfg.save_to(&path).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        for needle in [
+            "# My pwsw config\n# (hand written)\n",
+            "notify_manual = true # I find these noisy",
+            "log_level = \"debug\"",
+            "match_by_index = true",
+            "# --- outputs ---\n[[sinks]]",
+            "desc = \"Speakers\" # desk speakers",
+            "# the TV\n[[sinks]]\nname = \"alsa_output.hdmi\"\ndesc = \"Television\"",
+            "# --- rules ---",
+            "app_id = \"^mpv$\" # video player\nsink = 2\n",
+            "# games\n[[rules]]\napp_id = \"^steam$\"\nsink = \"Television\"",
+            "# trailing notes survive too",
+            "name = \"bluez_output.phones\"",
+            "app_id = \"^spotify$\"\nsink = \"Headphones\"",
+        ] {
+            assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+        }
+        // New sink is placed with the other sinks, before the rules
+        let phones = out.find("bluez_output.phones").unwrap();
+        assert!(phones < out.find("# --- rules ---").unwrap(), "{out}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_save_moves_and_removes_entries_with_their_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", COMMENTED);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.move_rule(1, 0).unwrap();
+        cfg.move_sink(1, 0).unwrap();
+        cfg.remove_rule(1).unwrap(); // the mpv rule
+        cfg.save_to(&path).unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("^mpv$"), "{out}");
+        assert!(!out.contains("video player"), "{out}");
+        let tv = out.find("# the TV").unwrap();
+        let speakers = out.find("desk speakers").unwrap();
+        assert!(tv < speakers, "moved sink keeps its comment:\n{out}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_save_after_direct_vec_mutation_matches_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", COMMENTED);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.rules.clear();
+        cfg.sinks.remove(0);
+        cfg.sinks[0].default = true;
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# the TV\n[[sinks]]"), "{out}");
+        assert!(!out.contains("[[rules]]"), "{out}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_save_through_symlink_updates_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = write(&dir, "real.toml", TWO_SINKS);
+        let link_dir = dir.path().join("pwsw");
+        std::fs::create_dir(&link_dir).unwrap();
+        let link = link_dir.join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut cfg = Config::load_from_path(&link).unwrap();
+        cfg.set_default_sink(1).unwrap();
+        cfg.save_to(&link).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "symlink must survive the save"
+        );
+        assert_eq!(std::fs::read_link(&link).unwrap(), real);
+        let loaded = Config::load_from_path(&real).unwrap();
+        assert_eq!(loaded.get_default_sink().unwrap().desc, "HDMI");
+        // Backup sits next to the path that was saved
+        assert_eq!(
+            std::fs::read_to_string(link_dir.join("config.toml.bak")).unwrap(),
+            TWO_SINKS
+        );
+    }
+
+    #[test]
+    fn test_backup_written_next_to_custom_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "custom.toml", TWO_SINKS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.settings.log_level = "warn".to_string();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("custom.toml.bak")).unwrap(),
+            TWO_SINKS
+        );
+    }
+
+    #[test]
+    fn test_save_refuses_when_file_changed_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", TWO_SINKS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        let external = format!("{TWO_SINKS}# edited in vim\n");
+        std::fs::write(&path, &external).unwrap();
+
+        cfg.settings.log_level = "warn".to_string();
+        let err = cfg.save_to(&path).unwrap_err();
+        assert!(
+            err.downcast_ref::<ConfigModifiedOnDisk>().is_some(),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+
+        cfg.save_impl(&path, true).expect("forced save overwrites");
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("log_level = \"warn\"")
+        );
+    }
+
+    #[test]
+    fn test_consecutive_saves_through_clones_are_not_conflicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", TWO_SINKS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        // The TUI saves a clone in the background, then keeps editing the original
+        let snapshot = cfg.clone();
+        cfg.settings.log_level = "warn".to_string();
+        snapshot.save_to(&path).unwrap();
+        cfg.save_to(&path)
+            .expect("second save must not see its own write as a conflict");
+        cfg.add_sink(make_sink("n.x", "X", false)).unwrap();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_fresh_config_generates_complete_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.toml");
+        let cfg = three_sinks();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.starts_with("[settings]\n"), "{out}");
+        assert!(out.contains("log_level = \"info\""), "{out}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
     }
 }

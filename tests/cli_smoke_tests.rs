@@ -181,22 +181,95 @@ fn cli_invalid_command_shows_error() {
 }
 
 #[test]
-fn cli_validate_creates_default_config_in_sandbox() {
+fn cli_validate_reports_missing_config_without_creating_it() {
     let sb = Sandbox::new();
     let output = run(sb.cmd().arg("validate"));
 
+    assert_exit(&output, 1);
+    assert_stderr_contains(&output, "Config file not found");
+    assert_stderr_contains(&output, &sb.default_config_path().display().to_string());
+    assert_stderr_contains(&output, "pwsw init");
+    assert!(
+        !sb.dir("config").join("pwsw").exists(),
+        "validate must not create a config"
+    );
+}
+
+#[test]
+fn cli_status_and_bare_invocation_do_not_create_config() {
+    let sb = Sandbox::new();
+    for args in [&[][..], &["status"][..]] {
+        let output = run(sb.cmd().args(args));
+        assert_exit(&output, 1);
+        assert_stderr_contains(&output, "Config file not found");
+    }
+    assert!(!sb.dir("config").join("pwsw").exists());
+}
+
+#[test]
+fn cli_init_writes_template_and_refuses_overwrite() {
+    let sb = Sandbox::new();
+    let path = sb.default_config_path();
+
+    let output = run(sb.cmd().arg("init"));
     assert_exit(&output, 0);
-    // The shipped default has no sinks: validate warns but succeeds without a daemon
+    assert_stderr_contains(&output, "Created default config at");
+    let template = std::fs::read_to_string(&path).expect("init should write the config");
+    assert!(
+        template.contains("# [[sinks]]"),
+        "template keeps its examples"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    // The template is a valid (sink-less) config
+    let output = run(sb.cmd().arg("validate"));
+    assert_exit(&output, 0);
     assert_stderr_contains(&output, "No sinks configured - daemon will not start");
-    assert!(
-        sb.default_config_path().is_file(),
-        "default config should be created at the sandbox XDG path"
+    assert!(stdout(&output).contains(&path.display().to_string()));
+
+    // A second init refuses and leaves the file alone
+    std::fs::write(&path, VALID_CONFIG).unwrap();
+    let output = run(sb.cmd().arg("init"));
+    assert_exit(&output, 1);
+    assert_stderr_contains(&output, "Config already exists");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), VALID_CONFIG);
+
+    // --force replaces it and keeps a backup
+    let output = run(sb.cmd().args(["init", "--force"]));
+    assert_exit(&output, 0);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
+    assert_eq!(
+        std::fs::read_to_string(path.with_file_name("config.toml.bak")).unwrap(),
+        VALID_CONFIG
     );
-    let out = stdout(&output);
-    assert!(
-        out.contains(&sb.default_config_path().display().to_string()),
-        "validate should print the config path in use:\n{out}"
-    );
+}
+
+#[test]
+fn cli_init_honours_config_flag() {
+    let sb = Sandbox::new();
+    let path = sb.dir("files").join("custom.toml");
+
+    let output = run(sb.cmd().arg("--config").arg(&path).arg("init"));
+    assert_exit(&output, 0);
+    assert!(path.is_file());
+    sb.assert_default_locations_untouched();
+}
+
+#[test]
+fn cli_validate_reports_unknown_key() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("typo.toml", "[settings]\nlog_levle = \"info\"\n");
+
+    let output = run(sb.cmd().arg("--config").arg(&config).arg("validate"));
+
+    assert_exit(&output, 1);
+    assert_stderr_contains(&output, "unknown field `log_levle`");
+    assert_stderr_contains(&output, &config.display().to_string());
 }
 
 #[test]
@@ -355,6 +428,24 @@ fn cli_status_reports_missing_pipewire_tools() {
     assert_exit(&output, 1);
     assert_stderr_contains(&output, "Failed to run `pw-dump`");
     sb.assert_default_locations_untouched();
+}
+
+#[test]
+fn cli_list_sinks_warns_when_config_fails_to_load() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("bad.toml", TWO_DEFAULTS_CONFIG);
+    // No `PipeWire` tools on PATH: the command fails afterwards, but the warning comes first
+    let empty_bin = sb.dir("cache");
+
+    let output = run(sb
+        .cmd()
+        .env("PATH", &empty_bin)
+        .arg("--config")
+        .arg(&config)
+        .arg("list-sinks"));
+
+    assert_stderr_contains(&output, "Config not loaded");
+    assert_stderr_contains(&output, "2 default sinks found");
 }
 
 /// Sanity check for the helper itself: the sandbox must not inherit session variables.

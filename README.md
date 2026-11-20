@@ -59,9 +59,10 @@ cargo install --path .
 # 3. Discover audio outputs
 pwsw list-sinks
 
-# 4. Edit config
-pwsw validate                         # Creates default config if missing
+# 4. Create and edit config (or run `pwsw tui` for guided setup)
+pwsw init                             # Writes a commented template
 $EDITOR ~/.config/pwsw/config.toml
+pwsw validate                         # Check it
 
 # 5. Start daemon
 pwsw daemon
@@ -102,10 +103,12 @@ Stop daemon gracefully.
 ```bash
 pwsw test-rule "^mpv$"
 pwsw validate
+pwsw init
 pwsw list-sinks
 ```
 - `test-rule`: Test regex against tracked windows (requires daemon)
-- `validate`: Check config syntax (no daemon needed)
+- `validate`: Check config syntax (no daemon needed; reports a missing config instead of creating one)
+- `init`: Write the commented default config (refuses to overwrite; `--force` replaces it and keeps `config.toml.bak`)
 - `list-sinks`: List audio outputs (no daemon needed, supports `--json`)
 
 **Manual sink control:**
@@ -123,6 +126,12 @@ No daemon needed. Useful for keybindings.
 ## Configuration
 
 **Location:** `~/.config/pwsw/config.toml` (override with `pwsw --config <PATH>` or the `PWSW_CONFIG` environment variable)
+
+Create it with `pwsw init` or `pwsw tui`; other commands never create it. Unknown keys
+(typos such as `defualt = true`) are rejected with an error naming the key and the file.
+When the TUI saves, your comments and formatting are kept, the previous version is copied
+to `config.toml.bak`, a symlinked config stays a symlink, and the save is refused if the
+file was changed on disk since the TUI loaded it.
 
 ### Settings
 
@@ -181,13 +190,15 @@ notify = false
 
 [[rules]]
 app_id = "^mpv$"
-sink = 2
+sink = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 ```
 
 **Fields:**
 - `app_id`: Regex pattern for window app_id (required)
 - `title`: Regex pattern for window title (optional)
-- `sink`: Reference by desc, name, or 1-indexed position
+- `sink`: The target sink's `desc` (recommended, what the TUI writes) or node `name`.
+  A 1-indexed position (`sink = 2`) still works but is deprecated (it logs a warning and
+  silently retargets if sinks are reordered by hand)
 - `desc`: Custom notification label (optional)
 - `notify`: Override global notify_rules setting (optional)
 

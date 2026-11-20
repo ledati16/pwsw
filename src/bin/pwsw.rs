@@ -96,7 +96,19 @@ async fn main() -> Result<()> {
         Some(Command::ListSinks { json }) => {
             init_logging();
 
-            let config = Config::load().ok();
+            // The sink list is useful without a config, but say why none is shown
+            let config = match Config::load() {
+                Ok(config) => Some(config),
+                Err(e) => {
+                    use crossterm::style::Stylize;
+                    eprintln!(
+                        "{} {}\n",
+                        "⚠".yellow(),
+                        format!("Config not loaded, configured sinks not shown: {e:#}").yellow()
+                    );
+                    None
+                }
+            };
             commands::list_sinks(config.as_ref(), json)
         }
 
@@ -115,6 +127,13 @@ async fn main() -> Result<()> {
             }
 
             config.print_summary();
+            Ok(())
+        }
+
+        Some(Command::Init { force }) => {
+            init_logging();
+            let path = Config::init(force)?;
+            Config::print_init_guidance(&path);
             Ok(())
         }
 

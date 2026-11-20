@@ -34,7 +34,10 @@ It can also be used as a command-line client to query the daemon status, list wi
 :   Test a regex pattern against current windows to see what would match. See **pwsw**(5) for details on regex syntax.
 
 **validate**
-:   Validate the configuration file syntax and sink references.
+:   Validate the configuration file syntax and sink references. Reports a missing file (it does not create one).
+
+**init** [*--force*]
+:   Write the commented default configuration file. Refuses if a file already exists; with **--force** it is replaced and the old file kept as *config.toml.bak*. **pwsw tui** also creates this file on first run; no other command does.
 
 **set-sink** *SINK*
 :   Set audio output by description, node name, or 1-indexed position (e.g., "1", "2"). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink.
@@ -91,7 +94,7 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 
 ## OPTIONS
 **--config** *PATH*
-:   Use *PATH* as the configuration file instead of the default location. Takes precedence over **PWSW_CONFIG**. Accepted before or after the command; when **pwsw** starts the daemon itself (background mode or the TUI), the same path is passed on. A default configuration is created at *PATH* if it does not exist.
+:   Use *PATH* as the configuration file instead of the default location. Takes precedence over **PWSW_CONFIG**. Accepted before or after the command; when **pwsw** starts the daemon itself (background mode or the TUI), the same path is passed on. Use **pwsw --config** *PATH* **init** to create a configuration there.
 
 **-h**, **--help**
 :   Print help information.

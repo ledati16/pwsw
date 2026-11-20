@@ -41,18 +41,7 @@ mod daemon_log_tests {
         const MAX_LOG_LINES: usize = 500;
 
         // Create a minimal config for App
-        let config = Config {
-            sinks: vec![],
-            rules: vec![],
-            settings: crate::config::Settings {
-                default_on_startup: true,
-                set_smart_toggle: true,
-                notify_manual: true,
-                notify_rules: true,
-                match_by_index: false,
-                log_level: "info".to_string(),
-            },
-        };
+        let config = Config::new(crate::config::Settings::default(), vec![], vec![]);
         let mut app = App::with_config(config);
 
         // Simulate 1000-line burst
@@ -86,18 +75,7 @@ mod daemon_log_tests {
     fn test_daemon_logs_incremental_growth() {
         const MAX_LOG_LINES: usize = 500;
 
-        let config = Config {
-            sinks: vec![],
-            rules: vec![],
-            settings: crate::config::Settings {
-                default_on_startup: true,
-                set_smart_toggle: true,
-                notify_manual: true,
-                notify_rules: true,
-                match_by_index: false,
-                log_level: "info".to_string(),
-            },
-        };
+        let config = Config::new(crate::config::Settings::default(), vec![], vec![]);
         let mut app = App::with_config(config);
 
         // Add 300 lines

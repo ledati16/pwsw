@@ -13,10 +13,11 @@ use clap::{Parser, Subcommand};
 #[command(about = "PipeWire Switcher - Automatically switch audio sinks based on active windows")]
 #[command(after_help = "\
 GETTING STARTED:
-  1. pwsw validate         Check config file syntax
+  1. pwsw init             Create a commented config (or use: pwsw tui)
   2. pwsw list-sinks       See available audio outputs
-  3. pwsw daemon           Start the daemon
-  4. pwsw                  Check status
+  3. pwsw validate         Check config file syntax
+  4. pwsw daemon           Start the daemon
+  5. pwsw                  Check status
 
 DAEMON CONTROL:
   daemon               Start daemon in background
@@ -32,6 +33,7 @@ QUERYING (requires running daemon):
 QUERYING (no daemon needed):
   list-sinks          List available PipeWire audio outputs
   validate            Check config file syntax
+  init [--force]      Write the commented default config
 
 MANUAL SINK CONTROL (no daemon needed):
   set-sink SINK       Switch to specific sink (by desc, name, or position 1/2/3)
@@ -96,6 +98,13 @@ pub enum Command {
 
     /// Check config file syntax (no daemon needed)
     Validate,
+
+    /// Write the commented default config file (refuses to overwrite without `--force`)
+    Init {
+        /// Replace an existing config (the old file is kept as `<name>.bak`)
+        #[arg(long)]
+        force: bool,
+    },
 
     /// Test regex pattern against all windows (`app_id` & title)
     TestRule {

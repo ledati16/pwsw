@@ -561,6 +561,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
                 if now.duration_since(last_config_reload) >= Duration::from_millis(CONFIG_DEBOUNCE_MS) {
                     last_config_reload = now;
                     info!("Config file changed, attempting reload...");
+                    // Never creates a file; a missing file is usually an editor's
+                    // rename-save in progress and is ignored below
                     match Config::load() {
                         Ok(new_config) => {
                             // Daemon requires sinks to operate - reject config with no sinks
@@ -589,6 +591,9 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
                             // Drain any pending events that occurred during processing (e.g. from atomic save steps)
                             while config_rx.try_recv().is_ok() {}
                         },
+                        Err(e) if e.downcast_ref::<crate::config::ConfigNotFound>().is_some() => {
+                            info!("Config file missing (save in progress?); keeping current config");
+                        }
                         Err(e) => {
                             error!("Failed to reload config: {e:#}");
                             if state.config.settings.notify_manual {
@@ -694,7 +699,7 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
             Response::Windows { windows }
         }
 
-        Request::TestRule { pattern } => match regex::Regex::new(&pattern) {
+        Request::TestRule { pattern } => match crate::config::compile_rule_regex(&pattern) {
             Ok(regex) => {
                 let matches = ctx
                     .all_windows

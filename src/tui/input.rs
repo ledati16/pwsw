@@ -1,13 +1,12 @@
 //! Input handling for keyboard events
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use regex::Regex;
 use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, DaemonAction, Screen};
 use super::screens::rules::RulesMode;
 use super::screens::sinks::SinksMode;
-use crate::config::{Rule, SinkConfig};
+use crate::config::{Rule, SinkConfig, compile_rule_regex};
 
 /// Handle a single input event and update app state
 ///
@@ -481,20 +480,28 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                 (KeyCode::Up, KeyModifiers::SHIFT) => {
                     let idx = app.sinks_screen.selected;
                     if idx > 0 && idx < app.config.sinks.len() {
-                        app.config.sinks.swap(idx, idx - 1);
-                        app.sinks_screen.selected = idx - 1;
-                        app.sinks_screen.update_display_descs(&app.config.sinks);
-                        app.mark_dirty();
+                        match app.config.move_sink(idx, idx - 1) {
+                            Ok(()) => {
+                                app.sinks_screen.selected = idx - 1;
+                                app.sinks_screen.update_display_descs(&app.config.sinks);
+                                app.mark_dirty();
+                            }
+                            Err(e) => app.set_status(format!("Cannot move sink: {e}")),
+                        }
                     }
                 }
                 // Shift+Down: Move sink down in list
                 (KeyCode::Down, KeyModifiers::SHIFT) => {
                     let idx = app.sinks_screen.selected;
                     if idx + 1 < app.config.sinks.len() {
-                        app.config.sinks.swap(idx, idx + 1);
-                        app.sinks_screen.selected = idx + 1;
-                        app.sinks_screen.update_display_descs(&app.config.sinks);
-                        app.mark_dirty();
+                        match app.config.move_sink(idx, idx + 1) {
+                            Ok(()) => {
+                                app.sinks_screen.selected = idx + 1;
+                                app.sinks_screen.update_display_descs(&app.config.sinks);
+                                app.mark_dirty();
+                            }
+                            Err(e) => app.set_status(format!("Cannot move sink: {e}")),
+                        }
                     }
                 }
                 (KeyCode::Char('a'), KeyModifiers::NONE) => {
@@ -513,15 +520,14 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     // Toggle default status
                     let idx = app.sinks_screen.selected;
                     if idx < app.config.sinks.len() {
-                        // Clear all defaults first
-                        for sink in &mut app.config.sinks {
-                            sink.default = false;
+                        match app.config.set_default_sink(idx) {
+                            Ok(()) => {
+                                // Update caches
+                                app.sinks_screen.update_display_descs(&app.config.sinks);
+                                app.mark_dirty();
+                            }
+                            Err(e) => app.set_status(format!("Cannot set default: {e}")),
                         }
-                        // Set selected as default
-                        app.config.sinks[idx].default = true;
-                        // Update caches
-                        app.sinks_screen.update_display_descs(&app.config.sinks);
-                        app.mark_dirty();
                     }
                 }
                 (KeyCode::Enter, KeyModifiers::NONE) if !app.config.sinks.is_empty() => {
@@ -539,19 +545,11 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     // Confirm deletion
                     let idx = app.sinks_screen.selected;
                     if idx < app.config.sinks.len() {
-                        // Prevent deleting last sink if rules exist (rules need sinks to resolve)
-                        if app.config.sinks.len() == 1 && !app.config.rules.is_empty() {
-                            app.set_status("Cannot delete last sink while rules exist".to_string());
+                        // Refuses (with the referencing rules named) if any rule uses it
+                        if let Err(e) = app.config.remove_sink(idx) {
+                            app.set_status(format!("{e}"));
                             app.sinks_screen.cancel();
                             return;
-                        }
-
-                        let was_default = app.config.sinks[idx].default;
-                        app.config.sinks.remove(idx);
-
-                        // If we deleted the default and there are sinks left, make first one default
-                        if was_default && !app.config.sinks.is_empty() {
-                            app.config.sinks[0].default = true;
                         }
 
                         // Adjust selection
@@ -690,7 +688,7 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 return;
             }
 
-            let mut new_sink = SinkConfig {
+            let new_sink = SinkConfig {
                 name: app.sinks_screen.editor.name.value().to_string(),
                 desc: app.sinks_screen.editor.desc.value().to_string(),
                 icon: if app.sinks_screen.editor.icon.value().is_empty() {
@@ -701,37 +699,22 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 default: app.sinks_screen.editor.default,
             };
 
-            // Force first sink to be default (user doesn't need to think about it)
-            if app.config.sinks.is_empty() {
-                new_sink.default = true;
-            }
-
-            if let Some(idx) = app.sinks_screen.editing_index {
-                // Editing existing - clear other defaults if this becomes default
-                if new_sink.default {
-                    for (i, sink) in app.config.sinks.iter_mut().enumerate() {
-                        if i != idx {
-                            sink.default = false;
-                        }
-                    }
-                }
-                app.config.sinks[idx] = new_sink;
-                app.set_status("Sink updated".to_string());
+            // The config methods keep the invariants: exactly one default (the first sink
+            // added becomes it), unique names/descs, and rules following renames.
+            let result = if let Some(idx) = app.sinks_screen.editing_index {
+                app.config
+                    .update_sink(idx, new_sink)
+                    .map(|()| "Sink updated")
             } else {
-                // Adding new - clear other defaults if this is default
-                if new_sink.default {
-                    for sink in &mut app.config.sinks {
-                        sink.default = false;
-                    }
+                app.config.add_sink(new_sink).map(|()| "Sink added")
+            };
+            match result {
+                Ok(msg) => app.set_status(msg.to_string()),
+                Err(e) => {
+                    // Keep the editor open so the user can fix the input
+                    app.set_status(format!("{e}"));
+                    return;
                 }
-                app.config.sinks.push(new_sink);
-                app.set_status("Sink added".to_string());
-            }
-
-            // Ensure exactly one default exists (safety net for edge cases)
-            if !app.config.sinks.is_empty() && !app.config.sinks.iter().any(|s| s.default) {
-                app.config.sinks[0].default = true;
-                app.set_status("First sink set as default".to_string());
             }
 
             // Update cached display descriptions
@@ -778,18 +761,26 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                 (KeyCode::Up, KeyModifiers::SHIFT) => {
                     let idx = app.rules_screen.selected;
                     if idx > 0 && idx < app.config.rules.len() {
-                        app.config.rules.swap(idx, idx - 1);
-                        app.rules_screen.selected = idx - 1;
-                        app.mark_dirty();
+                        match app.config.move_rule(idx, idx - 1) {
+                            Ok(()) => {
+                                app.rules_screen.selected = idx - 1;
+                                app.mark_dirty();
+                            }
+                            Err(e) => app.set_status(format!("Cannot move rule: {e}")),
+                        }
                     }
                 }
                 // Shift+Down: Move rule down in list
                 (KeyCode::Down, KeyModifiers::SHIFT) => {
                     let idx = app.rules_screen.selected;
                     if idx + 1 < app.config.rules.len() {
-                        app.config.rules.swap(idx, idx + 1);
-                        app.rules_screen.selected = idx + 1;
-                        app.mark_dirty();
+                        match app.config.move_rule(idx, idx + 1) {
+                            Ok(()) => {
+                                app.rules_screen.selected = idx + 1;
+                                app.mark_dirty();
+                            }
+                            Err(e) => app.set_status(format!("Cannot move rule: {e}")),
+                        }
                     }
                 }
                 (KeyCode::Char('a'), KeyModifiers::NONE) => {
@@ -827,7 +818,11 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
             KeyCode::Enter => {
                 let idx = app.rules_screen.selected;
                 if idx < app.config.rules.len() {
-                    app.config.rules.remove(idx);
+                    if let Err(e) = app.config.remove_rule(idx) {
+                        app.set_status(format!("{e}"));
+                        app.rules_screen.cancel();
+                        return;
+                    }
 
                     if app.rules_screen.selected >= app.config.rules.len()
                         && !app.config.rules.is_empty()
@@ -1007,8 +1002,9 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 return;
             }
 
-            // Validate regexes
-            // Validate regexes: prefer using compiled caches when available
+            // Validate regexes: prefer the compiled caches (refreshed to match the current
+            // text), compiled with the same builder config loading uses
+            app.rules_screen.editor.ensure_compiled();
             let app_id_regex = match app
                 .rules_screen
                 .editor
@@ -1017,7 +1013,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 .map(std::convert::AsRef::as_ref)
             {
                 Some(r) => r.clone(),
-                None => match Regex::new(app.rules_screen.editor.app_id_pattern.value()) {
+                None => match compile_rule_regex(app.rules_screen.editor.app_id_pattern.value()) {
                     Ok(r) => r,
                     Err(e) => {
                         app.set_status(format!("Invalid app_id regex: {e}"));
@@ -1037,7 +1033,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             {
                 Some(r.clone())
             } else {
-                match Regex::new(app.rules_screen.editor.title_pattern.value()) {
+                match compile_rule_regex(app.rules_screen.editor.title_pattern.value()) {
                     Ok(r) => Some(r),
                     Err(e) => {
                         app.set_status(format!("Invalid title regex: {e}"));
@@ -1064,12 +1060,21 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 },
             };
 
-            if let Some(idx) = app.rules_screen.editing_index {
-                app.config.rules[idx] = new_rule;
-                app.set_status("Rule updated".to_string());
+            // Stored with a `desc` sink reference; refused if it would make the config invalid
+            let result = if let Some(idx) = app.rules_screen.editing_index {
+                app.config
+                    .update_rule(idx, new_rule)
+                    .map(|()| "Rule updated")
             } else {
-                app.config.rules.push(new_rule);
-                app.set_status("Rule added".to_string());
+                app.config.add_rule(new_rule).map(|()| "Rule added")
+            };
+            match result {
+                Ok(msg) => app.set_status(msg.to_string()),
+                Err(e) => {
+                    // Keep the editor open so the user can fix the input
+                    app.set_status(format!("{e}"));
+                    return;
+                }
             }
 
             app.mark_dirty();

@@ -144,8 +144,9 @@ impl Drop for TerminalGuard {
 pub async fn run() -> Result<()> {
     // Load config BEFORE entering alternate screen to ensure any first-run messages
     // (e.g., "Created default config", "Next steps...") appear normally on the terminal
-    // rather than leaking into the TUI display
-    let config = crate::config::Config::load()?;
+    // rather than leaking into the TUI display. The TUI is the one place that creates
+    // the commented default config when none exists.
+    let config = crate::config::Config::load_or_init()?;
 
     // Install a panic hook to restore terminal on panic (best-effort).
     // This wraps the existing hook (likely color-eyre from main) to ensure

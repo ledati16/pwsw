@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use ratatui::text::{Line, Span};
 
+use crate::config::compile_rule_regex;
 use crate::ipc::WindowInfo;
 
 /// Match windows against provided regex patterns.
@@ -14,9 +15,9 @@ pub fn match_windows(
     windows: &[WindowInfo],
     max_results: usize,
 ) -> Result<Vec<String>, String> {
-    let app_re = regex::Regex::new(app_pattern).map_err(|e| format!("app pattern error: {e}"))?;
+    let app_re = compile_rule_regex(app_pattern).map_err(|e| format!("app pattern error: {e}"))?;
     let title_re = if let Some(tp) = title_pattern {
-        Some(regex::Regex::new(tp).map_err(|e| format!("title pattern error: {e}"))?)
+        Some(compile_rule_regex(tp).map_err(|e| format!("title pattern error: {e}"))?)
     } else {
         None
     };
@@ -99,7 +100,7 @@ pub async fn execute_preview(
             let title_re = title_re_opt.cloned().or_else(|| {
                 patterns_title
                     .as_deref()
-                    .and_then(|tp| regex::Regex::new(tp).ok())
+                    .and_then(|tp| compile_rule_regex(tp).ok())
             });
 
             // perform matching

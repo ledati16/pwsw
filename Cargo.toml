@@ -27,9 +27,9 @@ wayland-protocols-wlr = { version = "0.3", features = ["client"] }      # wlr-fo
 
 # Configuration and serialization
 toml = "1"
+toml_edit = "0.25"   # comment-preserving config saves
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_regex = "1"
 
 # Pattern matching for window rules
 regex = "1"

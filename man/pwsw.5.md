@@ -6,6 +6,10 @@ pwsw.toml - PWSW configuration file format
 ## DESCRIPTION
 PWSW uses a TOML configuration file located at *~/.config/pwsw/config.toml*. The file defines global settings, audio sinks, and window matching rules.
 
+Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
+
+When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and the save is refused if the file was changed on disk since it was loaded.
+
 ## SETTINGS
 The **[settings]** section controls global daemon behavior.
 
@@ -35,10 +39,10 @@ The **[settings]** section controls global daemon behavior.
 The **[[sinks]]** list defines the audio outputs PWSW should manage.
 
 **name** (string)
-:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`).
+:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`). Must be non-empty and unique.
 
 **desc** (string)
-:   A friendly description for the sink used in rules and notifications.
+:   A friendly description for the sink used in rules and notifications. Must be non-empty, unique, not a number, and not equal to another sink's `name`.
 
 **default** (boolean)
 :   Whether this is the fallback sink. When sinks are configured, exactly one must be marked as default. The first sink added via TUI is automatically set as default.
@@ -56,7 +60,7 @@ The **[[rules]]** list defines window-to-sink mappings.
 :   Regex pattern matching the window title.
 
 **sink** (string or integer)
-:   Reference to a sink by its `desc`, `name`, or 1-indexed position in the sinks list.
+:   Reference to a sink by its `desc` (recommended; the TUI always writes this) or its `name`. A 1-indexed position in the sinks list (`sink = 2` or `sink = "2"`) is still accepted but deprecated: it logs a warning on load and points at a different sink if the list is reordered by hand. Renaming, reordering, or deleting sinks in the TUI keeps every rule pointing at the same sink, and a sink that rules still use cannot be deleted.
 
 **desc** (string, optional)
 :   A custom label for this rule used in notifications.
@@ -68,7 +72,7 @@ The **[[rules]]** list defines window-to-sink mappings.
 PWSW uses the Rust **regex** crate, which prioritizes safety and performance.
 
 ### Flavor
-The syntax is mostly compatible with Perl-style regular expressions but does **not** support features like lookaround or backreferences to ensure linear-time matching.
+The syntax is mostly compatible with Perl-style regular expressions but does **not** support features like lookaround or backreferences to ensure linear-time matching. Because matching is always linear-time, any valid pattern is allowed (including nested repetition such as `^(.+)+-beta$`); the only limit is on the compiled size of a pattern (1 MiB), which rejects things like `\w{100000}`. Config loading, the TUI rule editor, and **pwsw test-rule** apply the same limit.
 
 ### Common Patterns
 **Substring match** (default)
