@@ -90,6 +90,9 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   `↑/↓` / `PageUp/PageDown`: Scroll logs
 
 ## OPTIONS
+**--config** *PATH*
+:   Use *PATH* as the configuration file instead of the default location. Takes precedence over **PWSW_CONFIG**. Accepted before or after the command; when **pwsw** starts the daemon itself (background mode or the TUI), the same path is passed on. A default configuration is created at *PATH* if it does not exist.
+
 **-h**, **--help**
 :   Print help information.
 
@@ -97,6 +100,12 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   Print version information.
 
 ## ENVIRONMENT
+**PWSW_CONFIG**
+:   Path to the configuration file to use when **--config** is not given. Ignored when empty.
+
+**XDG_CONFIG_HOME**
+:   Base directory for the default configuration file (*$XDG_CONFIG_HOME/pwsw/config.toml*, normally *~/.config/pwsw/config.toml*).
+
 **WAYLAND_DISPLAY**
 :   The name of the Wayland display to connect to.
 
@@ -111,7 +120,7 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 
 ## FILES
 *~/.config/pwsw/config.toml*
-:   The configuration file. See **pwsw**(5) for details.
+:   The default configuration file (override with **--config** or **PWSW_CONFIG**). See **pwsw**(5) for details.
 
 *~/.local/share/pwsw/daemon.log*
 :   Log file for the background daemon.

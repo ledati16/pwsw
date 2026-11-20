@@ -1,61 +1,9 @@
+//! Test-only helpers.
+//!
+//! Tests must never modify process environment variables: doing so is unsound while
+//! other test threads run. Isolate file-system state by passing explicit paths instead
+//! (e.g. `tempfile::tempdir()` plus `Config::load_from_path` / `Config::save_to`).
 #![allow(dead_code)]
-
-#[cfg(test)]
-use std::ffi::OsString;
-
-#[cfg(test)]
-/// RAII helper: set `XDG_CONFIG_HOME` to a tempdir for the lifetime of this guard.
-pub(crate) struct XdgTemp {
-    prev: Option<OsString>,
-    dir: tempfile::TempDir,
-}
-
-#[cfg(test)]
-impl XdgTemp {
-    /// Create and activate a temporary `XDG_CONFIG_HOME`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if a temporary directory cannot be created.
-    #[must_use]
-    pub fn new() -> Self {
-        let dir = tempfile::tempdir().expect("failed to create tempdir for XDG_CONFIG_HOME");
-        let prev = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("XDG_CONFIG_HOME", dir.path());
-        }
-        Self { prev, dir }
-    }
-
-    /// Path to the temporary `XDG_CONFIG_HOME` directory.
-    #[must_use]
-    pub fn path(&self) -> &std::path::Path {
-        self.dir.path()
-    }
-}
-
-#[cfg(test)]
-impl Default for XdgTemp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(test)]
-impl Drop for XdgTemp {
-    fn drop(&mut self) {
-        // SAFETY: Test-only code, restoring environment after test
-        unsafe {
-            if let Some(ref val) = self.prev {
-                std::env::set_var("XDG_CONFIG_HOME", val);
-            } else {
-                std::env::remove_var("XDG_CONFIG_HOME");
-            }
-        }
-        // TempDir will be removed when dropped
-    }
-}
 
 /// Shared test fixtures for building test data structures.
 ///

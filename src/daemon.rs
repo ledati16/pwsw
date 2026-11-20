@@ -267,7 +267,12 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
         // Spawn detached daemon process WITHOUT --foreground so it logs to file
         // Pass environment variable to prevent child from spawning another process
-        let mut child = Command::new(&exe)
+        let mut child_cmd = Command::new(&exe);
+        // Forward an explicit config selection so the child loads the same file
+        if let Some(config_path) = Config::config_path_override()? {
+            child_cmd.arg("--config").arg(config_path);
+        }
+        let mut child = child_cmd
             .arg("daemon")
             .env("PWSW_DAEMON_CHILD", "1")
             .stdin(std::process::Stdio::null())

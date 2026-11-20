@@ -41,6 +41,11 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // Register `--config` before anything resolves the config path.
+    if let Some(path) = args.config.as_deref() {
+        Config::set_config_path_override(path)?;
+    }
+
     // Handle subcommands
     match args.command {
         // No subcommand - show status or helpful message

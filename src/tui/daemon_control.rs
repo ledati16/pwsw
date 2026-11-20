@@ -38,9 +38,15 @@ impl DaemonManager {
                     .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
                     .context("Failed to get current executable path")?;
 
+                // Forward an explicit config selection so the daemon uses the same file
+                let config_override = crate::config::Config::config_path_override()?;
+
                 tokio::task::spawn_blocking(move || {
-                    Command::new(&pwsw_path)
-                        .arg("daemon")
+                    let mut cmd = Command::new(&pwsw_path);
+                    if let Some(config_path) = config_override {
+                        cmd.arg("--config").arg(config_path);
+                    }
+                    cmd.arg("daemon")
                         .stdin(Stdio::null())
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())

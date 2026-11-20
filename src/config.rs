@@ -10,10 +10,46 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use tracing::{info, warn};
 
 use crate::style::PwswStyle;
+
+// ============================================================================
+// Config Path Selection
+// ============================================================================
+
+/// Environment variable that selects an alternative config file.
+pub const CONFIG_PATH_ENV: &str = "PWSW_CONFIG";
+
+/// Process-wide `--config <PATH>` override, set once from `main`.
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+/// Make a user-supplied config path absolute (relative to the current directory).
+fn absolute_config_path(path: &Path) -> Result<PathBuf> {
+    if path.as_os_str().is_empty() {
+        eyre::bail!("Config path must not be empty");
+    }
+    std::path::absolute(path)
+        .with_context(|| format!("Failed to resolve config path: {}", path.display()))
+}
+
+/// Pick the explicit config path: the flag override wins, then a non-empty env value.
+///
+/// Pure function (no global or env access) so precedence can be unit tested.
+fn resolve_config_override(
+    flag: Option<&PathBuf>,
+    env_value: Option<&std::ffi::OsStr>,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = flag {
+        return Ok(Some(path.clone()));
+    }
+    match env_value {
+        Some(value) if !value.is_empty() => absolute_config_path(Path::new(value)).map(Some),
+        _ => Ok(None),
+    }
+}
 
 // ============================================================================
 // Public Configuration Types
@@ -159,26 +195,18 @@ impl Default for SettingsFile {
 // ============================================================================
 
 impl Config {
-    /// Load configuration from the default XDG config path
+    /// Load configuration from the active config path (see [`Config::get_config_path`]).
+    ///
+    /// Creates a default config at that path if no file exists yet.
     ///
     /// # Errors
-    /// Returns an error if the config file cannot be read, parsed, or is invalid.
+    /// Returns an error if the config path cannot be determined, or if the config file
+    /// cannot be created, read, parsed, or is invalid.
     pub fn load() -> Result<Self> {
         let config_path = Self::get_config_path()?;
 
         if !config_path.exists() {
-            // When running tests (`cargo test`) avoid creating a default config
-            // in the user's real XDG config directory, since tests should not
-            // modify user files. Cargo sets `RUST_TEST_THREADS` in test processes,
-            // so use its presence as a heuristic for test mode.
-            if std::env::var("RUST_TEST_THREADS").is_ok() {
-                eyre::bail!(
-                    "Config file not found at {} and test mode prevents creating it",
-                    config_path.display()
-                );
-            }
-
-            info!("Creating default config at {:?}", config_path);
+            info!("Creating default config at {}", config_path.display());
             Self::create_default_config(&config_path)?;
         }
 
@@ -353,92 +381,32 @@ impl Config {
         Ok(())
     }
 
-    fn ensure_write_allowed_and_backup(config_path: &std::path::Path) -> Result<()> {
-        if let Some(home_dir) = dirs::home_dir() {
-            let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
-            if config_path == home_cfg {
-                // Create a single backup of the existing file if present.
-                // Only one backup is kept (overwrites previous) since atomic writes
-                // already prevent corruption - this is just for user recovery ("undo").
-                if config_path.exists()
-                    && let Ok(metadata) = fs::metadata(config_path)
-                    && metadata.is_file()
-                {
-                    let bak_path = config_path
-                        .parent()
-                        .expect("XDG config path always has parent directory")
-                        .join("config.toml.bak");
-                    if let Err(e) = fs::copy(config_path, &bak_path) {
-                        warn!(
-                            "Failed to create config backup at {}: {}",
-                            bak_path.display(),
-                            e
-                        );
-                    }
-                }
-
-                // Debug logging: record attempted write details
-                // Only enabled in debug builds to avoid security risks in production
-                #[cfg(debug_assertions)]
-                let _ = (|| -> std::io::Result<()> {
-                    use rustix::process::getuid;
-                    use std::io::Write as _;
-
-                    // Use user-specific path with proper permissions to prevent symlink attacks
-                    let log_path = format!("/tmp/pwsw-config-write-{}.log", getuid().as_raw());
-                    let mut f = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&log_path)?;
-
-                    // Set user-only permissions (0o600) after creation
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::PermissionsExt;
-                        std::fs::set_permissions(
-                            &log_path,
-                            std::fs::Permissions::from_mode(0o600),
-                        )?;
-                    }
-
-                    let pid = std::process::id();
-                    let _ = writeln!(
-                        f,
-                        "[{pid}] Attempting to write real config at {}",
-                        config_path.display()
-                    );
-                    let _ = writeln!(
-                        f,
-                        "  RUST_TEST_THREADS={:?}",
-                        std::env::var("RUST_TEST_THREADS").ok()
-                    );
-                    let _ = writeln!(
-                        f,
-                        "  PWSW_ALLOW_CONFIG_WRITE={:?}",
-                        std::env::var("PWSW_ALLOW_CONFIG_WRITE").ok()
-                    );
-                    Ok(())
-                })();
-
-                // Only enforce the env opt-in when running tests. In normal runtime
-                // (TUI/daemon), allow writing the user's config without requiring
-                // `PWSW_ALLOW_CONFIG_WRITE`.
-                if std::env::var("RUST_TEST_THREADS").is_ok() {
-                    match std::env::var("PWSW_ALLOW_CONFIG_WRITE") {
-                        Ok(val) if val == "1" => {
-                            // explicit allow; proceed
-                        }
-                        _ => {
-                            eyre::bail!(
-                                "Refusing to write real user config at {} without PWSW_ALLOW_CONFIG_WRITE=1",
-                                config_path.display()
-                            );
-                        }
-                    }
-                }
+    /// Keep a single `config.toml.bak` copy of the user's default config before overwriting it.
+    ///
+    /// Only one backup is kept (overwrites previous) since atomic writes already prevent
+    /// corruption - this is just for user recovery ("undo"). Backup failures are logged,
+    /// never fatal.
+    fn backup_user_config(config_path: &std::path::Path) {
+        let Some(home_dir) = dirs::home_dir() else {
+            return;
+        };
+        let home_cfg = home_dir.join(".config").join("pwsw").join("config.toml");
+        if config_path != home_cfg {
+            return;
+        }
+        if let Ok(metadata) = fs::metadata(config_path)
+            && metadata.is_file()
+            && let Some(parent) = config_path.parent()
+        {
+            let bak_path = parent.join("config.toml.bak");
+            if let Err(e) = fs::copy(config_path, &bak_path) {
+                warn!(
+                    "Failed to create config backup at {}: {}",
+                    bak_path.display(),
+                    e
+                );
             }
         }
-        Ok(())
     }
 
     fn save_to_path_str(path_str: &str, config_path: &std::path::Path) -> Result<()> {
@@ -458,7 +426,7 @@ impl Config {
         // Ensure user-only permissions on Unix for the temp file
         Self::ensure_unix_permissions(tmp.path())?;
 
-        Self::ensure_write_allowed_and_backup(config_path)?;
+        Self::backup_user_config(config_path);
 
         // Persist atomically
         tmp.persist(config_path).with_context(|| {
@@ -663,24 +631,61 @@ impl Config {
         Ok(())
     }
 
-    /// Get the XDG config path for PWSW
+    /// Get the active config file path without creating anything on disk.
+    ///
+    /// Resolution order (first match wins):
+    /// 1. The `--config <PATH>` override registered with [`Config::set_config_path_override`]
+    /// 2. The `PWSW_CONFIG` environment variable (ignored when empty)
+    /// 3. `$XDG_CONFIG_HOME/pwsw/config.toml` (via the `dirs` crate)
+    ///
+    /// Overrides are made absolute against the current directory so that the daemon's
+    /// file watcher and re-spawned child processes see the same path.
+    ///
+    /// This function intentionally does not create the directory; callers that write
+    /// the config create the parent directory themselves (see `save`).
     ///
     /// # Errors
-    /// Returns an error if the config directory cannot be determined or created.
-    /// Get the configured XDG config path for PWSW without creating directories.
-    ///
-    /// This function intentionally does not create the directory on disk. Callers
-    /// that intend to write the config should create the parent directory first
-    /// (see `save` and internal helpers). Avoiding directory creation here prevents
-    /// test code from accidentally touching the user's real XDG config when it only
-    /// needs the path.
+    /// Returns an error if an override path cannot be made absolute, or if no override
+    /// is set and the XDG config directory cannot be determined.
     pub fn get_config_path() -> Result<PathBuf> {
-        // Compute the XDG config dir path for PWSW but do NOT create it here.
-        // Creating the directory had the side-effect of touching the user's
-        // real XDG config during tests when helper code only needed the path.
-        // Directory creation is performed where needed (e.g., on save), so
-        // returning the path without creating the directory avoids escaping test
-        // sandboxes.
+        if let Some(path) = Self::config_path_override()? {
+            return Ok(path);
+        }
+        Self::default_config_path()
+    }
+
+    /// Register the `--config <PATH>` override for this process.
+    ///
+    /// Must be called once, before anything loads or saves the config. Takes precedence
+    /// over `PWSW_CONFIG`. The process environment is not modified.
+    ///
+    /// # Errors
+    /// Returns an error if the path is empty, cannot be made absolute, or an override
+    /// was already registered.
+    pub fn set_config_path_override(path: &Path) -> Result<()> {
+        let path = absolute_config_path(path)?;
+        CONFIG_PATH_OVERRIDE.set(path).map_err(|rejected| {
+            eyre::eyre!(
+                "Config path override already set; refusing to change it to {}",
+                rejected.display()
+            )
+        })
+    }
+
+    /// The explicitly selected config path, if any (`--config` flag, else `PWSW_CONFIG`).
+    ///
+    /// Returns `Ok(None)` when the default XDG path is in use. Used to forward the same
+    /// selection to child processes that `pwsw` spawns of itself.
+    ///
+    /// # Errors
+    /// Returns an error if `PWSW_CONFIG` is set but cannot be made absolute.
+    pub fn config_path_override() -> Result<Option<PathBuf>> {
+        let env_value = std::env::var_os(CONFIG_PATH_ENV);
+        resolve_config_override(CONFIG_PATH_OVERRIDE.get(), env_value.as_deref())
+    }
+
+    /// Default config path: `$XDG_CONFIG_HOME/pwsw/config.toml`.
+    fn default_config_path() -> Result<PathBuf> {
         let config_dir = dirs::config_dir()
             .context("Could not determine config directory")?
             .join("pwsw");
@@ -1100,13 +1105,10 @@ mod tests {
 
     #[test]
     fn test_save_writes_file_and_permissions() {
-        use crate::test_utils::XdgTemp;
-
-        let guard = XdgTemp::new();
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
         {
             let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
-            // Use temp directory path directly to avoid race with parallel tests
-            let path = guard.path().join("pwsw").join("config.toml");
+            let path = dir.path().join("pwsw").join("config.toml");
             cfg.save_to(&path).unwrap();
 
             assert!(path.exists());
@@ -1131,14 +1133,12 @@ mod tests {
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
         }
-        drop(guard);
+        drop(dir);
     }
 
     #[test]
     fn test_save_and_load_roundtrip() {
-        use crate::test_utils::XdgTemp;
-
-        let guard = XdgTemp::new();
+        let dir = tempfile::tempdir().expect("failed to create tempdir");
         {
             let cfg = make_config(
                 vec![
@@ -1148,8 +1148,7 @@ mod tests {
                 vec![make_rule("firefox", None, "Sink 1")],
             );
 
-            // Use temp directory path directly to avoid race with parallel tests
-            let path = guard.path().join("pwsw").join("config.toml");
+            let path = dir.path().join("pwsw").join("config.toml");
             cfg.save_to(&path).unwrap();
 
             let loaded = Config::load_from_path(&path).unwrap();
@@ -1158,7 +1157,46 @@ mod tests {
             assert_eq!(loaded.rules.len(), 1);
             assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
         }
-        drop(guard);
+        drop(dir);
+    }
+
+    #[test]
+    fn test_config_override_flag_beats_env() {
+        let flag = PathBuf::from("/flag/config.toml");
+        let resolved =
+            resolve_config_override(Some(&flag), Some(std::ffi::OsStr::new("/env/config.toml")))
+                .expect("resolution should succeed");
+        assert_eq!(resolved, Some(flag));
+    }
+
+    #[test]
+    fn test_config_override_env_used_without_flag() {
+        let resolved = resolve_config_override(None, Some(std::ffi::OsStr::new("/env/c.toml")))
+            .expect("resolution should succeed");
+        assert_eq!(resolved, Some(PathBuf::from("/env/c.toml")));
+    }
+
+    #[test]
+    fn test_config_override_relative_env_is_made_absolute() {
+        let resolved = resolve_config_override(None, Some(std::ffi::OsStr::new("rel/c.toml")))
+            .expect("resolution should succeed")
+            .expect("env override should be used");
+        assert!(resolved.is_absolute(), "got {}", resolved.display());
+        assert!(resolved.ends_with("rel/c.toml"));
+    }
+
+    #[test]
+    fn test_config_override_absent_or_empty_env_falls_back_to_default() {
+        assert_eq!(resolve_config_override(None, None).unwrap(), None);
+        assert_eq!(
+            resolve_config_override(None, Some(std::ffi::OsStr::new(""))).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_absolute_config_path_rejects_empty() {
+        assert!(absolute_config_path(Path::new("")).is_err());
     }
 
     #[test]

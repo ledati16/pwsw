@@ -45,11 +45,17 @@ HOW IT WORKS:
 
 CONFIG & IPC:
   Config: ~/.config/pwsw/config.toml
+          (override with --config PATH or the PWSW_CONFIG env var)
   Socket: $XDG_RUNTIME_DIR/pwsw.sock
 
   After editing config, restart the daemon:
     pwsw shutdown && pwsw daemon")]
 pub struct Args {
+    /// Use this config file instead of `$XDG_CONFIG_HOME/pwsw/config.toml`
+    /// (overrides `PWSW_CONFIG`)
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<std::path::PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }

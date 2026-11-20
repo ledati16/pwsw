@@ -122,7 +122,7 @@ No daemon needed. Useful for keybindings.
 
 ## Configuration
 
-**Location:** `~/.config/pwsw/config.toml`
+**Location:** `~/.config/pwsw/config.toml` (override with `pwsw --config <PATH>` or the `PWSW_CONFIG` environment variable)
 
 ### Settings
 
