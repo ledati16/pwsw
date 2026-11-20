@@ -9,22 +9,20 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Pinned toolchain versions below must be bumped together with rust-toolchain.toml.
 jobs:
-  stable:
-    name: Stable (fmt, clippy, test)
+  check:
+    name: Check (clippy, test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Rust 1.100.0
+        uses: dtolnay/rust-toolchain@1.100.0
         with:
-          components: rustfmt, clippy
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --check
 
       # Pedantic lints are enforced via the [lints.clippy] table in Cargo.toml.
       - name: Clippy
@@ -36,19 +34,20 @@ jobs:
       - name: Check without default features
         run: cargo check --no-default-features --locked
 
-  msrv:
-    name: MSRV (1.98)
+  fmt:
+    name: Formatting (nightly rustfmt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Rust 1.98
-        uses: dtolnay/rust-toolchain@1.98
+      - name: Setup Rust nightly-2026-11-14
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-11-14
+          components: rustfmt
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Check
-        run: cargo check --all-targets --locked
+      - name: Check formatting
+        run: cargo +nightly-2026-11-14 fmt --check
 
   audit:
     name: Security audit

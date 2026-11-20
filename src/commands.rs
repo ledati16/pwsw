@@ -51,8 +51,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
 
     if json_output {
         let configured_names: HashSet<&str> = config
-            .map(|c| c.sinks.iter().map(|s| s.name.as_str()).collect())
-            .unwrap_or_default();
+            .map_or_default(|c| c.sinks.iter().map(|s| s.name.as_str()).collect());
 
         let output = ListSinksJson {
             active_sinks: active
@@ -75,7 +74,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                 })
                 .collect(),
             configured_sinks: config
-                .map(|c| {
+                .map_or_default(|c| {
                     c.sinks
                         .iter()
                         .enumerate()
@@ -91,8 +90,7 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                             }
                         })
                         .collect()
-                })
-                .unwrap_or_default(),
+                }),
             current_default,
         };
 
@@ -108,14 +106,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                 let marker = if sink.is_default { "* " } else { "  " };
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.name))
-                    .map(|s| {
+                    .map_or_default(|s| {
                         let mut m = String::with_capacity(3 + s.desc.len());
                         m.push_str(" [");
                         m.push_str(&s.desc);
                         m.push(']');
                         m
-                    })
-                    .unwrap_or_default();
+                    });
                 println!("{}{}{}", marker, sink.name.as_str().bold(), configured);
                 println!("    {}", sink.description.as_str().dim());
             }
@@ -128,14 +125,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             for sink in &profile {
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
-                    .map(|s| {
+                    .map_or_default(|s| {
                         let mut m = String::with_capacity(3 + s.desc.len());
                         m.push_str(" [");
                         m.push_str(&s.desc);
                         m.push(']');
                         m
-                    })
-                    .unwrap_or_default();
+                    });
                 println!(
                     "  {} {}{}",
                     "~".dim(),
