@@ -129,7 +129,19 @@ pub async fn execute_preview(
         )
     };
 
-    match run_blocking_with_timeout(blocking_closure, timeout).await {
+    run_preview_with_timeout(blocking_closure, timeout).await
+}
+
+/// Run a preview matching closure with a timeout and map the outcome to the
+/// `(matches, timed_out, regex_error)` triple returned by [`execute_preview`].
+///
+/// Split out of [`execute_preview`] so tests can drive the timeout path with a
+/// closure that deterministically blocks past the deadline.
+async fn run_preview_with_timeout<F>(f: F, timeout: Duration) -> (Vec<String>, bool, Option<String>)
+where
+    F: FnOnce() -> Result<Vec<String>, String> + Send + 'static,
+{
+    match run_blocking_with_timeout(f, timeout).await {
         Ok(Ok(v)) => (v, false, None),              // Success
         Ok(Err(e)) => (Vec::new(), false, Some(e)), // Invalid regex
         Err(_) => (Vec::new(), true, None),         // Timeout or join error
@@ -199,15 +211,20 @@ mod tests {
     use tokio::time::Instant;
 
     /// Run a simple debouncer that consumes preview requests from `preview_rx`, debounces them by `debounce_ms`,
-    /// executes `execute_preview` and sends `AppUpdate::PreviewPending` and `AppUpdate::PreviewMatches` on `bg_tx`.
-    async fn run_debouncer(
+    /// runs `preview` (normally a call to `execute_preview`) and sends `AppUpdate::PreviewPending` and
+    /// `AppUpdate::PreviewMatches` on `bg_tx`.
+    ///
+    /// Note: this debouncer is test-local; the production one lives in `src/tui/mod.rs`.
+    async fn run_debouncer<F, Fut>(
         mut preview_rx: bounded::Receiver<(String, Option<String>)>,
         bg_tx: tokio::sync::mpsc::UnboundedSender<AppUpdate>,
-        windows: Vec<WindowInfo>,
         debounce_ms: Duration,
-        timeout: Duration,
         poll_interval: Duration,
-    ) {
+        mut preview: F,
+    ) where
+        F: FnMut(String, Option<String>) -> Fut,
+        Fut: Future<Output = (Vec<String>, bool, Option<String>)>,
+    {
         use tokio::time::sleep;
 
         let mut last_preview_req: Option<(String, Option<String>, Instant)> = None;
@@ -229,16 +246,8 @@ mod tests {
                 });
 
                 // execute preview
-                let (matches_out, timed_out, regex_error) = execute_preview(
-                    app_pat.clone(),
-                    title_pat.clone(),
-                    windows.clone(),
-                    100,
-                    timeout,
-                    None,
-                    None,
-                )
-                .await;
+                let (matches_out, timed_out, regex_error) =
+                    preview(app_pat.clone(), title_pat.clone()).await;
 
                 let _ = bg_tx.send(AppUpdate::PreviewMatches {
                     app_pattern: app_pat.clone(),
@@ -270,10 +279,19 @@ mod tests {
         let debouncer = tokio::spawn(run_debouncer(
             preview_rx,
             bg_tx,
-            windows.clone(),
             Duration::from_millis(150),
-            Duration::from_millis(200),
             Duration::from_millis(10),
+            move |app, title| {
+                execute_preview(
+                    app,
+                    title,
+                    windows.clone(),
+                    100,
+                    Duration::from_millis(200),
+                    None,
+                    None,
+                )
+            },
         ));
 
         // Send a burst of preview requests rapidly
@@ -300,7 +318,7 @@ mod tests {
                     AppUpdate::PreviewPending { .. } => pending_seen = true,
                     AppUpdate::PreviewMatches { matches, .. } => {
                         matches_seen = true;
-                        assert!(!matches.is_empty());
+                        assert!(!matches.is_empty(), "expected at least one match");
                     }
                     _ => {}
                 }
@@ -316,42 +334,62 @@ mod tests {
 
     #[tokio::test]
     async fn test_debouncer_respects_timeout() {
-        // create a window list that will cause the blocking matching to sleep (simulate long work)
-        // execute_preview runs match_windows which doesn't sleep; instead, we test timeout by passing a very small timeout.
+        // The preview closure blocks on a channel until the test releases it, so the
+        // 10ms preview timeout is guaranteed to fire first. Waiting on `recv()` (bounded
+        // by a generous guard) instead of fixed sleeps removes scheduler-dependent timing.
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
 
-        let windows = vec![WindowInfo {
-            id: None,
-            app_id: "a".into(),
-            title: "b".into(),
-            matched_on: None,
-            tracked: None,
-        }];
         let (preview_tx, preview_rx) = bounded::channel::<(String, Option<String>)>(8);
         let (bg_tx, mut bg_rx) = unbounded_channel::<AppUpdate>();
 
         let debouncer = tokio::spawn(run_debouncer(
             preview_rx,
             bg_tx,
-            windows.clone(),
             Duration::from_millis(10),
-            Duration::from_millis(1),
             Duration::from_millis(5),
+            move |_app, _title| {
+                let release_rx = std::sync::Arc::clone(&release_rx);
+                run_preview_with_timeout(
+                    move || {
+                        // Blocks until `release_tx` is dropped by the test.
+                        let _ = release_rx.lock().map(|rx| rx.recv());
+                        Ok(vec!["should never be reported".to_string()])
+                    },
+                    Duration::from_millis(10),
+                )
+            },
         ));
 
-        let _ = preview_tx.try_send(("a".to_string(), None));
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        tokio::task::yield_now().await;
+        preview_tx
+            .try_send(("a".to_string(), None))
+            .expect("preview channel has capacity");
 
-        // Expect a PreviewMatches with timed_out == true (because timeout very small)
-        let mut saw = false;
-        while let Ok(msg) = bg_rx.try_recv() {
-            if let AppUpdate::PreviewMatches { .. } = msg {
-                saw = true;
-            }
-        }
-        assert!(saw, "expected PreviewMatches");
+        let (matches, timed_out, regex_error) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    match bg_rx.recv().await {
+                        Some(AppUpdate::PreviewMatches {
+                            matches,
+                            timed_out,
+                            regex_error,
+                            ..
+                        }) => break (matches, timed_out, regex_error),
+                        Some(_) => {}
+                        None => panic!("debouncer closed the update channel"),
+                    }
+                }
+            })
+            .await
+            .expect("debouncer should emit PreviewMatches");
 
+        // Unblock the blocking-pool thread before asserting so runtime shutdown is prompt.
+        drop(release_tx);
         debouncer.abort();
+
+        assert!(timed_out, "expected the preview to time out");
+        assert_eq!(matches, Vec::<String>::new());
+        assert_eq!(regex_error, None);
     }
 
     #[tokio::test]
@@ -423,7 +461,7 @@ mod tests {
         .await;
         assert!(!timed_out); // Should not be timeout
         assert!(regex_error.is_some()); // Should have regex error
-        assert!(matches.is_empty());
+        assert!(matches.is_empty(), "expected no matches, got {matches:?}");
     }
 
     #[test]
