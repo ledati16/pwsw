@@ -2,7 +2,7 @@
 name = "pwsw"
 version = "0.6.0"
 edition = "2024"
-rust-version = "1.94"
+rust-version = "1.98"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/pwsw"
@@ -26,7 +26,7 @@ wayland-protocols = { version = "0.32", features = ["staging"] }        # ext-fo
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }      # wlr-foreign-toplevel-management
 
 # Configuration and serialization
-toml = "0.9"
+toml = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_regex = "1"
@@ -41,7 +41,7 @@ color-eyre = "0.6"
 notify-rust = "4"
 
 # systemd notification protocol
-sd-notify = "0.4"
+sd-notify = "0.5"
 
 # Terminal styling for CLI and TUI output
 crossterm = { version = "0.29", features = ["event-stream"] }
@@ -52,7 +52,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 # XDG config directory
-dirs = "6"
+dirs = "7"
 
 # File system watching (config hot-reload, log tailing)
 notify = "8"
@@ -77,12 +77,12 @@ strip = true        # Remove debug symbols (smaller binary, no runtime cost)
 panic = "abort"     # Immediate termination on panic (systemd restarts daemon)
 
 [build-dependencies]
-built = { version = "0.8", features = ["git2"] }
+built = { version = "0.9", features = ["git2"] }
 mandown = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
-rstest = "0.26"
+rstest = "0.28"
 test-case = "3"
 wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["server", "staging"] }

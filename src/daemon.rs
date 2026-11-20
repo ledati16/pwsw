@@ -487,7 +487,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     #[cfg(unix)]
     {
         if matches!(sd_notify::booted(), Ok(true))
-            && let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready])
+            && let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready])
         {
             warn!("Failed to notify systemd: {}", e);
         } else if matches!(sd_notify::booted(), Ok(true)) {
