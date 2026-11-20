@@ -1,9 +1,17 @@
 [Unit]
 Description=PWSW - PipeWire Switcher daemon
-Documentation=https://github.com/ledati16/pwsw
-After=pipewire.service
-Requires=pipewire.service
-BindsTo=pipewire.service
+Documentation=https://github.com/ledati16/pwsw man:pwsw(1)
+# Part of the graphical session: started after it is up (WAYLAND_DISPLAY is
+# imported by then) and stopped/restarted together with it.
+PartOf=graphical-session.target
+After=graphical-session.target pipewire.service
+# Wants= rather than Requires=/BindsTo=: pwsw keeps no PipeWire connection open
+# (it runs pw-dump/pw-cli/pw-metadata per action), so it does not need to die
+# when PipeWire restarts - BindsTo= would stop it and nothing would start it again.
+Wants=pipewire.service
+# Give up after 5 failed starts within 60 s instead of restarting forever
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=notify
@@ -11,6 +19,26 @@ NotifyAccess=main
 ExecStart=/usr/bin/pwsw daemon --foreground
 Restart=on-failure
 RestartSec=5s
+
+# The sandbox below makes the home directory read-only; create the log directory
+# the daemon writes to first ('+' runs this outside the sandbox).
+ExecStartPre=+mkdir -p %h/.local/share/pwsw
+
+# Hardening (all of these work in user units)
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+UMask=0077
+ProtectSystem=strict
+# Daemon log and runtime dir (IPC socket, lock). The config is only read; it is
+# created by `pwsw init` / `pwsw tui`, never by the daemon.
+ReadWritePaths=%h/.local/share/pwsw %t
+# Nothing needs the shared /tmp: under systemd XDG_RUNTIME_DIR (%t) is always
+# set, so the IPC socket and PID file live there, never in the /tmp fallback.
+PrivateTmp=yes
 
 # Logging
 StandardOutput=journal

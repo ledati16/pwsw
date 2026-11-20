@@ -776,9 +776,9 @@ See `contrib/README.md` for installation instructions.
 **IPC Infrastructure (`ipc.rs`)**
 - Unix socket-based client-server communication
 - Length-prefixed JSON protocol (4-byte big-endian length + JSON payload)
-- Socket location: `$XDG_RUNTIME_DIR/pwsw.sock` or `/tmp/pwsw-$USER.sock`
-- Socket permissions: `0o600` (user-only access for security)
-- Automatic stale socket cleanup on daemon start with ownership verification
+- Socket location: `$XDG_RUNTIME_DIR/pwsw.sock` (absolute paths only) or `/tmp/pwsw-<uid>/pwsw.sock` in a verified `0700` per-user directory
+- Socket permissions: `0o600`, bound under a `077` umask; both sides check the peer's UID (`peer_cred`)
+- Stale socket cleanup on daemon start only on `ECONNREFUSED`, with ownership/type verification; `Drop` removes the socket only if it is still the inode we bound
 - Request types: Status, Reload, ListWindows, TestRule, Shutdown
 - Response types: Status, Ok, Error, Windows, RuleMatches
 - Window identity uses unique IDs (not app_id/title pairs) for correctness

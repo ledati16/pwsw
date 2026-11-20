@@ -140,7 +140,8 @@ impl SettingItem {
                  • debug: Detailed debugging information\n\
                  • trace: Very verbose tracing (for development)\n\
                  \n\
-                 View logs with: journalctl --user -u pwsw -f\n\
+                 Log file: ~/.local/share/pwsw/daemon.log\n\
+                 (systemd: journalctl --user -u pwsw -f)\n\
                  Or in TUI: Dashboard → [l] for logs view\n\
                  \n\
                  Default: info"

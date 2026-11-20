@@ -15,6 +15,8 @@ It can also be used as a command-line client to query the daemon status, list wi
 **daemon** [*OPTIONS*]
 :   Start the PWSW daemon.
 
+    Without **--foreground**, starts the daemon as a detached background process (in its own process group, so it survives the terminal closing) and waits until it answers; on failure the error and the last log lines are printed.
+
     **--foreground**
     :   Run in the foreground (useful for systemd or debugging).
 
@@ -113,7 +115,7 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   The name of the Wayland display to connect to.
 
 **XDG_RUNTIME_DIR**
-:   Directory for the IPC socket (`pwsw.sock`) and PID file.
+:   Directory for the IPC socket (`pwsw.sock`) and PID file. If unset, empty or not an absolute path, the socket is placed in */tmp/pwsw-<uid>/* instead (see **FILES**).
 
 **PROFILE_SWITCH_DELAY_MS**
 :   Interval in milliseconds between checks for the new sink after a profile switch (default: 150, clamped to 10-1000).
@@ -126,7 +128,13 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   The default configuration file (override with **--config** or **PWSW_CONFIG**). See **pwsw**(5) for details.
 
 *~/.local/share/pwsw/daemon.log*
-:   Log file for the background daemon.
+:   Daemon log file (rotated at 1 MB to *daemon.log.old*). Written in every mode; the background daemon started by **pwsw daemon** also appends its start-up errors here. Under systemd the same lines also go to the journal (**journalctl --user -u pwsw.service**).
+
+*$XDG_RUNTIME_DIR/pwsw.sock*
+:   IPC socket (mode 0600). Fallback: */tmp/pwsw-<uid>/pwsw.sock*, in a directory created with mode 0700; pwsw refuses to use that directory if it is a symlink, owned by another user, or has a different mode. Both sides check that the peer runs as the same user.
+
+*contrib/pwsw.service*
+:   systemd user unit (install to *~/.config/systemd/user/*). Part of *graphical-session.target*, restarts on failure, sandboxed.
 
 ## BUGS
 See <https://github.com/ledati16/pwsw/issues>

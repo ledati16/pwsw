@@ -1,13 +1,67 @@
 //! Daemon control integration - systemd with fallback to direct execution
 
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use color_eyre::eyre::{self, Context, Result};
 
-use crate::daemon_manager::DaemonManager;
+use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, status_with_timeout};
 use crate::ipc;
 
+/// How long the old daemon may take to release its socket during a restart.
+const RESTART_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long a cached `systemctl is-enabled` answer is reused by the poll loop.
+const IS_ENABLED_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// Timeout for `systemctl --user is-enabled`.
+const IS_ENABLED_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Last `is-enabled` answer and when it was obtained (the `TUI` polls often;
+/// spawning `systemctl` each time is wasteful).
+static IS_ENABLED_CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
+fn cached_is_enabled() -> Option<bool> {
+    let guard = IS_ENABLED_CACHE.lock().ok()?;
+    guard.and_then(|(at, value)| (at.elapsed() < IS_ENABLED_CACHE_TTL).then_some(value))
+}
+
+fn store_is_enabled(value: bool) {
+    if let Ok(mut guard) = IS_ENABLED_CACHE.lock() {
+        *guard = Some((Instant::now(), value));
+    }
+}
+
 impl DaemonManager {
+    /// Decide how the `TUI` should control the daemon (start/stop/restart).
+    ///
+    /// A running daemon reports how it was started over `IPC`; that answer wins.
+    /// Only when no daemon answers does the installed unit decide: if
+    /// `pwsw.service` is installed, start it via systemd, otherwise run it directly.
+    pub async fn for_control() -> Self {
+        if let Ok(ipc::Response::ManagerInfo { daemon_manager }) =
+            ipc::send_request(ipc::Request::GetManagerInfo).await
+        {
+            return daemon_manager;
+        }
+        Self::for_unit_management().await
+    }
+
+    /// [`DaemonManager::Systemd`] if the `pwsw.service` unit file is installed,
+    /// else [`DaemonManager::Direct`]. Used for enable/disable, which act on the
+    /// unit regardless of how a currently running daemon was started.
+    pub async fn for_unit_management() -> Self {
+        let installed = tokio::task::spawn_blocking(Self::unit_installed)
+            .await
+            .unwrap_or(false);
+        if installed {
+            Self::Systemd
+        } else {
+            Self::Direct
+        }
+    }
+
     /// Start the daemon
     ///
     /// # Errors
@@ -33,7 +87,9 @@ impl DaemonManager {
                 }
             }
             Self::Direct => {
-                // Spawn daemon process in background
+                // Run `pwsw daemon`: it spawns the detached daemon, waits until it
+                // answers on the socket and exits non-zero (with the reason on
+                // stderr) if start-up fails. Running it to completion also reaps it.
                 let pwsw_path = tokio::task::spawn_blocking(std::env::current_exe)
                     .await
                     .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
@@ -42,24 +98,26 @@ impl DaemonManager {
                 // Forward an explicit config selection so the daemon uses the same file
                 let config_override = crate::config::Config::config_path_override()?;
 
-                tokio::task::spawn_blocking(move || {
+                let output = tokio::task::spawn_blocking(move || {
                     let mut cmd = Command::new(&pwsw_path);
                     if let Some(config_path) = config_override {
                         cmd.arg("--config").arg(config_path);
                     }
-                    cmd.arg("daemon")
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
+                    cmd.arg("daemon").stdin(Stdio::null()).output()
                 })
                 .await
                 .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
-                .context("Failed to spawn daemon process")?;
+                .context("Failed to run `pwsw daemon`")?;
 
-                // Wait a moment for daemon to start
-                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                Ok("Daemon started directly".to_string())
+                if output.status.success() {
+                    Ok("Daemon started directly".to_string())
+                } else {
+                    eyre::bail!(
+                        "`pwsw daemon` failed ({}): {}",
+                        output.status,
+                        summarize_stderr(&output.stderr)
+                    );
+                }
             }
         }
     }
@@ -122,9 +180,11 @@ impl DaemonManager {
                 }
             }
             Self::Direct => {
-                // Stop then start
+                // Stop, wait for the old daemon to release its socket, then start
                 self.stop().await?;
-                tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+                ipc::wait_for_daemon_exit(RESTART_EXIT_TIMEOUT)
+                    .await
+                    .context("Old daemon did not exit")?;
                 self.start().await
             }
         }
@@ -176,6 +236,7 @@ impl DaemonManager {
                 .context("Failed to execute systemctl enable")?;
 
                 if output.status.success() {
+                    store_is_enabled(true);
                     Ok("Service enabled (will start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -205,6 +266,7 @@ impl DaemonManager {
                 .context("Failed to execute systemctl disable")?;
 
                 if output.status.success() {
+                    store_is_enabled(false);
                     Ok("Service disabled (won't start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -218,19 +280,65 @@ impl DaemonManager {
     }
 
     /// Check if the daemon service is enabled (only for systemd)
+    ///
+    /// The answer is cached for a few seconds (and updated by
+    /// [`DaemonManager::enable`]/[`DaemonManager::disable`]) because the `TUI`
+    /// polls it on every refresh.
     pub async fn is_enabled(self) -> bool {
         match self {
-            Self::Systemd => tokio::task::spawn_blocking(move || {
-                Command::new("systemctl")
-                    .args(["--user", "is-enabled", "pwsw.service"])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|status| status.success())
-            })
-            .await
-            .unwrap_or(false),
+            Self::Systemd => {
+                if let Some(value) = cached_is_enabled() {
+                    return value;
+                }
+                let value = tokio::task::spawn_blocking(|| {
+                    let mut cmd = Command::new("systemctl");
+                    cmd.args(["--user", "is-enabled", SYSTEMD_UNIT]);
+                    status_with_timeout(cmd, IS_ENABLED_TIMEOUT).is_some_and(|s| s.success())
+                })
+                .await
+                .unwrap_or(false);
+                store_is_enabled(value);
+                value
+            }
             Self::Direct => false,
         }
+    }
+}
+
+/// Condense a child's stderr (a coloured `color-eyre` report) into one line for
+/// the `TUI` status bar: strip `ANSI` escapes, drop blank lines and the
+/// backtrace/location boilerplate, join the rest with `" | "`.
+fn summarize_stderr(stderr: &[u8]) -> String {
+    const MAX_CHARS: usize = 400;
+
+    let text = crate::sanitize::strip_ansi(&String::from_utf8_lossy(stderr));
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .take_while(|l| !l.starts_with("Location:") && !l.starts_with("Backtrace omitted"))
+        .collect();
+    if lines.is_empty() {
+        return "no error output".to_string();
+    }
+    crate::sanitize::sanitize_line(&lines.join(" | "), MAX_CHARS).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_summarize_stderr_color_eyre_report() {
+        let report = "\u{1b}[31mError:\u{1b}[0m \n   0: \u{1b}[91mNo sinks configured\u{1b}[0m\n\nLocation:\n   src/bin/pwsw.rs:66\n\nBacktrace omitted.\n";
+        assert_eq!(
+            summarize_stderr(report.as_bytes()),
+            "Error: | 0: No sinks configured"
+        );
+    }
+
+    #[test]
+    fn test_summarize_stderr_empty() {
+        assert_eq!(summarize_stderr(b"\n  \n"), "no error output");
     }
 }

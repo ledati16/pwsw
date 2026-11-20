@@ -172,17 +172,9 @@ pub async fn run() -> Result<()> {
     // Create app state (pass pre-loaded config)
     let mut app = App::with_config(config);
 
-    // Query daemon for manager info, or detect locally if daemon not running
-    let is_systemd = match crate::ipc::send_request(crate::ipc::Request::GetManagerInfo).await {
-        Ok(crate::ipc::Response::ManagerInfo { daemon_manager }) => {
-            daemon_manager == crate::daemon_manager::DaemonManager::Systemd
-        }
-        _ => {
-            // Daemon not running, fall back to local detection for UI configuration
-            crate::daemon_manager::DaemonManager::detect()
-                == crate::daemon_manager::DaemonManager::Systemd
-        }
-    };
+    // Ask the running daemon how it is managed; if none runs, whether the unit is installed
+    let is_systemd = crate::daemon_manager::DaemonManager::for_control().await
+        == crate::daemon_manager::DaemonManager::Systemd;
     app.dashboard_screen.set_max_actions(is_systemd);
 
     let _term_guard = TerminalGuard;
@@ -343,13 +335,16 @@ pub async fn run() -> Result<()> {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     BgCommand::DaemonAction(action) => {
-                        // execute action and send result back
-                        // Run detection in blocking pool
-                        let dm = tokio::task::spawn_blocking(
-                            crate::daemon_manager::DaemonManager::detect,
-                        )
-                        .await
-                        .unwrap_or(crate::daemon_manager::DaemonManager::Direct);
+                        // Decide how to act: start/stop/restart follow how the running
+                        // daemon was started (reported over IPC; installed unit if none
+                        // runs), enable/disable act on the installed unit.
+                        let dm = match action {
+                            crate::tui::app::DaemonAction::Enable
+                            | crate::tui::app::DaemonAction::Disable => {
+                                crate::daemon_manager::DaemonManager::for_unit_management().await
+                            }
+                            _ => crate::daemon_manager::DaemonManager::for_control().await,
+                        };
 
                         let res = match action {
                             crate::tui::app::DaemonAction::Start => dm.start().await,

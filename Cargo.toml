@@ -60,8 +60,8 @@ notify = "8"
 # Atomic file writes
 tempfile = "3"
 
-# Unix UID lookup (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
-rustix = { version = "1", default-features = false, features = ["process"] }
+# Unix UID lookup, umask for socket binding (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
+rustix = { version = "1", default-features = false, features = ["fs", "process"] }
 
 # TUI dependencies (optional - enabled by default via "tui" feature)
 ratatui = { version = "0.30", optional = true, default-features = false, features = ["crossterm"] }

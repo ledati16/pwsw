@@ -293,9 +293,10 @@ With both Firefox and MPV open → Headphones (rule at index 0 wins, regardless 
 
 ### IPC Socket
 
-- **Location:** `$XDG_RUNTIME_DIR/pwsw.sock` or `/tmp/pwsw-$USER.sock`
-- **Permissions:** `0o600` (user-only)
-- Stale sockets auto-cleaned on daemon start
+- **Location:** `$XDG_RUNTIME_DIR/pwsw.sock`. If `XDG_RUNTIME_DIR` is unset, empty or not an absolute path: `/tmp/pwsw-<uid>/pwsw.sock` (numeric UID), inside a directory created with mode `0700`; pwsw refuses to use it if it is a symlink, owned by another user, or has any other mode
+- **Permissions:** socket `0600` (user-only), created under a `077` umask so it is never briefly world-accessible
+- **Peer check:** the daemon drops connections from other users, and clients refuse a socket served by another user
+- Stale sockets (nobody listening) are cleaned up on daemon start; a socket that merely answers slowly is left alone
 
 ### Logging
 
@@ -303,11 +304,17 @@ Set in config: `log_level = "debug"`
 
 Levels: error < warn < info < debug < trace
 
-View logs: `pwsw daemon --foreground`
+- **Log file:** `~/.local/share/pwsw/daemon.log` (rotated at 1 MB to `daemon.log.old`). The background daemon (`pwsw daemon`) also appends its start-up errors here; the TUI dashboard shows this file.
+- **Foreground:** `pwsw daemon --foreground` logs to stderr as well as the file.
+- **systemd:** `journalctl --user -u pwsw.service -f` (the service runs in the foreground, so the journal gets the same lines as the file).
+
+Window titles and `app_id`s are untrusted: control characters are escaped and long titles truncated in logs, and notification text is escaped so it cannot inject markup.
 
 ### Autostart (systemd)
 
-For automatic startup on login, see `contrib/pwsw.service`.
+For automatic startup on login, install `contrib/pwsw.service` (see `contrib/README.md`). It runs as part of `graphical-session.target`, restarts on failure (up to 5 times a minute) and is sandboxed (read-only system and home except pwsw's own directories).
+
+`pwsw daemon` without systemd detaches the daemon into its own process group, so it keeps running after the terminal (or TUI) that started it closes. The TUI's Start/Stop/Restart act on the daemon the way it was started (systemd unit or direct), as reported by the running daemon.
 
 ## Building
 

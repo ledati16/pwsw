@@ -181,6 +181,154 @@ fn check_and_cleanup_stale_pid_file() -> Result<bool> {
     }
 }
 
+/// Open the daemon log for appending (creating it and its directory, mode `0600`).
+///
+/// Used as the background daemon's stderr so that anything printed before
+/// logging is initialised (or a final error report) ends up next to its logs
+/// instead of vanishing into `/dev/null`.
+///
+/// # Errors
+/// Returns an error if the directory or file cannot be created/opened.
+fn open_log_for_stderr(log_path: &std::path::Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if let Some(dir) = log_path.parent() {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("Failed to create log directory: {}", dir.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log_path)
+        .with_context(|| format!("Failed to open daemon log: {}", log_path.display()))
+}
+
+/// Read up to `max_lines` trailing lines written to `log_path` after byte `offset`.
+///
+/// Best effort: returns an empty list if the file cannot be read.
+fn log_lines_since(log_path: &std::path::Path, offset: u64, max_lines: usize) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return Vec::new();
+    };
+    let mut buf = Vec::new();
+    if file.seek(SeekFrom::Start(offset)).is_err() || file.read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf);
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(max_lines)..]
+        .iter()
+        .map(|l| crate::sanitize::strip_ansi(l))
+        .collect()
+}
+
+/// Spawn the real daemon as a detached background process and wait until it
+/// answers on the `IPC` socket.
+///
+/// The child gets its own process group so it survives the launching terminal
+/// (or `TUI`) closing and is not hit by `Ctrl-C` aimed at the foreground job;
+/// its stdin/stdout go to `/dev/null` and its stderr is appended to the daemon
+/// log, so start-up errors are kept.
+///
+/// # Errors
+/// Returns an error if the child cannot be spawned, exits during start-up, or
+/// does not answer within the start-up window.
+async fn spawn_background_daemon() -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    // Wait for daemon to initialize by checking if it's responding to IPC
+    // Try for up to 2 seconds (20 attempts * 100ms)
+    const MAX_ATTEMPTS: u32 = 20;
+    const RETRY_DELAY_MS: u64 = 100;
+    /// How many log lines to quote when the child fails
+    const FAILURE_LOG_LINES: usize = 8;
+
+    let exe = std::env::current_exe()?;
+    let log_path = get_log_file_path()?;
+    let log_file = open_log_for_stderr(&log_path)?;
+    // Everything the child writes from here on is about this start attempt
+    let log_offset = log_file.metadata().map_or(0, |m| m.len());
+
+    // Spawn detached daemon process WITHOUT --foreground so it logs to file
+    // Pass environment variable to prevent child from spawning another process
+    let mut child_cmd = Command::new(&exe);
+    // Forward an explicit config selection so the child loads the same file
+    if let Some(config_path) = Config::config_path_override()? {
+        child_cmd.arg("--config").arg(config_path);
+    }
+    let mut child = child_cmd
+        .arg("daemon")
+        .env("PWSW_DAEMON_CHILD", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log_file))
+        // New process group: no SIGHUP/SIGINT from the launching terminal's job control
+        .process_group(0)
+        .spawn()
+        .with_context(|| {
+            format!(
+                "Failed to spawn background daemon: exe={}, working_dir={}",
+                exe.display(),
+                std::env::current_dir()
+                    .ok()
+                    .as_ref()
+                    .map_or_else(|| "unknown".to_string(), |p| p.display().to_string())
+            )
+        })?;
+
+    let pid = child.id();
+    println!("Starting daemon (PID: {})...", pid.to_string().technical());
+
+    for _attempt in 1..=MAX_ATTEMPTS {
+        tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+
+        if ipc::is_daemon_running().await {
+            println!(
+                "{} {}",
+                "✓".success(),
+                "Daemon started successfully".success()
+            );
+            println!("Use {} to check daemon status", "pwsw status".technical());
+            println!("Use {} to stop the daemon", "pwsw shutdown".technical());
+            return Ok(());
+        }
+
+        // Check if child process is still alive (reaps it if it exited)
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let tail = log_lines_since(&log_path, log_offset, FAILURE_LOG_LINES);
+                let tail = if tail.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n\nLast log lines:\n  {}", tail.join("\n  "))
+                };
+                eyre::bail!(
+                    "Daemon process (PID: {pid}) exited during startup with status: {status}{tail}\n\n\
+                     Full log: {}",
+                    log_path.display()
+                );
+            }
+            Ok(None) => {} // Still running
+            Err(e) => {
+                warn!("Could not check daemon process status: {}", e);
+            }
+        }
+    }
+
+    eyre::bail!(
+        "Daemon failed to start within {} seconds.\n\
+         Process may still be initializing. Check with: pwsw status\n\
+         Log: {}",
+        (u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS) / 1000,
+        log_path.display()
+    );
+}
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -226,7 +374,6 @@ struct IpcContext {
 pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     const CONFIG_DEBOUNCE_MS: u64 = 250;
 
-    use std::process::Command;
     use std::time::Duration;
 
     // Check for running daemon BEFORE any initialization
@@ -258,78 +405,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     // Background mode: spawn detached process and wait for successful startup
     if !foreground && std::env::var("PWSW_DAEMON_CHILD").is_err() {
-        // Wait for daemon to initialize by checking if it's responding to IPC
-        // Try for up to 2 seconds (20 attempts * 100ms)
-        const MAX_ATTEMPTS: u32 = 20;
-        const RETRY_DELAY_MS: u64 = 100;
-
-        // We're the initial process - spawn a background child
-        let exe = std::env::current_exe()?;
-
-        // Spawn detached daemon process WITHOUT --foreground so it logs to file
-        // Pass environment variable to prevent child from spawning another process
-        let mut child_cmd = Command::new(&exe);
-        // Forward an explicit config selection so the child loads the same file
-        if let Some(config_path) = Config::config_path_override()? {
-            child_cmd.arg("--config").arg(config_path);
-        }
-        let mut child = child_cmd
-            .arg("daemon")
-            .env("PWSW_DAEMON_CHILD", "1")
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "Failed to spawn background daemon: exe={}, working_dir={}",
-                    exe.display(),
-                    std::env::current_dir()
-                        .ok()
-                        .as_ref()
-                        .map_or_else(|| "unknown".to_string(), |p| p.display().to_string())
-                )
-            })?;
-
-        let pid = child.id();
-        println!("Starting daemon (PID: {})...", pid.to_string().technical());
-
-        for attempt in 1..=MAX_ATTEMPTS {
-            tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
-
-            if ipc::is_daemon_running().await {
-                println!(
-                    "{} {}",
-                    "✓".success(),
-                    "Daemon started successfully".success()
-                );
-                println!("Use {} to check daemon status", "pwsw status".technical());
-                println!("Use {} to stop the daemon", "pwsw shutdown".technical());
-                return Ok(());
-            }
-
-            // Check if child process is still alive (every 500ms)
-            if attempt % 5 == 0 {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
-                        eyre::bail!(
-                            "Daemon process (PID: {pid}) exited during startup with status: {status}\n\
-                             Check logs with: journalctl --user -xe | grep pwsw"
-                        );
-                    }
-                    Ok(None) => {} // Still running
-                    Err(e) => {
-                        warn!("Could not check daemon process status: {}", e);
-                    }
-                }
-            }
-        }
-
-        eyre::bail!(
-            "Daemon failed to start within {} seconds.\n\
-             Process may still be initializing. Check with: pwsw status",
-            (u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS) / 1000
-        );
+        return spawn_background_daemon().await;
     }
 
     // Validate required `PipeWire` tools are available
