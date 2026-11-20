@@ -10,9 +10,9 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  stable:
+    name: Stable (fmt, clippy, test)
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -21,17 +21,45 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Build
-        run: cargo build --all-targets
+      # Pedantic lints are enforced via the [lints.clippy] table in Cargo.toml.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --locked
 
-      - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Check without default features
+        run: cargo check --no-default-features --locked
 
-      - name: Clippy (pedantic)
-        run: cargo clippy --all-targets -- -W clippy::pedantic
+  msrv:
+    name: MSRV (1.98)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust 1.98
+        uses: dtolnay/rust-toolchain@1.98
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --all-targets --locked
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Audit dependencies
+        run: cargo audit
