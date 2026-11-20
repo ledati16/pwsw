@@ -95,6 +95,17 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 
     info!("Connected to Wayland display");
 
+    spawn_compositor_thread_on(conn)
+}
+
+/// Like [`spawn_compositor_thread`], but uses an already-established Wayland connection.
+///
+/// Lets callers (e.g. tests with a mock compositor) choose the socket explicitly instead
+/// of going through `WAYLAND_DISPLAY` / `XDG_RUNTIME_DIR`.
+///
+/// # Errors
+/// Returns an error if no supported window management protocol is advertised.
+pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<WindowEvent>> {
     // Pre-detect available protocols by checking the registry
     let protocol = detect_available_protocol(&conn)?;
 

@@ -113,14 +113,21 @@ pub struct TrackedInfo {
 /// to prevent potential symlink attacks from manipulated environment variables.
 #[must_use]
 pub fn get_socket_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("pwsw.sock")
-    } else {
-        // Fallback to /tmp with UID for consistent, secure location
-        // Using UID instead of USER env var prevents potential symlink attacks
-        use rustix::process::getuid;
-        let uid = getuid().as_raw();
-        PathBuf::from(format!("/tmp/pwsw-{uid}.sock"))
+    use rustix::process::getuid;
+    socket_path_from(
+        std::env::var("XDG_RUNTIME_DIR").ok().as_deref(),
+        getuid().as_raw(),
+    )
+}
+
+/// Pure socket path derivation from an optional `XDG_RUNTIME_DIR` value and a UID.
+///
+/// Fallback to `/tmp` with the UID gives a consistent, secure location; using the UID
+/// instead of the `USER` env var prevents potential symlink attacks.
+fn socket_path_from(runtime_dir: Option<&str>, uid: u32) -> PathBuf {
+    match runtime_dir {
+        Some(dir) => PathBuf::from(dir).join("pwsw.sock"),
+        None => PathBuf::from(format!("/tmp/pwsw-{uid}.sock")),
     }
 }
 
@@ -463,6 +470,22 @@ mod tests {
         assert!(matches!(deserialized, Request::ListWindows));
     }
 
+    #[test]
+    fn test_socket_path_prefers_runtime_dir() {
+        assert_eq!(
+            socket_path_from(Some("/run/user/1000"), 1000),
+            PathBuf::from("/run/user/1000/pwsw.sock")
+        );
+    }
+
+    #[test]
+    fn test_socket_path_falls_back_to_uid_in_tmp() {
+        assert_eq!(
+            socket_path_from(None, 4242),
+            PathBuf::from("/tmp/pwsw-4242.sock")
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn test_cleanup_stale_socket_non_socket_file() {
@@ -471,33 +494,16 @@ mod tests {
         let dir = tempdir().unwrap();
         let socket_path = dir.path().join("pwsw.sock");
 
-        // Ensure cleanup_stale_socket will look at our tempdir
-        let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
-
         // Create a regular file at the socket path
         std::fs::write(&socket_path, b"not a socket").unwrap();
         assert!(socket_path.exists());
 
         // Should not remove non-socket files
-        cleanup_stale_socket().await.unwrap();
+        cleanup_stale_socket_at(&socket_path).await.unwrap();
         assert!(
             socket_path.exists(),
             "Non-socket file should not be removed"
         );
-
-        // Restore env
-        // SAFETY: Test-only code, restoring environment after test
-        unsafe {
-            if let Some(val) = prev {
-                std::env::set_var("XDG_RUNTIME_DIR", val);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-        }
     }
 
     #[cfg(unix)]
@@ -508,33 +514,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let socket_path = dir.path().join("pwsw.sock");
 
-        // Ensure cleanup_stale_socket will look at our tempdir
-        let prev = std::env::var_os("XDG_RUNTIME_DIR");
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("XDG_RUNTIME_DIR", dir.path());
-        }
-
         // Bind and keep the listener alive to simulate active daemon
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
         assert!(socket_path.exists());
 
         // Active socket should not be removed
-        cleanup_stale_socket().await.unwrap();
+        cleanup_stale_socket_at(&socket_path).await.unwrap();
         assert!(socket_path.exists(), "Active socket should not be removed");
 
-        // Close the listener and ensure cleanup_stale_socket can still detect active socket removal
         drop(listener);
-
-        // Restore env
-        // SAFETY: Test-only code, restoring environment after test
-        unsafe {
-            if let Some(val) = prev {
-                std::env::set_var("XDG_RUNTIME_DIR", val);
-            } else {
-                std::env::remove_var("XDG_RUNTIME_DIR");
-            }
-        }
     }
 
     #[cfg(unix)]

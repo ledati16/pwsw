@@ -79,6 +79,17 @@ impl MockCompositor {
         }
     }
 
+    /// Open a client connection to this mock compositor's socket.
+    ///
+    /// Connecting by explicit path keeps tests from touching `WAYLAND_DISPLAY` /
+    /// `XDG_RUNTIME_DIR` (mutating process env from tests is unsound).
+    fn connect(&self) -> wayland_client::Connection {
+        let stream = std::os::unix::net::UnixStream::connect(&self.socket_path)
+            .expect("Failed to connect to mock compositor socket");
+        wayland_client::Connection::from_socket(stream)
+            .expect("Failed to create Wayland connection to mock compositor")
+    }
+
     fn create_window(&self, id: u32, title: &str, app_id: &str) {
         self.cmd_tx
             .send(ServerCommand::CreateWindow {
@@ -356,6 +367,7 @@ impl wayland_server::backend::ClientData for ClientData {
 
 // --- Tests ---
 
+// Serialise the mock-compositor tests: they rely on short sleeps for binding.
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -363,15 +375,8 @@ fn test_wlr_backend_lifecycle() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Wlr);
 
-    let socket_name = mock.socket_path.file_name().unwrap();
-    let runtime_dir = mock.socket_path.parent().unwrap();
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", socket_name);
-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
-    let mut event_rx =
-        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread_on(mock.connect())
+        .expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100)); // Wait for bind
 
@@ -418,15 +423,8 @@ fn test_ext_backend_lifecycle() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Ext);
 
-    let socket_name = mock.socket_path.file_name().unwrap();
-    let runtime_dir = mock.socket_path.parent().unwrap();
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", socket_name);
-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
-    let mut event_rx =
-        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread_on(mock.connect())
+        .expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 
@@ -474,16 +472,9 @@ fn test_priority_selection() {
     // Advertise BOTH protocols
     let mock = MockCompositor::new(ProtocolMode::Both);
 
-    let socket_name = mock.socket_path.file_name().unwrap();
-    let runtime_dir = mock.socket_path.parent().unwrap();
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", socket_name);
-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
     // Client should prefer Ext
-    let mut event_rx =
-        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread_on(mock.connect())
+        .expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 
@@ -511,15 +502,8 @@ fn test_ext_concurrent_windows() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Ext);
 
-    let socket_name = mock.socket_path.file_name().unwrap();
-    let runtime_dir = mock.socket_path.parent().unwrap();
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", socket_name);
-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
-    let mut event_rx =
-        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread_on(mock.connect())
+        .expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 
@@ -593,15 +577,8 @@ fn test_wlr_concurrent_windows() {
     let _guard = TEST_MUTEX.lock().unwrap();
     let mock = MockCompositor::new(ProtocolMode::Wlr);
 
-    let socket_name = mock.socket_path.file_name().unwrap();
-    let runtime_dir = mock.socket_path.parent().unwrap();
-    unsafe {
-        std::env::set_var("WAYLAND_DISPLAY", socket_name);
-        std::env::set_var("XDG_RUNTIME_DIR", runtime_dir);
-    }
-
-    let mut event_rx =
-        pwsw::compositor::spawn_compositor_thread().expect("Failed to spawn compositor thread");
+    let mut event_rx = pwsw::compositor::spawn_compositor_thread_on(mock.connect())
+        .expect("Failed to spawn compositor thread");
 
     thread::sleep(Duration::from_millis(100));
 

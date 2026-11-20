@@ -40,18 +40,26 @@ const MAX_PROFILE_SWITCH_RETRIES: u32 = 100;
 
 /// Get profile switch delay from env var or default (capped at 10 seconds)
 fn profile_switch_delay_ms() -> u64 {
-    std::env::var("PROFILE_SWITCH_DELAY_MS")
-        .ok()
+    parse_profile_switch_delay_ms(std::env::var("PROFILE_SWITCH_DELAY_MS").ok().as_deref())
+}
+
+/// Get profile switch max retries from env var or default (capped at 100)
+fn profile_switch_max_retries() -> u32 {
+    parse_profile_switch_max_retries(std::env::var("PROFILE_SWITCH_MAX_RETRIES").ok().as_deref())
+}
+
+/// Parse a `PROFILE_SWITCH_DELAY_MS` value: default when absent/invalid, capped at the maximum.
+fn parse_profile_switch_delay_ms(value: Option<&str>) -> u64 {
+    value
         .and_then(|v| v.parse().ok())
         .map_or(DEFAULT_PROFILE_SWITCH_DELAY_MS, |v: u64| {
             v.min(MAX_PROFILE_SWITCH_DELAY_MS)
         })
 }
 
-/// Get profile switch max retries from env var or default (capped at 100)
-fn profile_switch_max_retries() -> u32 {
-    std::env::var("PROFILE_SWITCH_MAX_RETRIES")
-        .ok()
+/// Parse a `PROFILE_SWITCH_MAX_RETRIES` value: default when absent/invalid, capped at the maximum.
+fn parse_profile_switch_max_retries(value: Option<&str>) -> u32 {
+    value
         .and_then(|v| v.parse().ok())
         .map_or(DEFAULT_PROFILE_SWITCH_MAX_RETRIES, |v: u32| {
             v.min(MAX_PROFILE_SWITCH_RETRIES)
@@ -1058,63 +1066,28 @@ mod tests {
         );
     }
 
+    #[rstest::rstest]
+    #[case::unset(None, 150, 5)]
+    #[case::valid_retries_capped(Some("300"), 300, MAX_PROFILE_SWITCH_RETRIES)]
+    #[case::invalid(Some("not_a_number"), 150, 5)]
+    #[case::empty(Some(""), 150, 5)]
+    #[case::negative(Some("-1"), 150, 5)]
+    #[case::extreme(
+        Some("999999999"),
+        MAX_PROFILE_SWITCH_DELAY_MS,
+        MAX_PROFILE_SWITCH_RETRIES
+    )]
+    fn test_profile_switch_env_parsing(
+        #[case] value: Option<&str>,
+        #[case] expected_delay: u64,
+        #[case] expected_retries: u32,
+    ) {
+        assert_eq!(parse_profile_switch_delay_ms(value), expected_delay);
+        assert_eq!(parse_profile_switch_max_retries(value), expected_retries);
+    }
+
     #[test]
-    fn test_profile_switch_env_vars() {
-        // Test default values when env vars are not set
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
-            std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
-        }
-
-        assert_eq!(profile_switch_delay_ms(), 150);
-        assert_eq!(profile_switch_max_retries(), 5);
-
-        // Test valid overrides
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "300");
-            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "10");
-        }
-
-        assert_eq!(profile_switch_delay_ms(), 300);
-        assert_eq!(profile_switch_max_retries(), 10);
-
-        // Test invalid values fall back to defaults
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "invalid");
-            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "not_a_number");
-        }
-
-        assert_eq!(profile_switch_delay_ms(), 150);
-        assert_eq!(profile_switch_max_retries(), 5);
-
-        // Test empty strings fall back to defaults
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "");
-            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "");
-        }
-
-        assert_eq!(profile_switch_delay_ms(), 150);
-        assert_eq!(profile_switch_max_retries(), 5);
-
-        // Test extreme values are capped to maximums
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::set_var("PROFILE_SWITCH_DELAY_MS", "999999999");
-            std::env::set_var("PROFILE_SWITCH_MAX_RETRIES", "999999999");
-        }
-
-        assert_eq!(profile_switch_delay_ms(), MAX_PROFILE_SWITCH_DELAY_MS);
-        assert_eq!(profile_switch_max_retries(), MAX_PROFILE_SWITCH_RETRIES);
-
-        // Cleanup
-        // SAFETY: Test-only code, single-threaded test execution, no concurrent env access
-        unsafe {
-            std::env::remove_var("PROFILE_SWITCH_DELAY_MS");
-            std::env::remove_var("PROFILE_SWITCH_MAX_RETRIES");
-        }
+    fn test_profile_switch_retries_valid_override() {
+        assert_eq!(parse_profile_switch_max_retries(Some("10")), 10);
     }
 }
