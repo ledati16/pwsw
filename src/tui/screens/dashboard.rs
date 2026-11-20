@@ -1109,7 +1109,7 @@ mod tests {
         // "Loaded" and "rules" are both patterns - they shouldn't overlap
         let spans = highlight_message("Loaded 5 sinks, 3 rules");
         // Should handle without crashing
-        assert!(!spans.is_empty());
+        assert!(!spans.is_empty(), "expected at least one span");
         // The full message content should be preserved
         let full: String = spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(full, "Loaded 5 sinks, 3 rules");

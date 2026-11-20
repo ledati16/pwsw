@@ -455,7 +455,8 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
             app.settings_screen.scroll_desc_down();
         }
         KeyCode::Enter | KeyCode::Char(' ') => {
-            if app.settings_screen.toggle_current(&mut app.config.settings) {
+            let changed = app.settings_screen.toggle_current(&mut app.config.settings);
+            if changed {
                 app.mark_dirty();
             }
         }
@@ -522,10 +523,8 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         app.mark_dirty();
                     }
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if !app.config.sinks.is_empty() {
-                        app.sinks_screen.start_inspect();
-                    }
+                (KeyCode::Enter, KeyModifiers::NONE) if !app.config.sinks.is_empty() => {
+                    app.sinks_screen.start_inspect();
                 }
                 _ => {}
             }
@@ -814,10 +813,8 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                         app.rules_screen.start_delete();
                     }
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
-                    if !app.config.rules.is_empty() {
-                        app.rules_screen.start_inspect();
-                    }
+                (KeyCode::Enter, KeyModifiers::NONE) if !app.config.rules.is_empty() => {
+                    app.rules_screen.start_inspect();
                 }
                 _ => {}
             }

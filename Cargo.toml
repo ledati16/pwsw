@@ -92,18 +92,19 @@ wayland-protocols-wlr = { version = "0.3", features = ["server", "client"] }
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(test)'] }
 
 [lints.clippy]
+# Enforce pedantic lints in plain `cargo clippy -D warnings` (CI); allows below override.
+pedantic = { level = "warn", priority = -1 }
+
 # === Structural Patterns (justified by domain) ===
 # Config structs: Independent boolean flags, not state machines (3 instances)
 struct_excessive_bools = "allow"
 
-# === Cohesion Over Line Limits (14 instances) ===
+# === Cohesion Over Line Limits (17 instances) ===
 # Event loops, TUI screens, input handlers - cohesive logic hard to split
 too_many_lines = "allow"
 
-# === Semantic Differences (1 instance) ===
-# Rule editor - conceptually different field types despite similar code
-match_same_arms = "allow"
-
 # === Generated Code (2 instances in src/lib.rs) ===
 # needless_raw_string_hashes, doc_markdown - kept as local #[allow] attributes
-# Total: 20 pedantic allows (18 here + 2 in lib.rs)
+# (defensive: built 0.9 output does not currently trigger them)
+# Total suppressed by this table: 20 (3 + 17). Local allows elsewhere: 2 in
+# src/lib.rs (above) and 1 needless_pass_by_value in tests/compositor_integration.rs.
