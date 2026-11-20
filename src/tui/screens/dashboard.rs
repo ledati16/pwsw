@@ -1,12 +1,10 @@
 //! Dashboard screen - Overview and quick actions
 
-use ratatui::{
-    Frame,
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
-};
+use ratatui::Frame;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 
 use crate::config::Config;
 use crate::style::colors;
@@ -665,7 +663,7 @@ fn highlight_message(message: &str) -> Vec<Span<'_>> {
     }
 
     // Sort matches by position, then by length (longer first for same position)
-    matches.sort_by(|(start_a, end_a, _, _), (start_b, end_b, _, _)| {
+    matches.sort_by(|(start_a, end_a, ..), (start_b, end_b, ..)| {
         start_a
             .cmp(start_b)
             .then_with(|| (end_b - start_b).cmp(&(end_a - start_a)))
@@ -677,7 +675,7 @@ fn highlight_message(message: &str) -> Vec<Span<'_>> {
         // Check if this match overlaps with any already filtered match
         let overlaps = filtered_matches
             .iter()
-            .any(|(f_start, f_end, _, _)| start < *f_end && end > *f_start);
+            .any(|(f_start, f_end, ..)| start < *f_end && end > *f_start);
         if !overlaps {
             filtered_matches.push((start, end, color, bold));
         }

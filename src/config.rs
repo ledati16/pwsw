@@ -3,15 +3,16 @@
 //! Handles loading, parsing, and validating the TOML configuration file.
 //! Supports settings, sink definitions, and window matching rules.
 
-use color_eyre::eyre::{self, Context, ContextCompat, Result};
-use crossterm::style::Stylize;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use color_eyre::eyre::{self, Context, ContextCompat, Result};
+use crossterm::style::Stylize;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::style::PwswStyle;
@@ -917,9 +918,10 @@ log_level = "info"         # error, warn, info, debug, trace
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
     use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
-    use rstest::rstest;
 
     // validate() tests
     #[test]
@@ -1260,10 +1262,9 @@ mod tests {
     #[test]
     fn test_validate_with_catastrophic_regex() {
         // Integration test: config validation should reject catastrophic patterns
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("(.*)*", None, "sink1")],
-        );
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![make_rule(
+            "(.*)*", None, "sink1",
+        )]);
 
         let result = config.validate();
         assert!(result.is_err());
@@ -1274,10 +1275,11 @@ mod tests {
     #[test]
     fn test_validate_catastrophic_in_title_pattern() {
         // Test that title patterns are also validated
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule("firefox", Some("(.+)+"), "sink1")],
-        );
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![make_rule(
+            "firefox",
+            Some("(.+)+"),
+            "sink1",
+        )]);
 
         let result = config.validate();
         assert!(result.is_err());

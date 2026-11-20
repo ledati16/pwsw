@@ -3,12 +3,13 @@
 //! Runs the main event loop, listening to compositor window events,
 //! `IPC` requests, and switching audio sinks based on configured rules.
 
-use color_eyre::eyre::{self, Context, ContextCompat, Result};
-use notify::{Event, RecursiveMode, Watcher};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
+
+use color_eyre::eyre::{self, Context, ContextCompat, Result};
+use notify::{Event, RecursiveMode, Watcher};
 use tempfile::NamedTempFile;
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -780,12 +781,9 @@ async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext
         Request::Shutdown => {
             info!("Shutdown requested via IPC");
             // Send response before shutting down
-            ipc::write_response(
-                stream,
-                &Response::Ok {
-                    message: "Daemon shutting down...".to_string(),
-                },
-            )
+            ipc::write_response(stream, &Response::Ok {
+                message: "Daemon shutting down...".to_string(),
+            })
             .await?;
 
             // Signal shutdown to main loop

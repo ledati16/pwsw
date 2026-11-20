@@ -1,15 +1,16 @@
 //! Rules screen - Manage window matching rules
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph,
-        Row, Table, TableState,
-    },
+use std::fmt::Write;
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row,
+    Table, TableState,
 };
+use regex::Regex;
 use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::config::{Rule, SinkConfig};
@@ -18,8 +19,6 @@ use crate::tui::editor_state::EditorState;
 use crate::tui::widgets::{
     ValidationState, centered_modal, modal_size, render_input, render_validated_input,
 };
-use regex::Regex;
-use std::fmt::Write;
 
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -341,16 +340,13 @@ fn render_list(
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(3),      // #
-            Constraint::Percentage(25), // App ID
-            Constraint::Percentage(25), // Title
-            Constraint::Percentage(20), // Target
-            Constraint::Percentage(30), // Description
-        ],
-    )
+    let table = Table::new(rows, [
+        Constraint::Length(3),      // #
+        Constraint::Percentage(25), // App ID
+        Constraint::Percentage(25), // Title
+        Constraint::Percentage(20), // Target
+        Constraint::Percentage(30), // Description
+    ])
     .header(
         Row::new(vec![
             "#",

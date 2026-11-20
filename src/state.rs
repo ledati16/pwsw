@@ -3,10 +3,11 @@
 //! Tracks active windows, rule matching, and audio sink state
 //! for the daemon mode event loop.
 
-use color_eyre::eyre::{self, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use color_eyre::eyre::{self, Result};
 use tracing::{debug, info, warn};
 
 use crate::compositor::WindowEvent;
@@ -535,9 +536,10 @@ pub fn switch_audio_blocking(
 
 #[cfg(test)]
 mod tests {
+    use test_case::test_case;
+
     use super::*;
     use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
-    use test_case::test_case;
 
     // find_matching_rule() parameterized tests
     #[test_case("firefox", None, "firefox", "Any Title", true ; "matches app_id only")]
@@ -554,10 +556,11 @@ mod tests {
         test_title: &str,
         should_match: bool,
     ) {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![make_rule(rule_app_id, rule_title, "sink1")],
-        );
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![make_rule(
+            rule_app_id,
+            rule_title,
+            "sink1",
+        )]);
         let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         let result = state.find_matching_rule(test_app_id, test_title);
@@ -566,13 +569,10 @@ mod tests {
 
     #[test]
     fn test_find_matching_rule_returns_first_match() {
-        let config = make_config(
-            vec![make_sink("sink1", "Sink 1", true)],
-            vec![
-                make_rule("firefox", None, "sink1"),
-                make_rule("fire.*", None, "sink1"),
-            ],
-        );
+        let config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![
+            make_rule("firefox", None, "sink1"),
+            make_rule("fire.*", None, "sink1"),
+        ]);
         let state = State::new_for_testing(Arc::new(config), "sink1".to_string());
 
         let result = state.find_matching_rule("firefox", "Title");
@@ -750,10 +750,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_windows_tracking() {
-        let config = make_config(
-            vec![make_sink("default_sink", "Default", true)],
-            vec![make_rule(".*", None, "default_sink")],
-        );
+        let config = make_config(vec![make_sink("default_sink", "Default", true)], vec![
+            make_rule(".*", None, "default_sink"),
+        ]);
         let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         // Add window to all_windows (happens during Opened event)
@@ -776,10 +775,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_all_windows_cleanup_multiple_windows() {
-        let config = make_config(
-            vec![make_sink("default_sink", "Default", true)],
-            vec![make_rule(".*", None, "default_sink")],
-        );
+        let config = make_config(vec![make_sink("default_sink", "Default", true)], vec![
+            make_rule(".*", None, "default_sink"),
+        ]);
         let mut state = State::new_for_testing(Arc::new(config), "default_sink".to_string());
 
         // Add multiple windows

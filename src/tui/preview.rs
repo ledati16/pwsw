@@ -1,7 +1,8 @@
-use crate::ipc::WindowInfo;
 use std::time::Duration;
 
 use ratatui::text::{Line, Span};
+
+use crate::ipc::WindowInfo;
 
 /// Match windows against provided regex patterns.
 ///
@@ -154,8 +155,9 @@ where
 /// renderers to convert `execute_preview`/`match_windows` output into `ratatui::text::Line` for
 /// direct rendering.
 pub fn build_preview_lines_from_strings(matches: &[String]) -> Vec<Line<'static>> {
-    use crate::style::colors;
     use ratatui::style::Style;
+
+    use crate::style::colors;
 
     matches
         .iter()
@@ -201,14 +203,16 @@ pub fn match_windows_with_compiled_count(
 // Debouncer & test harness
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::ipc::WindowInfo;
-    use crate::tui::app::AppUpdate;
     // `std::fmt::Write` not needed here; keep tests minimal
     use std::time::Duration;
+
     use tokio::sync::mpsc as bounded;
     use tokio::sync::mpsc::unbounded_channel;
     use tokio::time::Instant;
+
+    use super::*;
+    use crate::ipc::WindowInfo;
+    use crate::tui::app::AppUpdate;
 
     /// Run a simple debouncer that consumes preview requests from `preview_rx`, debounces them by `debounce_ms`,
     /// runs `preview` (normally a call to `execute_preview`) and sends `AppUpdate::PreviewPending` and

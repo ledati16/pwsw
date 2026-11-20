@@ -1,10 +1,9 @@
 use std::fs::{self, File};
 use std::io::{self, Write};
-use std::path::PathBuf;
-use std::sync::Mutex;
-
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
+use std::sync::Mutex;
 
 /// A file appender that rotates logs based on size.
 ///

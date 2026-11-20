@@ -3,9 +3,11 @@
 //! Implements both local commands (list-sinks, validate) and IPC-based commands
 //! that communicate with the daemon (status, reload, list-windows, test-rule).
 
+use std::collections::HashSet;
+use std::fmt::Write;
+
 use color_eyre::eyre::{self, Result};
 use crossterm::style::Stylize;
-use std::collections::HashSet;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -16,7 +18,6 @@ use crate::pipewire::{
     ProfileSinkJson,
 };
 use crate::style::PwswStyle;
-use std::fmt::Write;
 
 // ============================================================================
 // Local Commands (no daemon needed)
@@ -50,8 +51,8 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
     let current_default = active.iter().find(|s| s.is_default).map(|s| s.name.clone());
 
     if json_output {
-        let configured_names: HashSet<&str> = config
-            .map_or_default(|c| c.sinks.iter().map(|s| s.name.as_str()).collect());
+        let configured_names: HashSet<&str> =
+            config.map_or_default(|c| c.sinks.iter().map(|s| s.name.as_str()).collect());
 
         let output = ListSinksJson {
             active_sinks: active
@@ -73,24 +74,23 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                     profile_index: s.profile_index,
                 })
                 .collect(),
-            configured_sinks: config
-                .map_or_default(|c| {
-                    c.sinks
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| {
-                            let status = get_sink_status(&s.name, &active, &profile);
-                            ConfiguredSinkJson {
-                                index: i + 1,
-                                name: s.name.clone(),
-                                desc: s.desc.clone(),
-                                icon: s.icon.clone(),
-                                is_default_config: s.default,
-                                status: status.to_string(),
-                            }
-                        })
-                        .collect()
-                }),
+            configured_sinks: config.map_or_default(|c| {
+                c.sinks
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| {
+                        let status = get_sink_status(&s.name, &active, &profile);
+                        ConfiguredSinkJson {
+                            index: i + 1,
+                            name: s.name.clone(),
+                            desc: s.desc.clone(),
+                            icon: s.icon.clone(),
+                            is_default_config: s.default,
+                            status: status.to_string(),
+                        }
+                    })
+                    .collect()
+            }),
             current_default,
         };
 

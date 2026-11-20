@@ -1,16 +1,15 @@
 //! Sinks screen - Manage audio output sinks
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Cell, Clear, ListItem, ListState, Padding, Paragraph, Row,
-        Table, TableState,
-    },
-};
 use std::fmt::Write;
+
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, ListItem, ListState, Padding, Paragraph, Row, Table,
+    TableState,
+};
 
 use crate::config::SinkConfig;
 use crate::style::colors;
@@ -324,15 +323,12 @@ fn render_list(
         })
         .collect();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(10),     // Status
-            Constraint::Percentage(40), // Desc
-            Constraint::Percentage(40), // Name
-            Constraint::Length(10),     // Flags
-        ],
-    )
+    let table = Table::new(rows, [
+        Constraint::Length(10),     // Status
+        Constraint::Percentage(40), // Desc
+        Constraint::Percentage(40), // Name
+        Constraint::Length(10),     // Flags
+    ])
     .header(
         Row::new(vec!["Status", "Description", "Node Name", "Flags"])
             .style(

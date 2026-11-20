@@ -3,10 +3,11 @@
 //! Provides Unix socket-based IPC for CLI commands to communicate with the daemon.
 //! Uses length-prefixed JSON messages for protocol framing.
 
-use color_eyre::eyre::{self, Context, Result};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use color_eyre::eyre::{self, Context, Result};
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{debug, error, warn};
@@ -163,8 +164,9 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
     // On Unix: verify the file is actually a socket and owned by the current user
     #[cfg(unix)]
     {
-        use rustix::process::getuid;
         use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        use rustix::process::getuid;
 
         let metadata = std::fs::metadata(socket_path)
             .with_context(|| format!("Failed to stat socket: {}", socket_path.display()))?;

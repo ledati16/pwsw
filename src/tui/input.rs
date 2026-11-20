@@ -1,13 +1,13 @@
 //! Input handling for keyboard events
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use regex::Regex;
 use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, DaemonAction, Screen};
 use super::screens::rules::RulesMode;
 use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig};
-use regex::Regex;
 
 /// Handle a single input event and update app state
 ///
@@ -17,7 +17,7 @@ pub fn handle_event(app: &mut App, event: &Event) {
     if let Event::Key(key_event) = event {
         handle_key_event(app, *key_event);
         app.dirty = true;
-    } else if let Event::Resize(_, _) = event {
+    } else if let Event::Resize(..) = event {
         // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
         app.dirty = true;
     }
@@ -311,8 +311,9 @@ fn handle_screen_specific_input(app: &mut App, key: KeyEvent) {
 
 /// Handle dashboard screen input
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
-    use super::screens::DashboardView;
     use crossterm::event::KeyModifiers;
+
+    use super::screens::DashboardView;
 
     match (key.code, key.modifiers) {
         // Toggle between Logs and Windows view (Phase 9B)

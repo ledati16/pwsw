@@ -10,9 +10,10 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::server::{
 use wayland_protocols_wlr::foreign_toplevel::v1::server::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };
+use wayland_server::protocol::wl_output;
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
-    Resource, protocol::wl_output,
+    Resource,
 };
 
 // --- Mock Compositor Infrastructure ---

@@ -3,15 +3,14 @@
 //! This protocol is supported by Sway, Hyprland, Wayfire, River, labwc, dwl, hikari, Niri,
 //! and other wlroots-based compositors.
 
-use color_eyre::eyre::{Context, Result};
 use std::collections::HashMap;
+
+use color_eyre::eyre::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_output, wl_registry},
-};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::{wl_output, wl_registry};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols_wlr::foreign_toplevel::v1::client::{
     zwlr_foreign_toplevel_handle_v1, zwlr_foreign_toplevel_manager_v1,
 };
@@ -82,13 +81,10 @@ impl Dispatch<zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1, ()
                 trace!("New toplevel handle: {}", id);
 
                 // Register this handle with the event queue
-                state.toplevels.insert(
-                    id,
-                    ToplevelWindow {
-                        id: u64::from(id),
-                        ..Default::default()
-                    },
-                );
+                state.toplevels.insert(id, ToplevelWindow {
+                    id: u64::from(id),
+                    ..Default::default()
+                });
             }
             Event::Finished => {
                 debug!("Toplevel manager finished");

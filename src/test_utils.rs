@@ -12,8 +12,9 @@
 /// minimize test boilerplate while allowing customization of relevant fields.
 #[cfg(test)]
 pub(crate) mod fixtures {
-    use crate::config::{Config, Rule, Settings, SinkConfig};
     use regex::Regex;
+
+    use crate::config::{Config, Rule, Settings, SinkConfig};
 
     /// Create a test `Config` with the given sinks and rules.
     ///

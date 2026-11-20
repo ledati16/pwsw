@@ -2,6 +2,8 @@
 //!
 //! Manages screen navigation, user input, and application state.
 
+use std::sync::Arc;
+
 use color_eyre::eyre::Result;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,7 +12,6 @@ use throbber_widgets_tui::ThrobberState;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::Config;
 use crate::style::colors;
-use std::sync::Arc;
 
 // Type aliases to reduce complex type signatures for TUI preview channel
 pub type CompiledRegex = Arc<regex::Regex>;

@@ -9,12 +9,13 @@
 //! decreased since the last read, and recovers any unread lines from the old file before
 //! continuing with the new file.
 
-use color_eyre::eyre::{Context, ContextCompat, Result};
-use notify::{Event, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::PathBuf;
 use std::sync::mpsc;
+
+use color_eyre::eyre::{Context, ContextCompat, Result};
+use notify::{Event, RecursiveMode, Watcher};
 
 /// Maximum number of log lines to keep in the tailer's internal buffer.
 ///
@@ -202,8 +203,9 @@ impl LogTailer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::Write;
+
+    use super::*;
 
     /// Create a test-only `LogTailer` without file watching
     fn create_test_tailer(log_path: PathBuf) -> LogTailer {

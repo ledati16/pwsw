@@ -1,7 +1,8 @@
 //! Daemon control integration - systemd with fallback to direct execution
 
-use color_eyre::eyre::{self, Context, Result};
 use std::process::{Command, Stdio};
+
+use color_eyre::eyre::{self, Context, Result};
 
 use crate::daemon_manager::DaemonManager;
 use crate::ipc;

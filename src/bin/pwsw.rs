@@ -2,11 +2,13 @@
 //!
 //! Dispatches to daemon mode or subcommands based on CLI arguments.
 
+use std::sync::Arc;
+
 use clap::Parser;
 use color_eyre::eyre::{self, Result};
-use pwsw::{cli::Args, cli::Command, commands, config::Config, daemon};
-
-use std::sync::Arc;
+use pwsw::cli::{Args, Command};
+use pwsw::config::Config;
+use pwsw::{commands, daemon};
 
 /// Initialize logging for CLI commands.
 ///

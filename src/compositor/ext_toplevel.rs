@@ -3,15 +3,14 @@
 //! This is the standard protocol for listing toplevel windows.
 //! It provides read-only access to window metadata (title, `app_id`).
 
-use color_eyre::eyre::{Context, Result};
 use std::collections::HashMap;
+
+use color_eyre::eyre::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_output, wl_registry},
-};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::{wl_output, wl_registry};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
 };
@@ -80,13 +79,10 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for Ex
                 trace!("New ext-toplevel handle: {}", id);
 
                 // Register this handle
-                state.toplevels.insert(
-                    id,
-                    ToplevelWindow {
-                        id: u64::from(id),
-                        ..Default::default()
-                    },
-                );
+                state.toplevels.insert(id, ToplevelWindow {
+                    id: u64::from(id),
+                    ..Default::default()
+                });
             }
             Event::Finished => {
                 debug!("Ext-toplevel list finished");

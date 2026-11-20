@@ -4,6 +4,7 @@
 //! serialization/deserialization, rather than constructing Config structs directly.
 
 use std::fs;
+
 use tempfile::TempDir;
 
 /// Helper to create a temporary config directory

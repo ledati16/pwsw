@@ -3,8 +3,9 @@
 //! Provides an interactive terminal interface for managing PWSW configuration,
 //! monitoring daemon status, and controlling sinks.
 
-use crate::style::colors;
-use crate::tui::app::{AppUpdate, BgCommand};
+use std::fmt::Write;
+use std::io;
+
 use color_eyre::eyre::{Context, Result};
 use crossterm::cursor::Show;
 use crossterm::event::EventStream;
@@ -13,17 +14,16 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use futures_util::StreamExt;
-use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
-    layout::{Alignment, Constraint, Layout, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph, Tabs},
-};
-use std::fmt::Write;
-use std::io;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Tabs};
+use ratatui::{Frame, Terminal};
 use tokio::sync::mpsc::unbounded_channel;
+
+use crate::style::colors;
+use crate::tui::app::{AppUpdate, BgCommand};
 
 mod app;
 mod daemon_control;
@@ -38,13 +38,13 @@ mod widgets;
 mod tests;
 
 use app::{App, Screen};
+// Import type aliases from app module to avoid duplication
+use app::{CompiledRegex, PreviewInMsg};
 use input::handle_event;
 use screens::{
     RulesRenderContext, SinksRenderContext, render_dashboard, render_help, render_rules,
     render_settings, render_sinks,
 };
-// Import type aliases from app module to avoid duplication
-use app::{CompiledRegex, PreviewInMsg};
 #[derive(Clone)]
 struct PreviewReq {
     app_pattern: String,
@@ -659,18 +659,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             };
             render_dashboard(frame, main_area, &ctx);
         }
-        Screen::Sinks => render_sinks(
-            frame,
-            main_area,
-            &mut SinksRenderContext {
-                sinks: &app.config.sinks,
-                screen_state: &mut app.sinks_screen,
-                active_sinks: &app.active_sinks,
-                active_sink_list: &app.active_sink_list,
-                profile_sink_list: &app.profile_sink_list,
-                pipewire_available: app.pipewire_available,
-            },
-        ),
+        Screen::Sinks => render_sinks(frame, main_area, &mut SinksRenderContext {
+            sinks: &app.config.sinks,
+            screen_state: &mut app.sinks_screen,
+            active_sinks: &app.active_sinks,
+            active_sink_list: &app.active_sink_list,
+            profile_sink_list: &app.profile_sink_list,
+            pipewire_available: app.pipewire_available,
+        }),
         Screen::Rules => {
             // Snapshot read-only items so we can take mutable borrows later (throbber, screen state)
             // This avoids overlapping borrows when calling `render_rules` which needs both
@@ -684,18 +680,14 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             // two mutable references from a single &mut self borrow, avoiding double-borrows.
             let (rules_screen_mut, throbber_state_mut) = app.borrow_rules_and_throbber();
 
-            render_rules(
-                frame,
-                main_area,
-                &mut RulesRenderContext {
-                    rules: &rules_snapshot,
-                    sinks: &sinks_snapshot,
-                    screen_state: rules_screen_mut,
-                    windows: &windows_snapshot,
-                    preview: preview_snapshot.as_ref(),
-                    throbber_state: throbber_state_mut,
-                },
-            );
+            render_rules(frame, main_area, &mut RulesRenderContext {
+                rules: &rules_snapshot,
+                sinks: &sinks_snapshot,
+                screen_state: rules_screen_mut,
+                windows: &windows_snapshot,
+                preview: preview_snapshot.as_ref(),
+                throbber_state: throbber_state_mut,
+            });
         }
         Screen::Settings => render_settings(
             frame,

@@ -1,5 +1,6 @@
-use crate::tui::input::simulate_key_event;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use crate::tui::input::simulate_key_event;
 
 fn make_app_sinks() -> crate::tui::app::App {
     let temp_dir = tempfile::tempdir().expect("failed to create tempdir");

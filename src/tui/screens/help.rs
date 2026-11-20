@@ -1,13 +1,11 @@
 //! Help overlay - Context-aware keyboard shortcut reference
 
-use ratatui::{
-    Frame,
-    layout::{Constraint, Rect},
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{
-        Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState,
-    },
+use ratatui::Frame;
+use ratatui::layout::{Constraint, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState,
 };
 
 use crate::style::colors;
@@ -56,13 +54,10 @@ pub fn render_help(
     let rows = build_help_rows(current_screen, collapsed_sections, desc_width);
     let total_rows = rows.len();
 
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(22), // Key column (accommodate long combinations like "Ctrl+W, Alt+Backspace")
-            Constraint::Fill(1),    // Description column (take remaining space and wrap)
-        ],
-    )
+    let table = Table::new(rows, [
+        Constraint::Length(22), // Key column (accommodate long combinations like "Ctrl+W, Alt+Backspace")
+        Constraint::Fill(1),    // Description column (take remaining space and wrap)
+    ])
     .block(
         Block::default()
             .borders(Borders::ALL)

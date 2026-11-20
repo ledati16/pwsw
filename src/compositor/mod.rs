@@ -10,7 +10,8 @@ mod wlr_toplevel;
 use color_eyre::eyre::{self, Context, Result};
 use tokio::sync::mpsc;
 use tracing::{error, info};
-use wayland_client::{Connection, protocol::wl_registry};
+use wayland_client::Connection;
+use wayland_client::protocol::wl_registry;
 
 /// Supported window management protocols
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

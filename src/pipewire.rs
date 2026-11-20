@@ -11,11 +11,12 @@
 //!
 //! All required tools must be present in `PATH` for `PWSW` to function.
 
-use color_eyre::eyre::{self, Context, Result};
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::process::Command;
 use std::time::Duration;
+
+use color_eyre::eyre::{self, Context, Result};
+use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
 // ============================================================================
@@ -237,8 +238,7 @@ pub struct ConfiguredSinkJson {
 pub struct PipeWire;
 
 // Per-device lock table to serialize profile switches on the same device
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 /// Maximum number of device locks to retain before cleanup
 ///
@@ -673,11 +673,12 @@ impl PipeWire {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex as StdMutex};
     use std::thread;
     use std::time::Duration;
+
+    use super::*;
 
     const MINIMAL_SINK_JSON: &str = r#"[
         {
