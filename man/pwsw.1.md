@@ -113,10 +113,10 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   Directory for the IPC socket (`pwsw.sock`) and PID file.
 
 **PROFILE_SWITCH_DELAY_MS**
-:   Delay between retries when waiting for a sink to appear after a profile switch (default: 150).
+:   Interval in milliseconds between checks for the new sink after a profile switch (default: 150, clamped to 10-1000).
 
 **PROFILE_SWITCH_MAX_RETRIES**
-:   Maximum number of retries for profile switching (default: 5).
+:   Number of checks for the new sink after a profile switch (default: 10). The total wait (interval × checks) is capped at 5 seconds.
 
 ## FILES
 *~/.config/pwsw/config.toml*

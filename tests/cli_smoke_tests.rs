@@ -353,7 +353,7 @@ fn cli_status_reports_missing_pipewire_tools() {
         .arg("status"));
 
     assert_exit(&output, 1);
-    assert_stderr_contains(&output, "PipeWire tool 'pw-dump' not found or failed");
+    assert_stderr_contains(&output, "Failed to run `pw-dump`");
     sb.assert_default_locations_untouched();
 }
 

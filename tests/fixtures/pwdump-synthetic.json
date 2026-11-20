@@ -1,0 +1,621 @@
+[
+  {
+    "id": 60,
+    "type": "PipeWire:Interface:Device",
+    "info": {
+      "props": {
+        "device.api": "alsa",
+        "device.name": "alsa_card.usb-Example_USB_Headset-00",
+        "device.description": "Example USB Headset",
+        "media.class": "Audio/Device"
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "output:analog-stereo+input:mono-fallback",
+            "description": "Analog Stereo Output + Mono Input",
+            "priority": 6501,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 2,
+            "name": "output:analog-stereo",
+            "description": "Analog Stereo Output",
+            "priority": 6500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 3,
+            "name": "input:mono-fallback",
+            "description": "Mono Input",
+            "priority": 1,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 4,
+            "name": "pro-audio",
+            "description": "Pro Audio",
+            "priority": 1,
+            "available": "unknown",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  2
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  3
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 3,
+            "name": "input:mono-fallback",
+            "description": "Mono Input",
+            "priority": 1,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 61,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "alsa_input.usb-Example_USB_Headset-00.mono-fallback",
+        "node.description": "Example USB Headset Mono",
+        "media.class": "Audio/Source",
+        "device.id": 60,
+        "device.profile.name": "mono-fallback",
+        "card.profile.device": 0
+      }
+    }
+  },
+  {
+    "id": 70,
+    "type": "PipeWire:Interface:Device",
+    "info": {
+      "props": {
+        "device.api": "alsa",
+        "device.name": "alsa_card.pci-0000_00_1f.3",
+        "device.description": "Built-in Audio",
+        "media.class": "Audio/Device"
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "output:analog-stereo+input:analog-stereo",
+            "description": "Analog Stereo Duplex",
+            "priority": 6565,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 2,
+            "name": "output:analog-stereo",
+            "description": "Analog Stereo Output",
+            "priority": 6500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 3,
+            "name": "output:iec958-stereo+input:analog-stereo",
+            "description": "Digital Stereo (IEC958) Output + Analog Stereo Input",
+            "priority": 5565,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  2
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 4,
+            "name": "output:iec958-stereo+input:analog-mic",
+            "description": "Digital Stereo (IEC958) Output + Analog Mic Input",
+            "priority": 5600,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  3
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  2
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 5,
+            "name": "output:iec958-stereo",
+            "description": "Digital Stereo (IEC958) Output",
+            "priority": 5500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  2
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 6,
+            "name": "output:hdmi-stereo+input:analog-stereo",
+            "description": "Digital Stereo (HDMI) Output + Analog Stereo Input",
+            "priority": 5965,
+            "available": "no",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  4
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 7,
+            "name": "output:hdmi-stereo",
+            "description": "Digital Stereo (HDMI) Output",
+            "priority": 5900,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  4
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 8,
+            "name": "output:analog-surround-51+input:analog-stereo",
+            "description": "Analog Surround 5.1 Output + Analog Stereo Input",
+            "priority": 1365,
+            "available": "no",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  5
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 9,
+            "name": "output:analog-surround-51",
+            "description": "Analog Surround 5.1 Output",
+            "priority": 1300,
+            "available": "unknown",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  5
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 10,
+            "name": "input:analog-stereo",
+            "description": "Analog Stereo Input",
+            "priority": 65,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 1,
+            "name": "output:analog-stereo+input:analog-stereo",
+            "description": "Analog Stereo Duplex",
+            "priority": 6565,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 71,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "alsa_output.pci-0000_00_1f.3.analog-stereo",
+        "node.description": "Built-in Audio Analog Stereo",
+        "media.class": "Audio/Sink",
+        "device.id": 70,
+        "device.profile.name": "analog-stereo",
+        "card.profile.device": 0
+      }
+    }
+  },
+  {
+    "id": 72,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "alsa_input.pci-0000_00_1f.3.analog-stereo",
+        "node.description": "Built-in Audio Analog Stereo",
+        "media.class": "Audio/Source",
+        "device.id": 70,
+        "device.profile.name": "analog-stereo",
+        "card.profile.device": 1
+      }
+    }
+  },
+  {
+    "id": 80,
+    "type": "PipeWire:Interface:Device",
+    "info": {
+      "props": {
+        "device.api": "alsa",
+        "device.name": "alsa_card.platform-example_ucm",
+        "device.description": "Example UCM Card",
+        "media.class": "Audio/Device"
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "HiFi",
+            "description": "Play HiFi quality Music",
+            "priority": 8000,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 1,
+            "name": "HiFi",
+            "description": "Play HiFi quality Music",
+            "priority": 8000,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 81,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "alsa_output.platform-example_ucm.HiFi__Speaker__sink",
+        "node.description": "Example UCM Speaker",
+        "media.class": "Audio/Sink",
+        "device.id": 80,
+        "device.profile.name": "HiFi: Speaker: sink",
+        "card.profile.device": 0
+      }
+    }
+  },
+  {
+    "id": 90,
+    "type": "PipeWire:Interface:Device",
+    "info": {
+      "props": {
+        "device.api": "bluez5",
+        "device.name": "bluez_card.00_11_22_33_44_55",
+        "device.description": "Example Headphones",
+        "media.class": "Audio/Device"
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "available": "yes",
+            "priority": 0,
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "a2dp-sink",
+            "description": "High Fidelity Playback (A2DP Sink)",
+            "available": "yes",
+            "priority": 16,
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  1
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 0,
+            "name": "off"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 0,
+    "type": "PipeWire:Interface:Metadata",
+    "props": {
+      "metadata.name": "default"
+    },
+    "metadata": [
+      {
+        "subject": 0,
+        "key": "default.configured.audio.sink",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_output.pci-0000_00_1f.3.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.sink",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_output.pci-0000_00_1f.3.analog-stereo"
+        }
+      }
+    ]
+  }
+]

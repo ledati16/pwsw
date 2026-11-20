@@ -1,0 +1,904 @@
+[
+  {
+    "id": 38,
+    "type": "PipeWire:Interface:Metadata",
+    "version": 3,
+    "props": {
+      "metadata.name": "default"
+    },
+    "metadata": [
+      {
+        "subject": 0,
+        "key": "default.configured.audio.sink",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_output.pci-0000_0c_00.4.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.configured.audio.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_input.pci-0000_0c_00.4.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.sink",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_output.pci-0000_0c_00.4.iec958-stereo"
+        }
+      }
+    ]
+  },
+  {
+    "id": 42,
+    "type": "PipeWire:Interface:Device",
+    "version": 3,
+    "info": {
+      "props": {
+        "device.api": "alsa",
+        "device.bus": "pci",
+        "device.description": "Navi 10 HDMI Audio",
+        "device.name": "alsa_card.pci-0000_0a_00.1",
+        "device.nick": "HDA ATI HDMI",
+        "media.class": "Audio/Device",
+        "object.id": 42,
+        "api.alsa.use-acp": true,
+        "api.acp.auto-profile": false,
+        "api.acp.auto-port": false
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "output:hdmi-stereo",
+            "description": "Digital Stereo (HDMI) Output",
+            "priority": 5900,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  6
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 2,
+            "name": "output:hdmi-stereo-extra1",
+            "description": "Digital Stereo (HDMI 2) Output",
+            "priority": 5700,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  9
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 3,
+            "name": "output:hdmi-stereo-extra2",
+            "description": "Digital Stereo (HDMI 3) Output",
+            "priority": 5700,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  12
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 4,
+            "name": "output:hdmi-stereo-extra3",
+            "description": "Digital Stereo (HDMI 4) Output",
+            "priority": 5700,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  15
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 5,
+            "name": "output:hdmi-stereo-extra4",
+            "description": "Digital Stereo (HDMI 5) Output",
+            "priority": 5700,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  18
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 6,
+            "name": "output:hdmi-stereo-extra5",
+            "description": "Digital Stereo (HDMI 6) Output",
+            "priority": 5700,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  21
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 7,
+            "name": "output:hdmi-surround",
+            "description": "Digital Surround 5.1 (HDMI) Output",
+            "priority": 800,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  7
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 8,
+            "name": "output:hdmi-surround71",
+            "description": "Digital Surround 7.1 (HDMI) Output",
+            "priority": 800,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  8
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 9,
+            "name": "output:hdmi-surround-extra1",
+            "description": "Digital Surround 5.1 (HDMI 2) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  10
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 10,
+            "name": "output:hdmi-surround71-extra1",
+            "description": "Digital Surround 7.1 (HDMI 2) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  11
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 11,
+            "name": "output:hdmi-surround-extra2",
+            "description": "Digital Surround 5.1 (HDMI 3) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  13
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 12,
+            "name": "output:hdmi-surround71-extra2",
+            "description": "Digital Surround 7.1 (HDMI 3) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  14
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 13,
+            "name": "output:hdmi-surround-extra3",
+            "description": "Digital Surround 5.1 (HDMI 4) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  16
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 14,
+            "name": "output:hdmi-surround71-extra3",
+            "description": "Digital Surround 7.1 (HDMI 4) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  17
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 15,
+            "name": "output:hdmi-surround-extra4",
+            "description": "Digital Surround 5.1 (HDMI 5) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  19
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 16,
+            "name": "output:hdmi-surround71-extra4",
+            "description": "Digital Surround 7.1 (HDMI 5) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  20
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 17,
+            "name": "output:hdmi-surround-extra5",
+            "description": "Digital Surround 5.1 (HDMI 6) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  22
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 18,
+            "name": "output:hdmi-surround71-extra5",
+            "description": "Digital Surround 7.1 (HDMI 6) Output",
+            "priority": 600,
+            "available": "no",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  23
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 19,
+            "name": "pro-audio",
+            "description": "Pro Audio",
+            "priority": 1,
+            "available": "unknown",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                6,
+                "card.profile.devices",
+                [
+                  0,
+                  1,
+                  2,
+                  3,
+                  4,
+                  5
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 43,
+    "type": "PipeWire:Interface:Device",
+    "version": 3,
+    "info": {
+      "props": {
+        "device.api": "alsa",
+        "device.bus": "pci",
+        "device.description": "Starship/Matisse HD Audio Controller",
+        "device.name": "alsa_card.pci-0000_0c_00.4",
+        "device.nick": "HD-Audio Generic",
+        "media.class": "Audio/Device",
+        "object.id": 43,
+        "api.alsa.use-acp": true,
+        "api.acp.auto-profile": false,
+        "api.acp.auto-port": false
+      },
+      "params": {
+        "EnumProfile": [
+          {
+            "index": 0,
+            "name": "off",
+            "description": "Off",
+            "priority": 0,
+            "available": "yes",
+            "classes": [
+              0
+            ]
+          },
+          {
+            "index": 1,
+            "name": "output:analog-stereo+input:analog-stereo",
+            "description": "Analog Stereo Duplex",
+            "priority": 6565,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  5
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 2,
+            "name": "output:analog-stereo",
+            "description": "Analog Stereo Output",
+            "priority": 6500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  5
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 3,
+            "name": "output:iec958-stereo+input:analog-stereo",
+            "description": "Digital Stereo (IEC958) Output + Analog Stereo Input",
+            "priority": 5565,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  11
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 4,
+            "name": "output:iec958-stereo",
+            "description": "Digital Stereo (IEC958) Output",
+            "priority": 5500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  11
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 5,
+            "name": "output:analog-surround-21+input:analog-stereo",
+            "description": "Analog Surround 2.1 Output + Analog Stereo Input",
+            "priority": 1365,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  6
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 6,
+            "name": "output:analog-surround-41+input:analog-stereo",
+            "description": "Analog Surround 4.1 Output + Analog Stereo Input",
+            "priority": 1365,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  8
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 7,
+            "name": "output:analog-surround-51+input:analog-stereo",
+            "description": "Analog Surround 5.1 Output + Analog Stereo Input",
+            "priority": 1365,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  10
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 8,
+            "name": "output:analog-surround-21",
+            "description": "Analog Surround 2.1 Output",
+            "priority": 1300,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  6
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 9,
+            "name": "output:analog-surround-41",
+            "description": "Analog Surround 4.1 Output",
+            "priority": 1300,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  8
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 10,
+            "name": "output:analog-surround-51",
+            "description": "Analog Surround 5.1 Output",
+            "priority": 1300,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  10
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 11,
+            "name": "output:analog-surround-40+input:analog-stereo",
+            "description": "Analog Surround 4.0 Output + Analog Stereo Input",
+            "priority": 1265,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  7
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 12,
+            "name": "output:analog-surround-50+input:analog-stereo",
+            "description": "Analog Surround 5.0 Output + Analog Stereo Input",
+            "priority": 1265,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  9
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 13,
+            "name": "output:analog-surround-40",
+            "description": "Analog Surround 4.0 Output",
+            "priority": 1200,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  7
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 14,
+            "name": "output:analog-surround-50",
+            "description": "Analog Surround 5.0 Output",
+            "priority": 1200,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  9
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 15,
+            "name": "output:iec958-ac3-surround-51+input:analog-stereo",
+            "description": "Digital Surround 5.1 (IEC958/AC3) Output + Analog Stereo Input",
+            "priority": 365,
+            "available": "yes",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ],
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  12
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 16,
+            "name": "output:iec958-ac3-surround-51",
+            "description": "Digital Surround 5.1 (IEC958/AC3) Output",
+            "priority": 300,
+            "available": "unknown",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  12
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 17,
+            "name": "input:analog-stereo",
+            "description": "Analog Stereo Input",
+            "priority": 65,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Source",
+                1,
+                "card.profile.devices",
+                [
+                  0
+                ]
+              ]
+            ]
+          },
+          {
+            "index": 18,
+            "name": "pro-audio",
+            "description": "Pro Audio",
+            "priority": 1,
+            "available": "unknown",
+            "classes": [
+              2,
+              [
+                "Audio/Source",
+                2,
+                "card.profile.devices",
+                [
+                  3,
+                  4
+                ]
+              ],
+              [
+                "Audio/Sink",
+                2,
+                "card.profile.devices",
+                [
+                  1,
+                  2
+                ]
+              ]
+            ]
+          }
+        ],
+        "Profile": [
+          {
+            "index": 4,
+            "name": "output:iec958-stereo",
+            "description": "Digital Stereo (IEC958) Output",
+            "priority": 5500,
+            "available": "yes",
+            "classes": [
+              1,
+              [
+                "Audio/Sink",
+                1,
+                "card.profile.devices",
+                [
+                  11
+                ]
+              ]
+            ]
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 50,
+    "type": "PipeWire:Interface:Node",
+    "version": 3,
+    "info": {
+      "state": "suspended",
+      "props": {
+        "node.name": "alsa_output.pci-0000_0c_00.4.iec958-stereo",
+        "node.description": "Starship/Matisse HD Audio Controller Digital Stereo (IEC958)",
+        "node.nick": "ALC1220 Digital",
+        "media.class": "Audio/Sink",
+        "device.id": 43,
+        "device.api": "alsa",
+        "device.profile.name": "iec958-stereo",
+        "device.profile.description": "Digital Stereo (IEC958)",
+        "card.profile.device": 11,
+        "factory.name": "api.alsa.pcm.sink",
+        "object.id": 50,
+        "priority.session": 736,
+        "api.alsa.pcm.stream": "playback",
+        "audio.channels": 2,
+        "audio.position": "[ FL, FR ]"
+      }
+    }
+  }
+]

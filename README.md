@@ -255,10 +255,13 @@ sink = "Headphones"
 ### Profile Switching
 
 PWSW automatically switches device profiles when needed (e.g., analog ↔ digital on same card):
-1. Detects if sink requires profile switch
-2. Uses `pw-cli` to switch profile
-3. Waits for new sink node (with retries)
-4. Sets as default with `pw-metadata`
+1. Detects if sink requires profile switch (only profiles marked available are used)
+2. Picks the profile that keeps the card's current microphone input, if any
+3. Uses `pw-cli` to switch profile (saved, so WirePlumber keeps it)
+4. Waits for the new sink node (at most 5 s)
+5. Sets it as the default with `pw-metadata` (`default.configured.audio.sink`, like `wpctl set-default`)
+
+UCM (`HiFi`) and Pro Audio profiles are not switched to automatically.
 
 ### Priority Modes
 
