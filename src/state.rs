@@ -14,6 +14,7 @@ use crate::compositor::WindowEvent;
 use crate::config::{Config, Rule};
 use crate::notification::{get_app_icon, get_sink_icon, send_notification};
 use crate::pipewire::PipeWire;
+use crate::sanitize::for_log;
 
 /// Error message for missing default sink (should be caught by config validation)
 const BUG_NO_DEFAULT_SINK: &str =
@@ -262,7 +263,12 @@ impl State {
         app_id: &str,
         title: &str,
     ) -> Result<()> {
-        debug!("Window: id={}, app_id='{}', title='{}'", id, app_id, title);
+        debug!(
+            "Window: id={}, app_id='{}', title='{}'",
+            id,
+            for_log(app_id),
+            for_log(title)
+        );
 
         // Track all windows for test-rule command
         self.all_windows
@@ -346,7 +352,7 @@ impl State {
                 }
             } else {
                 // New window match - log and track it, potentially switch sink
-                info!("Rule matched: '{}' → {}", app_id, sink_desc);
+                info!("Rule matched: '{}' → {}", for_log(app_id), sink_desc);
                 self.track_window(
                     id,
                     sink_name.clone(),
@@ -389,7 +395,10 @@ impl State {
             if let Some(old_window) = self.untrack_window(id) {
                 info!(
                     "Rule unmatched: Window {} no longer matches rule (was: '{}', now: app_id='{}' title='{}')",
-                    id, old_window.trigger_desc, app_id, title
+                    id,
+                    for_log(&old_window.trigger_desc),
+                    for_log(app_id),
+                    for_log(title)
                 );
 
                 let target = self.determine_target_sink();
@@ -411,7 +420,8 @@ impl State {
         if let Some(closed_window) = self.untrack_window(id) {
             info!(
                 "Tracked window closed: {} (was: {})",
-                id, closed_window.trigger_desc
+                id,
+                for_log(&closed_window.trigger_desc)
             );
 
             let target = self.determine_target_sink();
@@ -515,7 +525,12 @@ pub fn switch_audio_blocking(
     notify: bool,
 ) -> Result<()> {
     if let Some(reason) = custom_desc {
-        info!("Switching: {} ({}) [Reason: {}]", desc, name, reason);
+        info!(
+            "Switching: {} ({}) [Reason: {}]",
+            desc,
+            name,
+            for_log(reason)
+        );
     } else {
         info!("Switching: {} ({})", desc, name);
     }

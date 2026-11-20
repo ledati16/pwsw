@@ -7,18 +7,25 @@ use color_eyre::eyre::{Context, Result};
 use notify_rust::Notification;
 
 use crate::config::SinkConfig;
+use crate::sanitize;
 
 /// Send a desktop notification
+///
+/// The body may contain untrusted text (window titles), so it is escaped for
+/// Pango markup and stripped of control characters before sending; the summary
+/// has control characters replaced (it is plain text per the notification spec).
 ///
 /// # Errors
 /// Returns an error if the notification cannot be sent (e.g., no notification daemon running).
 pub fn send_notification(summary: &str, body: &str, icon: Option<&str>) -> Result<()> {
     // Use provided icon, or fall back to generic audio icon
-    let icon = icon.unwrap_or("audio-card");
+    let icon = icon.filter(|i| !i.is_empty()).unwrap_or("audio-card");
+    let summary = sanitize::sanitize_line(summary, sanitize::MAX_LOG_CHARS);
+    let body = sanitize::for_notification(body);
 
     Notification::new()
-        .summary(summary)
-        .body(body)
+        .summary(&summary)
+        .body(&body)
         .appname("PWSW")
         .icon(icon)
         .timeout(3000)
@@ -65,8 +72,25 @@ pub fn get_sink_icon(sink: &SinkConfig) -> String {
 ///
 /// Handles reverse-DNS style `app_ids` by extracting the meaningful component.
 /// For example: `"org.mozilla.firefox"` → `"firefox"`, `"org.telegram.desktop"` → `"telegram"`.
+///
+/// The `app_id` is chosen by the window's owner, so anything that is not a plain
+/// icon-theme name (ASCII letters, digits, `-`, `_`) - e.g. a path - yields an
+/// empty string, which makes [`send_notification`] use its generic icon.
 #[must_use]
 pub fn get_app_icon(app_id: &str) -> String {
+    let icon = app_icon_candidate(app_id);
+    if icon
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        icon
+    } else {
+        String::new()
+    }
+}
+
+/// Pick the meaningful component of an `app_id` (unvalidated).
+fn app_icon_candidate(app_id: &str) -> String {
     // Generic suffixes that aren't useful as icon names
     const GENERIC_SUFFIXES: &[&str] = &[
         "desktop",
@@ -195,5 +219,13 @@ mod tests {
 
         // Two-part with generic suffix
         assert_eq!(get_app_icon("myapp.desktop"), "myapp");
+    }
+
+    #[test]
+    fn test_get_app_icon_rejects_paths_and_odd_chars() {
+        assert_eq!(get_app_icon("../../home/user/evil"), "");
+        assert_eq!(get_app_icon("/tmp/evil"), "");
+        assert_eq!(get_app_icon("app<b>"), "");
+        assert_eq!(get_app_icon("my-app_2"), "my-app_2");
     }
 }

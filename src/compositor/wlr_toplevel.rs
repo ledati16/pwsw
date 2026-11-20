@@ -16,6 +16,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
 };
 
 use super::WindowEvent;
+use crate::sanitize::for_log;
 
 /// State for handling toplevel windows
 pub struct WlrToplevelState {
@@ -116,13 +117,13 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()>
 
         match event {
             Event::Title { title } => {
-                trace!("Toplevel {} title: {}", handle_id, title);
+                trace!("Toplevel {} title: {}", handle_id, for_log(&title));
                 if let Some(window) = state.toplevels.get_mut(&handle_id) {
                     window.title = title;
                 }
             }
             Event::AppId { app_id } => {
-                trace!("Toplevel {} app_id: {}", handle_id, app_id);
+                trace!("Toplevel {} app_id: {}", handle_id, for_log(&app_id));
                 if let Some(window) = state.toplevels.get_mut(&handle_id) {
                     window.app_id = app_id;
                 }
@@ -137,7 +138,9 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()>
                         let title = window.title.clone();
                         trace!(
                             "Window changed: id={}, app_id='{}', title='{}'",
-                            id, app_id, title
+                            id,
+                            for_log(&app_id),
+                            for_log(&title)
                         );
                         state.send_event(WindowEvent::Changed { id, app_id, title });
                     } else {
@@ -148,7 +151,9 @@ impl Dispatch<zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1, ()>
                         let title = window.title.clone();
                         debug!(
                             "Window opened: id={}, app_id='{}', title='{}'",
-                            id, app_id, title
+                            id,
+                            for_log(&app_id),
+                            for_log(&title)
                         );
                         state.send_event(WindowEvent::Opened { id, app_id, title });
                     }

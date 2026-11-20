@@ -26,6 +26,7 @@ pub mod ipc;
 pub mod logging;
 pub mod notification;
 pub mod pipewire;
+pub mod sanitize;
 pub mod state;
 pub mod style;
 
