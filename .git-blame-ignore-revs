@@ -1,0 +1,6 @@
+# Purely mechanical formatting commits; `git blame` skips them when
+# `blame.ignoreRevsFile` is set (GitHub honours this file automatically):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: reformat with nightly rustfmt
+1e9ec4726c7b6a7ab32ffc2f9b52930dde388e4d
