@@ -29,7 +29,7 @@ fn is_unsafe_char(c: char) -> bool {
         )
 }
 
-/// Escape unsafe characters (see [`is_unsafe_char`]) as visible escapes such as
+/// Escape unsafe characters (see `is_unsafe_char`) as visible escapes such as
 /// `\n` or `\u{1b}` and truncate to at most `max_chars` characters (plus an
 /// ellipsis). Truncation always happens on a `char` boundary.
 ///
@@ -67,7 +67,7 @@ pub fn for_log(input: &str) -> Cow<'_, str> {
 }
 
 /// Prepare untrusted text for a notification body: replace unsafe control
-/// characters (see [`is_unsafe_char`]) with a space and, if `markup` is set,
+/// characters (see `is_unsafe_char`) with a space and, if `markup` is set,
 /// escape the characters Pango markup interprets (`&`, `<`, `>`) so the text is
 /// shown literally.
 ///

@@ -19,7 +19,7 @@ const BODY_MARKUP: &str = "body-markup";
 ///
 /// The body may contain untrusted text (window titles), so it is stripped of
 /// control characters and, if the server interprets markup (see
-/// [`server_supports_markup`]), escaped for Pango markup; the summary has control
+/// `server_supports_markup`), escaped for Pango markup; the summary has control
 /// characters replaced (it is plain text per the notification spec).
 ///
 /// Blocks on `D-Bus` (the first call also queries the server's capabilities), so

@@ -12,7 +12,7 @@ env:
 # Pinned toolchain versions below must be bumped together with rust-toolchain.toml.
 jobs:
   check:
-    name: Check (clippy, test)
+    name: Check (clippy, test, docs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,11 +28,20 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Run tests
-        run: cargo test --locked
+      # Runs `cargo test --locked` with HOME/XDG sandboxed and fails if any test
+      # touched the real pwsw config/data dirs or resolved a default path.
+      - name: Run tests (sandboxed, verify_tests_safe.sh)
+        run: bash scripts/verify_tests_safe.sh --locked
+        env:
+          PWSW_TMP: ${{ runner.temp }}
 
       - name: Check without default features
         run: cargo check --no-default-features --locked
+
+      - name: Docs
+        run: cargo doc --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   fmt:
     name: Formatting (nightly rustfmt)

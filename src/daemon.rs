@@ -1,7 +1,7 @@
 //! Daemon mode
 //!
 //! Startup (single-instance lock, optional detach, logging, compositor, `IPC`) and the
-//! wiring of the event loop in [`event_loop`], which tracks windows, reconciles the
+//! wiring of the event loop (`daemon/event_loop.rs`), which tracks windows, reconciles the
 //! default sink with the rules, and never waits on `PipeWire` itself.
 
 mod event_loop;

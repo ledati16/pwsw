@@ -3,8 +3,8 @@
 //! Provides an interactive terminal interface for managing PWSW configuration,
 //! monitoring daemon status, and controlling sinks.
 //!
-//! Rendering never performs I/O: everything shown comes from [`App`], which the
-//! background worker ([`worker`]) keeps up to date. The event loop sleeps until
+//! Rendering never performs I/O: everything shown comes from `App`, which the
+//! background worker (`worker`) keeps up to date. The event loop sleeps until
 //! an input event or a worker update arrives; it only wakes periodically while a
 //! spinner is animating.
 

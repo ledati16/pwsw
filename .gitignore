@@ -13,8 +13,15 @@ target
 # Contains mutation testing data
 **/mutants.out*/
 
-# Generated documentation
+# Local planning notes and audits (intentionally untracked)
 /docs/
+
+# makepkg run from contrib/ (git clone of the source, build dirs, packages, logs)
+/contrib/pwsw/
+/contrib/src/
+/contrib/pkg/
+/contrib/*.pkg.tar*
+/contrib/*.log
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

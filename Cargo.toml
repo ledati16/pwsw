@@ -89,6 +89,10 @@ wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["server", "staging"] }
 wayland-protocols-wlr = { version = "0.3", features = ["server", "client"] }
 
+[lints.cargo]
+# Flags dependencies no target uses (Rust 1.100+)
+unused_dependencies = "warn"
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(test)'] }
 
