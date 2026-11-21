@@ -65,6 +65,9 @@ pub struct RuleEditor {
     /// The rule's source references, carried through edits unchanged (the form does
     /// not edit them yet; empty for a new rule)
     pub source_refs: Vec<String>,
+    /// The rule's `output` pattern, carried through edits unchanged (the form does not
+    /// edit it yet; `None` for a new rule)
+    pub output_pattern: Option<String>,
     pub desc: Input,
     pub notify: Option<bool>,
     pub focused_field: RuleField,
@@ -110,11 +113,11 @@ impl RuleEditor {
     /// loading compiles them
     ///
     /// # Errors
-    /// When the app ID pattern or the target sinks are missing, or a pattern is
-    /// not a valid regex
+    /// When the app ID pattern (required unless the rule has an `output`) or the
+    /// target sinks are missing, or a pattern is not a valid regex
     pub(crate) fn to_rule(&self) -> Result<Rule, String> {
         let app_id = self.app_id_pattern.value();
-        if app_id.is_empty() {
+        if app_id.is_empty() && self.output_pattern.is_none() {
             return Err("App ID pattern is required".to_string());
         }
         let Some((first, fallbacks)) = self.sink_refs.split_first() else {
@@ -128,9 +131,16 @@ impl RuleEditor {
             .map(compile_rule_regex)
             .transpose()
             .map_err(|e| format!("Invalid title regex: {e}"))?;
+        let output_regex = self
+            .output_pattern
+            .as_deref()
+            .map(compile_rule_regex)
+            .transpose()
+            .map_err(|e| format!("Invalid output regex: {e}"))?;
         Ok(Rule {
             app_id_regex,
             title_regex,
+            output_regex,
             sink_ref: first.clone(),
             fallback_refs: fallbacks.to_vec(),
             source_refs: self.source_refs.clone(),
@@ -138,6 +148,7 @@ impl RuleEditor {
             notify: self.notify,
             app_id_pattern: app_id.to_string(),
             title_pattern,
+            output_pattern: self.output_pattern.clone(),
         })
     }
 
@@ -258,6 +269,7 @@ impl FormEditor for RuleEditor {
             title_pattern: Input::new(rule.title_pattern.clone().unwrap_or_default()),
             sink_refs: rule.sink_refs().map(str::to_string).collect(),
             source_refs: rule.source_refs.clone(),
+            output_pattern: rule.output_pattern.clone(),
             desc: Input::new(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             ..Self::default()
@@ -853,7 +865,7 @@ mod editor_tests {
 
     use super::*;
     use crate::test_utils::fixtures::{
-        make_rule, make_rule_with_fallbacks, make_sink, with_sources,
+        make_rule, make_rule_with_fallbacks, make_sink, with_output, with_sources,
     };
 
     fn sinks() -> Vec<SinkConfig> {
@@ -885,6 +897,34 @@ mod editor_tests {
             rule
         );
         assert_eq!(RuleEditor::blank().source_refs, Vec::<String>::new());
+    }
+
+    /// The form does not edit `output` yet: an edit must keep it, also for a rule with
+    /// no app ID (whose empty App ID field is then not an error)
+    #[test]
+    fn test_edit_keeps_the_rules_output() {
+        for app_id in ["^mpv$", ""] {
+            let rule = with_output(make_rule(app_id, None, "Speakers"), "^HDMI-");
+            let mut editor = RuleEditor::from_item(&rule);
+            assert_eq!(editor.output_pattern.as_deref(), Some("^HDMI-"));
+            editor.sink_refs = vec!["Headphones".to_string()];
+            let edited = editor.to_rule().expect("valid rule");
+            assert_eq!(edited.output_pattern.as_deref(), Some("^HDMI-"));
+            assert!(edited.output_regex.is_some_and(|r| r.is_match("HDMI-A-1")));
+            assert_eq!(edited.app_id_pattern, app_id);
+            assert_eq!(
+                RuleEditor::from_item(&rule).to_rule().expect("valid rule"),
+                rule
+            );
+        }
+        assert_eq!(RuleEditor::blank().output_pattern, None);
+        // Without an output the app ID stays required
+        let mut blank = RuleEditor::blank();
+        blank.sink_refs = vec!["Speakers".to_string()];
+        assert_eq!(
+            blank.to_rule().expect_err("no app ID"),
+            "App ID pattern is required"
+        );
     }
 
     #[test]

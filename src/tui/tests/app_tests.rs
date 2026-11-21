@@ -427,6 +427,8 @@ fn window(id: u64, app_id: &str, title: &str, matched: bool) -> crate::ipc::Wind
         id: Some(id),
         app_id: app_id.to_string(),
         title: title.to_string(),
+        outputs: Vec::new(),
+        minimized: false,
         matched_on: None,
         tracked: matched.then(|| crate::ipc::TrackedInfo {
             sink_name: "s1".to_string(),

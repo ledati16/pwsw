@@ -47,7 +47,13 @@ a monotonic sequence number, renewed when a window starts matching; or lowest ru
 with `match_by_index`, ties to the most recent), falling back to the default sink. Its
 answer is an ordered candidate list: the winning rule's sink and fallbacks
 (`sink = ["A", "B"]`), or the default sink alone. Each window is matched by the first
-rule that matches it. Nothing in `state.rs` does I/O; reachability is the worker's call.
+rule that matches it (`Rule::matches`: every condition the rule sets — `app_id`, `title`,
+`output` — must match; `output` matches when some connector name of the window's monitors
+matches and the window is not minimized). `State` keeps each window's `outputs` and
+`minimized` from `WindowEvent::Placement`; a placement change that makes a window start
+matching renews its sequence number like a title change; staying matched keeps it. Windows
+from the `ext` backend never get a placement, so `output` rules never match them. Nothing
+in `state.rs` does I/O; reachability is the worker's call.
 
 **Sources are a second, independent dimension** (`config::Endpoint::{Sink, Source}`).
 `State::desired_for(Source)` applies the same priority but only over matching windows
@@ -126,8 +132,13 @@ inside it.
   `Rule::source_refs` (ordered, empty = no source) may only be non-empty when sources
   exist; refs resolve, cascade and round-trip exactly like sink refs (`source` key kept
   as written when unchanged). `update_rule` replaces `source_refs` too: a caller that
-  does not edit sources must pass the old ones along (the TUI does not yet; see
-  limitations).
+  does not edit sources must pass the old ones along (the TUI's `RuleEditor` carries
+  them, and `output_pattern`, through unchanged).
+- A rule needs `app_id` or `output` (both optional in the file). No `app_id` is stored as
+  an empty `Rule::app_id_pattern` (`Rule::has_app_id`; `app_id = ""` is rejected at load,
+  and a rule that is empty with no `output` by validation); an empty `output` is rejected
+  too. Saves omit `app_id` for such rules. Use `Rule::label()` to name a rule in
+  messages.
 - A rule's targets are `Rule::sink_ref` (first choice) plus `Rule::fallback_refs`
   (`Rule::sink_refs()` yields both, in order); cascades cover every entry. `add_rule` /
   `update_rule` store all of them as `desc`s and drop a fallback equal to the first
@@ -156,7 +167,11 @@ inside it.
 **Hot reload.** The daemon watches the config's directory and, for a symlink, the
 target's directory too (re-resolved after each reload). 300 ms trailing debounce, load in
 `spawn_blocking`, `log_level` re-applied through the reload handle; SIGHUP reloads too.
-An invalid file keeps the previous config. Config changes never need a restart.
+An invalid file keeps the previous config. Config changes never need a restart, except
+one: the compositor protocol is chosen once at startup (`PreferWlr` iff the config has
+`output` rules, `daemon::protocol_preference`), so output rules added by a reload while on
+`ext` only log a warning (`event_loop::output_rules_warning`); the connection is never
+swapped.
 
 **IPC security** (`ipc.rs`):
 - Socket `$XDG_RUNTIME_DIR/pwsw.sock`; an unset, empty or relative `XDG_RUNTIME_DIR`
@@ -186,7 +201,9 @@ so the daemon exits non-zero and systemd restarts it. `ext` is preferred over `w
 reports which monitors a window is on and whether it is minimized: `WindowEvent::Placement`
 (sorted connector names from `wl_output` v4, emitted on `done` only when changed; coalesces
 in place like `Changed`, dropped by `Closed`; never emitted by `ext`). Window control
-requests are never used.
+requests are never used. The daemon reports its `Capabilities` (backend, monitor info) in
+`Status` (`backend`, `monitor_info`) and `WindowInfo` carries `outputs`/`minimized`;
+`doctor` judges availability with `ProtocolProbe::capabilities(PreferWlr)`.
 
 **TUI.** Render does no I/O: everything drawn comes from `App`. The background worker
 (`tui/worker.rs`) polls daemon status every 1 s and `pw-dump` every 2 s (only while a
@@ -298,7 +315,11 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 - Default-sink changes made outside pwsw are not tracked; pwsw re-reads the real default
   only for manual operations (`set-sink`, `next-sink`, `prev-sink`).
 - The daemon needs at least one configured sink to start.
-- The TUI does not show or edit `[[sources]]` or rule `source` yet; its rule editor
-  builds rules with empty `source_refs`, so editing a rule there drops its `source`.
+- The TUI does not show or edit `[[sources]]`, rule `source` or rule `output` yet (its rule
+  editor keeps both when a rule is edited). Its rules table shows an output-only rule
+  with an empty App ID, and its preview/"edit the matching rule" (`tui/preview.rs`
+  `first_matching_rule`) ignores `output`, so it treats an output-only rule as matching
+  every window.
+- `test-rule` matches `app_id` and title only, not monitors.
 - The code was written by LLMs and overhauled through an orchestrated multi-agent review;
   no human Rust expert has reviewed it. Validate changes thoroughly.

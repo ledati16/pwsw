@@ -61,13 +61,18 @@ Without any **[[sources]]** (the default), pwsw never touches the default source
 A source that is not present yet can be reached by switching its ALSA card's profile (predicted name `alsa_input.<card>.<input>`, recognised afterwards by device and profile like sinks). Such a switch always keeps the card's current output: pwsw never takes the audio output away to get a microphone. Renaming, reordering and deleting sources in the configuration keeps rule references pointing at the same source, and a source a rule uses cannot be deleted.
 
 ## RULES
-The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. Each window is matched by the first rule in the list that matches it.
+The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. A rule matches a window when every condition it sets matches (**app_id**, **title**, **output**); each rule needs at least one of **app_id** and **output**. Each window is matched by the first rule in the list that matches it.
 
-**app_id** (string, regex, required)
-:   Regex pattern matching the window's application ID. Must not be empty; use `.*` to match every application.
+**app_id** (string, regex, required unless **output** is set)
+:   Regex pattern matching the window's application ID. Must not be empty; use `.*` to match every application. A rule without **app_id** (it then has **output**) matches any application.
 
 **title** (string, regex, optional)
 :   Regex pattern matching the window title. If omitted, any title matches.
+
+**output** (string, regex, optional)
+:   Regex pattern matching the *connector name* of a monitor (`HDMI-A-1`, `DP-2`, `eDP-1`; see **pwsw list-windows**, or **swaymsg -t get_outputs**, **hyprctl monitors**, **niri msg outputs**): "audio follows the screen". The condition matches when the window is on a monitor whose name matches (a window spanning two monitors matches if either does) and the window is not minimized. Must not be empty; use `.*` for "on any monitor".
+
+    Only compositors offering **wlr-foreign-toplevel-management** (e.g. Sway, Hyprland) report which monitor a window is on; **ext-foreign-toplevel-list** does not. When the configuration has rules with **output**, the daemon prefers **wlr** at start-up. On a compositor that offers only **ext**, rules with **output** never match (the daemon logs a warning, and **pwsw doctor** says so); the other rules work as usual. Moving a window onto a matching monitor counts as fresh activity for **PRIORITY**, like a title change that starts matching; moving it between two matching monitors does not.
 
 **sink** (string, integer, or array of them, required)
 :   Reference to a sink by its `desc` (recommended; the TUI always writes this) or its `name`. A 1-indexed position in the sinks list (`sink = 2` or `sink = "2"`) is still accepted but deprecated: it logs a warning on load and points at a different sink if the list is reordered by hand. A reference that names no sink is an error. Renaming, reordering, or deleting sinks in the TUI keeps every rule pointing at the same sink, and a sink that rules still use cannot be deleted.
@@ -88,7 +93,7 @@ The **[[rules]]** list defines window-to-sink mappings. Rules require at least o
 ## PRIORITY
 The daemon tracks every open window and which rule it matches. The sink it wants is decided as follows:
 
-*   With `match_by_index = false`: the window that most recently opened, or most recently started matching a rule (e.g. after its title changed), wins.
+*   With `match_by_index = false`: the window that most recently opened, or most recently started matching a rule (e.g. after its title changed, or after it was moved onto, or restored on, a monitor an **output** rule names), wins.
 *   With `match_by_index = true`: the window whose rule comes first in the list wins; among windows of the same rule, the most recent one.
 *   When no window matches any rule: the default sink.
 
@@ -99,7 +104,7 @@ The source is an independent second answer: the same priority applies, but only 
 When one switch needs both a sink and a source on the same ALSA card, the card's profile is switched once, to an available profile that provides the sink's output *and* the source's input (e.g. `output:analog-stereo+input:analog-stereo`). If no such profile exists, the sink wins: its profile is used and that source is reported as unreachable (a fallback source on another card is still used). Sinks and sources on different cards are switched independently.
 
 ## HOT RELOAD
-The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is never needed for configuration changes.
+The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is not needed for configuration changes, with one exception: a daemon started without rules with **output** uses the **ext** protocol when the compositor offers it, which reports no monitors. Adding the first **output** rules then logs a warning and they do not match until the daemon is restarted (**systemctl --user restart pwsw**); removing them later needs no restart.
 
 ## REGEX SYNTAX
 PWSW uses the Rust **regex** crate, which prioritizes safety and performance.
@@ -161,6 +166,21 @@ app_id = "firefox"
 title = "YouTube"
 sink = "Speakers"
 notify = false
+
+[[sinks]]
+name = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
+desc = "TV"
+
+# Audio follows the screen: anything on the TV plays on the TV
+[[rules]]
+output = "^HDMI-A-1$"
+sink = "TV"
+
+# Or only the video player, on any HDMI monitor
+[[rules]]
+app_id = "^mpv$"
+output = "^HDMI-"
+sink = "TV"
 ```
 
 ## FILES

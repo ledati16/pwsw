@@ -79,6 +79,19 @@ the daemon switches less eagerly than before.
   single-sink rules are saved as. In the TUI the rule editor's **Sinks** field picks
   the sinks and their order (`Space` adds/removes, `Shift+↑/↓` reorders), and the rules
   table and details show them as `BT Headphones → Headphones`.
+- **Audio follows the screen (`output` rules)**: a rule key `output = "HDMI-A-1"` (a
+  regex, like `app_id`) matches the connector names of the monitors a window is on, while
+  it is not minimized; `app_id` is now optional when `output` is set (a rule needs at
+  least one of them). Moving a window onto a matching monitor counts as fresh activity,
+  like a title change that starts matching. Monitor information comes only from
+  `wlr-foreign-toplevel-management`, so with `output` rules the daemon prefers it over
+  `ext`; on an ext-only compositor these rules never match and the daemon warns. Adding
+  the first `output` rules to a running daemon that uses `ext` needs a restart (it logs
+  a warning). `list-windows` shows each window's monitors (`outputs`/`minimized` in the
+  JSON), `status` names the compositor protocol (`daemon.backend`,
+  `daemon.monitor_info` in `status --json`), `validate` notes the `wlr` requirement and
+  `pwsw doctor` reports whether monitor rules are available. The TUI keeps a rule's
+  `output` when the rule is edited (it does not edit it yet).
 - **Microphone (source) switching**: an optional `[[sources]]` list (same keys as
   `[[sinks]]`, exactly one `default`) and a rule key `source = "Headset Mic"` (or a
   fallback list, like `sink`) make the default input follow the rules too. The

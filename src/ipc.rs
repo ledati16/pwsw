@@ -118,6 +118,14 @@ pub enum Response {
         /// Whether `[[sources]]` are configured (pwsw manages the default source)
         #[serde(default)]
         sources_configured: bool,
+        /// The compositor protocol the daemon uses: `"ext"` or `"wlr"` (`None` from
+        /// daemons that predate reporting it)
+        #[serde(default)]
+        backend: Option<String>,
+        /// Whether the backend reports which monitors windows are on (rules with
+        /// `output` can match); `false` from older daemons
+        #[serde(default)]
+        monitor_info: bool,
     },
     /// Generic success response
     Ok { message: String },
@@ -157,6 +165,13 @@ pub struct WindowInfo {
     pub id: Option<u64>,
     pub app_id: String,
     pub title: String,
+    /// Connector names of the monitors the window is on (`HDMI-A-1`); empty when
+    /// unknown (the `ext` backend, or older daemons)
+    #[serde(default)]
+    pub outputs: Vec<String>,
+    /// Whether the window is minimized (`false` when unknown)
+    #[serde(default)]
+    pub minimized: bool,
     /// For test-rule: which fields matched ("`app_id`", "title", or "both")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched_on: Option<String>,
@@ -1369,6 +1384,8 @@ mod tests {
             current_source: Some("Headset Mic".to_string()),
             current_source_fallback: true,
             sources_configured: true,
+            backend: Some("wlr".to_string()),
+            monitor_info: true,
         };
         let json = serde_json::to_string(&response).unwrap();
         let deserialized: Response = serde_json::from_str(&json).unwrap();
@@ -1384,8 +1401,12 @@ mod tests {
             current_source,
             current_source_fallback,
             sources_configured,
+            backend,
+            monitor_info,
         } = deserialized
         {
+            assert_eq!(backend.as_deref(), Some("wlr"));
+            assert!(monitor_info);
             assert_eq!(current_source.as_deref(), Some("Headset Mic"));
             assert!(current_source_fallback && sources_configured);
             assert!(current_sink_fallback);
@@ -1413,8 +1434,19 @@ mod tests {
             current_source: None,
             current_source_fallback: false,
             sources_configured: false,
+            backend: None,
+            monitor_info: false,
             ..
         }));
+    }
+
+    /// A window from a daemon that predates placement reporting parses with no outputs
+    #[test]
+    fn test_window_info_without_placement_parses() {
+        let window: WindowInfo =
+            serde_json::from_str(r#"{"id":3,"app_id":"mpv","title":"video"}"#).expect("parse");
+        assert_eq!(window.outputs, Vec::<String>::new());
+        assert!(!window.minimized);
     }
 
     #[test]
@@ -1485,6 +1517,8 @@ mod tests {
             id: None,
             app_id: "firefox".to_string(),
             title: "Mozilla Firefox".to_string(),
+            outputs: vec!["DP-1".to_string(), "HDMI-A-1".to_string()],
+            minimized: true,
             matched_on: Some("firefox pattern".to_string()),
             tracked: Some(TrackedInfo {
                 sink_name: "hdmi_sink".to_string(),
@@ -1508,6 +1542,8 @@ mod tests {
             assert_eq!(windows.len(), 1);
             assert_eq!(windows[0].app_id, "firefox");
             assert_eq!(windows[0].title, "Mozilla Firefox");
+            assert_eq!(windows[0].outputs, ["DP-1", "HDMI-A-1"]);
+            assert!(windows[0].minimized);
             let tracked = windows[0].tracked.as_ref().expect("tracked");
             assert_eq!(tracked.fallbacks[0].desc, "Speakers");
             assert_eq!(tracked.sources[0].desc, "Mic");

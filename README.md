@@ -37,6 +37,9 @@ reporting instead, see [SECURITY.md](SECURITY.md).
 - **Automatic sink switching** from rules that match a window's `app_id` and title (regex)
 - **Fallback sinks**: a rule can list several sinks; the first one available right now
   wins (e.g. Bluetooth headphones when connected, wired ones otherwise)
+- **Audio follows the screen**: a rule can match the monitor a window is on
+  (`output = "HDMI-A-1"`), so whatever you move to the TV plays on the TV (needs a
+  compositor with `wlr-foreign-toplevel-management`)
 - **Respects your choices**: pwsw switches only when the rules' answer changes, so a sink
   you pick in pavucontrol (or a manual `pwsw set-sink`) stays until a rule wants
   something else
@@ -234,6 +237,10 @@ source = "Headset Mic"                  # optional: also switch the microphone
 app_id = ".*"        # any app...
 title = "YouTube"    # ...whose title contains "YouTube"
 sink = "Headphones"
+
+[[rules]]
+output = "^HDMI-A-1$" # audio follows the screen: any window on this monitor
+sink = "Optical Out"  # (app_id optional; needs wlr-foreign-toplevel-management)
 ```
 
 All `[settings]` keys are optional; the values above are the defaults.
@@ -243,10 +250,19 @@ exactly one sink has `default = true`: the fallback when no rule matches. Icons 
 auto-detected from the description (HDMI/TV/display → `video-display`;
 headphone/headset/Bluetooth → `audio-headphones`; otherwise `audio-speakers`).
 
-**Rules:** `app_id` (required) and `title` (optional) are regexes; `sink` names a sink by
+**Rules:** `app_id`, `title` and `output` are regexes; a rule matches when all the ones it
+sets match, and needs `app_id` or `output`. `sink` names a sink by
 `desc` (recommended, what the TUI writes) or node `name`. A 1-based position
 (`sink = 2`) still works but is deprecated: it logs a warning and points at a different
 sink if you reorder sinks by hand.
+
+**Audio follows the screen:** `output` matches the connector name of a monitor the window
+is on (`HDMI-A-1`, `DP-2`: shown by `pwsw list-windows`) while the window is not
+minimized; combine it with `app_id` to move only some apps (`app_id = "^mpv$"` and
+`output = "^HDMI-"`). Only `wlr-foreign-toplevel-management` reports monitors, so with
+`output` rules the daemon prefers it over `ext`; on a compositor that offers only `ext`
+these rules never match (`pwsw doctor` tells you). Adding the first `output` rule while
+the daemon runs on `ext` needs a daemon restart.
 
 **Sources (optional):** `[[sources]]` has the same keys as `[[sinks]]` (exactly one
 `default`), and a rule's `source` names one (or a fallback list) like `sink` does. The
@@ -278,7 +294,7 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
 ## How switching works
 
 - The daemon switches when the sink its rules want **changes**: a matching window opens,
-  closes or changes title, or a config change alters the rules. A sink chosen elsewhere
+  closes, changes title or moves to another monitor, or a config change alters the rules. A sink chosen elsewhere
   (pavucontrol, WirePlumber) stays until then.
 - At startup it switches only with `default_on_startup = true`.
 - The default is set the way `wpctl set-default` does it

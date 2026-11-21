@@ -14,6 +14,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use super::event_loop::{Command, ManualSwitch, PauseRequest, Snapshot};
+use crate::compositor::Capabilities;
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::{self, IpcServer, Request, Response, WindowInfo};
 
@@ -29,6 +30,8 @@ pub(crate) struct ServerInfo {
     pub version: String,
     pub started: std::time::Instant,
     pub daemon_manager: DaemonManager,
+    /// What the compositor connection provides (`None` in tests without one)
+    pub compositor: Option<Capabilities>,
 }
 
 /// Serve `IPC` connections until the returned task is aborted (which drops the
@@ -203,6 +206,8 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
         current_source_fallback: current_source.is_some() && snapshot.source_fallback,
         current_source,
         sources_configured: snapshot.sources_configured,
+        backend: info.compositor.map(|c| c.backend().name().to_string()),
+        monitor_info: info.compositor.is_some_and(Capabilities::monitor_info),
     }
 }
 
@@ -228,6 +233,8 @@ fn test_rule_response(windows: &[WindowInfo], pattern: String) -> Response {
                 id: w.id,
                 app_id: w.app_id.clone(),
                 title: w.title.clone(),
+                outputs: w.outputs.clone(),
+                minimized: w.minimized,
                 matched_on: Some(matched_on.to_string()),
                 // The rule the window matches now, so the output shows its sinks
                 tracked: w.tracked.clone(),

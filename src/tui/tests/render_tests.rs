@@ -67,6 +67,8 @@ fn window(app_id: &str, title: &str, sink: Option<&str>) -> WindowInfo {
         id: None,
         app_id: app_id.to_string(),
         title: title.to_string(),
+        outputs: Vec::new(),
+        minimized: false,
         matched_on: None,
         tracked: sink.map(|s| TrackedInfo {
             sink_name: String::new(),
@@ -1058,6 +1060,8 @@ fn windows_app(count: u64) -> App {
                 id: Some(i),
                 app_id: format!("app{i:02}"),
                 title: String::new(),
+                outputs: Vec::new(),
+                minimized: false,
                 matched_on: None,
                 tracked: None,
             })

@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use color_eyre::eyre::Result;
 
-use crate::compositor::{ProtocolProbe, probe_protocols};
+use crate::compositor::{Backend, ProtocolPreference, ProtocolProbe, probe_protocols};
 use crate::config::Config;
 use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, output_with_timeout};
 use crate::ipc::{self, Request, Response};
@@ -176,20 +176,23 @@ impl Report {
 /// `--config` was given (to say where the config path comes from).
 pub async fn run(config_flag: bool) -> bool {
     let local = tokio::task::spawn_blocking(move || local_sections(config_flag)).await;
-    let mut report = Report {
-        sections: local.unwrap_or_else(|e| {
+    let (sections, monitor) = match local {
+        Ok(local) => (local.sections, local.monitor),
+        Err(e) => (
             vec![Section {
                 title: "Doctor",
                 checks: vec![Check::fail(
                     format!("The checks stopped unexpectedly: {e}"),
                     "Please report this bug",
                 )],
-            }]
-        }),
+            }],
+            MonitorRules::default(),
+        ),
     };
+    let mut report = Report { sections };
     report
         .sections
-        .push(daemon_checks(&DaemonFacts::query().await));
+        .push(daemon_checks(&DaemonFacts::query().await, monitor));
     if let Ok(sections) = tokio::task::spawn_blocking(service_sections).await {
         report.sections.extend(sections);
     }
@@ -197,20 +200,23 @@ pub async fn run(config_flag: bool) -> bool {
     report.passed()
 }
 
+/// What the config and the compositor say about rules with `output`
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct MonitorRules {
+    /// The config has rules with `output`
+    configured: bool,
+    /// The compositor offers `wlr` (monitor info); `None` when it could not be asked
+    available: Option<bool>,
+}
+
+/// The locally gathered sections, and what they found out about monitor rules
+struct Local {
+    sections: Vec<Section>,
+    monitor: MonitorRules,
+}
+
 /// Wayland, `PipeWire`, config and sinks (blocking)
-fn local_sections(config_flag: bool) -> Vec<Section> {
-    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
-    let probe = display.as_ref().map(|_| probe_protocols(WAYLAND_TIMEOUT));
-    let wayland = wayland_checks(display.as_deref(), probe);
-
-    let tools: Vec<(&str, Result<String>)> = ["pw-dump", "pw-cli", "pw-metadata"]
-        .into_iter()
-        .map(|tool| (tool, PipeWire::tool_version(tool)))
-        .collect();
-    let dump = PipeWire::dump_with_info();
-    let wireplumber = PipeWire::tool_version("wireplumber");
-    let pipewire = pipewire_checks(&tools, dump.as_ref(), wireplumber.as_ref().ok());
-
+fn local_sections(config_flag: bool) -> Local {
     let path = Config::get_config_path();
     let source = if config_flag {
         "--config"
@@ -221,15 +227,41 @@ fn local_sections(config_flag: bool) -> Vec<Section> {
     };
     let exists = path.as_ref().is_ok_and(|p| p.exists());
     let config = exists.then(Config::load);
+    let loaded = config.as_ref().and_then(|c| c.as_ref().ok());
+    let output_rules = loaded.is_some_and(Config::has_output_rules);
+
+    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
+    let probe = display.as_ref().map(|_| probe_protocols(WAYLAND_TIMEOUT));
+    let monitor = MonitorRules {
+        configured: output_rules,
+        available: probe
+            .as_ref()
+            .and_then(|p| p.as_ref().ok())
+            .map(monitor_info_offered),
+    };
+    let wayland = wayland_checks(display.as_deref(), probe, output_rules);
+
+    let tools: Vec<(&str, Result<String>)> = ["pw-dump", "pw-cli", "pw-metadata"]
+        .into_iter()
+        .map(|tool| (tool, PipeWire::tool_version(tool)))
+        .collect();
+    let dump = PipeWire::dump_with_info();
+    let wireplumber = PipeWire::tool_version("wireplumber");
+    let pipewire = pipewire_checks(&tools, dump.as_ref(), wireplumber.as_ref().ok());
+
     let config_section = config_checks(path.as_deref().ok(), source, config.as_ref());
 
-    let sinks = sink_checks(
-        config.as_ref().and_then(|c| c.as_ref().ok()),
-        dump.as_ref().ok().map(|(snapshot, _)| snapshot),
-    );
+    let sinks = sink_checks(loaded, dump.as_ref().ok().map(|(snapshot, _)| snapshot));
     let mut sections = vec![wayland, pipewire, config_section];
     sections.extend(sinks);
-    sections
+    Local { sections, monitor }
+}
+
+/// Whether the compositor offers a protocol that reports monitors (`wlr`)
+fn monitor_info_offered(probe: &ProtocolProbe) -> bool {
+    probe
+        .capabilities(ProtocolPreference::PreferWlr)
+        .is_some_and(crate::compositor::Capabilities::monitor_info)
 }
 
 /// systemd unit and log file (blocking)
@@ -277,8 +309,13 @@ fn in_path(name: &str) -> bool {
 // ============================================================================
 
 /// Judge the Wayland session: `display` is `WAYLAND_DISPLAY`, `probe` the
-/// registry scan (`None` when there is no display to connect to)
-fn wayland_checks(display: Option<&OsStr>, probe: Option<Result<ProtocolProbe>>) -> Section {
+/// registry scan (`None` when there is no display to connect to), `output_rules`
+/// whether the config has rules with `output` (the daemon then prefers `wlr`)
+fn wayland_checks(
+    display: Option<&OsStr>,
+    probe: Option<Result<ProtocolProbe>>,
+    output_rules: bool,
+) -> Section {
     let mut checks = Vec::new();
     match (display, probe) {
         (None, _) | (_, None) => checks.push(Check::fail(
@@ -316,8 +353,31 @@ fn wayland_checks(display: Option<&OsStr>, probe: Option<Result<ProtocolProbe>>)
                     list.join(", ")
                 )));
             }
-            if let Some(chosen) = probe.chosen {
-                checks.push(Check::ok(format!("The daemon will use {chosen}")));
+            let preference = if output_rules {
+                ProtocolPreference::PreferWlr
+            } else {
+                ProtocolPreference::Auto
+            };
+            if let Some(capabilities) = probe.capabilities(preference) {
+                checks.push(Check::ok(format!(
+                    "The daemon will use {}",
+                    capabilities.backend().interface()
+                )));
+                checks.push(if monitor_info_offered(&probe) {
+                    Check::ok(format!(
+                        "Monitor rules: available ({})",
+                        Backend::Wlr.name()
+                    ))
+                } else if output_rules {
+                    Check::warn(
+                        "Monitor rules: unavailable: the compositor offers only ext, so rules \
+                         with `output` will never match",
+                        "Monitor rules need wlr-foreign-toplevel-management (e.g. Sway, \
+                         Hyprland); remove `output` from the rules or use such a compositor",
+                    )
+                } else {
+                    Check::info("Monitor rules: unavailable: the compositor offers only ext")
+                });
             }
         }
     }
@@ -551,6 +611,8 @@ struct DaemonStatus {
     uptime_secs: u64,
     current_sink: Option<String>,
     current_sink_fallback: bool,
+    /// Compositor backend the daemon uses (`None` from older daemons)
+    backend: Option<String>,
 }
 
 /// What the daemon checks found out
@@ -575,6 +637,7 @@ impl DaemonFacts {
                 uptime_secs,
                 current_sink,
                 current_sink_fallback,
+                backend,
                 ..
             }) => Ok(DaemonStatus {
                 version,
@@ -582,6 +645,7 @@ impl DaemonFacts {
                 uptime_secs,
                 current_sink,
                 current_sink_fallback,
+                backend,
             }),
             Ok(Response::Error { message }) => Err(message),
             Ok(_) => Err("unexpected answer to a status request".to_string()),
@@ -599,8 +663,9 @@ impl DaemonFacts {
     }
 }
 
-/// Judge the daemon
-fn daemon_checks(facts: &DaemonFacts) -> Section {
+/// Judge the daemon (`monitor`: whether monitor rules are configured and possible, to
+/// notice a daemon started before they were added)
+fn daemon_checks(facts: &DaemonFacts, monitor: MonitorRules) -> Section {
     let mut checks = Vec::new();
     let restart = "Restart it: systemctl --user restart pwsw (or pwsw shutdown, then pwsw daemon)";
     match &facts.status {
@@ -645,6 +710,17 @@ fn daemon_checks(facts: &DaemonFacts) -> Section {
                 Some(sink) => format!("Current sink: {sink}"),
                 None => "The daemon does not know the current sink yet".to_string(),
             }));
+            // Started without `output` rules it chose ext; a restart picks wlr
+            if monitor.configured
+                && monitor.available != Some(false)
+                && status.backend.as_deref() == Some(Backend::Ext.name())
+            {
+                checks.push(Check::warn(
+                    "The daemon uses ext, which reports no monitors, but the config has rules \
+                     with `output`",
+                    restart,
+                ));
+            }
         }
     }
     match facts.manager {
@@ -869,7 +945,7 @@ mod tests {
 
     #[test]
     fn test_wayland_checks() {
-        let missing = wayland_checks(None, None);
+        let missing = wayland_checks(None, None, false);
         assert_eq!(missing.checks.len(), 1);
         assert_eq!(missing.checks[0].level, Level::Fail);
         assert!(
@@ -879,7 +955,7 @@ mod tests {
         );
 
         let display = OsString::from("wayland-1");
-        let broken = wayland_checks(Some(&display), Some(Err(eyre!("refused"))));
+        let broken = wayland_checks(Some(&display), Some(Err(eyre!("refused"))), false);
         assert_eq!(broken.checks[0].level, Level::Fail);
         assert!(broken.checks[0].message.contains("wayland-1: refused"));
 
@@ -894,26 +970,75 @@ mod tests {
                     version: 1,
                 },
             ],
-            chosen: Some("ext_foreign_toplevel_list_v1"),
         };
-        let good = wayland_checks(Some(&display), Some(Ok(probe)));
+        let good = wayland_checks(Some(&display), Some(Ok(probe.clone())), false);
         let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
         assert_eq!(messages, [
             "Connected to Wayland display wayland-1",
             "Compositor advertises zwlr_foreign_toplevel_manager_v1 v3, \
              ext_foreign_toplevel_list_v1 v1",
             "The daemon will use ext_foreign_toplevel_list_v1",
+            "Monitor rules: available (wlr)",
         ]);
         assert!(good.checks.iter().all(|c| c.level == Level::Ok));
+
+        // With `output` rules the daemon prefers wlr
+        let monitor = wayland_checks(Some(&display), Some(Ok(probe)), true);
+        assert_eq!(
+            monitor.checks[2].message,
+            "The daemon will use zwlr_foreign_toplevel_manager_v1"
+        );
+        assert_eq!(monitor.checks[3].level, Level::Ok);
 
         let gnome = wayland_checks(
             Some(&display),
             Some(Ok(ProtocolProbe {
                 advertised: Vec::new(),
-                chosen: None,
             })),
+            false,
         );
         assert_eq!(gnome.checks[1].level, Level::Fail);
+        assert_eq!(gnome.checks.len(), 2, "no daemon or monitor line");
+    }
+
+    /// An ext-only compositor: monitor rules are just unavailable, unless the config
+    /// has some (then it warns that they never match)
+    #[test]
+    fn test_wayland_checks_ext_only_monitor_rules() {
+        let display = OsString::from("wayland-1");
+        let ext_only = || {
+            Some(Ok(ProtocolProbe {
+                advertised: vec![AdvertisedGlobal {
+                    interface: "ext_foreign_toplevel_list_v1".to_string(),
+                    version: 1,
+                }],
+            }))
+        };
+        let plain = wayland_checks(Some(&display), ext_only(), false);
+        let last = plain.checks.last().expect("checks");
+        assert_eq!(last.level, Level::Info);
+        assert_eq!(
+            last.message,
+            "Monitor rules: unavailable: the compositor offers only ext"
+        );
+
+        let with_rules = wayland_checks(Some(&display), ext_only(), true);
+        let last = with_rules.checks.last().expect("checks");
+        assert_eq!(last.level, Level::Warn);
+        assert!(
+            last.message.contains("will never match"),
+            "{}",
+            last.message
+        );
+        assert!(
+            last.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("wlr-foreign-toplevel-management")),
+            "{last:?}"
+        );
+        assert!(!monitor_info_offered(&ProtocolProbe {
+            advertised: Vec::new()
+        }));
     }
 
     #[test]
@@ -1045,7 +1170,8 @@ mod tests {
 
     #[test]
     fn test_daemon_checks() {
-        let stopped = daemon_checks(&DaemonFacts::default());
+        let none = MonitorRules::default();
+        let stopped = daemon_checks(&DaemonFacts::default(), none);
         assert_eq!(stopped.checks.len(), 1);
         assert_eq!(stopped.checks[0].level, Level::Warn);
 
@@ -1057,11 +1183,12 @@ mod tests {
                 uptime_secs: 3700,
                 current_sink: Some("Speakers".to_string()),
                 current_sink_fallback: true,
+                backend: Some("ext".to_string()),
             })),
             manager: Some(DaemonManager::Systemd),
         };
         let mine = crate::version_string();
-        let good = daemon_checks(&status(ipc::PROTOCOL_VERSION, &mine));
+        let good = daemon_checks(&status(ipc::PROTOCOL_VERSION, &mine), none);
         let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
         assert_eq!(messages, [
             format!("The daemon {mine} is running (uptime 1h 1m)").as_str(),
@@ -1069,17 +1196,76 @@ mod tests {
             "Managed by systemd (pwsw.service)",
         ]);
 
-        let old = daemon_checks(&status(ipc::PROTOCOL_VERSION, "v0.6.0"));
+        let old = daemon_checks(&status(ipc::PROTOCOL_VERSION, "v0.6.0"), none);
         assert_eq!(old.checks[1].level, Level::Warn);
-        let other_protocol = daemon_checks(&status(ipc::PROTOCOL_VERSION + 1, "v9"));
+        let other_protocol = daemon_checks(&status(ipc::PROTOCOL_VERSION + 1, "v9"), none);
         assert_eq!(other_protocol.checks[0].level, Level::Fail);
 
-        let mute = daemon_checks(&DaemonFacts {
-            running: true,
-            status: Some(Err("timed out".to_string())),
-            manager: None,
-        });
+        let mute = daemon_checks(
+            &DaemonFacts {
+                running: true,
+                status: Some(Err("timed out".to_string())),
+                manager: None,
+            },
+            none,
+        );
         assert_eq!(mute.checks[0].level, Level::Fail);
+    }
+
+    /// A daemon on ext while the config has `output` rules and the compositor offers
+    /// wlr: restart it. Nothing to say when wlr is not offered (the Wayland section
+    /// warns) or the daemon already uses wlr.
+    #[test]
+    fn test_daemon_checks_monitor_rules_need_a_restart() {
+        let facts = |backend: Option<&str>| DaemonFacts {
+            running: true,
+            status: Some(Ok(DaemonStatus {
+                version: crate::version_string(),
+                protocol: ipc::PROTOCOL_VERSION,
+                uptime_secs: 5,
+                current_sink: None,
+                current_sink_fallback: false,
+                backend: backend.map(str::to_string),
+            })),
+            manager: None,
+        };
+        let restart_warning = |facts: &DaemonFacts, monitor| {
+            daemon_checks(facts, monitor)
+                .checks
+                .into_iter()
+                .find(|c| c.message.contains("rules with `output`"))
+        };
+        let wanted = MonitorRules {
+            configured: true,
+            available: Some(true),
+        };
+        let warning = restart_warning(&facts(Some("ext")), wanted).expect("a warning");
+        assert_eq!(warning.level, Level::Warn);
+        assert!(
+            warning
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains("restart pwsw")),
+            "{warning:?}"
+        );
+        // Could not ask the compositor: still worth saying
+        let unknown = MonitorRules {
+            available: None,
+            ..wanted
+        };
+        assert!(restart_warning(&facts(Some("ext")), unknown).is_some());
+
+        assert!(restart_warning(&facts(Some("wlr")), wanted).is_none());
+        assert!(
+            restart_warning(&facts(None), wanted).is_none(),
+            "older daemon"
+        );
+        let ext_only = MonitorRules {
+            available: Some(false),
+            ..wanted
+        };
+        assert!(restart_warning(&facts(Some("ext")), ext_only).is_none());
+        assert!(restart_warning(&facts(Some("ext")), MonitorRules::default()).is_none());
     }
 
     #[test]

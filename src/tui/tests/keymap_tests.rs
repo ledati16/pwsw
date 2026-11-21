@@ -70,6 +70,8 @@ fn base(dir: &Path) -> App {
                 id: Some(i),
                 app_id: format!("app{i}"),
                 title: format!("title {i}"),
+                outputs: Vec::new(),
+                minimized: false,
                 matched_on: None,
                 tracked: None,
             })

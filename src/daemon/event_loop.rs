@@ -59,7 +59,7 @@ use tracing::{debug, error, info, warn};
 
 use super::notifier::{Notice, NoticeKind, Notifier};
 use super::worker::{self, Job, JobResult, Outcome, Pending, SinkSwitcher, Target};
-use crate::compositor::WindowEvent;
+use crate::compositor::{Capabilities, ProtocolPreference, WindowEvent};
 use crate::config::{Config, ConfigNotFound, Endpoint, SinkConfig};
 use crate::ipc::{FallbackSink, Response, TrackedInfo, WindowInfo};
 pub(crate) use crate::manual::ManualSwitch;
@@ -190,6 +190,41 @@ pub(crate) struct Hooks {
     pub after_reload: Option<ReloadHook>,
 }
 
+/// The compositor connection the daemon runs on: what it provides, and the protocol
+/// preference it was spawned with (chosen from the startup config)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompositorInfo {
+    pub capabilities: Capabilities,
+    pub preference: ProtocolPreference,
+}
+
+/// Why rules with `output` cannot match on this compositor connection, if they cannot
+/// (`None` when there are none, or the backend reports monitors)
+///
+/// Spawned with [`ProtocolPreference::PreferWlr`] (the startup config had such rules)
+/// and still on `ext`, the compositor offers nothing else. Spawned without (the rules
+/// came with a reload), a restart picks `wlr` if the compositor has it; the connection
+/// is not swapped while running.
+pub(crate) fn output_rules_warning(
+    compositor: CompositorInfo,
+    has_output_rules: bool,
+) -> Option<&'static str> {
+    if !has_output_rules || compositor.capabilities.monitor_info() {
+        return None;
+    }
+    Some(match compositor.preference {
+        ProtocolPreference::PreferWlr => {
+            "Monitor rules need wlr-foreign-toplevel-management; this compositor only offers \
+             ext-foreign-toplevel-list, so rules with `output` will never match"
+        }
+        ProtocolPreference::Auto => {
+            "Rules with `output` need monitor information, which the current compositor \
+             connection (ext-foreign-toplevel-list) does not report: restart pwsw to enable \
+             them (systemctl --user restart pwsw); they need wlr-foreign-toplevel-management"
+        }
+    })
+}
+
 /// Who asked for an activation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Origin {
@@ -315,6 +350,8 @@ pub(crate) struct Daemon {
     next_generation: u64,
     /// `IPC` replies waiting for the job of that lane and generation
     replies: Vec<(Endpoint, u64, oneshot::Sender<Response>)>,
+    /// The compositor connection (`None` in tests that do not set one)
+    compositor: Option<CompositorInfo>,
 }
 
 impl Daemon {
@@ -345,7 +382,16 @@ impl Daemon {
             paused: false,
             next_generation: 0,
             replies: Vec::new(),
+            compositor: None,
         }
+    }
+
+    /// The compositor connection the window events come from (for the reload check
+    /// of rules with `output`)
+    #[must_use]
+    pub(crate) fn with_compositor(mut self, compositor: CompositorInfo) -> Self {
+        self.compositor = Some(compositor);
+        self
     }
 
     /// The current default source, if known (queried at startup)
@@ -1323,6 +1369,8 @@ impl Daemon {
                     id: Some(w.id),
                     app_id: w.app_id.to_string(),
                     title: w.title.to_string(),
+                    outputs: w.outputs.to_vec(),
+                    minimized: w.minimized,
                     matched_on: None,
                     tracked: w.sinks.split_first().map(|(first, rest)| TrackedInfo {
                         sink_name: first.name.clone(),
@@ -1403,6 +1451,12 @@ impl Daemon {
                         config.sinks.len(),
                         config.rules.len()
                     );
+                    if let Some(warning) = self
+                        .compositor
+                        .and_then(|c| output_rules_warning(c, config.has_output_rules()))
+                    {
+                        warn!("{warning}");
+                    }
                     if config.settings.notify_manual {
                         self.notify_daemon(
                             "Configuration Reloaded",

@@ -151,9 +151,15 @@ pub(crate) fn window_matches(
 /// Index of the first rule (in config order) that matches `window`, the rule
 /// the daemon would apply to it.
 pub(crate) fn first_matching_rule(rules: &[Rule], window: &WindowInfo) -> Option<usize> {
-    rules
-        .iter()
-        .position(|rule| window_matches(&rule.app_id_regex, rule.title_regex.as_ref(), window))
+    // Same matching as the daemon (app_id, title and output conditions)
+    rules.iter().position(|rule| {
+        rule.matches(
+            &window.app_id,
+            &window.title,
+            &window.outputs,
+            window.minimized,
+        )
+    })
 }
 
 /// Match windows against compiled patterns.
@@ -203,6 +209,8 @@ mod tests {
             id: None,
             app_id: app_id.into(),
             title: title.into(),
+            outputs: Vec::new(),
+            minimized: false,
             matched_on: None,
             tracked: None,
         }
@@ -314,5 +322,44 @@ mod tests {
         assert_eq!(lines.len(), 1);
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "✓ firefox | Firefox Browser");
+    }
+}
+
+#[cfg(test)]
+mod output_rule_tests {
+    use super::*;
+    use crate::test_utils::fixtures::{make_rule, with_output};
+
+    fn window_on(app_id: &str, outputs: &[&str], minimized: bool) -> WindowInfo {
+        WindowInfo {
+            id: None,
+            app_id: app_id.into(),
+            title: String::new(),
+            outputs: outputs.iter().map(|o| (*o).to_string()).collect(),
+            minimized,
+            matched_on: None,
+            tracked: None,
+        }
+    }
+
+    #[test]
+    fn test_output_only_rule_matches_only_windows_on_that_output() {
+        let rules = vec![with_output(make_rule("", None, "TV"), "^HDMI-A-1$")];
+        assert_eq!(
+            first_matching_rule(&rules, &window_on("mpv", &["HDMI-A-1"], false)),
+            Some(0)
+        );
+        assert_eq!(
+            first_matching_rule(&rules, &window_on("mpv", &["DP-1"], false)),
+            None
+        );
+        assert_eq!(
+            first_matching_rule(&rules, &window_on("mpv", &["HDMI-A-1"], true)),
+            None
+        );
+        assert_eq!(
+            first_matching_rule(&rules, &window_on("mpv", &[], false)),
+            None
+        );
     }
 }

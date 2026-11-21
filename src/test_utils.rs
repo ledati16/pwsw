@@ -69,6 +69,7 @@ pub(crate) mod fixtures {
             app_id_regex: compile_rule_regex(app_id).expect("Invalid app_id regex in test fixture"),
             title_regex: title
                 .map(|t| compile_rule_regex(t).expect("Invalid title regex in test fixture")),
+            output_regex: None,
             sink_ref: sink_ref.to_string(),
             fallback_refs: Vec::new(),
             source_refs: Vec::new(),
@@ -76,6 +77,7 @@ pub(crate) mod fixtures {
             notify: None,
             app_id_pattern: app_id.to_string(),
             title_pattern: title.map(String::from),
+            output_pattern: None,
         }
     }
 
@@ -88,6 +90,20 @@ pub(crate) mod fixtures {
         let (first, rest) = sinks.split_first().expect("at least one sink");
         let mut rule = make_rule(app_id, title, first);
         rule.fallback_refs = rest.iter().map(|s| (*s).to_string()).collect();
+        rule
+    }
+
+    /// `rule` with an `output` condition (`pattern` as in the config); pass `""` as
+    /// `app_id` to [`make_rule`] for a rule without `app_id`
+    ///
+    /// # Panics
+    ///
+    /// Panics if `pattern` is not a valid regex.
+    #[must_use]
+    pub fn with_output(mut rule: Rule, pattern: &str) -> Rule {
+        rule.output_regex =
+            Some(compile_rule_regex(pattern).expect("Invalid output regex in test fixture"));
+        rule.output_pattern = Some(pattern.to_string());
         rule
     }
 

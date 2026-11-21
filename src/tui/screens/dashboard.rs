@@ -891,6 +891,8 @@ mod tests {
             id: Some(id),
             app_id: app_id.to_string(),
             title: String::new(),
+            outputs: Vec::new(),
+            minimized: false,
             matched_on: None,
             tracked: matched.then(|| crate::ipc::TrackedInfo {
                 sink_name: String::new(),

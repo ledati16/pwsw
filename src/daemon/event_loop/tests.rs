@@ -16,11 +16,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 
 use super::*;
+use crate::compositor::detected_capabilities;
 use crate::daemon::ipc_handler::{ServerInfo, handle_connection};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::Request;
 use crate::test_utils::fixtures::{
-    make_config, make_rule, make_rule_with_fallbacks, make_sink, with_sources,
+    make_config, make_rule, make_rule_with_fallbacks, make_sink, with_output, with_sources,
 };
 
 /// Upper bound for any single wait in these tests
@@ -282,6 +283,16 @@ struct Harness {
 }
 
 fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harness {
+    start_with(config, switcher, applied, None)
+}
+
+/// [`start`] with the compositor connection the loop is told it runs on
+fn start_with(
+    config: Config,
+    switcher: FakeSwitcher,
+    applied: Option<&str>,
+    compositor: Option<CompositorInfo>,
+) -> Harness {
     let watchdog = Watchdog::arm();
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join("config.toml");
@@ -322,6 +333,10 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
         applied.map(str::to_string),
     )
     .with_applied_source(applied_source);
+    let daemon = match compositor {
+        Some(compositor) => daemon.with_compositor(compositor),
+        None => daemon,
+    };
     let task = tokio::spawn(daemon.run(Inputs {
         windows: windows_rx,
         commands: commands_rx,
@@ -1262,6 +1277,7 @@ async fn test_set_sink_over_ipc_stream() {
             version: "test".to_string(),
             started: std::time::Instant::now(),
             daemon_manager: DaemonManager::Direct,
+            compositor: None,
         };
         handle_connection(server, &commands, &info).await
     });
@@ -1301,6 +1317,15 @@ async fn test_set_sink_over_ipc_stream() {
 
 /// Send one raw `IPC` frame to `handle_connection` and return the parsed reply
 async fn raw_ipc_exchange(h: &Harness, body: &[u8]) -> Response {
+    raw_ipc_exchange_with(h, body, None).await
+}
+
+/// [`raw_ipc_exchange`] with a server that runs on `compositor`
+async fn raw_ipc_exchange_with(
+    h: &Harness,
+    body: &[u8],
+    compositor: Option<Capabilities>,
+) -> Response {
     let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
     let commands = h.commands.clone();
     let server_task = tokio::spawn(async move {
@@ -1308,6 +1333,7 @@ async fn raw_ipc_exchange(h: &Harness, body: &[u8]) -> Response {
             version: "v9.9.9+test".to_string(),
             started: std::time::Instant::now(),
             daemon_manager: DaemonManager::Direct,
+            compositor,
         };
         handle_connection(server, &commands, &info).await
     });
@@ -2201,5 +2227,176 @@ async fn test_reload_adds_and_removes_the_source_lane() {
         h.statuses().last().map(String::as_str),
         Some("Sink: Speakers")
     );
+    h.stop().await.expect("clean shutdown");
+}
+
+// ----------------------------------------------------------------------------
+// Monitor (`output`) rules
+// ----------------------------------------------------------------------------
+
+const EXT: &str = "ext_foreign_toplevel_list_v1";
+const WLR: &str = "zwlr_foreign_toplevel_manager_v1";
+
+/// A compositor connection on `interface`, spawned with `preference`
+fn compositor_on(interface: &str, preference: ProtocolPreference) -> CompositorInfo {
+    CompositorInfo {
+        capabilities: detected_capabilities([interface], preference).expect("supported"),
+        preference,
+    }
+}
+
+/// [`base_config`] plus: any window on `HDMI-A-1` → hdmi (first rule)
+fn monitor_config() -> Config {
+    let mut config = base_config();
+    config
+        .rules
+        .insert(0, with_output(make_rule("", None, "hdmi"), "^HDMI-A-1$"));
+    config
+}
+
+/// Capture what this thread logs at `WARN` and above while the guard lives (the
+/// harness runs the loop on the test's single-threaded runtime)
+struct LogCapture {
+    buffer: Arc<Mutex<Vec<u8>>>,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+impl LogCapture {
+    fn start() -> Self {
+        #[derive(Clone)]
+        struct Writer(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Writer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buffer = Arc::new(Mutex::new(Vec::new()));
+        let writer = Writer(Arc::clone(&buffer));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        Self {
+            buffer,
+            _guard: tracing::subscriber::set_default(subscriber),
+        }
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8(self.buffer.lock().expect("lock").clone()).expect("utf-8 logs")
+    }
+}
+
+/// A window moving onto the monitor an `output` rule names switches; moving off
+/// switches back to the default
+#[tokio::test(start_paused = true)]
+async fn test_placement_event_switches() {
+    let h = start(monitor_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "vlc").await;
+    h.event(WindowEvent::Placement {
+        id: 1,
+        outputs: vec!["HDMI-A-1".to_string()],
+        minimized: false,
+    })
+    .await;
+    let snapshot = h.wait_applied("hdmi").await;
+    assert_eq!(snapshot.windows[0].outputs, ["HDMI-A-1"]);
+    assert!(!snapshot.windows[0].minimized);
+    assert!(snapshot.windows[0].tracked.is_some());
+
+    h.event(WindowEvent::Placement {
+        id: 1,
+        outputs: vec!["HDMI-A-1".to_string()],
+        minimized: true,
+    })
+    .await;
+    let snapshot = h.wait_applied("speakers").await;
+    assert!(snapshot.windows[0].minimized);
+    assert_eq!(h.calls(), vec!["hdmi", "speakers"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Output rules added by a reload while the daemon runs on ext: it warns that a
+/// restart is needed (nothing is reconnected); no warning on wlr
+#[tokio::test(start_paused = true)]
+async fn test_reload_adding_output_rules_on_ext_warns() {
+    for (compositor, warns) in [
+        (compositor_on(EXT, ProtocolPreference::Auto), true),
+        (compositor_on(WLR, ProtocolPreference::Auto), false),
+    ] {
+        let logs = LogCapture::start();
+        let h = start_with(
+            base_config(),
+            FakeSwitcher::default(),
+            Some("speakers"),
+            Some(compositor),
+        );
+        monitor_config()
+            .save_to(&h.config_path)
+            .expect("write config");
+        h.signal(Signal::Hangup).await;
+        h.wait_for("reload", |s, _| s.config.has_output_rules())
+            .await;
+        let text = logs.text();
+        assert_eq!(
+            text.contains("restart pwsw"),
+            warns,
+            "{compositor:?}: {text}"
+        );
+        h.stop().await.expect("clean shutdown");
+    }
+}
+
+#[test]
+fn test_output_rules_warning() {
+    let ext_auto = compositor_on(EXT, ProtocolPreference::Auto);
+    let ext_only = compositor_on(EXT, ProtocolPreference::PreferWlr);
+    let wlr = compositor_on(WLR, ProtocolPreference::PreferWlr);
+    assert_eq!(output_rules_warning(ext_auto, false), None);
+    assert_eq!(output_rules_warning(wlr, true), None);
+    assert_eq!(output_rules_warning(wlr, false), None);
+    let restart = output_rules_warning(ext_auto, true).expect("warns");
+    assert!(restart.contains("restart pwsw"), "{restart}");
+    let never = output_rules_warning(ext_only, true).expect("warns");
+    assert!(
+        never.contains("need wlr-foreign-toplevel-management"),
+        "{never}"
+    );
+    assert!(never.contains("only offers ext"), "{never}");
+    assert!(never.contains("will never match"), "{never}");
+}
+
+/// `Status` names the backend and whether monitor info is available
+#[tokio::test]
+async fn test_status_reports_backend_and_monitor_info() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let body = serde_json::to_vec(&Request::Status).expect("serialize");
+    for (compositor, expected) in [
+        (None, (None, false)),
+        (
+            Some(compositor_on(WLR, ProtocolPreference::PreferWlr).capabilities),
+            (Some("wlr"), true),
+        ),
+        (
+            Some(compositor_on(EXT, ProtocolPreference::Auto).capabilities),
+            (Some("ext"), false),
+        ),
+    ] {
+        let response = raw_ipc_exchange_with(&h, &body, compositor).await;
+        let Response::Status {
+            backend,
+            monitor_info,
+            ..
+        } = response
+        else {
+            panic!("expected a status reply, got {response:?}");
+        };
+        assert_eq!((backend.as_deref(), monitor_info), expected);
+    }
     h.stop().await.expect("clean shutdown");
 }

@@ -75,11 +75,16 @@ pub const RULE_REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// Cache budget of the lazy DFA used when matching one rule regex.
 pub const RULE_REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
 
+/// What `pwsw validate` notes about rules with `output`
+pub const OUTPUT_RULES_NOTE: &str = "rules with `output` need a compositor offering \
+     wlr-foreign-toplevel-management (e.g. Sway, Hyprland): only it reports which \
+     monitor a window is on. Check with `pwsw doctor`.";
+
 /// Largest accepted `switch_delay_ms` (5 s): a longer settle delay would make the
 /// daemon look unresponsive
 pub const MAX_SWITCH_DELAY_MS: u32 = 5000;
 
-/// Compile a window rule pattern (`app_id`, title, or a `test-rule` pattern).
+/// Compile a window rule pattern (`app_id`, title, output, or a `test-rule` pattern).
 ///
 /// This is the single place rule regexes are built: config loading, the TUI rule
 /// editor and its live preview, and the daemon's `test-rule` handler all call it, so a
@@ -284,10 +289,18 @@ pub struct SinkConfig {
 pub type SourceConfig = SinkConfig;
 
 /// Window matching rule
+///
+/// A rule matches a window when every condition it sets matches: `app_id` (unless the
+/// rule has none), `title` (if set) and `output` (if set; see [`Rule::matches`]). A rule
+/// sets at least one of `app_id` and `output`.
 #[derive(Debug, Clone)]
 pub struct Rule {
+    /// Compiled [`Rule::app_id_pattern`] (for a rule without `app_id` the empty
+    /// pattern, which matches every `app_id`)
     pub app_id_regex: Regex,
     pub title_regex: Option<Regex>,
+    /// Compiled [`Rule::output_pattern`]
+    pub output_regex: Option<Regex>,
     /// Sink reference: a sink `desc` (what the TUI writes), a node `name`, or a
     /// deprecated 1-based position (`"2"`; an integer `sink = 2` in the file).
     ///
@@ -304,8 +317,13 @@ pub struct Rule {
     pub desc: Option<String>,
     pub notify: Option<bool>,
     // Original patterns for display
+    /// The `app_id` pattern; empty when the rule has no `app_id` (then it has an
+    /// `output`)
     pub app_id_pattern: String,
     pub title_pattern: Option<String>,
+    /// The `output` pattern: a regex matched against the connector names (`HDMI-A-1`)
+    /// of the monitors a window is on; `None` when the rule does not care
+    pub output_pattern: Option<String>,
 }
 
 impl PartialEq for Rule {
@@ -314,6 +332,7 @@ impl PartialEq for Rule {
         // The patterns are the source of truth; compiled regexes are derived from them.
         self.app_id_pattern == other.app_id_pattern
             && self.title_pattern == other.title_pattern
+            && self.output_pattern == other.output_pattern
             && self.sink_ref == other.sink_ref
             && self.fallback_refs == other.fallback_refs
             && self.source_refs == other.source_refs
@@ -323,6 +342,40 @@ impl PartialEq for Rule {
 }
 
 impl Rule {
+    /// Whether the rule has an `app_id` condition (else it has an `output` one)
+    #[must_use]
+    pub fn has_app_id(&self) -> bool {
+        !self.app_id_pattern.is_empty()
+    }
+
+    /// Whether a window matches every condition the rule sets
+    ///
+    /// `outputs` are the connector names of the monitors the window is on and
+    /// `minimized` its minimized flag (only the `wlr` backend reports either; without
+    /// them `outputs` is empty). An `output` condition matches when the window is not
+    /// minimized and some connector matches it, so it never matches a window whose
+    /// placement is unknown.
+    #[must_use]
+    pub fn matches(&self, app_id: &str, title: &str, outputs: &[String], minimized: bool) -> bool {
+        (!self.has_app_id() || self.app_id_regex.is_match(app_id))
+            && self.title_regex.as_ref().is_none_or(|r| r.is_match(title))
+            && self
+                .output_regex
+                .as_ref()
+                .is_none_or(|r| !minimized && outputs.iter().any(|o| r.is_match(o)))
+    }
+
+    /// The rule's conditions for messages: `^mpv$`, `^mpv$ on output ^HDMI-`, or
+    /// `output ^HDMI-` for a rule without `app_id`
+    #[must_use]
+    pub fn label(&self) -> String {
+        match (&self.output_pattern, self.has_app_id()) {
+            (None, _) => self.app_id_pattern.clone(),
+            (Some(output), true) => format!("{} on output {output}", self.app_id_pattern),
+            (Some(output), false) => format!("output {output}"),
+        }
+    }
+
     /// The rule's sink references in priority order: [`Rule::sink_ref`], then
     /// [`Rule::fallback_refs`]
     pub fn sink_refs(&self) -> impl Iterator<Item = &str> {
@@ -434,9 +487,12 @@ struct SinkConfigFile {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuleConfigFile {
-    app_id: String,
+    #[serde(default)]
+    app_id: Option<String>,
     #[serde(default)]
     title: Option<String>,
+    #[serde(default)]
+    output: Option<String>,
     #[serde(deserialize_with = "deserialize_sink_refs")]
     sink: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_source_refs")]
@@ -445,6 +501,14 @@ struct RuleConfigFile {
     desc: Option<String>,
     #[serde(default)]
     notify: Option<bool>,
+}
+
+/// A rule (1-based `number`) without `app_id` and `output`, or with an empty `app_id`
+fn missing_app_id(number: usize) -> eyre::Report {
+    eyre::eyre!(
+        "Rule {number} needs `app_id` or `output` (an empty app_id pattern is not allowed: use \
+         '.*' to match all windows)"
+    )
 }
 
 const fn default_true() -> bool {
@@ -673,6 +737,10 @@ switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle
 # app_id = "^discord$"
 # sink = ["Headphones", "Speakers"]  # Fallbacks: the first one available now wins
 # source = "Headset Mic"             # Optional: also switch the microphone (needs [[sources]])
+#
+# [[rules]]
+# output = "^HDMI-A-1$"  # Any window on this monitor (connector name; regex); app_id optional
+# sink = "TV"            # Needs a wlr-foreign-toplevel-management compositor: pwsw doctor
 "#;
 
 // ============================================================================
@@ -864,7 +932,13 @@ impl Config {
 
         let mut rules = Vec::with_capacity(config_file.rules.len());
         for (i, r) in config_file.rules.into_iter().enumerate() {
-            let app_id_regex = compile_rule_regex(&r.app_id)
+            // An absent `app_id` is stored as the empty pattern, so an empty one written
+            // out is rejected here (validation cannot tell them apart)
+            if r.app_id.as_deref() == Some("") {
+                return Err(missing_app_id(i + 1));
+            }
+            let app_id = r.app_id.unwrap_or_default();
+            let app_id_regex = compile_rule_regex(&app_id)
                 .map_err(|e| eyre::eyre!("Rule {}: invalid app_id regex: {e}", i + 1))?;
             let title_regex = r
                 .title
@@ -872,6 +946,12 @@ impl Config {
                 .map(compile_rule_regex)
                 .transpose()
                 .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+            let output_regex = r
+                .output
+                .as_deref()
+                .map(compile_rule_regex)
+                .transpose()
+                .map_err(|e| eyre::eyre!("Rule {}: invalid output regex: {e}", i + 1))?;
             let mut refs = r.sink.into_iter();
             let sink_ref = refs.next().ok_or_else(|| {
                 eyre::eyre!(
@@ -890,13 +970,15 @@ impl Config {
             rules.push(Rule {
                 app_id_regex,
                 title_regex,
+                output_regex,
                 sink_ref,
                 fallback_refs: refs.collect(),
                 source_refs,
                 desc: r.desc,
                 notify: r.notify,
-                app_id_pattern: r.app_id,
+                app_id_pattern: app_id,
                 title_pattern: r.title,
+                output_pattern: r.output,
             });
         }
 
@@ -1292,9 +1374,15 @@ impl Config {
             self.origin.rule_slots.clone()
         } else {
             let keys = doc_table_keys(doc, "rules", |t| {
-                let app_id = t.get("app_id").and_then(Item::as_str)?;
-                let title = t.get("title").and_then(Item::as_str).unwrap_or_default();
-                Some(rule_key(app_id, title))
+                let field = |key: &str| t.get(key).and_then(Item::as_str);
+                if field("app_id").is_none() && field("output").is_none() {
+                    return None;
+                }
+                Some(rule_key(
+                    field("app_id").unwrap_or_default(),
+                    field("title").unwrap_or_default(),
+                    field("output"),
+                ))
             });
             match_slots(
                 &keys,
@@ -1302,6 +1390,7 @@ impl Config {
                     rule_key(
                         &r.app_id_pattern,
                         r.title_pattern.as_deref().unwrap_or_default(),
+                        r.output_pattern.as_deref(),
                     )
                 }),
             )
@@ -1463,7 +1552,7 @@ impl Config {
                         .into_iter()
                         .any(|r| c.resolve_index(kind, r) == Some(index))
                 })
-                .map(|(i, r)| format!("{} ({})", i + 1, r.app_id_pattern))
+                .map(|(i, r)| format!("{} ({})", i + 1, r.label()))
                 .collect();
             if !users.is_empty() {
                 eyre::bail!(
@@ -1727,12 +1816,18 @@ impl Config {
 
         // All rule sinks must exist and patterns must be non-empty
         for (i, rule) in self.rules.iter().enumerate() {
-            // Empty app_id pattern would match everything - require explicit `.*` for that
-            if rule.app_id_pattern.is_empty() {
-                eyre::bail!(
-                    "Rule {} has empty app_id pattern. Use '.*' to match all windows.",
+            // A rule needs `app_id` or `output`; an empty pattern would match everything,
+            // so `.*` must be written for that
+            match rule.output_pattern.as_deref() {
+                None if !rule.has_app_id() => {
+                    return Err(missing_app_id(i + 1));
+                }
+                Some("") => eyre::bail!(
+                    "Rule {} has an empty output pattern. Use '.*' to match windows on any \
+                     monitor.",
                     i + 1
-                );
+                ),
+                _ => {}
             }
             if !rule.source_refs.is_empty() && self.sources.is_empty() {
                 eyre::bail!(
@@ -1862,6 +1957,10 @@ impl Config {
             if let Some(title) = &rule.title_pattern {
                 compile_rule_regex(title)
                     .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+            }
+            if let Some(output) = &rule.output_pattern {
+                compile_rule_regex(output)
+                    .map_err(|e| eyre::eyre!("Rule {}: invalid output regex: {e}", i + 1))?;
             }
         }
         Ok(())
@@ -2029,14 +2128,27 @@ impl Config {
                 self.rules.len().to_string().technical()
             );
             for (i, rule) in self.rules.iter().enumerate() {
-                crate::outln!(
-                    "  {}. {}: {}",
-                    (i + 1).to_string().dim(),
-                    "app_id".dim(),
-                    rule.app_id_pattern.as_str().technical()
-                );
-                if let Some(ref title) = rule.title_pattern {
-                    crate::outln!("     {}: {}", "title".dim(), title.as_str().technical());
+                let mut conditions = Vec::new();
+                if rule.has_app_id() {
+                    conditions.push(("app_id", rule.app_id_pattern.as_str()));
+                }
+                if let Some(title) = &rule.title_pattern {
+                    conditions.push(("title", title.as_str()));
+                }
+                if let Some(output) = &rule.output_pattern {
+                    conditions.push(("output", output.as_str()));
+                }
+                for (n, (key, pattern)) in conditions.into_iter().enumerate() {
+                    if n == 0 {
+                        crate::outln!(
+                            "  {}. {}: {}",
+                            (i + 1).to_string().dim(),
+                            key.dim(),
+                            pattern.technical()
+                        );
+                    } else {
+                        crate::outln!("     {}: {}", key.dim(), pattern.technical());
+                    }
                 }
                 let effective_notify = rule.notify.unwrap_or(self.settings.notify_rules);
                 let source = if rule.notify.is_some() {
@@ -2069,9 +2181,20 @@ impl Config {
             }
         }
 
+        if self.has_output_rules() {
+            crate::outln!("\n{} {}", "Note:".warning(), OUTPUT_RULES_NOTE);
+        }
+
         if let Ok(path) = Self::get_config_path() {
             crate::outln!("\n{} {}", "Config:".dim(), path.display());
         }
+    }
+
+    /// Whether any rule has an `output` condition (the daemon then asks the
+    /// compositor for monitor information; see [`OUTPUT_RULES_NOTE`])
+    #[must_use]
+    pub fn has_output_rules(&self) -> bool {
+        self.rules.iter().any(|r| r.output_pattern.is_some())
     }
 
     /// Resolve a `kind` reference (by position, desc, or name) to its 0-based index.
@@ -2174,8 +2297,11 @@ fn resolve_write_target(path: &Path) -> Result<PathBuf> {
 // Document editing helpers (`toml_edit`)
 // ============================================================================
 
-fn rule_key(app_id: &str, title: &str) -> String {
-    format!("{app_id}\u{0}{title}")
+fn rule_key(app_id: &str, title: &str, output: Option<&str>) -> String {
+    match output {
+        Some(output) => format!("{app_id}\u{0}{title}\u{0}{output}"),
+        None => format!("{app_id}\u{0}{title}"),
+    }
 }
 
 /// A matching key for every table of the array `key` in `doc`.
@@ -2354,8 +2480,13 @@ fn apply_sink(table: &mut Table, sink: &SinkConfig) {
 }
 
 fn apply_rule(table: &mut Table, rule: &Rule) {
-    set_value(table, "app_id", rule.app_id_pattern.as_str());
+    set_optional(
+        table,
+        "app_id",
+        rule.has_app_id().then_some(rule.app_id_pattern.as_str()),
+    );
     set_optional(table, "title", rule.title_pattern.as_deref());
+    set_optional(table, "output", rule.output_pattern.as_deref());
     // Keep the value as written (integer positions, a one-entry array) if it still
     // says the same thing
     let refs: Vec<&str> = rule.sink_refs().collect();
@@ -2469,7 +2600,7 @@ mod tests {
 
     use super::*;
     use crate::test_utils::fixtures::{
-        make_config, make_rule, make_rule_with_fallbacks, make_sink,
+        make_config, make_rule, make_rule_with_fallbacks, make_sink, with_output,
     };
 
     // validate() tests
@@ -4023,5 +4154,145 @@ sink = "Headset"
         assert!(sinks < sources && sources < rules, "{text}");
         assert!(text.contains("source = [\"Mic B\", \"Mic A\"]"), "{text}");
         assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    // ------------------------------------------------------------------------
+    // Rules with `output`
+    // ------------------------------------------------------------------------
+
+    const MONITOR_RULES: &str = r#"[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.hdmi"
+desc = "TV"
+
+# any window on the TV
+[[rules]]
+output = "HDMI-A-1" # connector
+sink = "TV"
+
+[[rules]]
+app_id = "^mpv$"
+output = "^HDMI-"
+sink = "TV"
+"#;
+
+    #[test]
+    fn test_output_rules_load_and_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", MONITOR_RULES);
+        let cfg = Config::load_from_path(&path).expect("output rules are valid");
+        assert!(cfg.has_output_rules());
+        let (any, mpv) = (&cfg.rules[0], &cfg.rules[1]);
+        assert!(!any.has_app_id());
+        assert_eq!(any.output_pattern.as_deref(), Some("HDMI-A-1"));
+        assert_eq!(any.label(), "output HDMI-A-1");
+        assert_eq!(mpv.label(), "^mpv$ on output ^HDMI-");
+        let hdmi = ["HDMI-A-1".to_string()];
+        let dp = ["DP-1".to_string()];
+        assert!(any.matches("firefox", "x", &hdmi, false));
+        assert!(any.matches("", "", &["DP-1".to_string(), "HDMI-A-1".to_string()], false));
+        assert!(!any.matches("firefox", "x", &dp, false));
+        assert!(!any.matches("firefox", "x", &hdmi, true), "minimized");
+        assert!(!any.matches("firefox", "x", &[], false), "no placement");
+        assert!(mpv.matches("mpv", "x", &hdmi, false));
+        assert!(!mpv.matches("vlc", "x", &hdmi, false));
+        // Rules without `output` ignore placement entirely
+        let plain = make_rule("^mpv$", None, "TV");
+        assert!(plain.matches("mpv", "x", &[], false));
+        assert!(plain.matches("mpv", "x", &hdmi, true));
+        assert!(!make_config(vec![], vec![plain]).has_output_rules());
+    }
+
+    #[rstest]
+    #[case::neither("[[rules]]\nsink = \"TV\"\n", "needs `app_id` or `output`")]
+    #[case::empty_app_id(
+        "[[rules]]\napp_id = \"\"\noutput = \"HDMI\"\nsink = \"TV\"\n",
+        "empty app_id pattern"
+    )]
+    #[case::empty_output("[[rules]]\noutput = \"\"\nsink = \"TV\"\n", "empty output pattern")]
+    #[case::bad_output_regex(
+        "[[rules]]\noutput = \"(HDMI\"\nsink = \"TV\"\n",
+        "Rule 1: invalid output regex"
+    )]
+    #[case::huge_output_regex(
+        "[[rules]]\noutput = '\\w{50000}'\nsink = \"TV\"\n",
+        "Rule 1: invalid output regex"
+    )]
+    fn test_output_rule_errors(#[case] rule: &str, #[case] expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let sinks = MONITOR_RULES
+            .split("# any window")
+            .next()
+            .expect("sinks part");
+        let contents = format!("{sinks}{rule}");
+        let path = write(&dir, "c.toml", &contents);
+        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        assert!(err.contains(expected), "expected {expected:?}, got: {err}");
+    }
+
+    /// The same checks hold for rules built in memory (the TUI's path)
+    #[test]
+    fn test_add_rule_requires_app_id_or_output() {
+        let mut cfg = make_config(vec![make_sink("tv", "TV", true)], vec![]);
+        let err = cfg.add_rule(make_rule("", None, "TV")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("needs `app_id` or `output`"),
+            "{err:#}"
+        );
+        let mut empty_output = with_output(make_rule("", None, "TV"), "x");
+        empty_output.output_pattern = Some(String::new());
+        assert!(cfg.add_rule(empty_output).is_err());
+        cfg.add_rule(with_output(make_rule("", None, "TV"), "^DP-"))
+            .expect("output-only rule");
+        assert_eq!(cfg.rules.len(), 1);
+    }
+
+    /// Unchanged output rules save byte-identical; edits and new rules round-trip
+    /// (an output-only rule is written without `app_id`)
+    #[test]
+    fn test_output_rules_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", MONITOR_RULES);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), MONITOR_RULES);
+
+        let mut cfg2 = Config::load_from_path(&path).unwrap();
+        let mut edited = cfg2.rules[0].clone();
+        edited.sink_ref = "Speakers".to_string();
+        cfg2.update_rule(0, edited).unwrap();
+        cfg2.add_rule(with_output(make_rule("", Some("YouTube"), "TV"), "^DP-1$"))
+            .unwrap();
+        cfg2.add_rule(with_output(make_rule("^vlc$", None, "TV"), "HDMI"))
+            .unwrap();
+        cfg2.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        for needle in [
+            "# any window on the TV\n[[rules]]\noutput = \"HDMI-A-1\" # connector\nsink = \
+             \"Speakers\"\n",
+            "[[rules]]\ntitle = \"YouTube\"\noutput = \"^DP-1$\"\nsink = \"TV\"\n",
+            "[[rules]]\napp_id = \"^vlc$\"\noutput = \"HDMI\"\nsink = \"TV\"\n",
+        ] {
+            assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
+        }
+        let back = Config::load_from_path(&path).unwrap();
+        assert_eq!(back.rules, cfg2.rules);
+        assert_eq!(back.rules[2].output_pattern.as_deref(), Some("^DP-1$"));
+        assert!(!back.rules[2].has_app_id());
+
+        // Removing an output rule keeps the others in their slots
+        cfg = back;
+        cfg.remove_rule(0).unwrap();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("# connector"), "{out}");
+        assert!(
+            out.contains("app_id = \"^mpv$\"\noutput = \"^HDMI-\"\n"),
+            "{out}"
+        );
     }
 }

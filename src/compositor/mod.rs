@@ -43,6 +43,15 @@ impl Backend {
         }
     }
 
+    /// Short name for status output and logs: `"ext"` or `"wlr"`
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ext => "ext",
+            Self::Wlr => "wlr",
+        }
+    }
+
     /// Whether windows tracked with this backend get [`WindowEvent::Placement`] events
     #[must_use]
     pub const fn reports_placement(self) -> bool {
@@ -419,12 +428,21 @@ pub(crate) struct AdvertisedGlobal {
     pub(crate) version: u32,
 }
 
-/// What a compositor offers `pwsw`: the supported toplevel protocols it advertises,
-/// and the interface the daemon would bind (`None`: none is supported)
+/// What a compositor offers `pwsw`: the supported toplevel protocols it advertises
+/// (which one the daemon binds depends on its config: [`ProtocolProbe::capabilities`])
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProtocolProbe {
     pub(crate) advertised: Vec<AdvertisedGlobal>,
-    pub(crate) chosen: Option<&'static str>,
+}
+
+impl ProtocolProbe {
+    /// What a daemon asking with `preference` would get (`None`: nothing supported)
+    pub(crate) fn capabilities(&self, preference: ProtocolPreference) -> Option<Capabilities> {
+        detected_capabilities(
+            self.advertised.iter().map(|g| g.interface.as_str()),
+            preference,
+        )
+    }
 }
 
 /// Registry state of [`probe_protocols`] (it binds nothing)
@@ -443,8 +461,7 @@ impl wayland_client::Dispatch<wl_registry::WlRegistry, GlobalListContents> for P
 }
 
 /// Connect to the Wayland display named by the environment and list the supported
-/// toplevel protocols it advertises, picking one the way the daemon does. Binds
-/// nothing; read-only. Blocking (one registry roundtrip, at most `timeout`).
+/// toplevel protocols it advertises. Binds nothing; read-only. Blocking (one registry roundtrip, at most `timeout`).
 ///
 /// # Errors
 /// Returns an error if no Wayland connection can be made, the registry roundtrip
@@ -484,11 +501,6 @@ fn probe_on_env() -> Result<ProtocolProbe> {
                     version: g.version,
                 })
                 .collect(),
-            chosen: choose_protocol(
-                list.iter().map(|g| g.interface.as_str()),
-                ProtocolPreference::Auto,
-            )
-            .map(Backend::interface),
         }
     }))
 }

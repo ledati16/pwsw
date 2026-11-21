@@ -18,12 +18,12 @@ use notify::{Event, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use self::event_loop::{Daemon, Hooks, Inputs, Signal};
+use self::event_loop::{CompositorInfo, Daemon, Hooks, Inputs, Signal, output_rules_warning};
 use self::ipc_handler::ServerInfo;
 use self::lock::InstanceLock;
 use self::notifier::{Notice, NoticeKind, Notifier};
 use self::worker::PipeWireSwitcher;
-use crate::compositor;
+use crate::compositor::{self, ProtocolPreference};
 use crate::config::Config;
 use crate::ipc::{self, IpcServer};
 use crate::pipewire::PipeWire;
@@ -314,8 +314,21 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         }
     };
 
-    let window_events = compositor::spawn_compositor_thread()?;
-    info!("Compositor event thread started");
+    let preference = protocol_preference(&config);
+    let (window_events, capabilities) =
+        compositor::spawn_compositor_thread_with_preference(preference)?;
+    info!(
+        "Compositor event thread started: {} backend, {}",
+        capabilities.backend().name(),
+        capabilities.monitor_info_summary()
+    );
+    let compositor = CompositorInfo {
+        capabilities,
+        preference,
+    };
+    if let Some(warning) = output_rules_warning(compositor, config.has_output_rules()) {
+        warn!("{warning}");
+    }
 
     let ipc_server = IpcServer::bind().await?;
     info!(
@@ -330,6 +343,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
             version: crate::version_string(),
             started,
             daemon_manager,
+            compositor: Some(capabilities),
         }),
     );
 
@@ -365,7 +379,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         hooks,
         applied,
     )
-    .with_applied_source(applied_source);
+    .with_applied_source(applied_source)
+    .with_compositor(compositor);
 
     // No-op unless started by systemd with `Type=notify`
     if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
@@ -390,6 +405,18 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         error!("Daemon exiting with error: {e:#}");
     }
     result
+}
+
+/// The toplevel protocol to ask the compositor for: `wlr` when a rule has `output`
+/// (only `wlr` reports which monitors windows are on), else the default (`ext` first)
+///
+/// Decided once at startup; a reload never reconnects (see [`output_rules_warning`]).
+fn protocol_preference(config: &Config) -> ProtocolPreference {
+    if config.has_output_rules() {
+        ProtocolPreference::PreferWlr
+    } else {
+        ProtocolPreference::Auto
+    }
 }
 
 /// Watches the config file for hot-reload, following a file-level symlink
@@ -514,6 +541,22 @@ mod tests {
 
     /// Upper bound for one watcher event to arrive
     const EVENT_WAIT: Duration = Duration::from_secs(10);
+
+    /// Rules with `output` make the daemon prefer `wlr`; without them it keeps `ext` first
+    #[test]
+    fn test_protocol_preference_follows_output_rules() {
+        use crate::test_utils::fixtures::{make_config, make_rule, make_sink, with_output};
+        let sinks = vec![make_sink("tv", "TV", true)];
+        let plain = make_config(sinks.clone(), vec![make_rule("^mpv$", None, "TV")]);
+        assert_eq!(protocol_preference(&plain), ProtocolPreference::Auto);
+        let empty = make_config(sinks.clone(), vec![]);
+        assert_eq!(protocol_preference(&empty), ProtocolPreference::Auto);
+        let monitor = make_config(sinks, vec![
+            make_rule("^mpv$", None, "TV"),
+            with_output(make_rule("", None, "TV"), "^HDMI-"),
+        ]);
+        assert_eq!(protocol_preference(&monitor), ProtocolPreference::PreferWlr);
+    }
 
     async fn expect_event(rx: &mut mpsc::UnboundedReceiver<()>, what: &str) {
         let got = tokio::time::timeout(EVENT_WAIT, rx.recv()).await;

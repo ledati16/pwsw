@@ -11,8 +11,13 @@
 //! the desired candidates with what it last activated (see `daemon`).
 //!
 //! Ordering is deterministic: every window carries a sequence number from a monotonic
-//! counter, assigned when it opens and renewed when it starts matching a rule, so the
-//! "most recent" window is never decided by clock resolution or `HashMap` order.
+//! counter, assigned when it opens and renewed when it starts matching a rule (after a
+//! title change, or a move to a monitor an `output` rule names), so the "most recent"
+//! window is never decided by clock resolution or `HashMap` order.
+//!
+//! Rules match a window's `app_id`, title and, for `output` rules, the monitors it is on
+//! ([`WindowEvent::Placement`], reported only by the `wlr` backend): see
+//! [`Rule::matches`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -53,6 +58,11 @@ pub struct State {
 struct Window {
     app_id: String,
     title: String,
+    /// Connector names of the monitors the window is on (empty until a `Placement`,
+    /// and always with the `ext` backend)
+    outputs: Vec<String>,
+    /// The compositor's minimized flag (from `Placement`)
+    minimized: bool,
     /// Priority ordering: assigned on open, renewed when the window starts matching
     seq: u64,
     /// The rule this window currently matches, if any
@@ -122,6 +132,10 @@ pub struct WindowView<'a> {
     pub id: u64,
     pub app_id: &'a str,
     pub title: &'a str,
+    /// Connector names of the monitors the window is on (empty when unknown)
+    pub outputs: &'a [String],
+    /// Whether the window is minimized (`false` when unknown)
+    pub minimized: bool,
     /// The sinks this window's rule points at in priority order (its sink, then its
     /// fallbacks); empty if it matches no rule
     pub sinks: Vec<&'a SinkConfig>,
@@ -155,7 +169,7 @@ fn index_config(config: &Config) -> Result<Index> {
             config.resolve_rule_sinks(rule).ok_or_else(|| {
                 eyre::eyre!(
                     "Rule '{}' references an unknown sink ({})",
-                    rule.app_id_pattern,
+                    rule.label(),
                     rule.sink_refs().collect::<Vec<_>>().join(", ")
                 )
             })
@@ -179,7 +193,7 @@ fn index_config(config: &Config) -> Result<Index> {
             if !rule.source_refs.is_empty() && default_source.is_none() {
                 eyre::bail!(
                     "Rule '{}' sets a source but no sources are configured",
-                    rule.app_id_pattern
+                    rule.label()
                 );
             }
             config
@@ -187,7 +201,7 @@ fn index_config(config: &Config) -> Result<Index> {
                 .ok_or_else(|| {
                     eyre::eyre!(
                         "Rule '{}' references an unknown source ({})",
-                        rule.app_id_pattern,
+                        rule.label(),
                         rule.source_refs.join(", ")
                     )
                 })
@@ -277,7 +291,7 @@ impl State {
             let Some(window) = self.windows.get(&id) else {
                 continue;
             };
-            let matched = match_window(&self.config, &window.app_id, &window.title);
+            let matched = match_window(&self.config, window);
             match (before.get(&id), &matched) {
                 (None, Some(m)) => info!(
                     "Rule matched: '{}' → {}",
@@ -308,10 +322,10 @@ impl State {
         }
     }
 
-    /// Find the first rule matching `app_id` and `title`, with its index
+    /// Find the first rule matching `app_id` and `title` (on no monitor), with its index
     #[cfg(test)]
     fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
-        find_rule(&self.config, app_id, title)
+        find_rule(&self.config, app_id, title, &[], false)
     }
 
     /// Fold one compositor event into the tracked windows (no I/O)
@@ -322,9 +336,12 @@ impl State {
         match event {
             WindowEvent::Opened { id, app_id, title }
             | WindowEvent::Changed { id, app_id, title } => self.upsert(id, app_id, title),
+            WindowEvent::Placement {
+                id,
+                outputs,
+                minimized,
+            } => self.place(id, outputs, minimized),
             WindowEvent::Closed { id } => self.close(id),
-            // Monitor placement is not used by rules yet
-            WindowEvent::Placement { .. } => None,
         }
     }
 
@@ -387,47 +404,83 @@ impl State {
             for_log(&app_id),
             for_log(&title)
         );
-        let matched = match_window(&self.config, &app_id, &title);
-
-        let Some(previous) = self.windows.get(&id).map(|w| w.matched.clone()) else {
-            if let Some(m) = &matched {
-                info!(
-                    "Rule matched: '{}' → {}",
-                    for_log(&app_id),
-                    self.targets_desc(m.rule_index)
-                );
-            }
-            let seq = self.take_seq();
-            self.windows.insert(id, Window {
-                app_id,
-                title,
-                seq,
-                matched,
+        if self.windows.contains_key(&id) {
+            return self.refresh(id, |w| {
+                w.app_id = app_id;
+                w.title = title;
             });
-            return None;
+        }
+        let seq = self.take_seq();
+        let mut window = Window {
+            app_id,
+            title,
+            outputs: Vec::new(),
+            minimized: false,
+            seq,
+            matched: None,
         };
+        window.matched = match_window(&self.config, &window);
+        if let Some(m) = &window.matched {
+            info!(
+                "Rule matched: '{}' → {}",
+                for_log(&window.app_id),
+                self.targets_desc(m.rule_index)
+            );
+        }
+        self.windows.insert(id, window);
+        None
+    }
 
+    /// A window's monitors or minimized state changed (`wlr` only)
+    fn place(&mut self, id: u64, outputs: Vec<String>, minimized: bool) -> Option<Departure> {
+        debug!(
+            "Window placement: id={}, outputs=[{}], minimized={}",
+            id,
+            for_log(&outputs.join(", ")),
+            minimized
+        );
+        if !self.windows.contains_key(&id) {
+            // The compositor layer never sends this before `Opened`
+            debug!("Placement for unknown window {id}; ignored");
+            return None;
+        }
+        self.refresh(id, |w| {
+            w.outputs = outputs;
+            w.minimized = minimized;
+        })
+    }
+
+    /// Apply `change` to the known window `id` and re-match it: starting to match counts
+    /// as the most recent activity (a new sequence number); keeping its rule keeps the
+    /// trigger text from when the rule first matched
+    fn refresh(&mut self, id: u64, change: impl FnOnce(&mut Window)) -> Option<Departure> {
+        let window = self.windows.get_mut(&id)?;
+        let previous = window.matched.take();
+        change(window);
+        let window = self.windows.get(&id)?;
+        let matched = match_window(&self.config, window);
+
+        let mut renew = false;
         let departure = match (&previous, &matched) {
             (None, Some(m)) => {
                 info!(
                     "Rule matched: '{}' → {}",
-                    for_log(&app_id),
+                    for_log(&window.app_id),
                     self.targets_desc(m.rule_index)
                 );
-                // Starting to match counts as the most recent activity
-                let seq = self.take_seq();
-                if let Some(w) = self.windows.get_mut(&id) {
-                    w.seq = seq;
-                }
+                renew = true;
                 None
             }
             (Some(old), None) => {
                 info!(
-                    "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' title='{}')",
+                    "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' \
+                     title='{}' outputs=[{}]{})",
                     id,
                     for_log(&old.trigger),
-                    for_log(&app_id),
-                    for_log(&title)
+                    for_log(&window.app_id),
+                    for_log(&window.title),
+                    for_log(&window.outputs.join(", ")),
+                    if window.minimized { " minimized" } else { "" }
                 );
                 Some(Departure {
                     trigger: old.trigger.clone(),
@@ -445,10 +498,11 @@ impl State {
             _ => None,
         };
 
+        let seq = renew.then(|| self.take_seq());
         if let Some(w) = self.windows.get_mut(&id) {
-            w.app_id = app_id;
-            w.title = title;
-            // Keep the trigger text from when the rule first matched
+            if let Some(seq) = seq {
+                w.seq = seq;
+            }
             w.matched = match (previous, matched) {
                 (Some(old), Some(new)) if old.rule_index == new.rule_index => Some(old),
                 (_, new) => new,
@@ -568,6 +622,8 @@ impl State {
                 id: *id,
                 app_id: &w.app_id,
                 title: &w.title,
+                outputs: &w.outputs,
+                minimized: w.minimized,
                 sinks: w
                     .matched
                     .as_ref()
@@ -583,17 +639,31 @@ impl State {
     }
 }
 
-fn find_rule<'a>(config: &'a Config, app_id: &str, title: &str) -> Option<(usize, &'a Rule)> {
-    config.rules.iter().enumerate().find(|(_, rule)| {
-        rule.app_id_regex.is_match(app_id)
-            && rule.title_regex.as_ref().is_none_or(|r| r.is_match(title))
-    })
+fn find_rule<'a>(
+    config: &'a Config,
+    app_id: &str,
+    title: &str,
+    outputs: &[String],
+    minimized: bool,
+) -> Option<(usize, &'a Rule)> {
+    config
+        .rules
+        .iter()
+        .enumerate()
+        .find(|(_, rule)| rule.matches(app_id, title, outputs, minimized))
 }
 
-fn match_window(config: &Config, app_id: &str, title: &str) -> Option<Match> {
-    find_rule(config, app_id, title).map(|(rule_index, rule)| Match {
+fn match_window(config: &Config, window: &Window) -> Option<Match> {
+    find_rule(
+        config,
+        &window.app_id,
+        &window.title,
+        &window.outputs,
+        window.minimized,
+    )
+    .map(|(rule_index, rule)| Match {
         rule_index,
-        trigger: rule.desc.clone().unwrap_or_else(|| title.to_string()),
+        trigger: rule.desc.clone().unwrap_or_else(|| window.title.clone()),
     })
 }
 
@@ -604,7 +674,7 @@ mod tests {
 
     use super::*;
     use crate::test_utils::fixtures::{
-        make_config, make_rule, make_rule_with_fallbacks, make_sink, with_sources,
+        make_config, make_rule, make_rule_with_fallbacks, make_sink, with_output, with_sources,
     };
 
     fn opened(id: u64, app_id: &str, title: &str) -> WindowEvent {
@@ -1188,5 +1258,187 @@ mod tests {
             &["Mic"],
         )]);
         assert!(State::new(Arc::new(config)).is_err());
+    }
+
+    // ------------------------------------------------------------------------
+    // Monitor (`output`) rules
+    // ------------------------------------------------------------------------
+
+    fn placed(id: u64, outputs: &[&str], minimized: bool) -> WindowEvent {
+        WindowEvent::Placement {
+            id,
+            outputs: outputs.iter().map(|o| (*o).to_string()).collect(),
+            minimized,
+        }
+    }
+
+    /// Default speakers; any window on `HDMI-A-1` → TV; firefox → headphones
+    fn monitor_config(match_by_index: bool) -> Config {
+        let mut config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("tv", "TV", false),
+                make_sink("headphones", "Headphones", false),
+            ],
+            vec![
+                with_output(make_rule("", None, "TV"), "^HDMI-A-1$"),
+                make_rule("firefox", None, "Headphones"),
+            ],
+        );
+        config.settings.match_by_index = match_by_index;
+        config
+    }
+
+    #[test]
+    fn test_output_rule_matches_window_on_that_monitor() {
+        let mut s = state(monitor_config(false));
+        s.apply(opened(1, "mpv", "video"));
+        assert_eq!(s.desired_sink().name, "speakers", "placement not known yet");
+        assert_eq!(s.apply(placed(1, &["HDMI-A-1"], false)), None);
+        let desired = s.desired();
+        assert_eq!(desired.first().name, "tv");
+        assert_eq!(desired.window.map(|w| w.trigger), Some("video"));
+        let views = s.windows();
+        assert_eq!(views[0].outputs, ["HDMI-A-1"]);
+        assert!(!views[0].minimized);
+    }
+
+    /// Moving to another monitor stops matching (back to the default); moving back
+    /// matches again as fresh activity, winning over a window that matched since
+    #[test]
+    fn test_moving_between_monitors_rematches_with_a_new_sequence() {
+        let mut s = state(monitor_config(false));
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "tv");
+
+        let departure = s.apply(placed(1, &["DP-1"], false));
+        assert_eq!(
+            departure,
+            Some(Departure {
+                trigger: "video".to_string(),
+                notify: true,
+                closed: false,
+            })
+        );
+        assert_eq!(s.desired_sink().name, "speakers");
+
+        s.apply(opened(2, "firefox", "Browser"));
+        assert_eq!(s.desired_sink().name, "headphones");
+        assert_eq!(s.apply(placed(1, &["HDMI-A-1"], false)), None);
+        assert_eq!(s.desired_sink().name, "tv", "newly matching wins");
+    }
+
+    /// A window spanning both monitors matches; moving between two matching monitors
+    /// keeps its place in the priority order
+    #[test]
+    fn test_spanning_and_moving_between_matching_monitors_keep_sequence() {
+        let mut config = monitor_config(false);
+        config.rules[0] = with_output(make_rule("", None, "TV"), "^HDMI-");
+        let mut s = state(config);
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(placed(1, &["DP-1", "HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "tv", "spans both: matches");
+        s.apply(opened(2, "firefox", "Browser"));
+        assert_eq!(s.desired_sink().name, "headphones");
+
+        // Still on a matching monitor: no fresh activity, firefox stays newer
+        s.apply(placed(1, &["HDMI-A-2"], false));
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "headphones");
+        s.apply(WindowEvent::Closed { id: 2 });
+        assert_eq!(s.desired_sink().name, "tv");
+    }
+
+    #[test]
+    fn test_minimized_window_does_not_match_output_rule() {
+        let mut s = state(monitor_config(false));
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(placed(1, &["HDMI-A-1"], true));
+        assert_eq!(s.desired_sink().name, "speakers");
+        assert!(s.windows()[0].minimized);
+
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "tv", "restored");
+        assert!(
+            s.apply(placed(1, &["HDMI-A-1"], true)).is_some(),
+            "minimized again"
+        );
+        assert_eq!(s.desired_sink().name, "speakers");
+    }
+
+    /// `app_id` and `output` together: both must match
+    #[test]
+    fn test_app_id_and_output_combined() {
+        let config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("tv", "TV", false),
+            ],
+            vec![with_output(make_rule("^mpv$", None, "TV"), "^HDMI-")],
+        );
+        let mut s = state(config);
+        s.apply(opened(1, "firefox", "Browser"));
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "speakers", "wrong app_id");
+        s.apply(opened(2, "mpv", "video"));
+        assert_eq!(s.desired_sink().name, "speakers", "no placement yet");
+        s.apply(placed(2, &["DP-1"], false));
+        assert_eq!(s.desired_sink().name, "speakers", "wrong monitor");
+        s.apply(placed(2, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "tv");
+        assert_eq!(s.tracked_count(), 1);
+    }
+
+    /// The `ext` backend never sends `Placement`: output rules never match its windows,
+    /// whatever their `app_id`; other rules still do
+    #[test]
+    fn test_windows_without_placement_never_match_output_rules() {
+        let mut config = monitor_config(false);
+        config.rules[0] = with_output(make_rule(".*", None, "TV"), ".*");
+        let mut s = state(config);
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(changed(1, "mpv", "video 2"));
+        assert_eq!(s.tracked_count(), 0);
+        s.apply(opened(2, "firefox", "Browser"));
+        assert_eq!(s.desired_sink().name, "headphones");
+        assert_eq!(s.windows()[0].outputs, Vec::<String>::new());
+    }
+
+    /// With `match_by_index`, an output rule ranks by its index like any other rule
+    #[test]
+    fn test_output_rule_priority_by_index() {
+        let mut s = state(monitor_config(true));
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        s.apply(opened(2, "firefox", "Browser"));
+        assert_eq!(s.desired_sink().name, "tv", "rule 1 beats rule 2");
+    }
+
+    /// A placement for a window the reducer never saw open is ignored
+    #[test]
+    fn test_placement_for_unknown_window_is_ignored() {
+        let mut s = state(monitor_config(false));
+        assert_eq!(s.apply(placed(7, &["HDMI-A-1"], false)), None);
+        assert_eq!(s.windows().len(), 0);
+    }
+
+    /// A reload that adds an output rule matches windows already on that monitor
+    #[test]
+    fn test_reconfigure_with_output_rule_uses_known_placement() {
+        let sinks = vec![
+            make_sink("speakers", "Speakers", true),
+            make_sink("tv", "TV", false),
+        ];
+        let mut s = state(make_config(sinks.clone(), vec![]));
+        s.apply(opened(1, "mpv", "video"));
+        s.apply(placed(1, &["HDMI-A-1"], false));
+        assert_eq!(s.desired_sink().name, "speakers");
+        s.reconfigure(Arc::new(make_config(sinks, vec![with_output(
+            make_rule("", None, "TV"),
+            "HDMI",
+        )])))
+        .expect("valid config");
+        assert_eq!(s.desired_sink().name, "tv");
     }
 }

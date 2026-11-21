@@ -430,6 +430,10 @@ struct DaemonStatus {
     active_window: Option<String>,
     tracked_windows: Option<usize>,
     paused: Option<bool>,
+    /// Compositor protocol in use (`"ext"`/`"wlr"`)
+    backend: Option<String>,
+    /// Whether the backend reports monitors (rules with `output` can match)
+    monitor_info: Option<bool>,
 }
 
 impl DaemonStatus {
@@ -456,6 +460,8 @@ impl DaemonStatus {
                 current_source,
                 current_source_fallback,
                 sources_configured: _,
+                backend,
+                monitor_info,
             }) => Self {
                 running: true,
                 error: (protocol != ipc::PROTOCOL_VERSION).then(|| {
@@ -476,6 +482,9 @@ impl DaemonStatus {
                 active_window,
                 tracked_windows: Some(tracked_windows),
                 paused: Some(paused),
+                // Older daemons do not report the backend; then monitor info is unknown
+                monitor_info: backend.as_ref().map(|_| monitor_info),
+                backend,
             },
             Ok(Response::Error { message }) => error(message),
             Ok(other) => error(format!("{:#}", unexpected_response(&other))),
@@ -498,6 +507,8 @@ impl DaemonStatus {
             "active_window": self.active_window,
             "tracked_windows": self.tracked_windows,
             "paused": self.paused,
+            "backend": self.backend,
+            "monitor_info": self.monitor_info,
         })
     }
 }
@@ -620,6 +631,14 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
         );
         if let Some(version) = &daemon.version {
             crate::outln!("{} {}", "Version:".dim(), version);
+        }
+        if let Some(backend) = &daemon.backend {
+            let monitors = if daemon.monitor_info == Some(true) {
+                "monitor info available"
+            } else {
+                "no monitor info"
+            };
+            crate::outln!("{} {backend} ({monitors})", "Compositor:".dim());
         }
         if daemon.paused == Some(true) {
             crate::outln!(
@@ -779,6 +798,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                                 window.app_id
                             );
                             crate::outln!("    {}: {}", "title".dim(), window.title);
+                            print_placement(window, "    ");
                             crate::outln!(
                                 "    {} {}: {}",
                                 "→".success(),
@@ -800,6 +820,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                     for window in &untracked {
                         crate::outln!("  {} {}: {}", "•".dim(), "app_id".dim(), window.app_id);
                         crate::outln!("    {}: {}", "title".dim(), window.title);
+                        print_placement(window, "    ");
                     }
                 }
             }
@@ -809,6 +830,24 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             eyre::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
+    }
+}
+
+/// Print the monitors a window is on (and whether it is minimized), when known
+fn print_placement(window: &ipc::WindowInfo, indent: &str) {
+    if let Some(line) = placement_text(window) {
+        crate::outln!("{indent}{}: {}", "monitor".dim(), line.as_str().technical());
+    }
+}
+
+/// `HDMI-A-1, DP-1`, with ` (minimized)` appended; `None` when the daemon knows no
+/// placement (the `ext` backend reports none)
+fn placement_text(window: &ipc::WindowInfo) -> Option<String> {
+    let minimized = if window.minimized { " (minimized)" } else { "" };
+    match (window.outputs.as_slice(), window.minimized) {
+        ([], false) => None,
+        ([], true) => Some("none (minimized)".to_string()),
+        (outputs, _) => Some(format!("{}{minimized}", outputs.join(", "))),
     }
 }
 
@@ -917,5 +956,41 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
             eyre::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn window(outputs: &[&str], minimized: bool) -> ipc::WindowInfo {
+        ipc::WindowInfo {
+            id: Some(1),
+            app_id: "mpv".to_string(),
+            title: "video".to_string(),
+            outputs: outputs.iter().map(|o| (*o).to_string()).collect(),
+            minimized,
+            matched_on: None,
+            tracked: None,
+        }
+    }
+
+    #[test]
+    fn test_placement_text() {
+        assert_eq!(placement_text(&window(&[], false)), None);
+        assert_eq!(
+            placement_text(&window(&["HDMI-A-1"], false)).as_deref(),
+            Some("HDMI-A-1")
+        );
+        assert_eq!(
+            placement_text(&window(&["DP-1", "HDMI-A-1"], true)).as_deref(),
+            Some("DP-1, HDMI-A-1 (minimized)")
+        );
+        assert_eq!(
+            placement_text(&window(&[], true)).as_deref(),
+            Some("none (minimized)")
+        );
     }
 }
