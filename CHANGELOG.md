@@ -54,9 +54,11 @@ maintenance mode.
   could silently undo; that write is gone.
 - **Profile switches are saved in WirePlumber** (so it keeps the profile), only
   available profiles are used, and a profile that keeps the card's microphone is
-  preferred. pwsw waits up to 3 s for the new node (was 750 ms); if it does not
-  appear, the card is switched back to its previous profile, so a failed switch leaves
-  the audio where it was.
+  preferred. pwsw waits up to 3 s for the new node (was 750 ms). If it does not appear,
+  a rule-driven switch leaves the card on the new profile for its retries (a slow card
+  usually finishes meanwhile, and the retry only sets the default); when the last retry
+  fails, the card is switched back to its previous profile. A manual switch switches it
+  back at once, so a failed one leaves the audio where it was.
 - **A choice made outside pwsw is respected by fallbacks too:** when a rule settled
   for a fallback and you pick another output (e.g. in pavucontrol), pwsw no longer
   moves you to the rule's first choice when it becomes available.
@@ -94,7 +96,18 @@ maintenance mode.
   `pipewire.service` (a PipeWire restart no longer stops pwsw), at most 5 restarts per
   minute, and sandboxed.
 - Rule log lines name the window: `Rule matched: window 12 'kitty' "~/src" → Headphones`
-  (title shortened), so lines for several windows of one app can be told apart.
+  (title shortened), so lines for several windows of one app can be told apart, and
+  every rule-driven `Switching:` line names the window (and rule) that decided it, or
+  the window whose closing brought the default back.
+- **A window that moves to a different rule counts as newly matching** (e.g. a browser
+  tab title that now matches another rule): it takes priority like a window that just
+  opened, as it does when it starts matching a rule at all.
+- `pwsw status` marks the current output (and mic) *(changed outside pwsw)* when it is
+  not what the daemon applied.
+- A smart-toggle `set-sink`/`set-source` says what it did
+  (`Headset was already active: toggled back to Speakers`), and a position given to
+  `set-sink`/`set-source` (`pwsw set-sink 2`) warns that positions are deprecated and
+  names the description to use.
 - **TUI redesign**: a one-row header and footer (status messages and key hints from
   the real key bindings), forms and dialogs sized to their content, a theme that uses
   the terminal's own text colour (readable on light themes) and honours `--color never`
@@ -130,7 +143,9 @@ maintenance mode.
   fallback was used, the next window event or reload switches up once an earlier sink
   is available again (no polling). Status, the systemd status line, notifications and
   logs mark a fallback as such; `list-windows` and `test-rule` show a rule's fallbacks;
-  `status --json` has `daemon.daemon_sink_fallback`. A plain string still works and is
+  `status --json` has `daemon.daemon_sink_fallback`, and the window whose rule plays a
+  fallback says so (*fallback in use*; `tracked.fallback_in_use` in `list-windows
+  --json` and `test-rule --json`). A plain string still works and is
   what single-sink rules are saved as. In the TUI the rule editor's **Sinks** field
   picks the sinks and their order (`Space` adds/removes, `Shift+↑/↓` reorders), and the
   rules table and details show them as `BT Headphones → Headphones`.

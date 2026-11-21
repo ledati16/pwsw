@@ -121,7 +121,7 @@ impl fmt::Display for ConfigNotFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Config file not found: {}", self.path.display())?;
         if let Some(target) = &self.symlink_target {
-            write!(f, " is a symlink to missing {}", target.display())?;
+            write!(f, " (a symlink to missing {})", target.display())?;
             let dir = parent_dir(target);
             if !dir.is_dir() {
                 return write!(
@@ -740,7 +740,7 @@ fn deserialize_source_refs<'de, D: Deserializer<'de>>(
 }
 
 /// The 1-based position a sink reference names, if it is positional (`"2"` or `2`).
-fn positional_ref(sink_ref: &str) -> Option<usize> {
+pub(crate) fn positional_ref(sink_ref: &str) -> Option<usize> {
     sink_ref.parse::<usize>().ok()
 }
 
@@ -2426,7 +2426,6 @@ impl Config {
 // File helpers
 // ============================================================================
 
-/// `<path>.bak` (e.g. `config.toml.bak`), next to `path`.
 /// The `pwsw` command line that runs `args` against the config at `path`: plain
 /// `pwsw <args>` for the default location, else `pwsw --config <path> <args>` (the path
 /// shell-quoted when needed), so a hint never points at a different file.
@@ -2511,6 +2510,16 @@ pub fn dangling_symlink_target(path: &Path) -> Option<PathBuf> {
 }
 
 /// The directory holding `path` (`.` for a bare file name)
+/// The directory a dangling symlink at `path` points into, when that directory does
+/// not exist either: nothing (not `pwsw init`, not `pwsw tui`) can create the config
+/// there until it is created or the link is changed
+#[must_use]
+pub(crate) fn missing_symlink_dir(path: &Path) -> Option<PathBuf> {
+    let target = dangling_symlink_target(path)?;
+    let dir = parent_dir(&target);
+    (!dir.is_dir()).then(|| dir.to_path_buf())
+}
+
 fn parent_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())

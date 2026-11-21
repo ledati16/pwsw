@@ -83,14 +83,21 @@ impl StartHint {
         }
     }
 
-    /// What to do: `Add a sink first (pwsw tui)`, `Start it: pwsw daemon`, ...
+    /// What to do: `Add a sink first (pwsw tui)`, `Start it: pwsw daemon`, ... (with
+    /// `--config <path>` when the config in use is not the default one)
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub fn text(self) -> String {
+        let pwsw = crate::commands::config_command;
         match self {
-            Self::FixConfig => "Fix the config first: pwsw validate shows the error",
-            Self::AddSink => "Add a sink first (pwsw tui)",
-            Self::Direct => "Start it: pwsw daemon",
-            Self::Systemd => "Start it: systemctl --user enable --now pwsw (or pwsw daemon)",
+            Self::FixConfig => {
+                format!("Fix the config first: {} shows the error", pwsw("validate"))
+            }
+            Self::AddSink => format!("Add a sink first ({})", pwsw("tui")),
+            Self::Direct => format!("Start it: {}", pwsw("daemon")),
+            Self::Systemd => format!(
+                "Start it: systemctl --user enable --now pwsw (or {})",
+                pwsw("daemon")
+            ),
         }
     }
 }

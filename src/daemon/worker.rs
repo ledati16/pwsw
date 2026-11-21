@@ -27,7 +27,7 @@ use tracing::debug;
 
 use crate::config::{Config, Endpoint};
 use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
-use crate::pipewire::{Activated, PipeWire};
+use crate::pipewire::{Activated, CardLeft, PipeWire};
 
 /// One half of an activation: candidates (configured node names, in priority order),
 /// for an upgrade check the index of the candidate that is the default already, and
@@ -92,6 +92,10 @@ pub(crate) enum Target {
     Rule {
         candidates: Vec<String>,
         upgrade_from: Option<usize>,
+        /// No further attempt follows if this one fails (the last retry, an upgrade
+        /// check): a profile switch whose node does not appear in time is switched
+        /// back. Otherwise the card is left on the new profile for the retry.
+        final_attempt: bool,
     },
     /// Wherever a manual request leads, decided by [`manual::plan`] against a fresh
     /// probe of the audio server
@@ -128,6 +132,9 @@ pub(crate) enum Outcome {
     /// An upgrade check found the default changed outside pwsw (this node is the
     /// default now); nothing changed
     Elsewhere(String),
+    /// An upgrade check found `tried[index]` (a candidate before the applied
+    /// fallback) is the default already, chosen outside pwsw; nothing changed
+    Adopted { index: usize },
     /// Nothing needed doing (manual request); the reply message
     Done(String),
     /// The error (formatted with its causes)
@@ -148,6 +155,10 @@ pub(crate) struct JobResult {
     /// description of that target; the job switched to the default sink (source)
     pub toggled_from: Option<String>,
     pub outcome: Outcome,
+    /// The job failed and left a card on a profile it switched to (the node had not
+    /// appeared yet; see [`crate::pipewire::JobHalf::switch_back`]), so the default
+    /// from before may not play any more
+    pub card_left: bool,
     /// Another result of the same run follows (the other half of a joint
     /// activation), so the loop can publish the status once for the whole run
     pub more: bool,
@@ -176,6 +187,7 @@ enum Prepared {
         tried: Vec<String>,
         upgrade_from: Option<usize>,
         keep: bool,
+        switch_back: bool,
         observed: Option<String>,
         toggled_from: Option<String>,
     },
@@ -197,6 +209,7 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
             observed,
             toggled_from: None,
             outcome,
+            card_left: false,
             more: false,
         })
     };
@@ -204,17 +217,21 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
         Target::Rule {
             candidates,
             upgrade_from,
+            final_attempt,
         } => Prepared::Activate {
             tried: candidates,
             upgrade_from,
             keep: false,
+            switch_back: final_attempt,
             observed: None,
             toggled_from: None,
         },
+        // Nothing retries a microphone riding along
         Target::Keep { candidates } => Prepared::Activate {
             tried: candidates,
             upgrade_from: None,
             keep: true,
+            switch_back: true,
             observed: None,
             toggled_from: None,
         },
@@ -236,10 +253,12 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
                 Endpoint::Source => probed.current_source.clone(),
             };
             match manual::plan(&config, &request, probed) {
+                // A failed manual switch is not retried: the card goes back at once
                 Ok(ManualTarget::Switch(target)) => Prepared::Activate {
                     tried: vec![target.name.clone()],
                     upgrade_from: None,
                     keep: false,
+                    switch_back: true,
                     observed,
                     toggled_from: None,
                 },
@@ -247,6 +266,7 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
                     tried: vec![to.name.clone()],
                     upgrade_from: None,
                     keep: false,
+                    switch_back: true,
                     observed,
                     toggled_from: Some(from.desc.clone()),
                 },
@@ -257,9 +277,15 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
     }
 }
 
-/// The outcome of one activated half
-fn outcome_of(result: Option<HalfResult>, tried: &[String]) -> Outcome {
-    match result {
+/// The outcome of one activated half, and whether it left a card on a profile it
+/// switched to ([`JobResult::card_left`])
+fn outcome_of(result: Option<HalfResult>, tried: &[String]) -> (Outcome, bool) {
+    if let Some(Err(e)) = &result
+        && e.downcast_ref::<CardLeft>().is_some()
+    {
+        return (Outcome::Failed(format!("{e:#}")), true);
+    }
+    let outcome = match result {
         Some(Ok(Activated::Switched { index, node_name })) if index < tried.len() => {
             Outcome::Activated { index, node_name }
         }
@@ -269,9 +295,15 @@ fn outcome_of(result: Option<HalfResult>, tried: &[String]) -> Outcome {
         )),
         Some(Ok(Activated::Unchanged)) => Outcome::Unchanged,
         Some(Ok(Activated::Elsewhere(current))) => Outcome::Elsewhere(current),
+        Some(Ok(Activated::Adopted { index })) if index < tried.len() => Outcome::Adopted { index },
+        Some(Ok(Activated::Adopted { index })) => Outcome::Failed(format!(
+            "Internal error: adopted candidate {index} of {}",
+            tried.len()
+        )),
         Some(Err(e)) => Outcome::Failed(format!("{e:#}")),
         None => Outcome::Failed("Internal error: the activation returned nothing".to_string()),
-    }
+    };
+    (outcome, false)
 }
 
 /// A job to activate
@@ -280,6 +312,7 @@ struct Ready {
     tried: Vec<String>,
     upgrade_from: Option<usize>,
     keep: bool,
+    switch_back: bool,
     observed: Option<String>,
     toggled_from: Option<String>,
 }
@@ -291,6 +324,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
             candidates: &ready.tried,
             upgrade_from: ready.upgrade_from,
             keep: ready.keep,
+            switch_back: ready.switch_back,
         })
     }
 
@@ -304,6 +338,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 tried,
                 upgrade_from,
                 keep,
+                switch_back,
                 observed,
                 toggled_from,
             } => {
@@ -312,6 +347,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                     tried,
                     upgrade_from,
                     keep,
+                    switch_back,
                     observed,
                     toggled_from,
                 });
@@ -339,6 +375,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                     observed,
                     toggled_from,
                     outcome: Outcome::Unchanged,
+                    card_left: false,
                     more: false,
                 });
             }
@@ -355,7 +392,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
             ..
         }) = halves[kind.index()].take()
         {
-            let outcome = outcome_of(result, &tried);
+            let (outcome, card_left) = outcome_of(result, &tried);
             results.push(JobResult {
                 generation,
                 kind,
@@ -363,6 +400,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 observed,
                 toggled_from,
                 outcome,
+                card_left,
                 more: false,
             });
         }
@@ -393,11 +431,13 @@ async fn run<S: SinkSwitcher>(
                 Target::Rule {
                     candidates,
                     upgrade_from,
+                    final_attempt,
                 } => debug!(
-                    "Activating the first reachable {} of [{}]{} (job {})",
+                    "Activating the first reachable {} of [{}]{}{} (job {})",
                     job.kind.noun(),
                     candidates.join(", "),
                     upgrade_from.map_or_else(String::new, |k| format!(" before #{k}")),
+                    if *final_attempt { ", last attempt" } else { "" },
                     job.generation
                 ),
                 Target::Manual { request, .. } => {
@@ -438,6 +478,7 @@ async fn run<S: SinkSwitcher>(
                         observed: None,
                         toggled_from: None,
                         outcome: Outcome::Failed(format!("activation task failed: {e}")),
+                        card_left: false,
                         more: false,
                     })
                     .collect()

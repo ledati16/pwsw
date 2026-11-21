@@ -296,14 +296,14 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     {
         Ok(Ok((sink, source))) => {
             if let Some(name) = &sink {
-                info!("Current default sink: {name}");
+                info!("Current default sink: {}", crate::sanitize::for_log(name));
             } else {
                 warn!("Could not query default sink: none set in PipeWire metadata");
             }
             if !config.sources.is_empty() {
                 info!(
                     "Current default source: {}",
-                    source.as_deref().unwrap_or("unknown")
+                    crate::sanitize::for_log(source.as_deref().unwrap_or("unknown"))
                 );
             }
             (sink, source)
@@ -330,9 +330,12 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         capabilities,
         preference,
     };
-    if let Some(warning) =
-        output_rules_warning(compositor, config.has_output_rules(), Some(daemon_manager))
-    {
+    if let Some(warning) = output_rules_warning(
+        compositor,
+        config.has_output_rules(),
+        Some(daemon_manager),
+        &crate::commands::config_command("daemon"),
+    ) {
         warn!("{}", warning.log);
     }
 

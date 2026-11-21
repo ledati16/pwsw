@@ -103,10 +103,14 @@ fn git_revision(manifest_dir: &Path) -> Option<String> {
             watch_if_exists(&manifest_dir.join(path));
         }
     }
-    // Whatever can change the dirty marker: every tracked top-level entry (an edit,
-    // or its revert), and every untracked one `git status` reports (so the marker goes
-    // away again once it is removed: Cargo re-runs the script for a missing path).
-    // Ignored paths (`target/`) are not watched, or every build would re-run this.
+    // What can change the dirty marker: every tracked top-level entry (an edit or its
+    // revert, also a new file inside a tracked directory), and the untracked entries
+    // `git status` reports right now (so the marker goes away once they are removed:
+    // Cargo re-runs the script for a path that went missing). A *new* untracked file
+    // at the top level is not noticed until something else re-runs the script (e.g.
+    // `git add`, which changes the index): watching the crate directory itself would
+    // re-run it on every build, since `target/` lives there. Ignored paths are not
+    // watched for the same reason.
     if let Some(tracked) = git(manifest_dir, &["ls-tree", "-z", "--name-only", "HEAD"]) {
         for name in tracked.split('\0').filter(|n| !n.is_empty()) {
             println!(

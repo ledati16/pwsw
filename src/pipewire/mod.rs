@@ -33,12 +33,14 @@ mod node_state;
 mod parse;
 mod resolve;
 
-use activate::{Request, SystemClock, WaitPolicy};
+pub(crate) use activate::CardLeft;
+use activate::{LeftCards, Request, SystemClock, WaitPolicy};
 use cli::CliBackend;
 pub use model::Snapshot;
 pub use node_state::NodeState;
 
 use crate::config::Endpoint;
+use crate::sanitize::for_log;
 
 // ============================================================================
 // Sink Discovery Types
@@ -160,6 +162,9 @@ pub enum Activated {
     /// fallback it was asked to improve on (someone chose another one outside pwsw):
     /// the default as the user sees it now
     Elsewhere(String),
+    /// An upgrade check touched nothing because candidate `index` (one before the
+    /// applied fallback) is the default already: chosen outside pwsw
+    Adopted { index: usize },
 }
 
 /// One half (sink or source) of an activation job ([`PipeWire::activate_joint`])
@@ -175,24 +180,32 @@ pub struct JobHalf<'a> {
     /// one of `candidates` (then planned jointly: one profile for both, or this half
     /// fails when none provides both); otherwise nothing is touched (`Ok(None)`).
     pub keep: bool,
+    /// Switch a card back to its previous profile when the node of a profile switch
+    /// does not appear in time (no further attempt follows); without it the card is
+    /// left on the new profile for the retry that follows
+    pub switch_back: bool,
 }
 
 impl<'a> JobHalf<'a> {
-    /// A plain half: activate the first reachable of `candidates`
+    /// A plain half: activate the first reachable of `candidates` (a timed-out profile
+    /// switch is switched back)
     #[must_use]
     pub const fn new(candidates: &'a [String]) -> Self {
         Self {
             candidates,
             upgrade_from: None,
             keep: false,
+            switch_back: true,
         }
     }
 }
 
 /// Serialises all sink and source activations in this process, so each one takes its snapshot
-/// and makes its decision with no other switch in flight. Guards no data, so a
-/// poisoned lock (a panicking activation) is simply taken over.
-static ACTIVATION_LOCK: Mutex<()> = Mutex::new(());
+/// and makes its decision with no other switch in flight. Guards the cards an
+/// attempt left switched for the attempts that follow ([`activate::LeftCards`]); a
+/// poisoned lock (a panicking activation) is simply taken over, as that record is
+/// only advice (at worst a card is switched again, or back to the profile it had).
+static ACTIVATION_LOCK: Mutex<LeftCards> = Mutex::new(LeftCards::new());
 
 impl PipeWire {
     /// Validate that all required `PipeWire` tools are available in `PATH`
@@ -313,6 +326,27 @@ impl PipeWire {
         ))
     }
 
+    /// The entry of `entries` (configured sinks or sources of `kind`) that the
+    /// current `kind` default is: by node name, else the entry whose name resolves to
+    /// that node (one `WirePlumber` renamed, recognised by device and profile as
+    /// activation recognises it); `None` when no default is set or it is none of them
+    #[must_use]
+    pub fn configured_default<'a>(
+        snapshot: &Snapshot,
+        kind: Endpoint,
+        entries: &'a [crate::config::SinkConfig],
+    ) -> Option<&'a crate::config::SinkConfig> {
+        let current = snapshot.current_default_of(kind)?;
+        entries.iter().find(|e| e.name == current).or_else(|| {
+            entries.iter().find(|e| {
+                matches!(
+                    resolve::resolve_endpoint(snapshot, kind, &e.name),
+                    Ok(resolve::Plan::SetDefault { node_name }) if node_name == current
+                )
+            })
+        })
+    }
+
     /// Check whether a configured sink could be made the default right now
     ///
     /// Decided by the same resolver activation uses: the node exists, or an available
@@ -386,7 +420,7 @@ impl PipeWire {
             .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no result")))?
         {
             Activated::Switched { node_name, .. } => Ok(node_name),
-            Activated::Unchanged | Activated::Elsewhere(_) => {
+            Activated::Unchanged | Activated::Elsewhere(_) | Activated::Adopted { .. } => {
                 Err(anyhow::anyhow!("Internal error: nothing activated"))
             }
         }
@@ -420,9 +454,10 @@ impl PipeWire {
                 candidates: half.candidates,
                 upgrade_from: half.upgrade_from,
                 keep: half.keep,
+                switch_back: half.switch_back,
             }
         }
-        let _guard = ACTIVATION_LOCK
+        let mut left = ACTIVATION_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let outcome = activate::activate_joint(
@@ -431,6 +466,7 @@ impl PipeWire {
             WaitPolicy::from_env(),
             sink.map(request),
             source.map(request),
+            &mut left,
         );
         let switches = |result: &Option<Result<Option<activate::Chosen>>>| match result {
             Some(Ok(Some(chosen))) => chosen.activation.profile_switch.clone(),
@@ -450,16 +486,16 @@ impl PipeWire {
         if joint && let Some(switch) = &sink_switch {
             info!(
                 "Switched {} to profile {} and set default sink {} and source {}",
-                switch.device_name,
-                switch.profile_name,
-                node(&outcome.sink),
-                node(&outcome.source)
+                for_log(&switch.device_name),
+                for_log(&switch.profile_name),
+                for_log(&node(&outcome.sink)),
+                for_log(&node(&outcome.source))
             );
         }
         let [sink_elsewhere, source_elsewhere] = outcome.elsewhere;
         let report = |kind: Endpoint,
                       result: Option<Result<Option<activate::Chosen>>>,
-                      elsewhere: Option<String>| {
+                      elsewhere: Option<activate::Elsewhere>| {
             result.map(|r| {
                 r.map(|chosen| match chosen {
                     Some(chosen) => {
@@ -468,13 +504,17 @@ impl PipeWire {
                             Some(_) if joint => {}
                             Some(switch) => info!(
                                 "Switched {} to profile {} and set default {} {}",
-                                switch.device_name,
-                                switch.profile_name,
+                                for_log(&switch.device_name),
+                                for_log(&switch.profile_name),
                                 kind.noun(),
-                                activation.node_name
+                                for_log(&activation.node_name)
                             ),
                             None => {
-                                debug!("Set default {} {}", kind.noun(), activation.node_name);
+                                debug!(
+                                    "Set default {} {}",
+                                    kind.noun(),
+                                    for_log(&activation.node_name)
+                                );
                             }
                         }
                         Activated::Switched {
@@ -482,7 +522,11 @@ impl PipeWire {
                             node_name: activation.node_name,
                         }
                     }
-                    None => elsewhere.map_or(Activated::Unchanged, Activated::Elsewhere),
+                    None => match elsewhere {
+                        None => Activated::Unchanged,
+                        Some(activate::Elsewhere::Other(current)) => Activated::Elsewhere(current),
+                        Some(activate::Elsewhere::Candidate(index)) => Activated::Adopted { index },
+                    },
                 })
             })
         };

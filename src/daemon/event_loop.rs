@@ -14,7 +14,8 @@
 //! do not each switch as they arrive; with `default_on_startup` it is activated,
 //! otherwise nothing happens until it changes. Window events already queued when the
 //! loop wakes up are applied together before one reconcile. A failed rule-driven
-//! activation is retried with backoff, then once more on the next event or reload.
+//! activation is retried with backoff; once that is used up, the next event or reload
+//! starts over.
 //!
 //! `applied` is pwsw's view of the default sink: what it last activated, found at
 //! startup, or saw when a manual request probed `PipeWire`. Manual requests are
@@ -252,11 +253,13 @@ pub(crate) struct CompositorInfo {
 /// and still on `ext`, the compositor offers nothing else. Spawned without (the rules
 /// came with a reload), a restart picks `wlr` if the compositor has it; the connection
 /// is not swapped while running. The restart hint fits how the daemon runs
-/// (`manager`; both ways when unknown).
+/// (`manager`; both ways when unknown); `daemon` is the command that starts it
+/// directly (`pwsw daemon`, with `--config` for a config elsewhere).
 pub(crate) fn output_rules_warning(
     compositor: CompositorInfo,
     has_output_rules: bool,
     manager: Option<DaemonManager>,
+    daemon: &str,
 ) -> Option<OutputRulesWarning> {
     if !has_output_rules || compositor.capabilities.monitor_info() {
         return None;
@@ -270,9 +273,9 @@ pub(crate) fn output_rules_warning(
         },
         ProtocolPreference::Auto => {
             let restart = match manager {
-                Some(DaemonManager::Systemd) => "systemctl --user restart pwsw",
-                Some(DaemonManager::Direct) => "pwsw shutdown, then pwsw daemon",
-                None => "systemctl --user restart pwsw, or pwsw shutdown, then pwsw daemon",
+                Some(DaemonManager::Systemd) => "systemctl --user restart pwsw".to_string(),
+                Some(DaemonManager::Direct) => format!("pwsw shutdown, then {daemon}"),
+                None => format!("systemctl --user restart pwsw, or pwsw shutdown, then {daemon}"),
             };
             OutputRulesWarning {
                 log: format!(
@@ -381,8 +384,12 @@ struct Lane {
     last_desired: Option<Vec<String>>,
     /// A manual switch holds until the desired answer changes
     manual_override: bool,
-    /// The rules' target failed and retries ran out: try once more on the next event
+    /// The rules' target failed and retries ran out: the next event starts over
     stalled: bool,
+    /// A failed rule-driven attempt left a card on the profile it switched to (its
+    /// node had not appeared yet; a retry follows): `applied` may not play any more,
+    /// so it serves nothing until something is activated again
+    card_left: bool,
     /// A rule-driven job that a manual request replaced (or that failed while the
     /// manual request was queued behind it): if the manual request switches nothing,
     /// it is submitted again at once, since no later change of the rules' answer
@@ -409,6 +416,7 @@ impl Lane {
         self.applied_fallback = false;
         self.manual_override = false;
         self.stalled = false;
+        self.card_left = false;
         self.superseded = None;
         self.settle = None;
         self.retry = None;
@@ -801,7 +809,8 @@ impl Daemon {
             // A manual job: its target is not chosen yet
             Some(_) => false,
             None => {
-                lane.applied.is_some()
+                !lane.card_left
+                    && lane.applied.is_some()
                     && (lane.applied_for.as_deref() == Some(candidates)
                         || lane.applied.as_deref() == candidates.first().map(String::as_str))
             }
@@ -915,7 +924,7 @@ impl Daemon {
             lane.stalled = false;
             lane.retries = 0;
             let notice = self.rule_notice(kind, departure);
-            self.submit(kind, names, notice);
+            self.submit(kind, names, notice, departure);
         } else if let Some(rank) = self.upgrade_due(kind) {
             debug!(
                 "Applied {} is fallback #{rank}; checking for a higher-priority one",
@@ -928,6 +937,9 @@ impl Daemon {
                 Target::Rule {
                     candidates: names.clone(),
                     upgrade_from: Some(rank),
+                    // Never retried: a timed-out switch goes back to the fallback's
+                    // profile at once
+                    final_attempt: true,
                 },
                 Some(names),
                 Origin::Upgrade,
@@ -997,7 +1009,7 @@ impl Daemon {
             });
             return false;
         }
-        self.submit(kind, names, notice);
+        self.submit(kind, names, notice, departure);
         true
     }
 
@@ -1022,7 +1034,7 @@ impl Daemon {
             {
                 continue;
             }
-            self.submit(kind, settle.candidates, settle.notice);
+            self.submit(kind, settle.candidates, settle.notice, None);
         }
     }
 
@@ -1189,15 +1201,45 @@ impl Daemon {
         })
     }
 
-    /// Submit a rule-driven activation of the first reachable of `candidates`
+    /// Submit a rule-driven activation of the first reachable of `candidates`,
+    /// logging why (the deciding window, or the `departure` that left the default)
     fn submit(
         &mut self,
         kind: Endpoint,
         candidates: Vec<String>,
         notice: Option<RuleNotice>,
+        departure: Option<&Departure>,
     ) -> u64 {
-        let what = format!("Switching: {}", self.candidates_desc(kind, &candidates));
+        let what = format!(
+            "Switching: {}{}",
+            self.candidates_desc(kind, &candidates),
+            self.switch_reason(kind, departure)
+        );
         self.submit_logged(kind, candidates, notice, &what)
+    }
+
+    /// Why the rules want what they want for `kind`, for the `Switching:` line: the
+    /// deciding window and its rule, else the window whose `departure` left the
+    /// default (empty when neither is known)
+    fn switch_reason(&self, kind: Endpoint, departure: Option<&Departure>) -> String {
+        use crate::sanitize::for_log;
+        if let Some(window) = self.state.desired_for(kind).and_then(|d| d.window) {
+            let rule = self
+                .state
+                .config()
+                .rules
+                .get(window.rule_index)
+                .and_then(|r| r.desc.as_deref())
+                .map_or_else(
+                    || format!("rule #{}", window.rule_index + 1),
+                    |desc| format!("rule '{}'", for_log(desc)),
+                );
+            return format!(" for {} ({rule})", crate::state::winner_label(&window));
+        }
+        departure.map_or_else(String::new, |d| {
+            let what = if d.closed { "closed" } else { "ended" };
+            format!(" ('{}' {what})", for_log(&d.trigger))
+        })
     }
 
     /// [`Daemon::submit`], logging `what` (at info) instead of the usual line
@@ -1209,11 +1251,14 @@ impl Daemon {
         what: &str,
     ) -> u64 {
         info!("{what}");
+        // No retry follows the last scheduled one (see `schedule_retry`)
+        let final_attempt = self.lane(kind).retries >= RETRY_BACKOFF.len();
         self.submit_job(
             kind,
             Target::Rule {
                 candidates: candidates.clone(),
                 upgrade_from: None,
+                final_attempt,
             },
             Some(candidates),
             Origin::Rule,
@@ -1272,8 +1317,9 @@ impl Daemon {
             && self.lane(kind).applied.as_deref() != Some(observed.as_str())
         {
             debug!(
-                "Default {noun} is {observed} (last known: {})",
-                self.lane(kind).applied.as_deref().unwrap_or("unknown")
+                "Default {noun} is {} (last known: {})",
+                crate::sanitize::for_log(&observed),
+                crate::sanitize::for_log(self.lane(kind).applied.as_deref().unwrap_or("unknown"))
             );
             let lane = self.lane_mut(kind);
             lane.applied = Some(observed);
@@ -1283,9 +1329,22 @@ impl Daemon {
 
         let tried = result.tried;
         let toggled_from = result.toggled_from;
+        if active {
+            // Whether the default may have stopped playing: a failed attempt left a
+            // card switched (a retry follows), until something is activated or seen
+            let lane = self.lane_mut(kind);
+            match &result.outcome {
+                Outcome::Failed(_) => lane.card_left |= result.card_left,
+                Outcome::Activated { .. } | Outcome::Elsewhere(_) | Outcome::Adopted { .. } => {
+                    lane.card_left = false;
+                }
+                Outcome::Unchanged | Outcome::Done(_) => {}
+            }
+        }
         let response = match result.outcome {
             Outcome::Activated { index, node_name } if index < tried.len() => {
                 let name = tried[index].clone();
+                let node = crate::sanitize::for_log(&node_name).into_owned();
                 let fallback = index > 0;
                 let mut desc = self.endpoint_desc(kind, &name);
                 let what = match kind {
@@ -1308,17 +1367,14 @@ impl Daemon {
                 };
                 if let Some(old) = upgraded_from {
                     info!(
-                        "Upgrade: {} is now {desc}{marker} ({node_name}): available again, was \
+                        "Upgrade: {} is now {desc}{marker} ({node}): available again, was \
                          fallback {old}",
                         what.to_lowercase()
                     );
                 } else if let Some(from) = &toggled_from {
-                    info!(
-                        "{what} is now {desc} ({node_name}): {from} was already active, toggled \
-                         back"
-                    );
+                    info!("{what} is now {desc} ({node}): {from} was already active, toggled back");
                 } else {
-                    info!("{what} is now {desc}{marker} ({node_name})");
+                    info!("{what} is now {desc}{marker} ({node})");
                 }
                 // The candidate list the new value serves: a rule-driven job's (a stale
                 // result too: a manual job's single target is its own first choice),
@@ -1432,7 +1488,7 @@ impl Daemon {
                     tried
                         .first()
                         .map_or_else(|| noun.to_string(), |c| self.endpoint_desc(kind, c)),
-                    self.endpoint_desc(kind, &current)
+                    crate::sanitize::for_log(&self.endpoint_desc(kind, &current))
                 );
                 info!("{message}");
                 if active {
@@ -1440,6 +1496,27 @@ impl Daemon {
                     lane.applied = Some(current);
                     lane.applied_for = None;
                     lane.applied_fallback = false;
+                }
+                Response::Ok { message }
+            }
+            Outcome::Adopted { index } => {
+                // The default chosen outside pwsw is one of the rule's own candidates,
+                // higher in its list than the applied fallback: it serves the list
+                let message = tried.get(index).map_or_else(
+                    || format!("Already on a higher-priority {noun} (chosen outside pwsw)"),
+                    |name| {
+                        format!(
+                            "Already on {} (chosen outside pwsw)",
+                            self.endpoint_desc(kind, name)
+                        )
+                    },
+                );
+                info!("{message}");
+                if active && let Some(name) = tried.get(index) {
+                    let lane = self.lane_mut(kind);
+                    lane.applied = Some(name.clone());
+                    lane.applied_for = Some(tried.clone());
+                    lane.applied_fallback = index > 0;
                 }
                 Response::Ok { message }
             }
@@ -1567,7 +1644,7 @@ impl Daemon {
                 "Resuming the switch to {} the manual request replaced",
                 self.candidates_desc(kind, &superseded.candidates)
             );
-            self.submit(kind, superseded.candidates, superseded.notice);
+            self.submit(kind, superseded.candidates, superseded.notice, None);
         }
     }
 
@@ -1622,7 +1699,7 @@ impl Daemon {
             {
                 continue;
             }
-            self.submit(kind, retry.candidates, retry.notice);
+            self.submit(kind, retry.candidates, retry.notice, None);
         }
     }
 
@@ -1933,7 +2010,8 @@ impl Daemon {
                     crate::sanitize::error_line(&e)
                 );
                 if notify_manual {
-                    self.notify_daemon("Reload Failed", &reload_failed_body(&text));
+                    let validate = crate::config::pwsw_command(&self.config_path, "validate");
+                    self.notify_daemon("Reload Failed", &reload_failed_body(&text, &validate));
                 }
             }
             Ok(Ok(config)) => {
@@ -1965,8 +2043,9 @@ impl Daemon {
                         config.sinks.len(),
                         config.rules.len()
                     );
+                    let daemon = crate::config::pwsw_command(&self.config_path, "daemon");
                     let warning = self.compositor.and_then(|c| {
-                        output_rules_warning(c, config.has_output_rules(), self.manager)
+                        output_rules_warning(c, config.has_output_rules(), self.manager, &daemon)
                     });
                     if let Some(warning) = &warning {
                         warn!("{}", warning.log);
@@ -2009,8 +2088,8 @@ impl Daemon {
 
 /// The "Reload Failed" notification body: the start of the error (a parse error's
 /// first line is only the file, so its second line, the position, comes along) and
-/// where to see all of it
-fn reload_failed_body(error: &str) -> String {
+/// where to see all of it (`validate`: the `pwsw validate` command for this config)
+fn reload_failed_body(error: &str, validate: &str) -> String {
     let mut lines = crate::sanitize::one_line(error)
         .split("; ")
         .take(2)
@@ -2019,7 +2098,7 @@ fn reload_failed_body(error: &str) -> String {
     if lines.len() == 2 && !lines[0].starts_with("Failed to parse config") {
         lines.truncate(1);
     }
-    format!("{} - run pwsw validate for details", lines.join(": "))
+    format!("{} - run {validate} for details", lines.join(": "))
 }
 
 /// The compositor's window event channel closed (logged here)

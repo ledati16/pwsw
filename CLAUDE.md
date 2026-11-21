@@ -76,8 +76,8 @@ At startup the loop first applies the windows the compositor already has (up to
 `WindowEvent::InitialSync`, at most `INITIAL_SYNC_TIMEOUT`, 2 s), then takes the answer
 as the baseline; with `default_on_startup` it is activated. Window events already queued
 when the loop wakes are applied together (up to `WINDOW_EVENT_BATCH`) before one
-reconcile. Failed rule switches retry after 2 s and 5 s, then once more on the next
-event or reload. A manual switch holds the same way; a failed manual switch changes
+reconcile. Failed rule switches retry after 2 s and 5 s; if those fail too the lane
+stalls, and the next event or reload starts over (an attempt, then the two retries). A manual switch holds the same way; a failed manual switch changes
 nothing. "Changed" means
 the candidate list changed. A rule job activates the first reachable candidate against
 one snapshot (`pipewire::activate::activate_first`), trying the next reachable one if
@@ -132,13 +132,21 @@ inside it.
   two halves (cards switched for the sink are frozen for the source's fallthrough).
 - Post-switch wait: `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES` (default
   150 ms × 20 = 3 s), capped at 5 s. A switch whose node does not appear in time is
-  undone (the card goes back to its previous profile, if still available), so a failed
-  switch leaves the audio where it was; a `keep` source on that card then counts as
-  untouched, as it does when no snapshot could be taken at all.
+  undone (the card goes back to its previous profile, if still available) only when no
+  further attempt follows (`JobHalf::switch_back`: manual jobs, upgrade checks, `keep`,
+  and the last scheduled rule retry, `Target::Rule::final_attempt`); otherwise the card
+  is left on the new profile so a slow card can finish and the retry finds the node, and
+  the half's error is a `CardLeft`. The loop then treats `applied` as not serving
+  anything (`Lane::card_left`) until something is activated, so the rules returning to
+  it switch again. A switch to the profile the card already had counts as undone; a
+  `keep` source on an undone card counts as untouched, as it does when no snapshot
+  could be taken at all.
 - Upgrade checks only act while the configured default is still the applied fallback
   (by name or the node it resolves to); otherwise the half returns
   `Activated::Elsewhere` and the loop adopts the observed default like a manual probe
-  (`applied_for` = None, no more upgrade checks).
+  (`applied_for` = None, no more upgrade checks), or `Activated::Adopted` when that
+  default is one of the rule's candidates before the fallback (it serves the list:
+  `applied_for` = the candidates, `applied_fallback` unless it is the first).
 - `activate.rs` runs over the `AudioBackend` and `Clock` traits so the whole flow is
   tested with fakes; put new logic there or in `resolve.rs`, not in `cli.rs`.
 

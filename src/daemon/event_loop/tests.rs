@@ -111,6 +111,12 @@ struct FakeSwitcher {
     hold_upgrades: std::sync::atomic::AtomicBool,
     /// Fail this many upgrade checks outright (like a `pw-dump` that timed out)
     fail_upgrades: AtomicUsize,
+    /// Every `activate` request's sink half: whether a timed-out profile switch is
+    /// switched back (`JobHalf::switch_back`)
+    switch_backs: Mutex<Vec<bool>>,
+    /// Failures (`failures`) are reported like a timed-out profile switch that left
+    /// the card on the new profile (`CardLeft`), unless the half switches back
+    left_on_failure: std::sync::atomic::AtomicBool,
 }
 
 impl FakeSwitcher {
@@ -155,7 +161,7 @@ impl FakeSwitcher {
 }
 
 impl FakeSwitcher {
-    fn activate_one(&self, kind: Endpoint, name: &str) -> Result<String> {
+    fn activate_one(&self, kind: Endpoint, name: &str, switch_back: bool) -> Result<String> {
         match kind {
             Endpoint::Sink => self.calls.lock().expect("lock").push(name.to_string()),
             Endpoint::Source => self
@@ -176,6 +182,11 @@ impl FakeSwitcher {
             && *left > 0
         {
             *left -= 1;
+            if !switch_back && self.left_on_failure.load(Ordering::SeqCst) {
+                return Err(anyhow::Error::new(crate::pipewire::CardLeft::new(
+                    &format!("fake timeout for {name}; left the card on that profile"),
+                )));
+            }
             anyhow::bail!("fake failure for {name}");
         }
         let current = match kind {
@@ -187,12 +198,8 @@ impl FakeSwitcher {
     }
 
     /// One half: like the real resolver, `absent` candidates are skipped
-    fn activate_half(
-        &self,
-        kind: Endpoint,
-        candidates: &[String],
-        upgrade_from: Option<usize>,
-    ) -> worker::HalfResult {
+    fn activate_half(&self, kind: Endpoint, half: worker::Half<'_>) -> worker::HalfResult {
+        let (candidates, upgrade_from) = (half.candidates, half.upgrade_from);
         let absent = self.absent.lock().expect("lock").clone();
         let reachable = |c: &String| !absent.contains(c);
         if upgrade_from.is_some() {
@@ -218,6 +225,13 @@ impl FakeSwitcher {
             if let Some(current) = current
                 && candidates.get(rank) != Some(&current)
             {
+                // A higher-priority candidate chosen elsewhere serves the list
+                if let Some(index) = candidates[..rank.min(candidates.len())]
+                    .iter()
+                    .position(|c| *c == current)
+                {
+                    return Ok(Activated::Adopted { index });
+                }
                 return Ok(Activated::Elsewhere(current));
             }
             if !candidates[..rank.min(candidates.len())]
@@ -228,17 +242,25 @@ impl FakeSwitcher {
             }
         }
         let mut errors = Vec::new();
+        let mut left = false;
         for (index, candidate) in candidates.iter().enumerate() {
             if !reachable(candidate) {
                 errors.push(format!("{candidate} is not present"));
                 continue;
             }
-            match self.activate_one(kind, candidate) {
+            match self.activate_one(kind, candidate, half.switch_back) {
                 Ok(node_name) => return Ok(Activated::Switched { index, node_name }),
-                Err(e) => errors.push(format!("{e:#}")),
+                Err(e) => {
+                    left |= e.downcast_ref::<crate::pipewire::CardLeft>().is_some();
+                    errors.push(format!("{e:#}"));
+                }
             }
         }
-        anyhow::bail!("{}", errors.join("; "))
+        let message = errors.join("; ");
+        if left {
+            return Err(anyhow::Error::new(crate::pipewire::CardLeft::new(&message)));
+        }
+        anyhow::bail!("{message}")
     }
 
     /// A source half riding along with a sink half, answered as `keep_answer` says
@@ -285,6 +307,10 @@ impl SinkSwitcher for FakeSwitcher {
                 .lock()
                 .expect("lock")
                 .push((half.candidates.to_vec(), half.upgrade_from));
+            self.switch_backs
+                .lock()
+                .expect("lock")
+                .push(half.switch_back);
         }
         if let Some(half) = source {
             self.source_requests
@@ -292,12 +318,10 @@ impl SinkSwitcher for FakeSwitcher {
                 .expect("lock")
                 .push((half.candidates.to_vec(), half.upgrade_from));
         }
-        let sink = sink.map(|h| self.activate_half(Endpoint::Sink, h.candidates, h.upgrade_from));
+        let sink = sink.map(|h| self.activate_half(Endpoint::Sink, h));
         let source = match keep {
             Some(half) => Some(self.keep_half(half.candidates)),
-            None => {
-                source.map(|h| self.activate_half(Endpoint::Source, h.candidates, h.upgrade_from))
-            }
+            None => source.map(|h| self.activate_half(Endpoint::Source, h)),
         };
         (sink, source)
     }
@@ -510,6 +534,11 @@ impl Harness {
 
     fn requests(&self) -> Vec<(Vec<String>, Option<usize>)> {
         self.switcher.requests.lock().expect("lock").clone()
+    }
+
+    /// Per sink request: whether a timed-out profile switch is switched back
+    fn switch_backs(&self) -> Vec<bool> {
+        self.switcher.switch_backs.lock().expect("lock").clone()
     }
 
     fn source_calls(&self) -> Vec<String> {
@@ -820,6 +849,122 @@ async fn test_gives_up_after_backoff_until_next_event() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// A timed-out profile switch is switched back only when no further attempt follows:
+/// a rule switch leaves the card on the new profile for its retries and switches it
+/// back on the last one; the attempt on the next event after giving up starts the
+/// retries over (so it leaves the card too, and its own last retry switches back)
+#[tokio::test(start_paused = true)]
+async fn test_switch_back_only_on_the_last_attempt() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::failing("headphones", 100),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    h.wait_for("three attempts", |_, calls| calls.len() == 3)
+        .await;
+    assert_eq!(
+        h.switch_backs(),
+        vec![false, false, true],
+        "first, retry, last retry"
+    );
+
+    // Given up; the next event tries again, with the retries over again
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    h.open(2, "zsh").await;
+    h.wait_for("three more attempts", |_, calls| calls.len() == 6)
+        .await;
+    assert_eq!(h.switch_backs(), vec![
+        false, false, true, false, false, true
+    ]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Manual switches and upgrade checks are never retried: a timed-out switch of theirs
+/// is switched back at once
+#[tokio::test(start_paused = true)]
+async fn test_manual_switches_and_upgrade_checks_switch_back() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    let response = h.switch(ManualSwitch::Set("USB".to_string())).await;
+    assert!(
+        matches!(response, Response::SinkSwitched { .. }),
+        "{response:?}"
+    );
+    h.switch(ManualSwitch::Set("Speakers".to_string())).await;
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    h.wait_for("the upgrade check's result", |s, _| {
+        s.jobs_submitted == 4 && !s.sink_in_flight
+    })
+    .await;
+    assert_eq!(h.requests()[3], (names(&["headphones", "hdmi"]), Some(1)));
+    assert_eq!(
+        h.switch_backs(),
+        vec![true, true, false, true],
+        "manual, manual, first rule attempt, upgrade check"
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A failed attempt that left a card on its new profile (a retry follows) makes the
+/// applied sink uncertain: when the rules return to it before the retry, it is
+/// switched to again (it may not play any more) instead of counting as served
+#[tokio::test(start_paused = true)]
+async fn test_rules_returning_after_a_card_was_left_switch_again() {
+    let switcher = FakeSwitcher::failing("headphones", 1);
+    switcher
+        .left_on_failure
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let h = start(base_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    let snapshot = h
+        .wait_for("the failed attempt", |s, calls| {
+            calls.len() == 1 && s.sink_retry_pending
+        })
+        .await;
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+
+    // Firefox closes before the retry: back to the speakers, switched to again
+    h.close(1).await;
+    h.wait_for("the speakers again", |s, calls| {
+        calls.len() == 2 && !s.sink_in_flight
+    })
+    .await;
+    assert_eq!(h.calls(), vec!["headphones", "speakers"]);
+    assert_eq!(h.switch_backs(), vec![false, false]);
+
+    // Activated again: the speakers serve the rules as usual
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "nothing more to do");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// An attempt that failed without leaving a card (nothing switched) keeps the applied
+/// sink: the rules returning to it switch nothing
+#[tokio::test(start_paused = true)]
+async fn test_rules_returning_after_a_plain_failure_switch_nothing() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::failing("headphones", 1),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    h.wait_for("the failed attempt", |s, calls| {
+        calls.len() == 1 && s.sink_retry_pending
+    })
+    .await;
+    h.close(1).await;
+    let snapshot = h.wait_windows(0).await;
+    assert_eq!(snapshot.jobs_submitted, 1, "the speakers are still applied");
+    assert_eq!(h.calls(), vec!["headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
 #[tokio::test(start_paused = true)]
 async fn test_default_on_startup_failure_does_not_abort() {
     let mut config = base_config();
@@ -1119,6 +1264,45 @@ async fn test_fallback_changed_outside_pwsw_is_not_upgraded_away() {
     // Until the rules' answer changes
     h.close(1).await;
     h.wait_applied("speakers").await;
+    h.stop().await.expect("clean shutdown");
+}
+
+/// The default chosen outside pwsw while a fallback is applied is the rule's own first
+/// choice: the upgrade check adopts it (it serves the rule's list) instead of
+/// reporting it as changed outside pwsw, and switches nothing
+#[tokio::test(start_paused = true)]
+async fn test_outside_choice_of_the_rules_first_choice_is_adopted() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+
+    // The headphones come back and the user picks them in `pavucontrol`
+    h.switcher.set_current("headphones");
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.fallback, "the first choice");
+    assert_eq!(h.requests()[1], (names(&["headphones", "hdmi"]), Some(1)));
+    assert_eq!(h.calls(), vec!["hdmi"], "nothing switched");
+    assert_eq!(
+        snapshot.active_window.as_deref(),
+        Some("firefox window: Headphones"),
+        "it is what the rule wants"
+    );
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Headphones")
+    );
+
+    // It serves the rule's list: a reload keeping the list switches nothing, and no
+    // more upgrade checks run
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(3, "zsh").await;
+    let snapshot = h.wait_windows(3).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "the switch and one check");
     h.stop().await.expect("clean shutdown");
 }
 
@@ -2698,6 +2882,11 @@ struct LogCapture {
 
 impl LogCapture {
     fn start() -> Self {
+        Self::at(tracing::Level::WARN)
+    }
+
+    /// Capture at `level` and above
+    fn at(level: tracing::Level) -> Self {
         #[derive(Clone)]
         struct Writer(Arc<Mutex<Vec<u8>>>);
         impl std::io::Write for Writer {
@@ -2714,7 +2903,7 @@ impl LogCapture {
         let subscriber = tracing_subscriber::fmt()
             .with_writer(move || writer.clone())
             .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
+            .with_max_level(level)
             .finish();
         Self {
             buffer,
@@ -2915,13 +3104,18 @@ fn test_reload_failed_body() {
                  at line 64, column 9\n   |\n64 | [[rules]\n   |         ^\nunclosed array \
                  table, expected `]`\n";
     assert_eq!(
-        reload_failed_body(parse),
+        reload_failed_body(parse, "pwsw validate"),
         "Failed to parse config: /home/u/.config/pwsw/config.toml: TOML parse error at line \
          64, column 9 - run pwsw validate for details"
     );
     assert_eq!(
-        reload_failed_body("Rule 2 refers to unknown sink 'TV'\nAvailable: 'Speakers'"),
-        "Rule 2 refers to unknown sink 'TV' - run pwsw validate for details"
+        reload_failed_body(
+            "Rule 2 refers to unknown sink 'TV'\nAvailable: 'Speakers'",
+            "pwsw --config /home/u/x.toml validate"
+        ),
+        "Rule 2 refers to unknown sink 'TV' - run pwsw --config /home/u/x.toml validate for \
+         details",
+        "the hint names the config in use"
     );
 }
 
@@ -2931,36 +3125,45 @@ fn test_output_rules_warning() {
     let ext_only = compositor_on(EXT, ProtocolPreference::PreferWlr);
     let wlr = compositor_on(WLR, ProtocolPreference::PreferWlr);
     let direct = Some(DaemonManager::Direct);
-    assert_eq!(output_rules_warning(ext_auto, false, direct), None);
-    assert_eq!(output_rules_warning(wlr, true, direct), None);
-    assert_eq!(output_rules_warning(wlr, false, direct), None);
+    assert_eq!(
+        output_rules_warning(ext_auto, false, direct, "pwsw daemon"),
+        None
+    );
+    assert_eq!(output_rules_warning(wlr, true, direct, "pwsw daemon"), None);
+    assert_eq!(
+        output_rules_warning(wlr, false, direct, "pwsw daemon"),
+        None
+    );
 
     // The restart hint fits how the daemon runs
-    let restart = output_rules_warning(ext_auto, true, direct).expect("warns");
+    let restart = output_rules_warning(ext_auto, true, direct, "pwsw --config /c.toml daemon")
+        .expect("warns");
     assert!(restart.log.contains("restart pwsw"), "{}", restart.log);
     assert!(
-        restart.log.contains("pwsw shutdown, then pwsw daemon"),
+        restart
+            .log
+            .contains("pwsw shutdown, then pwsw --config /c.toml daemon"),
         "{}",
         restart.log
     );
     assert!(!restart.log.contains("systemctl"), "{}", restart.log);
     assert!(restart.notice.contains("restarted"), "{}", restart.notice);
-    let systemd =
-        output_rules_warning(ext_auto, true, Some(DaemonManager::Systemd)).expect("warns");
+    let systemd = output_rules_warning(ext_auto, true, Some(DaemonManager::Systemd), "pwsw daemon")
+        .expect("warns");
     assert!(
         systemd.log.contains("systemctl --user restart pwsw"),
         "{}",
         systemd.log
     );
     assert!(!systemd.log.contains("pwsw shutdown"), "{}", systemd.log);
-    let unknown = output_rules_warning(ext_auto, true, None).expect("warns");
+    let unknown = output_rules_warning(ext_auto, true, None, "pwsw daemon").expect("warns");
     assert!(
         unknown.log.contains("systemctl") && unknown.log.contains("pwsw shutdown"),
         "{}",
         unknown.log
     );
 
-    let never = output_rules_warning(ext_only, true, direct).expect("warns");
+    let never = output_rules_warning(ext_only, true, direct, "pwsw daemon").expect("warns");
     assert!(
         never.log.contains("need wlr-foreign-toplevel-management"),
         "{}",
@@ -3384,3 +3587,86 @@ async fn test_status_active_window_follows_the_applied_sink() {
 
 mod ipc;
 mod status_stream;
+
+// ------------------------------------------------------------ log lines (review B4/B7/B8)
+
+/// B4: a default chosen outside pwsw is a `PipeWire` node name, which any client can
+/// set: logged escaped, so a newline in it cannot forge a second log line
+#[tokio::test(start_paused = true)]
+async fn test_outside_default_is_logged_sanitised() {
+    let logs = LogCapture::at(tracing::Level::INFO);
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    h.switcher
+        .set_current("evil\n2026-11-21T00:00:00Z ERROR pwsw::daemon: forged");
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    h.wait_for("the outside default adopted", |s, _| {
+        s.applied.as_deref().is_some_and(|a| a.starts_with("evil"))
+    })
+    .await;
+    h.stop().await.expect("clean shutdown");
+    let text = logs.text();
+    assert!(
+        text.contains("(now evil\\n2026-11-21T00:00:00Z ERROR pwsw::daemon: forged)"),
+        "{text}"
+    );
+    assert!(
+        !text.lines().any(|l| l.starts_with("2026-11-21T00:00:00Z")),
+        "no forged line: {text}"
+    );
+}
+
+/// B7: every rule-driven `Switching:` line says why: the deciding window and its
+/// rule, or the window whose end brought the default back; the rule match of a window
+/// moving to another rule names the rule it was on before
+#[tokio::test(start_paused = true)]
+async fn test_switching_lines_name_the_reason() {
+    let logs = LogCapture::at(tracing::Level::INFO);
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("headphones").await;
+    h.close(1).await;
+    h.wait_applied("speakers").await;
+    h.stop().await.expect("clean shutdown");
+    let text = logs.text();
+    assert!(
+        text.contains(
+            "Switching: Headphones (headphones) for window 1 'firefox' \"firefox window\" \
+             (rule #3)"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Switching: Speakers (speakers) ('firefox window' closed)"),
+        "{text}"
+    );
+}
+
+/// B8: the outside choice is the rule's own first choice: said as such, not as a
+/// refusal to upgrade to it
+#[tokio::test(start_paused = true)]
+async fn test_adopted_outside_choice_is_logged_as_already_on() {
+    let logs = LogCapture::at(tracing::Level::INFO);
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    h.switcher.set_current("headphones");
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    h.wait_applied("headphones").await;
+    h.stop().await.expect("clean shutdown");
+    let text = logs.text();
+    assert!(
+        text.contains("Already on Headphones (chosen outside pwsw)"),
+        "{text}"
+    );
+    assert!(!text.contains("Not upgrading"), "{text}");
+}

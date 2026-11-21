@@ -897,23 +897,45 @@ fn cli_status_reports_missing_pipewire_tools() {
     let out = stdout(&output);
     assert!(out.contains("unavailable"), "{out}");
     assert!(out.contains("Not running"), "{out}");
-    // No systemd unit to start (no systemctl at all here)
-    assert!(out.contains("  Start it: pwsw daemon"), "{out}");
+    // No systemd unit to start (no systemctl at all here); the config in use is named
+    assert!(
+        out.contains(&format!(
+            "  Start it: pwsw --config {} daemon",
+            config.display()
+        )),
+        "{out}"
+    );
     sb.assert_default_locations_untouched();
 }
 
 /// A config that does not load is not "no sinks": the start hint sends the user to
-/// `pwsw validate` (the TUI cannot open it); a missing one still says to add a sink
+/// `pwsw validate` (the TUI cannot open it); a missing one still says to add a sink,
+/// unless it is a symlink into a missing directory (the TUI cannot create it there
+/// either). The hints name the config in use.
 #[test]
 fn cli_start_hint_for_a_broken_or_missing_config() {
     let sb = Sandbox::new();
     let broken = sb.write_file("broken.toml", TWO_DEFAULTS_CONFIG);
     let missing = sb.dir("files").join("missing.toml");
+    let dangling = sb.dir("files").join("dangling.toml");
+    std::os::unix::fs::symlink(sb.dir("files").join("gone").join("pwsw.toml"), &dangling)
+        .expect("create symlink");
     let empty_bin = sb.dir("cache");
-    let fix = "Fix the config first: pwsw validate shows the error";
-    let add = "Add a sink first (pwsw tui)";
+    let fix = |config: &std::path::Path| {
+        format!(
+            "Fix the config first: pwsw --config {} validate shows the error",
+            config.display()
+        )
+    };
+    let add = |config: &std::path::Path| {
+        format!("Add a sink first (pwsw --config {} tui)", config.display())
+    };
 
-    for (config, expected, unexpected) in [(&broken, fix, add), (&missing, add, fix)] {
+    for (config, expected, unexpected) in [
+        (&broken, fix(&broken), add(&broken)),
+        (&missing, add(&missing), fix(&missing)),
+        (&dangling, fix(&dangling), add(&dangling)),
+    ] {
         let output = run(sb
             .cmd()
             .env("PATH", &empty_bin)
@@ -923,7 +945,7 @@ fn cli_start_hint_for_a_broken_or_missing_config() {
         assert_exit(&output, 1);
         let out = stdout(&output);
         assert!(out.contains(&format!("  {expected}")), "{out}");
-        assert!(!out.contains(unexpected), "{out}");
+        assert!(!out.contains(&unexpected), "{out}");
 
         let output = run(sb
             .cmd()
@@ -1182,8 +1204,11 @@ fn cli_doctor_reports_what_is_missing_and_changes_nothing() {
         &format!("· Config file: {} (--config)", config.display()),
         "✓ The config is valid: 1 sink, 0 rules",
         "Sinks\n  · Not checked: PipeWire could not be queried",
-        // Sinks, but no systemd unit (no systemctl): start it directly
-        "⚠ The daemon is not running\n    → Start it: pwsw daemon",
+        // Sinks, but no systemd unit (no systemctl): start it directly, with the config
+        &format!(
+            "⚠ The daemon is not running\n    → Start it: pwsw --config {} daemon",
+            config.display()
+        ),
     ] {
         assert!(out.contains(line), "missing {line:?} in:\n{out}");
     }
@@ -1384,7 +1409,10 @@ fn cli_list_sinks_says_when_there_is_no_config_or_no_sink() {
     assert_exit(&output, 0);
     let out = stdout(&output);
     assert!(
-        out.contains("CONFIGURED SINKS:\n-----------------\n  (none; add one with pwsw tui)"),
+        out.contains(&format!(
+            "CONFIGURED SINKS:\n-----------------\n  (none; add one with pwsw --config {} tui)",
+            config.display()
+        )),
         "{out}"
     );
     assert!(
@@ -1406,7 +1434,7 @@ fn cli_init_writes_through_a_dangling_symlink() {
     assert_stderr_contains(
         &output,
         &format!(
-            "Config file not found: {} is a symlink to missing {}",
+            "Config file not found: {} (a symlink to missing {})",
             link.display(),
             target.display()
         ),

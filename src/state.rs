@@ -544,7 +544,7 @@ impl State {
                     );
                 } else {
                     info!(
-                        "Rule matched: {} → {} (another rule than before, → {}{})",
+                        "Rule matched: {} → {} (was → {}{})",
                         window_label(id, window),
                         self.targets_desc(new.rule_index),
                         self.targets_desc(old.rule_index),
@@ -770,10 +770,20 @@ fn what_changed(before: &Window, now: &Window) -> String {
 /// A window for rule log lines: `window 12 'kitty' "~/src"`, so lines about several
 /// windows of one app can be told apart (untrusted text sanitised, title shortened)
 fn window_label(id: u64, window: &Window) -> String {
+    label(id, &window.app_id, &window.title)
+}
+
+/// The deciding window for a log line, as rule matches name it:
+/// `window 3 'firefox' "Title"` (sanitised, the title shortened)
+pub(crate) fn winner_label(winner: &Winner<'_>) -> String {
+    label(winner.id, winner.app_id, winner.title)
+}
+
+fn label(id: u64, app_id: &str, title: &str) -> String {
     format!(
         "window {id} '{}' \"{}\"",
-        for_log(&window.app_id),
-        sanitize_line(&window.title, LOG_TITLE_CHARS)
+        for_log(app_id),
+        sanitize_line(title, LOG_TITLE_CHARS)
     )
 }
 

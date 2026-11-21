@@ -19,7 +19,7 @@ use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
 use crate::notification::{get_sink_icon, get_source_icon, send_notification};
 use crate::pipewire::{
     ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, NodeState, PipeWire,
-    ProfileSink, ProfileSinkJson,
+    ProfileSink, ProfileSinkJson, Snapshot,
 };
 use crate::style::PwswStyle;
 
@@ -166,7 +166,10 @@ impl Listing {
         crate::outln!("\n{}", configured_title.header());
         crate::outln!("{}", "-".repeat(configured_title.chars().count()));
         if entries.is_empty() {
-            crate::outln!("  {}", "(none; add one with pwsw tui)".dim());
+            crate::outln!(
+                "  {}",
+                format!("(none; add one with {})", config_command("tui")).dim()
+            );
         }
         for (i, entry) in entries.iter().enumerate() {
             let default_marker = if entry.default {
@@ -365,7 +368,8 @@ fn toggled_back_line(from: &str, to: &str) -> String {
 /// silently means another entry once the list is reordered); `None` for other
 /// references
 fn positional_warning(config: &Config, kind: Endpoint, r: &str) -> Option<String> {
-    let position = r.trim().parse::<usize>().ok()?;
+    // Exactly what resolving the reference takes for a position (` 2` is none)
+    let position = crate::config::positional_ref(r)?;
     let entry = config.endpoints(kind).get(position.checked_sub(1)?)?;
     let command = match kind {
         Endpoint::Sink => "set-sink",
@@ -579,9 +583,13 @@ impl DaemonStatus {
 /// of the document, and status bars treat a failing command as "hide the module".
 pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     let config_path = Config::get_config_path().ok();
-    // A config that does not exist yet is not broken: `pwsw tui` creates it
+    // A config that does not exist yet is not broken: `pwsw tui` creates it (unless
+    // it is a symlink into a missing directory: that is a config problem to fix first)
     let config_ok = config.as_ref().map_or_else(
-        |e| e.downcast_ref::<crate::config::ConfigNotFound>().is_some(),
+        |e| {
+            e.downcast_ref::<crate::config::ConfigNotFound>()
+                .is_some_and(|missing| crate::config::missing_symlink_dir(&missing.path).is_none())
+        },
         |_| true,
     );
     let (config, config_error) = match config {
@@ -590,27 +598,19 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     };
 
     // `PipeWire` is queried directly (works with or without daemon)
-    let defaults = match tokio::task::spawn_blocking(PipeWire::get_defaults).await {
+    let snapshot = match tokio::task::spawn_blocking(PipeWire::dump).await {
         Ok(result) => result,
         Err(e) => Err(anyhow::anyhow!("PipeWire query task failed: {e}")),
     };
-    let describe = |kind: Endpoint, name: String| {
-        let description = config
-            .as_ref()
-            .map_or_else(|| name.clone(), |c| c.endpoint_desc(kind, &name));
-        (name, description)
-    };
-    let (current_sink, current_source, pipewire_error) = match defaults {
-        Ok((Some(sink), source)) => (
-            Some(describe(Endpoint::Sink, sink)),
-            source.map(|s| describe(Endpoint::Source, s)),
-            None,
-        ),
-        Ok((None, source)) => (
-            None,
-            source.map(|s| describe(Endpoint::Source, s)),
-            Some("No default sink found in PipeWire metadata".to_string()),
-        ),
+    let (current_sink, current_source, pipewire_error) = match snapshot {
+        Ok(snapshot) => {
+            let sink = describe_default(&snapshot, Endpoint::Sink, config.as_ref());
+            let source = describe_default(&snapshot, Endpoint::Source, config.as_ref());
+            let error = sink
+                .is_none()
+                .then(|| "No default sink found in PipeWire metadata".to_string());
+            (sink, source, error)
+        }
         Err(e) => (None, None, Some(format!("{e:#}"))),
     };
     let sources_configured = config.as_ref().is_some_and(|c| !c.sources.is_empty());
@@ -657,13 +657,14 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
 
     crate::outln!("{}", "Audio Output".header());
     crate::outln!("{}", "-".repeat(12));
+    let config_loaded = config.is_some();
     match &current_sink {
         Some((_, description)) => {
             crate::outln!(
                 "{} {}{}",
                 "Current:".dim(),
-                description.as_str().bold(),
-                outside_note(description, &daemon, Endpoint::Sink)
+                term(description).as_ref().bold(),
+                outside_note(description, &daemon, Endpoint::Sink, config_loaded)
             );
         }
         None => crate::outln!(
@@ -678,8 +679,8 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
                 crate::outln!(
                     "{} {}{}",
                     "Mic:".dim(),
-                    description.as_str().bold(),
-                    outside_note(description, &daemon, Endpoint::Source)
+                    term(description).as_ref().bold(),
+                    outside_note(description, &daemon, Endpoint::Source, config_loaded)
                 );
             }
             None => crate::outln!("{} {}", "Mic:".dim(), "unknown".dim()),
@@ -697,7 +698,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
                 .await
                 .unwrap_or(false);
         let hint = crate::daemon_manager::StartHint::new(config_ok, has_sinks, unit_installed);
-        crate::outln!("  {}", hint.text().technical());
+        crate::outln!("  {}", hint.text().as_str().technical());
     } else if let Some(uptime_secs) = daemon.uptime_secs {
         crate::outln!(
             "{} {}",
@@ -745,7 +746,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             crate::outln!(
                 "{} {}{fallback}",
                 "Applied Mic:".dim(),
-                source.as_str().technical()
+                term(source).as_ref().technical()
             );
         }
         if let Some(tracked) = daemon.tracked_windows {
@@ -772,14 +773,37 @@ fn active_rule_text(rule: &str) -> String {
     term(rule).into_owned()
 }
 
+/// The current `kind` default as `pwsw status` shows it: its node name, and its
+/// description: the configured entry it is (by name, or a renamed node recognised
+/// like activation does, see [`PipeWire::configured_default`]), else the node name
+fn describe_default(
+    snapshot: &Snapshot,
+    kind: Endpoint,
+    config: Option<&Config>,
+) -> Option<(String, String)> {
+    let name = snapshot.current_default_of(kind)?.to_string();
+    let description = config
+        .and_then(|c| PipeWire::configured_default(snapshot, kind, c.endpoints(kind)))
+        .map_or_else(|| name.clone(), |entry| entry.desc.clone());
+    Some((name, description))
+}
+
 /// ` (changed outside pwsw)` when a running daemon applied another `kind` than the
-/// real `PipeWire` default (`description`); empty otherwise
-fn outside_note(description: &str, daemon: &DaemonStatus, kind: Endpoint) -> String {
+/// real `PipeWire` default (`description`, see [`describe_default`]); empty
+/// otherwise, also when this command could not load the config (`config_loaded`
+/// false: the default cannot be described as the daemon describes it)
+fn outside_note(
+    description: &str,
+    daemon: &DaemonStatus,
+    kind: Endpoint,
+    config_loaded: bool,
+) -> String {
     let applied = match kind {
         Endpoint::Sink => daemon.daemon_sink.as_deref(),
         Endpoint::Source => daemon.daemon_source.as_deref(),
     };
-    if daemon.running
+    if config_loaded
+        && daemon.running
         && daemon.error.is_none()
         && applied.is_some_and(|applied| applied != description)
     {
@@ -1234,19 +1258,79 @@ mod tests {
             ..DaemonStatus::default()
         };
         assert_eq!(
-            outside_note("Speakers", &daemon, Endpoint::Sink),
+            outside_note("Speakers", &daemon, Endpoint::Sink, true),
             " (changed outside pwsw)"
         );
-        assert_eq!(outside_note("TV", &daemon, Endpoint::Sink), "");
+        assert_eq!(outside_note("TV", &daemon, Endpoint::Sink, true), "");
         assert_eq!(
-            outside_note("Desk Mic", &daemon, Endpoint::Source),
+            outside_note("Desk Mic", &daemon, Endpoint::Source, true),
             "",
             "unknown applied source"
         );
         assert_eq!(
-            outside_note("Speakers", &DaemonStatus::default(), Endpoint::Sink),
+            outside_note("Speakers", &DaemonStatus::default(), Endpoint::Sink, true),
             "",
             "no daemon"
+        );
+        // B3b: without the config the default can only be named by its node, which
+        // says nothing about whether it is what the daemon applied
+        assert_eq!(
+            outside_note(
+                "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                &daemon,
+                Endpoint::Sink,
+                false
+            ),
+            "",
+            "config not loaded"
+        );
+    }
+
+    /// B3a: the default is described as the configured entry it is, also when
+    /// `WirePlumber` gave the node another name (recognised by device and profile),
+    /// so `status` does not mark a sink pwsw itself set as changed outside pwsw
+    #[test]
+    fn test_describe_default_recognises_a_renamed_node() {
+        use crate::test_utils::fixtures::{make_config, make_sink};
+        let iec = "alsa_output.pci-0000_0c_00.4.iec958-stereo";
+        let mut snapshot = crate::pipewire::parse_snapshot(include_bytes!(
+            "../tests/fixtures/pwdump-alsa-profiles.json"
+        ))
+        .expect("fixture parses");
+        let renamed = format!("{iec}.2");
+        let node = snapshot
+            .sinks
+            .iter_mut()
+            .find(|n| n.name == iec)
+            .expect("digital output");
+        node.name.clone_from(&renamed);
+        snapshot.defaults.configured = Some(renamed.clone());
+        snapshot.defaults.effective = Some(renamed.clone());
+        let config = make_config(
+            vec![
+                make_sink(
+                    "alsa_output.pci-0000_0c_00.4.analog-stereo",
+                    "Speakers",
+                    true,
+                ),
+                make_sink(iec, "Optical", false),
+            ],
+            vec![],
+        );
+        assert_eq!(
+            describe_default(&snapshot, Endpoint::Sink, Some(&config)),
+            Some((renamed.clone(), "Optical".to_string()))
+        );
+        let daemon = DaemonStatus {
+            running: true,
+            daemon_sink: Some("Optical".to_string()),
+            ..DaemonStatus::default()
+        };
+        assert_eq!(outside_note("Optical", &daemon, Endpoint::Sink, true), "");
+        // Without the config: the node name
+        assert_eq!(
+            describe_default(&snapshot, Endpoint::Sink, None),
+            Some((renamed.clone(), renamed))
         );
     }
 
@@ -1271,6 +1355,11 @@ mod tests {
             "no entry there: the unknown-sink error says enough"
         );
         assert_eq!(positional_warning(&config, Endpoint::Source, "1"), None);
+        assert_eq!(
+            positional_warning(&config, Endpoint::Sink, " 2"),
+            None,
+            "not a position when resolving either (no warning before an unknown-sink error)"
+        );
     }
 
     /// `test-rule --output` explains an empty result when the daemon has no monitor

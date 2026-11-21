@@ -366,11 +366,13 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
 - If the target needs a profile switch, pwsw picks an available profile that provides the
   output (keeping the card's microphone when possible; a mic switch always keeps the
   card's output, and a sink plus a mic on one card get one profile providing both),
-  switches with `pw-cli` (saved in WirePlumber), waits up to 5 s for the new node, then
-  makes it the default. UCM (`HiFi`) and Pro Audio profiles are not switched to
-  automatically.
-- A failed rule-driven switch is retried after 2 s and 5 s, then on the next window event
-  or reload.
+  switches with `pw-cli` (saved in WirePlumber), waits for the new node (3 s by
+  default), then makes it the default. UCM (`HiFi`) and Pro Audio profiles are not
+  switched to automatically.
+- A failed rule-driven switch is retried after 2 s and 5 s; if those fail too, the next
+  window event or reload starts over. A profile switch whose node did not appear in time is left in place for the
+  retries (a slow card may finish meanwhile); when the last attempt fails, the card is
+  switched back to its previous profile. A manual switch switches it back at once.
 
 ## Troubleshooting
 
@@ -392,9 +394,11 @@ the log, and says how to fix each problem it finds. It changes nothing.
 - **A rule doesn't fire:** check the window's real `app_id` with `pwsw list-windows` and
   test the pattern with `pwsw test-rule`.
 - **"sink did not appear" after a profile switch:** some devices are slow. pwsw waits
-  3 s by default, then switches the card back to its previous profile so the audio stays
-  where it was; raise `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (their
-  total sleep is capped at 5 s).
+  3 s by default; a rule-driven switch then leaves the card on the new profile and
+  retries (usually the node is there by then), and switches the card back to its
+  previous profile only when the last retry fails; a manual switch switches it back at
+  once. Raise `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (their total
+  sleep is capped at 5 s).
 - **After upgrading pwsw**, restart the daemon (`systemctl --user restart pwsw`);
   `pwsw status` tells you if the running daemon speaks a different protocol version.
 

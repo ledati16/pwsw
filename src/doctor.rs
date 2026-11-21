@@ -279,9 +279,13 @@ fn local_sections(config_flag: bool) -> Local {
     Local {
         sections,
         monitor,
+        // A missing config is created by `pwsw tui`, unless it is a symlink into a
+        // missing directory (the config check says what to do then)
         config_ok: match &config {
             Some(result) => result.is_ok(),
-            None => path.is_ok(),
+            None => path
+                .as_ref()
+                .is_ok_and(|p| crate::config::missing_symlink_dir(p).is_none()),
         },
         has_sinks: loaded.is_some_and(|c| !c.sinks.is_empty()),
     }
