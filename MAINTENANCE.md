@@ -5,10 +5,10 @@ fixes. Work on `dev`, merge to `main` when the checks pass.
 
 ## 1. Look at what is waiting
 
-- Open Dependabot PRs (weekly cargo group, separate majors, monthly Actions group) and
-  the last runs of **Scheduled checks** (weekly `cargo audit` + build/test) in the
-  Actions tab. If the schedule shows as disabled (GitHub turns it off after 60 days of
-  inactivity), re-enable it there.
+- Nothing runs on a schedule and there are no automated update PRs (no scheduled
+  workflow, no Dependabot), so a visit starts here: run `cargo audit` (section 4) for
+  advisories, then update as in section 2. CI (`ci.yml`) runs on every push to `main`
+  and `dev`.
 
 ## 2. Update dependencies
 
@@ -19,15 +19,15 @@ cargo tree --duplicates      # new duplicate versions worth chasing?
 
 Majors (and 0.x minors, which may break): compare `Cargo.toml` with
 `cargo search <crate>` or crates.io, read the crate's CHANGELOG, update one crate at a
-time and fix the fallout before the next. Merge or close the Dependabot PRs to match.
+time and fix the fallout before the next. The GitHub Actions used in `ci.yml` (e.g.
+`actions/checkout`) are not bumped automatically either; update them now and then.
 
 ## 3. Bump the pinned toolchain (when a newer stable is wanted)
 
 All of these together, in one commit:
 
 - `rust-toolchain.toml` `channel`
-- `.github/workflows/ci.yml` and `.github/workflows/scheduled.yml`:
-  `dtolnay/rust-toolchain@<version>` and the step names
+- `.github/workflows/ci.yml`: `dtolnay/rust-toolchain@<version>` and the step names
 - `Cargo.toml` `rust-version`
 - README Rust badge
 - Then fix any new clippy lints (`cargo clippy --all-targets -- -D warnings`).
