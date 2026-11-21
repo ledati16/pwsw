@@ -165,6 +165,10 @@ pub enum Command {
     /// Terminal UI for configuration and monitoring
     Tui,
 
+    /// Check the setup (Wayland, `PipeWire`, config, sinks, daemon, systemd, log) and say
+    /// what to fix; changes nothing. Exits 1 if anything is broken
+    Doctor,
+
     /// Print a shell completion script to stdout
     Completions {
         /// Shell to generate completions for

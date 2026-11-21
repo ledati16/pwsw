@@ -130,6 +130,7 @@ creates the config file for you.
 | `pwsw list-windows [--json]` | Open windows, tracked (matching a rule) or not | required |
 | `pwsw test-rule PATTERN [--json]` | Which windows a regex matches (`app_id` or title) | required |
 | `pwsw validate` | Check the config file (never creates one) | not needed |
+| `pwsw doctor` | Check the whole setup and say what to fix (read-only) | optional |
 | `pwsw init [--force]` | Write the commented default config (`--force` keeps `config.toml.bak`) | not needed |
 | `pwsw set-sink SINK` | Switch to a sink by description or node name | optional |
 | `pwsw next-sink` / `prev-sink` | Cycle through configured sinks, skipping unavailable ones | optional |
@@ -257,6 +258,11 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
   or reload.
 
 ## Troubleshooting
+
+Run **`pwsw doctor` first.** It checks the Wayland session and the compositor's window
+protocols, the PipeWire tools and WirePlumber, the config, whether each configured sink
+can be activated right now, the daemon, the systemd unit and the last warning in the
+log, and says how to fix each problem it finds. It changes nothing.
 
 - **Logs:** `~/.local/share/pwsw/daemon.log` (rotated at 1 MB to `daemon.log.old`), also
   shown on the TUI dashboard. Under systemd the same lines go to

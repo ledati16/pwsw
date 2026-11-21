@@ -76,7 +76,9 @@ the daemon switches less eagerly than before.
   is available again (no polling). Status, `STATUS=`, notifications and logs mark a
   fallback as such; `list-windows` and `test-rule` show a rule's fallbacks; `status
   --json` has `daemon.daemon_sink_fallback`. A plain string still works and is what
-  single-sink rules are saved as.
+  single-sink rules are saved as. In the TUI the rule editor's **Sinks** field picks
+  the sinks and their order (`Space` adds/removes, `Shift+↑/↓` reorders), and the rules
+  table and details show them as `BT Headphones → Headphones`.
 - **Pause / resume**: `pwsw pause`, `pwsw resume` and `pwsw toggle-pause` stop and
   restart rule-driven switching. While paused the daemon keeps tracking windows and
   reloading the config, and manual switches still work; resuming switches at once if the
@@ -88,6 +90,12 @@ the daemon switches less eagerly than before.
   if the rules still want the same sink after this delay, so a splash screen or a
   flickering window title no longer switches back and forth. Manual switches, retries
   and the start-up switch are not delayed.
+- `pwsw doctor`: one read-only command that checks the Wayland session and the
+  compositor's window protocols, the PipeWire tools, version and WirePlumber, the config,
+  whether each configured sink can be activated now (and by which profile switch), the
+  daemon (version, protocol, systemd or direct), the systemd unit and the last log
+  warning, printing ✓/⚠/✗ lines with a one-line fix for each problem. Exits 1 if
+  anything is broken.
 - `pwsw init [--force]`: write the commented default config (`--force` keeps the old
   file as `config.toml.bak`).
 - `--config PATH` and the `PWSW_CONFIG` environment variable to use another config file.

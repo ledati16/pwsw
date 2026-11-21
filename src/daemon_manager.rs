@@ -2,6 +2,7 @@
 //!
 //! Determines whether the daemon is running under systemd supervision or directly.
 
+use std::io::Read;
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
@@ -93,6 +94,57 @@ pub fn status_with_timeout(mut cmd: Command, timeout: Duration) -> Option<ExitSt
     }
 }
 
+/// What a command run by [`output_with_timeout`] printed, and how it exited
+#[derive(Debug, Clone)]
+pub struct CommandOutput {
+    pub status: ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
+/// Run `cmd` (stdin on `/dev/null`) capturing its output, waiting at most `timeout`.
+///
+/// For commands with short output (a few lines, like `systemctl --user is-active`):
+/// the output is read after the command exited. Returns `None` if it cannot be
+/// spawned or does not finish in time (it is then killed and reaped). Blocking.
+#[must_use]
+pub fn output_with_timeout(mut cmd: Command, timeout: Duration) -> Option<CommandOutput> {
+    const POLL: Duration = Duration::from_millis(10);
+
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL),
+            Ok(None) | Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    Some(CommandOutput {
+        status,
+        stdout: read_pipe(child.stdout.take()),
+        stderr: read_pipe(child.stderr.take()),
+    })
+}
+
+/// The text left in a finished child's output pipe (at most 64 KiB, lossy UTF-8)
+fn read_pipe(pipe: Option<impl Read>) -> String {
+    let mut bytes = Vec::new();
+    if let Some(pipe) = pipe {
+        let _ = pipe.take(64 * 1024).read_to_end(&mut bytes);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use test_case::test_case;
@@ -131,5 +183,19 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn test_output_with_timeout() {
+        let mut echo = Command::new("sh");
+        echo.args(["-c", "echo out; echo err >&2; exit 3"]);
+        let output = output_with_timeout(echo, Duration::from_secs(5)).expect("ran");
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout, "out\n");
+        assert_eq!(output.stderr, "err\n");
+
+        let mut slow = Command::new("sleep");
+        slow.arg("5");
+        assert!(output_with_timeout(slow, Duration::from_millis(100)).is_none());
     }
 }

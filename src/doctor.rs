@@ -1,0 +1,1170 @@
+//! `pwsw doctor`: check the whole setup and say, in plain language, what to fix.
+//!
+//! Strictly read-only: it never changes audio state, the config or services. It
+//! queries the compositor's registry (binding nothing), runs the `PipeWire` tools
+//! with `--version` and one `pw-dump`, loads the config, asks a running daemon for
+//! its status over `IPC`, asks `systemctl --user` about the unit and reads the log.
+//!
+//! Gathering ([`run`]) is kept apart from judging (the `*_checks` functions, which
+//! are pure) and from printing ([`Report::render`]), so the verdicts and the
+//! output can be tested without a session.
+
+use std::ffi::OsStr;
+use std::fmt::Write as _;
+use std::path::Path;
+use std::process::Command;
+use std::time::Duration;
+
+use color_eyre::eyre::Result;
+
+use crate::compositor::{ProtocolProbe, probe_protocols};
+use crate::config::Config;
+use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, output_with_timeout};
+use crate::ipc::{self, Request, Response};
+use crate::pipewire::{GraphInfo, PipeWire, Reachability, Snapshot};
+use crate::style::PwswStyle;
+
+/// How long the compositor may take to answer the registry roundtrip
+const WAYLAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long one `systemctl --user` query may take
+const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(3);
+/// Longest log line shown
+const MAX_LOG_LINE_CHARS: usize = 300;
+
+// ============================================================================
+// Report
+// ============================================================================
+
+/// How a check came out
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    /// Works
+    Ok,
+    /// A fact worth knowing (a path, how something is set up)
+    Info,
+    /// Works, but probably not as intended
+    Warn,
+    /// Broken: `pwsw` will not work until this is fixed
+    Fail,
+}
+
+impl Level {
+    const fn mark(self) -> &'static str {
+        match self {
+            Self::Ok => "✓",
+            Self::Info => "·",
+            Self::Warn => "⚠",
+            Self::Fail => "✗",
+        }
+    }
+}
+
+/// One line of the report, with an optional one-line fix
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Check {
+    pub level: Level,
+    pub message: String,
+    pub hint: Option<String>,
+}
+
+impl Check {
+    fn new(level: Level, message: impl Into<String>) -> Self {
+        Self {
+            level,
+            message: message.into(),
+            hint: None,
+        }
+    }
+
+    fn ok(message: impl Into<String>) -> Self {
+        Self::new(Level::Ok, message)
+    }
+
+    fn info(message: impl Into<String>) -> Self {
+        Self::new(Level::Info, message)
+    }
+
+    fn warn(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(Level::Warn, message).hint(hint)
+    }
+
+    fn fail(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self::new(Level::Fail, message).hint(hint)
+    }
+
+    fn hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
+    }
+}
+
+/// A titled group of checks
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub title: &'static str,
+    pub checks: Vec<Check>,
+}
+
+/// Everything `pwsw doctor` found
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Report {
+    pub sections: Vec<Section>,
+}
+
+impl Report {
+    fn count(&self, level: Level) -> usize {
+        self.sections
+            .iter()
+            .flat_map(|s| &s.checks)
+            .filter(|c| c.level == level)
+            .count()
+    }
+
+    /// Whether nothing is broken (no ✗); decides the exit status
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        self.count(Level::Fail) == 0
+    }
+
+    /// The report as printed: one block per section, then a summary line.
+    /// Styled for stdout (plain when colour is off there).
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        for section in &self.sections {
+            let _ = writeln!(out, "{}", section.title.header());
+            for check in &section.checks {
+                let mark = match check.level {
+                    Level::Ok => check.level.mark().success(),
+                    Level::Info => check.level.mark().dim(),
+                    Level::Warn => check.level.mark().warning(),
+                    Level::Fail => check.level.mark().error(),
+                };
+                let mut lines = check.message.lines();
+                let _ = writeln!(out, "  {mark} {}", lines.next().unwrap_or_default());
+                for line in lines {
+                    let _ = writeln!(out, "    {line}");
+                }
+                if let Some(hint) = &check.hint {
+                    let _ = writeln!(out, "    {} {hint}", "→".dim());
+                }
+            }
+            out.push('\n');
+        }
+        let (fails, warns) = (self.count(Level::Fail), self.count(Level::Warn));
+        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+        let summary = match (fails, warns) {
+            (0, 0) => "Everything looks fine.".success().to_string(),
+            (0, w) => format!("No problems, {}.", plural(w, "warning"))
+                .warning()
+                .to_string(),
+            (f, w) => format!("{}, {}.", plural(f, "problem"), plural(w, "warning"))
+                .error()
+                .to_string(),
+        };
+        let _ = writeln!(out, "{summary}");
+        out
+    }
+}
+
+// ============================================================================
+// Running the checks
+// ============================================================================
+
+/// Run every check, print the report and return whether nothing is broken
+/// (the exit status: 0 without ✗ lines, 1 otherwise). `config_flag`: whether
+/// `--config` was given (to say where the config path comes from).
+pub async fn run(config_flag: bool) -> bool {
+    let local = tokio::task::spawn_blocking(move || local_sections(config_flag)).await;
+    let mut report = Report {
+        sections: local.unwrap_or_else(|e| {
+            vec![Section {
+                title: "Doctor",
+                checks: vec![Check::fail(
+                    format!("The checks stopped unexpectedly: {e}"),
+                    "Please report this bug",
+                )],
+            }]
+        }),
+    };
+    report
+        .sections
+        .push(daemon_checks(&DaemonFacts::query().await));
+    if let Ok(sections) = tokio::task::spawn_blocking(service_sections).await {
+        report.sections.extend(sections);
+    }
+    crate::style::write_stdout(format_args!("{}", report.render()));
+    report.passed()
+}
+
+/// Wayland, `PipeWire`, config and sinks (blocking)
+fn local_sections(config_flag: bool) -> Vec<Section> {
+    let display = std::env::var_os("WAYLAND_DISPLAY").filter(|d| !d.is_empty());
+    let probe = display.as_ref().map(|_| probe_protocols(WAYLAND_TIMEOUT));
+    let wayland = wayland_checks(display.as_deref(), probe);
+
+    let tools: Vec<(&str, Result<String>)> = ["pw-dump", "pw-cli", "pw-metadata"]
+        .into_iter()
+        .map(|tool| (tool, PipeWire::tool_version(tool)))
+        .collect();
+    let dump = PipeWire::dump_with_info();
+    let wireplumber = PipeWire::tool_version("wireplumber");
+    let pipewire = pipewire_checks(&tools, dump.as_ref(), wireplumber.as_ref().ok());
+
+    let path = Config::get_config_path();
+    let source = if config_flag {
+        "--config"
+    } else if Config::config_path_override().ok().flatten().is_some() {
+        "PWSW_CONFIG"
+    } else {
+        "default location"
+    };
+    let exists = path.as_ref().is_ok_and(|p| p.exists());
+    let config = exists.then(Config::load);
+    let config_section = config_checks(path.as_deref().ok(), source, config.as_ref());
+
+    let sinks = sink_checks(
+        config.as_ref().and_then(|c| c.as_ref().ok()),
+        dump.as_ref().ok().map(|(snapshot, _)| snapshot),
+    );
+    let mut sections = vec![wayland, pipewire, config_section];
+    sections.extend(sinks);
+    sections
+}
+
+/// systemd unit and log file (blocking)
+fn service_sections() -> Vec<Section> {
+    let systemd = if in_path("systemctl") {
+        let query = |verb: &str| {
+            let mut cmd = Command::new("systemctl");
+            cmd.args(["--user", verb, SYSTEMD_UNIT]);
+            output_with_timeout(cmd, SYSTEMCTL_TIMEOUT).map(|o| UnitQuery {
+                stdout: o.stdout.trim().to_string(),
+                stderr: o.stderr.trim().to_string(),
+            })
+        };
+        let enabled = query("is-enabled");
+        let active = query("is-active");
+        systemd_checks(Some((enabled, active)))
+    } else {
+        systemd_checks(None)
+    };
+
+    let log_path = crate::daemon::get_log_file_path().ok();
+    let contents = log_path
+        .as_deref()
+        .and_then(|p| std::fs::read(p).ok())
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    vec![
+        systemd,
+        log_checks(log_path.as_deref(), contents.as_deref()),
+    ]
+}
+
+/// Whether an executable `name` is in `PATH`
+fn in_path(name: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|dir| {
+            std::fs::metadata(dir.join(name))
+                .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        })
+    })
+}
+
+// ============================================================================
+// Wayland
+// ============================================================================
+
+/// Judge the Wayland session: `display` is `WAYLAND_DISPLAY`, `probe` the
+/// registry scan (`None` when there is no display to connect to)
+fn wayland_checks(display: Option<&OsStr>, probe: Option<Result<ProtocolProbe>>) -> Section {
+    let mut checks = Vec::new();
+    match (display, probe) {
+        (None, _) | (_, None) => checks.push(Check::fail(
+            "WAYLAND_DISPLAY is not set: not running inside a Wayland session",
+            "Run pwsw from your Wayland session; under systemd the compositor must export it \
+             (systemctl --user import-environment WAYLAND_DISPLAY)",
+        )),
+        (Some(display), Some(Err(e))) => checks.push(Check::fail(
+            format!(
+                "Cannot connect to Wayland display {}: {e:#}",
+                display.to_string_lossy()
+            ),
+            "Is the compositor running? WAYLAND_DISPLAY and XDG_RUNTIME_DIR must point at its socket",
+        )),
+        (Some(display), Some(Ok(probe))) => {
+            checks.push(Check::ok(format!(
+                "Connected to Wayland display {}",
+                display.to_string_lossy()
+            )));
+            if probe.advertised.is_empty() {
+                checks.push(Check::fail(
+                    "The compositor advertises no window protocol pwsw supports \
+                     (ext_foreign_toplevel_list_v1, zwlr_foreign_toplevel_manager_v1)",
+                    "pwsw cannot see windows here; GNOME and KDE Plasma 6 offer neither (see \
+                     COMPATIBILITY in pwsw(1))",
+                ));
+            } else {
+                let list: Vec<String> = probe
+                    .advertised
+                    .iter()
+                    .map(|g| format!("{} v{}", g.interface, g.version))
+                    .collect();
+                checks.push(Check::ok(format!(
+                    "Compositor advertises {}",
+                    list.join(", ")
+                )));
+            }
+            if let Some(chosen) = probe.chosen {
+                checks.push(Check::ok(format!("The daemon will use {chosen}")));
+            }
+        }
+    }
+    Section {
+        title: "Wayland",
+        checks,
+    }
+}
+
+// ============================================================================
+// PipeWire
+// ============================================================================
+
+/// The version in a `--version` output: the `Linked with libX <version>` line's
+/// last word, else the last non-empty line
+fn version_of(output: &str) -> Option<&str> {
+    let lines = || output.lines().map(str::trim).filter(|l| !l.is_empty());
+    lines()
+        .find(|l| l.starts_with("Linked with"))
+        .and_then(|l| l.split_whitespace().last())
+        .or_else(|| lines().next_back())
+}
+
+/// Judge the `PipeWire` side: each tool's `--version` result, the `pw-dump`
+/// snapshot, and `wireplumber --version` (if it ran)
+fn pipewire_checks(
+    tools: &[(&str, Result<String>)],
+    dump: Result<&(Snapshot, GraphInfo), &color_eyre::Report>,
+    wireplumber: Option<&String>,
+) -> Section {
+    const INSTALL_HINT: &str = "Install your distribution's PipeWire tools (pipewire-tools, \
+                                pipewire-utils or pipewire-bin)";
+    let mut checks = Vec::new();
+    let broken: Vec<_> = tools.iter().filter(|(_, r)| r.is_err()).collect();
+    if broken.is_empty() {
+        let names: Vec<&str> = tools.iter().map(|(t, _)| *t).collect();
+        checks.push(Check::ok(format!("{} work", names.join(", "))));
+    }
+    for (tool, result) in broken {
+        if let Err(e) = result {
+            checks.push(Check::fail(
+                format!("{tool} does not work: {e:#}"),
+                INSTALL_HINT,
+            ));
+        }
+    }
+    let dump_tool_works = tools
+        .iter()
+        .any(|(tool, result)| *tool == "pw-dump" && result.is_ok());
+
+    let wireplumber_version = wireplumber.and_then(|o| version_of(o));
+    match dump {
+        Ok((_, info)) => {
+            let library = tools
+                .iter()
+                .find(|(tool, _)| *tool == "pw-cli")
+                .and_then(|(_, r)| r.as_ref().ok())
+                .and_then(|o| version_of(o));
+            match (&info.server_version, library) {
+                (Some(version), _) => {
+                    checks.push(Check::ok(format!("PipeWire {version} is running")));
+                }
+                (None, Some(version)) => checks.push(Check::ok(format!(
+                    "PipeWire is running (library {version})"
+                ))),
+                (None, None) => checks.push(Check::ok("PipeWire is running (version unknown)")),
+            }
+            match &info.session_manager {
+                Some(name) => checks.push(Check::ok(match wireplumber_version {
+                    Some(version) => format!("{name} {version} is connected"),
+                    None => format!("{name} is connected"),
+                })),
+                None => checks.push(Check::warn(
+                    "No WirePlumber client is connected to PipeWire",
+                    "pwsw relies on WirePlumber to keep the default sink and profiles: \
+                     systemctl --user enable --now wireplumber",
+                )),
+            }
+        }
+        Err(e) => {
+            if dump_tool_works {
+                checks.push(Check::fail(
+                    format!("Cannot read the PipeWire graph: {e:#}"),
+                    "Is PipeWire running? Check: systemctl --user status pipewire",
+                ));
+            }
+            match wireplumber_version {
+                Some(version) => checks.push(Check::info(format!(
+                    "WirePlumber {version} is installed (whether it runs is unknown)"
+                ))),
+                None => checks.push(Check::warn(
+                    "WirePlumber not found",
+                    "Install WirePlumber, PipeWire's session manager (package wireplumber)",
+                )),
+            }
+        }
+    }
+    Section {
+        title: "PipeWire",
+        checks,
+    }
+}
+
+// ============================================================================
+// Config
+// ============================================================================
+
+/// Judge the config: `path` in use (from `source`), and the load result
+/// (`None`: the file does not exist)
+fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Config>>) -> Section {
+    let mut checks = Vec::new();
+    match path {
+        Some(path) => checks.push(Check::info(format!(
+            "Config file: {} ({source})",
+            path.display()
+        ))),
+        None => checks.push(Check::fail(
+            "Cannot tell where the config file is",
+            "Set XDG_CONFIG_HOME or HOME, or pass --config PATH",
+        )),
+    }
+    match config {
+        None if path.is_some() => checks.push(Check::fail(
+            "The config file does not exist",
+            "Create it: pwsw init (or pwsw tui, which also helps you add sinks)",
+        )),
+        None => {}
+        Some(Err(e)) => checks.push(Check::fail(
+            format!("The config is invalid: {e:#}"),
+            "Fix the file; pwsw validate shows the same error",
+        )),
+        Some(Ok(config)) => {
+            let plural =
+                |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+            checks.push(Check::ok(format!(
+                "The config is valid: {}, {}",
+                plural(config.sinks.len(), "sink"),
+                plural(config.rules.len(), "rule")
+            )));
+            if config.sinks.is_empty() {
+                checks.push(Check::fail(
+                    "No sinks are configured, so the daemon will not start",
+                    "Add sinks: pwsw tui (2 Sinks → a); pwsw list-sinks shows your outputs",
+                ));
+            }
+            let positional = config.rules_with_positional_refs();
+            if !positional.is_empty() {
+                let numbers: Vec<String> = positional.iter().map(ToString::to_string).collect();
+                checks.push(Check::warn(
+                    format!(
+                        "Rule(s) {} name a sink by position, which is deprecated",
+                        numbers.join(", ")
+                    ),
+                    "Use the sink's desc (sink = \"Speakers\"); saving the rule in pwsw tui does that",
+                ));
+            }
+        }
+    }
+    Section {
+        title: "Config",
+        checks,
+    }
+}
+
+/// Judge each configured sink against one snapshot (`None` sections when there
+/// is no valid config with sinks)
+fn sink_checks(config: Option<&Config>, snapshot: Option<&Snapshot>) -> Option<Section> {
+    let config = config.filter(|c| !c.sinks.is_empty())?;
+    let mut checks = Vec::new();
+    let Some(snapshot) = snapshot else {
+        checks.push(Check::info("Not checked: PipeWire could not be queried"));
+        return Some(Section {
+            title: "Sinks",
+            checks,
+        });
+    };
+    let mut reachable = 0;
+    for sink in &config.sinks {
+        let label = if sink.default {
+            format!("{} (fallback)", sink.desc)
+        } else {
+            sink.desc.clone()
+        };
+        match PipeWire::reachability(snapshot, &sink.name) {
+            Ok(Reachability::Present { node_name }) => {
+                reachable += 1;
+                checks.push(Check::ok(if node_name == sink.name {
+                    format!("{label}: present")
+                } else {
+                    format!("{label}: present as {node_name}")
+                }));
+            }
+            Ok(Reachability::ProfileSwitch {
+                device_name,
+                profile_name,
+            }) => {
+                reachable += 1;
+                checks.push(Check::ok(format!(
+                    "{label}: available by switching {device_name} to profile {profile_name}"
+                )));
+            }
+            Err(e) => checks.push(Check::warn(
+                format!("{label}: not available now: {e:#}"),
+                "Expected while the device is off or disconnected; otherwise compare the node \
+                 name with pwsw list-sinks",
+            )),
+        }
+    }
+    if reachable == 0 {
+        checks.push(Check::fail(
+            "None of the configured sinks can be activated right now",
+            "Compare the configured node names with pwsw list-sinks (pwsw tui → 2 Sinks → e, \
+             Space on Node picks one)",
+        ));
+    }
+    Some(Section {
+        title: "Sinks",
+        checks,
+    })
+}
+
+// ============================================================================
+// Daemon
+// ============================================================================
+
+/// What a running daemon said about itself
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DaemonStatus {
+    version: String,
+    protocol: u32,
+    uptime_secs: u64,
+    current_sink: Option<String>,
+    current_sink_fallback: bool,
+}
+
+/// What the daemon checks found out
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct DaemonFacts {
+    running: bool,
+    /// The `Status` answer, or why there was none (only when `running`)
+    status: Option<Result<DaemonStatus, String>>,
+    manager: Option<DaemonManager>,
+}
+
+impl DaemonFacts {
+    /// Ask the daemon (if one answers on the socket); read-only requests only
+    async fn query() -> Self {
+        if !ipc::is_daemon_running().await {
+            return Self::default();
+        }
+        let status = match ipc::send_request(Request::Status).await {
+            Ok(Response::Status {
+                version,
+                protocol,
+                uptime_secs,
+                current_sink,
+                current_sink_fallback,
+                ..
+            }) => Ok(DaemonStatus {
+                version,
+                protocol,
+                uptime_secs,
+                current_sink,
+                current_sink_fallback,
+            }),
+            Ok(Response::Error { message }) => Err(message),
+            Ok(_) => Err("unexpected answer to a status request".to_string()),
+            Err(e) => Err(format!("{e:#}")),
+        };
+        let manager = match ipc::send_request(Request::GetManagerInfo).await {
+            Ok(Response::ManagerInfo { daemon_manager }) => Some(daemon_manager),
+            _ => None,
+        };
+        Self {
+            running: true,
+            status: Some(status),
+            manager,
+        }
+    }
+}
+
+/// Judge the daemon
+fn daemon_checks(facts: &DaemonFacts) -> Section {
+    let mut checks = Vec::new();
+    let restart = "Restart it: systemctl --user restart pwsw (or pwsw shutdown, then pwsw daemon)";
+    match &facts.status {
+        _ if !facts.running => checks.push(Check::warn(
+            "The daemon is not running",
+            "Start it: systemctl --user enable --now pwsw (or pwsw daemon)",
+        )),
+        None => {}
+        Some(Err(message)) => checks.push(Check::fail(
+            format!("The daemon runs but could not report its status: {message}"),
+            restart,
+        )),
+        Some(Ok(status)) => {
+            if status.protocol == ipc::PROTOCOL_VERSION {
+                checks.push(Check::ok(format!(
+                    "The daemon {} is running (uptime {})",
+                    status.version,
+                    crate::format_uptime(status.uptime_secs)
+                )));
+                let mine = crate::version_string();
+                if status.version != mine {
+                    checks.push(Check::warn(
+                        format!("The daemon is {}, this pwsw is {mine}", status.version),
+                        restart,
+                    ));
+                }
+            } else {
+                checks.push(Check::fail(
+                    format!(
+                        "The daemon {} speaks IPC protocol {}, this pwsw speaks {}",
+                        status.version,
+                        status.protocol,
+                        ipc::PROTOCOL_VERSION
+                    ),
+                    restart,
+                ));
+            }
+            checks.push(Check::info(match &status.current_sink {
+                Some(sink) if status.current_sink_fallback => {
+                    format!("Current sink: {sink} (a rule's fallback)")
+                }
+                Some(sink) => format!("Current sink: {sink}"),
+                None => "The daemon does not know the current sink yet".to_string(),
+            }));
+        }
+    }
+    match facts.manager {
+        Some(DaemonManager::Systemd) => {
+            checks.push(Check::info(format!("Managed by systemd ({SYSTEMD_UNIT})")));
+        }
+        Some(DaemonManager::Direct) => {
+            checks.push(Check::info("Started directly (not by systemd)"));
+        }
+        None => {}
+    }
+    Section {
+        title: "Daemon",
+        checks,
+    }
+}
+
+// ============================================================================
+// systemd
+// ============================================================================
+
+/// What `systemctl --user <verb> pwsw.service` printed (`None`: it did not finish)
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnitQuery {
+    stdout: String,
+    stderr: String,
+}
+
+/// Judge the user unit from `is-enabled` and `is-active` (`None`: no `systemctl`)
+fn systemd_checks(queries: Option<(Option<UnitQuery>, Option<UnitQuery>)>) -> Section {
+    let mut checks = Vec::new();
+    let title = "systemd user unit";
+    let Some((enabled, active)) = queries else {
+        checks.push(Check::info("systemctl not found: skipped"));
+        return Section { title, checks };
+    };
+    let Some(enabled) = enabled else {
+        checks.push(Check::warn(
+            format!(
+                "systemctl --user did not answer within {} s",
+                SYSTEMCTL_TIMEOUT.as_secs()
+            ),
+            "Check the user manager: systemctl --user status",
+        ));
+        return Section { title, checks };
+    };
+    let is_enabled = match enabled.stdout.as_str() {
+        "enabled" | "enabled-runtime" | "linked" | "linked-runtime" | "alias" => {
+            checks.push(Check::ok(format!(
+                "{SYSTEMD_UNIT} is installed and enabled"
+            )));
+            true
+        }
+        "disabled" | "indirect" => {
+            checks.push(
+                Check::info(format!("{SYSTEMD_UNIT} is installed, not enabled"))
+                    .hint("To start pwsw with your session: systemctl --user enable --now pwsw"),
+            );
+            false
+        }
+        "" | "not-found" => {
+            let unreachable = enabled.stdout.is_empty()
+                && (enabled.stderr.contains("Failed to connect")
+                    || !(enabled.stderr.contains("not found")
+                        || enabled.stderr.contains("No such file")));
+            if unreachable {
+                let why = enabled.stderr.lines().next().unwrap_or("no answer");
+                checks.push(Check::info(format!(
+                    "The systemd user manager is not reachable: {why}"
+                )));
+            } else {
+                checks.push(
+                    Check::info(format!("{SYSTEMD_UNIT} is not installed")).hint(
+                        "Optional: install contrib/pwsw.service to start pwsw with your session \
+                     (see the README)",
+                    ),
+                );
+            }
+            return Section { title, checks };
+        }
+        other => {
+            checks.push(Check::warn(
+                format!("{SYSTEMD_UNIT} is {other}"),
+                "See: systemctl --user status pwsw",
+            ));
+            false
+        }
+    };
+    match active.as_ref().map(|q| q.stdout.as_str()) {
+        Some("active" | "reloading" | "refreshing") => {
+            checks.push(Check::ok(format!("{SYSTEMD_UNIT} is active")));
+        }
+        Some("failed") => checks.push(Check::fail(
+            format!("{SYSTEMD_UNIT} has failed"),
+            "See why: journalctl --user -u pwsw -e; then systemctl --user restart pwsw",
+        )),
+        Some("activating") => checks.push(Check::info(format!("{SYSTEMD_UNIT} is starting"))),
+        Some(_) if is_enabled => checks.push(Check::warn(
+            format!("{SYSTEMD_UNIT} is enabled but not running"),
+            "Start it: systemctl --user start pwsw",
+        )),
+        Some(_) => checks.push(Check::info(format!("{SYSTEMD_UNIT} is not running"))),
+        None => {}
+    }
+    Section { title, checks }
+}
+
+// ============================================================================
+// Log
+// ============================================================================
+
+/// The last `ERROR` or `WARN` line of a daemon log, as (level, timestamp, message)
+fn last_problem(contents: &str) -> Option<(&str, &str, &str)> {
+    contents.lines().rev().find_map(|line| {
+        // `<timestamp> <level> <target>: <message>`, the level padded with spaces
+        let (timestamp, rest) = line.trim_start().split_once(char::is_whitespace)?;
+        let (level, message) = rest.trim_start().split_once(char::is_whitespace)?;
+        matches!(level, "ERROR" | "WARN").then(|| (level, timestamp, message.trim_start()))
+    })
+}
+
+/// `2026-11-20T23:50:13.788054Z` → `2026-11-20 23:50:13 UTC` (others unchanged)
+fn readable_timestamp(timestamp: &str) -> String {
+    match timestamp.strip_suffix('Z').and_then(|t| t.split_once('T')) {
+        Some((date, time)) => {
+            let time = time.split('.').next().unwrap_or(time);
+            format!("{date} {time} UTC")
+        }
+        None => timestamp.to_string(),
+    }
+}
+
+/// Judge the log: where it is and its last warning or error
+fn log_checks(path: Option<&Path>, contents: Option<&str>) -> Section {
+    let mut checks = Vec::new();
+    match path {
+        None => checks.push(Check::info(
+            "Cannot tell where the daemon log is (no HOME?)",
+        )),
+        Some(path) => checks.push(Check::info(format!("Log file: {}", path.display()))),
+    }
+    match contents {
+        None if path.is_some() => checks.push(Check::info("No log yet (the daemon has not run)")),
+        None => {}
+        Some(contents) => {
+            let clean = crate::sanitize::strip_ansi(contents);
+            match last_problem(&clean) {
+                Some((level, timestamp, message)) => {
+                    let what = if level == "ERROR" { "error" } else { "warning" };
+                    let message = crate::sanitize::sanitize_line(message, MAX_LOG_LINE_CHARS);
+                    checks.push(Check::info(format!(
+                        "Last {what} ({}): {message}",
+                        readable_timestamp(timestamp)
+                    )));
+                }
+                None => checks.push(Check::info("No warnings or errors in the log")),
+            }
+        }
+    }
+    Section {
+        title: "Log",
+        checks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use color_eyre::eyre::eyre;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+    use crate::compositor::AdvertisedGlobal;
+    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+
+    fn section(title: &'static str, checks: Vec<Check>) -> Section {
+        Section { title, checks }
+    }
+
+    #[test]
+    fn test_render_marks_hints_and_summary() {
+        let report = Report {
+            sections: vec![
+                section("Wayland", vec![
+                    Check::ok("Connected"),
+                    Check::fail("No protocol", "Use another compositor"),
+                ]),
+                section("Log", vec![
+                    Check::info("Log file: /x\nsecond line"),
+                    Check::warn("Old daemon", "Restart it"),
+                ]),
+            ],
+        };
+        assert_eq!(
+            report.render(),
+            "Wayland\n  ✓ Connected\n  ✗ No protocol\n    → Use another compositor\n\n\
+             Log\n  · Log file: /x\n    second line\n  ⚠ Old daemon\n    → Restart it\n\n\
+             1 problem, 1 warning.\n"
+        );
+        assert!(!report.passed());
+    }
+
+    #[test]
+    fn test_exit_status_ignores_warnings() {
+        let mut report = Report {
+            sections: vec![section("A", vec![Check::ok("fine"), Check::info("fact")])],
+        };
+        assert!(report.passed());
+        assert!(report.render().ends_with("Everything looks fine.\n"));
+        report.sections[0]
+            .checks
+            .push(Check::warn("odd", "look at it"));
+        assert!(report.passed());
+        assert!(report.render().ends_with("No problems, 1 warning.\n"));
+        report.sections[0].checks.push(Check::fail("a", "b"));
+        report.sections[0].checks.push(Check::fail("c", "d"));
+        assert!(!report.passed());
+        assert!(report.render().ends_with("2 problems, 1 warning.\n"));
+    }
+
+    #[test]
+    fn test_wayland_checks() {
+        let missing = wayland_checks(None, None);
+        assert_eq!(missing.checks.len(), 1);
+        assert_eq!(missing.checks[0].level, Level::Fail);
+        assert!(
+            missing.checks[0]
+                .message
+                .contains("WAYLAND_DISPLAY is not set")
+        );
+
+        let display = OsString::from("wayland-1");
+        let broken = wayland_checks(Some(&display), Some(Err(eyre!("refused"))));
+        assert_eq!(broken.checks[0].level, Level::Fail);
+        assert!(broken.checks[0].message.contains("wayland-1: refused"));
+
+        let probe = ProtocolProbe {
+            advertised: vec![
+                AdvertisedGlobal {
+                    interface: "zwlr_foreign_toplevel_manager_v1".to_string(),
+                    version: 3,
+                },
+                AdvertisedGlobal {
+                    interface: "ext_foreign_toplevel_list_v1".to_string(),
+                    version: 1,
+                },
+            ],
+            chosen: Some("ext_foreign_toplevel_list_v1"),
+        };
+        let good = wayland_checks(Some(&display), Some(Ok(probe)));
+        let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(messages, [
+            "Connected to Wayland display wayland-1",
+            "Compositor advertises zwlr_foreign_toplevel_manager_v1 v3, \
+             ext_foreign_toplevel_list_v1 v1",
+            "The daemon will use ext_foreign_toplevel_list_v1",
+        ]);
+        assert!(good.checks.iter().all(|c| c.level == Level::Ok));
+
+        let gnome = wayland_checks(
+            Some(&display),
+            Some(Ok(ProtocolProbe {
+                advertised: Vec::new(),
+                chosen: None,
+            })),
+        );
+        assert_eq!(gnome.checks[1].level, Level::Fail);
+    }
+
+    #[test]
+    fn test_pipewire_checks() {
+        let tools =
+            |dump: Result<String>| {
+                vec![
+                ("pw-dump", dump),
+                (
+                    "pw-cli",
+                    Ok("pw-cli\nCompiled with libpipewire 1.2.7\nLinked with libpipewire 1.2.7\n"
+                        .to_string()),
+                ),
+                ("pw-metadata", Ok(String::new())),
+            ]
+            };
+        let info = GraphInfo {
+            server_version: Some("1.2.7".to_string()),
+            session_manager: Some("WirePlumber".to_string()),
+        };
+        let wp = "wireplumber\nLinked with libwireplumber 0.5.6\n".to_string();
+        let ok = (Snapshot::default(), info);
+        let good = pipewire_checks(&tools(Ok(String::new())), Ok(&ok), Some(&wp));
+        let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(messages, [
+            "pw-dump, pw-cli, pw-metadata work",
+            "PipeWire 1.2.7 is running",
+            "WirePlumber 0.5.6 is connected",
+        ]);
+
+        let no_wp = (Snapshot::default(), GraphInfo::default());
+        let checks = pipewire_checks(&tools(Ok(String::new())), Ok(&no_wp), None).checks;
+        assert_eq!(checks[1].message, "PipeWire is running (library 1.2.7)");
+        assert_eq!(checks[2].level, Level::Warn);
+
+        // No server: the dump fails although the tool runs
+        let err = eyre!("can't connect");
+        let checks = pipewire_checks(&tools(Ok(String::new())), Err(&err), Some(&wp)).checks;
+        assert_eq!(checks[1].level, Level::Fail);
+        assert!(checks[1].message.contains("can't connect"), "{checks:?}");
+        assert_eq!(checks[2].level, Level::Info);
+
+        // No tools: one ✗ per missing tool, the dump failure is not repeated
+        let checks = pipewire_checks(&tools(Err(eyre!("not found"))), Err(&err), None).checks;
+        let fails: Vec<&str> = checks
+            .iter()
+            .filter(|c| c.level == Level::Fail)
+            .map(|c| c.message.as_str())
+            .collect();
+        assert_eq!(fails, ["pw-dump does not work: not found"]);
+        assert!(
+            checks
+                .iter()
+                .all(|c| c.level == Level::Ok || c.hint.is_some())
+        );
+    }
+
+    #[test]
+    fn test_config_checks() {
+        let path = PathBuf::from("/c/config.toml");
+        let missing = config_checks(Some(&path), "default location", None);
+        assert_eq!(
+            missing.checks[0].message,
+            "Config file: /c/config.toml (default location)"
+        );
+        assert_eq!(missing.checks[1].level, Level::Fail);
+
+        let invalid = config_checks(
+            Some(&path),
+            "--config",
+            Some(&Err(eyre!("2 default sinks"))),
+        );
+        assert!(invalid.checks[1].message.contains("2 default sinks"));
+
+        let config = make_config(vec![make_sink("a", "A", true)], vec![
+            make_rule("x", None, "A"),
+            make_rule("y", None, "1"),
+        ]);
+        let valid = config_checks(Some(&path), "PWSW_CONFIG", Some(&Ok(config)));
+        assert_eq!(
+            valid.checks[1].message,
+            "The config is valid: 1 sink, 2 rules"
+        );
+        assert_eq!(valid.checks[2].level, Level::Warn);
+        assert!(
+            valid.checks[2]
+                .message
+                .starts_with("Rule(s) 2 name a sink by position")
+        );
+
+        let empty = config_checks(
+            Some(&path),
+            "--config",
+            Some(&Ok(make_config(vec![], vec![]))),
+        );
+        assert_eq!(empty.checks[2].level, Level::Fail);
+    }
+
+    #[test]
+    fn test_sink_checks() {
+        let json = include_bytes!("../tests/fixtures/pwdump-synthetic.json");
+        let snapshot = crate::pipewire::parse_snapshot(json).expect("fixture");
+        let present = PipeWire::get_active_sinks(&snapshot);
+        let present = present.first().expect("an active sink");
+        let config = make_config(
+            vec![
+                make_sink(&present.name, "Here", true),
+                make_sink("bluez_output.00_00_00_00_00_00.1", "Gone", false),
+            ],
+            vec![],
+        );
+        let section = sink_checks(Some(&config), Some(&snapshot)).expect("a section");
+        assert_eq!(section.checks[0].message, "Here (fallback): present");
+        assert_eq!(section.checks[1].level, Level::Warn);
+        assert!(
+            section.checks[1].message.contains("Bluetooth"),
+            "{section:?}"
+        );
+        assert_eq!(section.checks.len(), 2, "one sink is reachable");
+
+        let none = make_config(vec![make_sink("nope", "Nope", true)], vec![]);
+        let section = sink_checks(Some(&none), Some(&snapshot)).expect("a section");
+        assert_eq!(section.checks.last().map(|c| c.level), Some(Level::Fail));
+
+        assert!(sink_checks(None, Some(&snapshot)).is_none());
+        let section = sink_checks(Some(&config), None).expect("a section");
+        assert_eq!(section.checks[0].level, Level::Info);
+    }
+
+    #[test]
+    fn test_daemon_checks() {
+        let stopped = daemon_checks(&DaemonFacts::default());
+        assert_eq!(stopped.checks.len(), 1);
+        assert_eq!(stopped.checks[0].level, Level::Warn);
+
+        let status = |protocol, version: &str| DaemonFacts {
+            running: true,
+            status: Some(Ok(DaemonStatus {
+                version: version.to_string(),
+                protocol,
+                uptime_secs: 3700,
+                current_sink: Some("Speakers".to_string()),
+                current_sink_fallback: true,
+            })),
+            manager: Some(DaemonManager::Systemd),
+        };
+        let mine = crate::version_string();
+        let good = daemon_checks(&status(ipc::PROTOCOL_VERSION, &mine));
+        let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(messages, [
+            format!("The daemon {mine} is running (uptime 1h 1m)").as_str(),
+            "Current sink: Speakers (a rule's fallback)",
+            "Managed by systemd (pwsw.service)",
+        ]);
+
+        let old = daemon_checks(&status(ipc::PROTOCOL_VERSION, "v0.6.0"));
+        assert_eq!(old.checks[1].level, Level::Warn);
+        let other_protocol = daemon_checks(&status(ipc::PROTOCOL_VERSION + 1, "v9"));
+        assert_eq!(other_protocol.checks[0].level, Level::Fail);
+
+        let mute = daemon_checks(&DaemonFacts {
+            running: true,
+            status: Some(Err("timed out".to_string())),
+            manager: None,
+        });
+        assert_eq!(mute.checks[0].level, Level::Fail);
+    }
+
+    #[test]
+    fn test_systemd_checks() {
+        let q = |stdout: &str, stderr: &str| {
+            Some(UnitQuery {
+                stdout: stdout.to_string(),
+                stderr: stderr.to_string(),
+            })
+        };
+        let levels = |s: Section| s.checks.iter().map(|c| c.level).collect::<Vec<_>>();
+
+        assert_eq!(levels(systemd_checks(None)), [Level::Info]);
+        assert_eq!(
+            levels(systemd_checks(Some((q("enabled", ""), q("active", ""))))),
+            [Level::Ok, Level::Ok]
+        );
+        assert_eq!(
+            levels(systemd_checks(Some((q("enabled", ""), q("failed", ""))))),
+            [Level::Ok, Level::Fail]
+        );
+        assert_eq!(
+            levels(systemd_checks(Some((q("enabled", ""), q("inactive", ""))))),
+            [Level::Ok, Level::Warn]
+        );
+        assert_eq!(
+            levels(systemd_checks(Some((q("disabled", ""), q("inactive", ""))))),
+            [Level::Info, Level::Info]
+        );
+        let missing = systemd_checks(Some((
+            q(
+                "",
+                "Failed to get unit file state for pwsw.service: No such file or directory",
+            ),
+            q("inactive", ""),
+        )));
+        assert!(missing.checks[0].message.contains("not installed"));
+        assert_eq!(missing.checks.len(), 1);
+        for stderr in [
+            "Failed to connect to bus: No medium found",
+            "Failed to connect to user scope bus via local transport: No such file or directory",
+        ] {
+            let no_bus = systemd_checks(Some((q("", stderr), q("", ""))));
+            assert!(
+                no_bus.checks[0]
+                    .message
+                    .contains("not reachable: Failed to connect"),
+                "{no_bus:?}"
+            );
+        }
+        let not_found = systemd_checks(Some((q("not-found", ""), q("inactive", ""))));
+        assert!(not_found.checks[0].message.contains("not installed"));
+        assert_eq!(levels(systemd_checks(Some((None, None)))), [Level::Warn]);
+    }
+
+    #[test]
+    fn test_log_checks_find_the_last_problem() {
+        let log = "\
+2026-11-20T10:00:00.000001Z  INFO pwsw::daemon: Starting
+2026-11-20T10:00:01.000001Z ERROR pwsw::daemon: first
+2026-11-20T10:00:02.000001Z  WARN pwsw::state: Could not \u{1b}[31mquery\u{1b}[0m default sink
+2026-11-20T10:00:03.000001Z  INFO pwsw::daemon: fine
+";
+        assert_eq!(
+            last_problem(log),
+            Some((
+                "WARN",
+                "2026-11-20T10:00:02.000001Z",
+                "pwsw::state: Could not \u{1b}[31mquery\u{1b}[0m default sink"
+            ))
+        );
+        let path = PathBuf::from("/d/daemon.log");
+        let section = log_checks(Some(&path), Some(log));
+        let messages: Vec<&str> = section.checks.iter().map(|c| c.message.as_str()).collect();
+        assert_eq!(messages, [
+            "Log file: /d/daemon.log",
+            "Last warning (2026-11-20 10:00:02 UTC): pwsw::state: Could not query default sink",
+        ]);
+        assert_eq!(
+            log_checks(Some(&path), Some("x INFO fine\n")).checks[1].message,
+            "No warnings or errors in the log"
+        );
+        assert_eq!(
+            log_checks(Some(&path), None).checks[1].message,
+            "No log yet (the daemon has not run)"
+        );
+    }
+}

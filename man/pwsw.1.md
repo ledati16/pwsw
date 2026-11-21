@@ -41,6 +41,11 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 **validate**
 :   Validate the configuration file syntax and sink references. Reports a missing file (it does not create one).
 
+**doctor**
+:   Check the whole setup and print a plain-language report: one line per check, marked **✓** (works), **·** (for information), **⚠** (works, but probably not as intended) or **✗** (broken), each problem followed by a one-line hint on how to fix it. It checks, in order: the Wayland session (*WAYLAND_DISPLAY*, the connection, which of *ext_foreign_toplevel_list_v1* and *zwlr_foreign_toplevel_manager_v1* the compositor advertises with their versions, and which one the daemon would use); the PipeWire tools (**pw-dump**, **pw-cli**, **pw-metadata**), the PipeWire version and whether WirePlumber is connected; the configuration file (which path is used and why, whether it exists and validates, deprecated positional sink references, the number of sinks and rules); each configured sink (present, available through a profile switch and which one, or why not), from a single **pw-dump**; the daemon (running, its version and IPC protocol compared with this **pwsw**, whether systemd manages it, its current sink); the systemd user unit (installed, enabled, active; skipped without **systemctl**); and the log file with its last warning or error. Colours follow **--color** and *NO_COLOR*.
+
+    Read-only: it never changes the audio state, the configuration or any service, and creates no files. Exits with status 0 when no check is **✗**, 1 otherwise (warnings do not count).
+
 **init** [*--force*]
 :   Write the commented default configuration file. Refuses if a file already exists; with **--force** it is replaced and the old file kept as *config.toml.bak*. **pwsw tui** also creates this file on first run; no other command does.
 
@@ -127,7 +132,7 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 :   `Enter`: Run the selected action
 :   `w`: Toggle between Logs and Windows view
 :   `↑/↓`, `PgUp/PgDn`, `Home/End`: Scroll the log (`End` returns to live view), or select a window in the Windows view
-:   `n` (Windows view): New rule for the selected window, its app ID escaped and anchored so it matches that app ID only; the Sink field is focused (preselected when there is only one sink) and the window's title is shown to copy from. If a rule already matches the window, that rule opens for editing instead
+:   `n` (Windows view): New rule for the selected window, its app ID escaped and anchored so it matches that app ID only; the Sinks field is focused (preselected when there is only one sink) and the window's title is shown to copy from. If a rule already matches the window, that rule opens for editing instead
 
 **Sinks and Rules lists**
 :   `↑/↓`: Navigate
@@ -138,9 +143,14 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 
 **Editors**
 :   `↑/↓`, `Tab` / `Shift+Tab`: Switch field
-:   `Space`: Open the node list (sink *Node Name*) or the sink list (rule *Target Sink*); toggle or cycle on/off fields
+:   `Space`: Open the node list (sink *Node*) or the sink picker (rule *Sinks*); toggle or cycle on/off fields
 :   `Enter`: Apply the edit (written to the file with `Ctrl+S`)
 :   `Esc`: Cancel editing / close a list
+
+**Rule sink picker** (a rule's *Sinks*: the first is tried first, the rest are fallbacks in order)
+:   `Space`: Add the highlighted sink at the end of the order, or remove it (the next one moves up)
+:   `Shift+↑/↓`: Move the highlighted chosen sink earlier / later
+:   `Enter`: Use the chosen sinks (with none chosen, the highlighted one); `Esc`: back without changes
 
 **Settings**
 :   `↑/↓`: Navigate
@@ -219,7 +229,7 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 :   Success.
 
 **1**
-:   An error (printed to stderr). For **status**, also when part of the status could not be determined (not with **--json**). **pwsw daemon** exits non-zero when it fails to start or stops on an error.
+:   An error (printed to stderr). For **status**, also when part of the status could not be determined (not with **--json**). For **doctor**, when a check failed (a **✗** line). **pwsw daemon** exits non-zero when it fails to start or stops on an error.
 
 **2**
 :   Invalid command-line usage.

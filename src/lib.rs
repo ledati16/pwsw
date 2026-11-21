@@ -23,6 +23,7 @@ pub mod compositor;
 pub mod config;
 pub mod daemon;
 pub mod daemon_manager;
+pub mod doctor;
 pub mod ipc;
 pub mod logging;
 pub mod manual;

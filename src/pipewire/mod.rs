@@ -63,6 +63,30 @@ pub struct ProfileSink {
     pub profile_name: String,
 }
 
+/// How a configured sink can be made the default right now (see
+/// [`PipeWire::reachability`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reachability {
+    /// The sink node exists, under this node name (it can differ from the configured
+    /// one when the node was found by device identity)
+    Present { node_name: String },
+    /// Switching the card `device_name` to profile `profile_name` provides it
+    ProfileSwitch {
+        device_name: String,
+        profile_name: String,
+    },
+}
+
+/// What a `pw-dump` says about the `PipeWire` server and its clients
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphInfo {
+    /// The server's version (core object), e.g. `1.2.7`
+    pub server_version: Option<String>,
+    /// `application.name` of the connected session manager client, if it is
+    /// `WirePlumber`
+    pub session_manager: Option<String>,
+}
+
 // ============================================================================
 // JSON Output Structures (for --list-sinks --json)
 // ============================================================================
@@ -154,6 +178,24 @@ impl PipeWire {
         activate::AudioBackend::snapshot(&CliBackend)
     }
 
+    /// Like [`Self::dump`], also returning what the dump says about the server and
+    /// its clients (one `pw-dump`)
+    ///
+    /// # Errors
+    /// Returns an error if `pw-dump` cannot be run, times out, fails, or returns
+    /// invalid `JSON`.
+    pub fn dump_with_info() -> Result<(Snapshot, GraphInfo)> {
+        parse::parse_dump_with_info(&cli::dump_bytes()?)
+    }
+
+    /// The output of `tool --version` (run under the command deadline)
+    ///
+    /// # Errors
+    /// Returns an error if the tool cannot be run, does not finish in time, or fails.
+    pub fn tool_version(tool: &str) -> Result<String> {
+        cli::tool_version(tool)
+    }
+
     /// Get currently active audio sinks from a snapshot
     #[must_use]
     pub fn get_active_sinks(snapshot: &Snapshot) -> Vec<ActiveSink> {
@@ -206,6 +248,20 @@ impl PipeWire {
     /// providing it is marked unavailable).
     pub fn check_reachable(snapshot: &Snapshot, sink_name: &str) -> Result<()> {
         resolve::resolve(snapshot, sink_name).map(|_| ())
+    }
+
+    /// Like [`Self::check_reachable`], saying how the sink would be activated
+    ///
+    /// # Errors
+    /// Returns why the sink cannot be activated (see [`Self::check_reachable`]).
+    pub fn reachability(snapshot: &Snapshot, sink_name: &str) -> Result<Reachability> {
+        Ok(match resolve::resolve(snapshot, sink_name)? {
+            resolve::Plan::SetDefault { node_name } => Reachability::Present { node_name },
+            resolve::Plan::SwitchProfile(switch) => Reachability::ProfileSwitch {
+                device_name: switch.device_name,
+                profile_name: switch.profile_name,
+            },
+        })
     }
 
     /// Activate a sink by its configured node name, switching profiles if necessary

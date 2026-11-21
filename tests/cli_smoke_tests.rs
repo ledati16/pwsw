@@ -832,6 +832,80 @@ fn cli_list_sinks_warns_when_config_fails_to_load() {
     assert_stderr_contains(&output, "2 default sinks found");
 }
 
+/// Every path under `dir`, recursively, sorted
+fn tree(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("readable sandbox dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                stack.push(path.clone());
+            }
+            out.push(path);
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn cli_doctor_reports_what_is_missing_and_changes_nothing() {
+    let sb = Sandbox::new();
+    // No Wayland, no `PipeWire` tools, no `systemctl`, no daemon, no config
+    let empty_bin = sb.dir("cache");
+    let before = tree(sb.root.path());
+
+    let output = run(sb.cmd().env("PATH", &empty_bin).arg("doctor"));
+
+    assert_exit(&output, 1);
+    let out = stdout(&output);
+    for line in [
+        "✗ WAYLAND_DISPLAY is not set",
+        "→ Run pwsw from your Wayland session",
+        "✗ pw-dump does not work: Failed to run `pw-dump --version`",
+        "✗ pw-cli does not work",
+        "✗ pw-metadata does not work",
+        "→ Install your distribution's PipeWire tools",
+        "⚠ WirePlumber not found",
+        &format!(
+            "· Config file: {} (default location)",
+            sb.default_config_path().display()
+        ),
+        "✗ The config file does not exist",
+        "→ Create it: pwsw init",
+        "⚠ The daemon is not running",
+        "→ Start it: systemctl --user enable --now pwsw",
+        "· systemctl not found: skipped",
+        "· No log yet (the daemon has not run)",
+        "5 problems, 2 warnings.",
+    ] {
+        assert!(out.contains(line), "missing {line:?} in:\n{out}");
+    }
+    assert!(!has_escape(&output.stdout), "NO_COLOR is honoured");
+    assert_eq!(tree(sb.root.path()), before, "doctor must not create files");
+
+    // With a valid config: it is checked, the sinks are not (no PipeWire)
+    let config = sb.write_file("doctor.toml", VALID_CONFIG);
+    let before = tree(sb.root.path());
+    let output = run(sb
+        .cmd()
+        .env("PATH", &empty_bin)
+        .arg("--config")
+        .arg(&config)
+        .arg("doctor"));
+    assert_exit(&output, 1);
+    let out = stdout(&output);
+    for line in [
+        &format!("· Config file: {} (--config)", config.display()),
+        "✓ The config is valid: 1 sink, 0 rules",
+        "Sinks\n  · Not checked: PipeWire could not be queried",
+    ] {
+        assert!(out.contains(line), "missing {line:?} in:\n{out}");
+    }
+    assert_eq!(tree(sb.root.path()), before, "doctor must not create files");
+}
+
 /// Sanity check for the helper itself: the sandbox must not inherit session variables.
 #[test]
 fn sandbox_environment_is_isolated() {

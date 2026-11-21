@@ -233,6 +233,15 @@ async fn run(args: Args) -> Result<ExitCode> {
             success(commands::cycle(&config, commands::Direction::Prev).await)
         }
 
+        // Read-only check of the whole setup; exit 1 when a check failed
+        Some(Command::Doctor) => {
+            // Its own report says everything; logs only when asked for (`RUST_LOG`)
+            if std::env::var_os("RUST_LOG").is_some() {
+                init_logging();
+            }
+            Ok(status_exit(pwsw::doctor::run(args.config.is_some()).await))
+        }
+
         Some(Command::Completions { shell }) => {
             // Generated in memory: `clap_complete` panics on a failed write (e.g. a
             // closed pipe), and `write_stdout_bytes` does not

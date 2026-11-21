@@ -172,6 +172,23 @@ pub(crate) fn run(
     Ok(stdout)
 }
 
+/// `tool --version`'s output, under the command deadline.
+///
+/// # Errors
+/// Returns an error if the tool cannot be run, times out or fails (see [`run`]).
+pub(crate) fn tool_version(tool: &str) -> Result<String> {
+    let out = run(tool, &["--version"], PW_COMMAND_TIMEOUT, MAX_COMMAND_BYTES)?;
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// Raw `pw-dump` output, under its deadline and output cap.
+///
+/// # Errors
+/// Returns an error if `pw-dump` cannot be run, times out or fails (see [`run`]).
+pub(crate) fn dump_bytes() -> Result<Vec<u8>> {
+    run("pw-dump", &[], PW_DUMP_TIMEOUT, MAX_DUMP_BYTES)
+}
+
 /// Whether `tool --version` runs and exits successfully.
 pub(crate) fn tool_works(tool: &str) -> bool {
     run(tool, &["--version"], PW_COMMAND_TIMEOUT, MAX_COMMAND_BYTES)
@@ -184,8 +201,7 @@ pub(crate) struct CliBackend;
 
 impl AudioBackend for CliBackend {
     fn snapshot(&self) -> Result<Snapshot> {
-        let out = run("pw-dump", &[], PW_DUMP_TIMEOUT, MAX_DUMP_BYTES)?;
-        parse_dump(&out)
+        parse_dump(&dump_bytes()?)
     }
 
     /// Writes `default.configured.audio.sink` (as `wpctl set-default` does);

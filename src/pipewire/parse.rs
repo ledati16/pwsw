@@ -7,11 +7,14 @@ use color_eyre::eyre::{Context, Result};
 use serde_json::{Map, Value};
 use tracing::trace;
 
+use super::GraphInfo;
 use super::model::{Availability, Defaults, Device, Profile, SinkNode, Snapshot};
 
 const TYPE_DEVICE: &str = "PipeWire:Interface:Device";
 const TYPE_NODE: &str = "PipeWire:Interface:Node";
 const TYPE_METADATA: &str = "PipeWire:Interface:Metadata";
+const TYPE_CORE: &str = "PipeWire:Interface:Core";
+const TYPE_CLIENT: &str = "PipeWire:Interface:Client";
 
 const KEY_CONFIGURED_SINK: &str = "default.configured.audio.sink";
 const KEY_EFFECTIVE_SINK: &str = "default.audio.sink";
@@ -25,6 +28,42 @@ pub(crate) fn parse_dump(bytes: &[u8]) -> Result<Snapshot> {
         serde_json::from_slice(bytes).context("Failed to parse pw-dump JSON")?;
     trace!("pw-dump returned {} objects", objects.len());
     Ok(snapshot_from_objects(&objects))
+}
+
+/// Parse raw `pw-dump` output into a snapshot plus what it says about the server
+/// and its clients.
+///
+/// # Errors
+/// Returns an error if the input is not a `JSON` array.
+pub(crate) fn parse_dump_with_info(bytes: &[u8]) -> Result<(Snapshot, GraphInfo)> {
+    let objects: Vec<Value> =
+        serde_json::from_slice(bytes).context("Failed to parse pw-dump JSON")?;
+    Ok((snapshot_from_objects(&objects), graph_info(&objects)))
+}
+
+/// The server version (from the core object) and the session manager client (the
+/// first client whose `application.name` contains `WirePlumber`).
+fn graph_info(objects: &[Value]) -> GraphInfo {
+    let mut info = GraphInfo::default();
+    for obj in objects {
+        match obj.get("type").and_then(Value::as_str) {
+            Some(TYPE_CORE) if info.server_version.is_none() => {
+                info.server_version = obj
+                    .get("info")
+                    .and_then(|i| i.get("version"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
+            }
+            Some(TYPE_CLIENT) if info.session_manager.is_none() => {
+                info.session_manager = props(obj)
+                    .and_then(|p| prop_str(p, "application.name"))
+                    .filter(|name| name.to_lowercase().contains("wireplumber"))
+                    .map(String::from);
+            }
+            _ => {}
+        }
+    }
+    info
 }
 
 /// Build a snapshot from already-decoded `pw-dump` objects.
@@ -344,5 +383,26 @@ mod tests {
     fn test_parse_rejects_non_array() {
         assert!(parse_dump(b"{}").is_err());
         assert!(parse_dump(b"not json").is_err());
+    }
+
+    #[test]
+    fn test_graph_info_reads_core_version_and_wireplumber() {
+        let objects = json!([
+            { "id": 0, "type": TYPE_CORE, "info": { "version": "1.2.7", "name": "pipewire-0" } },
+            { "id": 33, "type": TYPE_CLIENT,
+              "info": { "props": { "application.name": "pw-dump" } } },
+            { "id": 34, "type": TYPE_CLIENT,
+              "info": { "props": { "application.name": "WirePlumber" } } },
+        ]);
+        let bytes = serde_json::to_vec(&objects).expect("serialize");
+        let (snapshot, info) = parse_dump_with_info(&bytes).expect("parses");
+        assert_eq!(snapshot, Snapshot::default());
+        assert_eq!(info, GraphInfo {
+            server_version: Some("1.2.7".to_string()),
+            session_manager: Some("WirePlumber".to_string()),
+        });
+        // The fixtures have neither
+        let (_, info) = parse_dump_with_info(REAL_FIXTURE.as_bytes()).expect("fixture parses");
+        assert_eq!(info, GraphInfo::default());
     }
 }

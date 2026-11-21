@@ -265,6 +265,94 @@ fn setup(conn: &Connection) -> Result<(EventQueue<WindowTracker>, Protocol)> {
     Ok((queue, protocol))
 }
 
+/// A toplevel protocol global the compositor advertises (see [`probe_protocols`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdvertisedGlobal {
+    pub(crate) interface: String,
+    pub(crate) version: u32,
+}
+
+/// What a compositor offers `pwsw`: the supported toplevel protocols it advertises,
+/// and the interface the daemon would bind (`None`: none is supported)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProtocolProbe {
+    pub(crate) advertised: Vec<AdvertisedGlobal>,
+    pub(crate) chosen: Option<&'static str>,
+}
+
+impl Protocol {
+    /// The Wayland interface name of this protocol's global
+    const fn interface(self) -> &'static str {
+        match self {
+            Self::Ext => ext_toplevel::INTERFACE,
+            Self::Wlr => wlr_toplevel::INTERFACE,
+        }
+    }
+}
+
+/// Registry state of [`probe_protocols`] (it binds nothing)
+struct ProbeState;
+
+impl wayland_client::Dispatch<wl_registry::WlRegistry, GlobalListContents> for ProbeState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_registry::WlRegistry,
+        _event: wl_registry::Event,
+        _data: &GlobalListContents,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+/// Connect to the Wayland display named by the environment and list the supported
+/// toplevel protocols it advertises, picking one the way the daemon does. Binds
+/// nothing; read-only. Blocking (one registry roundtrip, at most `timeout`).
+///
+/// # Errors
+/// Returns an error if no Wayland connection can be made, the registry roundtrip
+/// fails, or the compositor does not answer within `timeout`.
+pub(crate) fn probe_protocols(timeout: Duration) -> Result<ProtocolProbe> {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    // On a thread, so a compositor that never answers cannot hang the caller
+    std::thread::Builder::new()
+        .name("pwsw-wayland-probe".into())
+        .spawn(move || {
+            let _ = tx.send(probe_on_env());
+        })
+        .context("Failed to spawn Wayland probe thread")?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(RecvTimeoutError::Timeout) => eyre::bail!(
+            "Compositor did not answer the Wayland registry roundtrip within {}s",
+            timeout.as_secs()
+        ),
+        Err(RecvTimeoutError::Disconnected) => eyre::bail!("Wayland probe thread exited"),
+    }
+}
+
+/// Body of [`probe_protocols`]
+fn probe_on_env() -> Result<ProtocolProbe> {
+    let conn = Connection::connect_to_env().context("Failed to connect to Wayland display")?;
+    let (globals, _queue) = registry_queue_init::<ProbeState>(&conn)
+        .context("Failed to initialize Wayland registry")?;
+    Ok(globals.contents().with_list(|list| {
+        let supported = [ext_toplevel::INTERFACE, wlr_toplevel::INTERFACE];
+        ProtocolProbe {
+            advertised: list
+                .iter()
+                .filter(|g| supported.contains(&g.interface.as_str()))
+                .map(|g| AdvertisedGlobal {
+                    interface: g.interface.clone(),
+                    version: g.version,
+                })
+                .collect(),
+            chosen: choose_protocol(list.iter().map(|g| g.interface.as_str()))
+                .map(Protocol::interface),
+        }
+    }))
+}
+
 /// Pick the preferred protocol among the advertised global interface names
 fn choose_protocol<'a>(interfaces: impl IntoIterator<Item = &'a str>) -> Option<Protocol> {
     let mut best = None;
