@@ -501,9 +501,13 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
         )),
     }
     match config {
-        None if path.is_some() => checks.push(Check::fail(
+        None if let Some(path) = path => checks.push(Check::fail(
             "The config file does not exist",
-            "Create it: pwsw init (or pwsw tui, which also helps you add sinks)",
+            format!(
+                "Create it: {} (or {}, which also helps you add sinks)",
+                crate::config::pwsw_command(path, "init"),
+                crate::config::pwsw_command(path, "tui")
+            ),
         )),
         None => {}
         Some(Err(e)) => checks.push(Check::fail(

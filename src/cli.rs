@@ -35,7 +35,8 @@ PAUSING (requires running daemon):
 
 QUERYING (requires running daemon):
   list-windows        Show all open windows (tracked vs untracked)
-  test-rule PATTERN   Test regex against windows (checks app_id & title)
+  test-rule PATTERN   Test regex against windows (checks app_id & title;
+                      --output REGEX also or only matches the monitor)
 
 QUERYING (no daemon needed):
   [no subcommand]     Show current audio output and daemon status
@@ -46,16 +47,19 @@ QUERYING (no daemon needed):
   validate            Check config file syntax
   init [--force]      Write the commented default config
 
-MANUAL SINK CONTROL (through the daemon when it runs, otherwise directly):
+MANUAL CONTROL (through the daemon when it runs, otherwise directly):
   set-sink SINK       Switch to specific sink (by desc or node name)
   next-sink           Cycle to next configured sink (wraps around)
   prev-sink           Cycle to previous configured sink (wraps around)
+  set-source SOURCE   Switch the microphone (needs [[sources]] in the config)
 
 HOW IT WORKS:
   The daemon monitors Wayland windows and switches audio outputs based on
-  rules in your config file. The most recently opened matching window wins
-  (or the first matching rule, with match_by_index). When all matching
-  windows close, it returns to the default output.
+  rules in your config file; a rule matches a window's app_id, title and/or
+  the monitor it is on (output). The most recently opened matching window
+  wins (or the first matching rule, with match_by_index). When all matching
+  windows close, it returns to the default output. With [[sources]], rules
+  can switch the microphone the same way.
 
 CONFIG & IPC:
   Config: $XDG_CONFIG_HOME/pwsw/config.toml (normally ~/.config/pwsw/config.toml)

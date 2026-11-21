@@ -118,9 +118,11 @@ impl fmt::Display for ConfigNotFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Config file not found: {}\n\nCreate one with:\n  pwsw init   (commented \
-             template)\n  pwsw tui    (interactive setup)",
-            self.path.display()
+            "Config file not found: {}\n\nCreate one with:\n  {}  (commented template)\n  \
+             {}  (interactive setup)",
+            self.path.display(),
+            pwsw_command(&self.path, "init"),
+            pwsw_command(&self.path, "tui")
         )
     }
 }
@@ -676,7 +678,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# PWSW (PipeWire Switcher) Configuratio
 # Comments in this file are kept when the TUI saves changes.
 
 [settings]
-default_on_startup = false # Switch to default sink on daemon start
+default_on_startup = false # On daemon start, switch to what the rules want
 set_smart_toggle = true    # set-sink toggles back to default if already active
 notify_manual = true       # Desktop notifications for manual switches
 notify_rules = true        # Desktop notifications for rule-triggered switches
@@ -1068,9 +1070,10 @@ impl Config {
     pub fn init_at(path: &Path, force: bool) -> Result<()> {
         if !force && fs::symlink_metadata(path).is_ok() {
             anyhow::bail!(
-                "Config already exists: {}\nUse `pwsw init --force` to replace it (the old file \
-                 is kept as {}).",
+                "Config already exists: {}\nUse `{}` to replace it (the old file is kept as \
+                 {}).",
                 path.display(),
+                pwsw_command(path, "init --force"),
                 backup_path(path).display()
             );
         }
@@ -2276,6 +2279,31 @@ impl Config {
 // ============================================================================
 
 /// `<path>.bak` (e.g. `config.toml.bak`), next to `path`.
+/// The `pwsw` command line that runs `args` against the config at `path`: plain
+/// `pwsw <args>` for the default location, else `pwsw --config <path> <args>` (the path
+/// shell-quoted when needed), so a hint never points at a different file.
+#[must_use]
+pub(crate) fn pwsw_command(path: &Path, args: &str) -> String {
+    if Config::default_config_path().is_ok_and(|default| default == path) {
+        return format!("pwsw {args}");
+    }
+    format!(
+        "pwsw --config {} {args}",
+        shell_quote(&path.to_string_lossy())
+    )
+}
+
+/// `s` as one POSIX shell word: unchanged when it has only safe characters, else in
+/// single quotes (an embedded `'` becomes `'\''`).
+fn shell_quote(s: &str) -> String {
+    let safe = |b: u8| b.is_ascii_alphanumeric() || b"/._-+=:,@%".contains(&b);
+    if !s.is_empty() && s.bytes().all(safe) {
+        s.to_owned()
+    } else {
+        format!("'{}'", s.replace('\'', r"'\''"))
+    }
+}
+
 fn backup_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".bak");
@@ -3255,13 +3283,32 @@ notify = false
         assert!(err.contains(&path.display().to_string()), "{err}");
     }
 
+    #[test_case("/home/u/.config/pwsw/config.toml", "/home/u/.config/pwsw/config.toml" ; "safe path unchanged")]
+    #[test_case("/c/my config.toml", "'/c/my config.toml'" ; "space is quoted")]
+    #[test_case("/c/it's.toml", r"'/c/it'\''s.toml'" ; "single quote is escaped")]
+    #[test_case("~/x.toml", "'~/x.toml'" ; "tilde is not expanded")]
+    #[test_case("", "''" ; "empty is quoted")]
+    fn test_shell_quote(input: &str, expected: &str) {
+        assert_eq!(shell_quote(input), expected);
+    }
+
+    #[test]
+    fn test_pwsw_command_names_a_non_default_path() {
+        let path = Path::new("/nonexistent-pwsw-test/my config.toml");
+        assert_eq!(
+            pwsw_command(path, "init --force"),
+            "pwsw --config '/nonexistent-pwsw-test/my config.toml' init --force"
+        );
+    }
+
     #[test]
     fn test_load_missing_file_errors_without_creating() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("pwsw").join("config.toml");
         let err = Config::load_from_path(&path).expect_err("`load_from_path` fails");
         assert!(err.downcast_ref::<ConfigNotFound>().is_some());
-        assert!(err.to_string().contains("pwsw init"), "{err}");
+        let hint = format!("pwsw --config {} init", path.display());
+        assert!(err.to_string().contains(&hint), "{err}");
         assert!(!path.exists());
         assert!(!dir.path().join("pwsw").exists());
     }
