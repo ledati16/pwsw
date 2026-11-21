@@ -1,0 +1,40 @@
+# Dependabot version updates.
+#
+# Not handled here, bumped by hand together (see MAINTENANCE.md): the Rust toolchain
+# pinned in rust-toolchain.toml, `rust-version` in Cargo.toml, the toolchain and nightly
+# rustfmt versions pinned in .github/workflows/*.yml, and the README badge.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # All minor and patch updates in one PR; major updates get a PR each.
+      # Note: for 0.x crates a "minor" bump (0.29 -> 0.30) may be breaking. If the
+      # grouped PR fails CI, update the offending crate separately.
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    ignore:
+      # The ref is the pinned Rust version; bump it by hand with rust-toolchain.toml.
+      - dependency-name: dtolnay/rust-toolchain

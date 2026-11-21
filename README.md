@@ -20,6 +20,18 @@ headset. Close the window? It switches back.
 It watches windows through standard Wayland protocols and controls audio with
 PipeWire's own command-line tools.
 
+## Project status
+
+PWSW is feature-complete and in **maintenance mode**. It does one job: switching the
+default audio output (and input) based on which windows are open and which screen they
+are on. It keeps receiving dependency and security updates and bug fixes; new features
+are unlikely unless they fit that job. Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
+
+Found a bug? Open a [GitHub issue](https://github.com/ledati16/pwsw/issues) and include
+the output of `pwsw doctor` and `pwsw --version`. Security problems go through private
+reporting instead, see [SECURITY.md](SECURITY.md).
+
 ## Features
 
 - **Automatic sink switching** from rules that match a window's `app_id` and title (regex)
@@ -302,6 +314,18 @@ cargo test
 Contributor setup (formatting with the pinned nightly rustfmt, clippy pedantic, the
 sandboxed test runner, git hooks) is described in [CLAUDE.md](CLAUDE.md). Changes are
 listed in [CHANGELOG.md](CHANGELOG.md).
+
+## FAQ
+
+### Per-app audio routing?
+
+PWSW deliberately switches only the *default* device. To always send one application to
+a specific output, move it there once in pavucontrol (or your desktop shell's mixer, or
+`pactl move-sink-input`): WirePlumber remembers that choice per application and restores
+it every time the app plays audio. Such an app then stays on its output and no longer
+follows the default, which is usually what you want. PWSW handles the part nothing else
+does: switching the default based on which windows are open and which screen they are
+on.
 
 ## Appendix: LLM-Generated Code
 
