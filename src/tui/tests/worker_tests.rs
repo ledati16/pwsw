@@ -146,7 +146,7 @@ async fn test_worker_runs_commands_immediately_despite_slow_poll() {
         .await
         .expect("queued");
     let result = recv_until(&mut h.updates, |u| matches!(u, AppUpdate::ActionResult(_))).await;
-    assert!(matches!(result, AppUpdate::ActionResult(ref m) if m == "Enable done"));
+    assert!(matches!(result, AppUpdate::ActionResult(Ok(ref m)) if m == "Enable done"));
 
     // No clock time passed: neither command waited for the poll or a tick.
     assert!(
@@ -288,6 +288,6 @@ fn test_successful_send_sets_pending_until_result() {
     simulate_key_event(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(rx.try_recv().is_err());
 
-    app.handle_update(AppUpdate::ActionResult("ok".to_string()));
+    app.handle_update(AppUpdate::ActionResult(Ok("ok".to_string())));
     assert!(!app.is_busy());
 }

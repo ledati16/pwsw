@@ -1,35 +1,21 @@
-//! Shared TUI widget helpers
+//! Shared TUI widget helpers: blocks, content-sized dialogs, one-row forms,
+//! scrollbars and display-width text helpers.
 
-use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Modifier, Style};
+use std::borrow::Cow;
+
+use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Wrap,
 };
 use ratatui::{Frame, symbols};
 use tui_input::Input;
 
-use crate::style::colors;
+use crate::tui::theme;
 
-/// Standard modal sizes (width%, height%)
-pub mod modal_size {
-    /// Small modals - confirmations (50%x40%)
-    pub const SMALL: (u16, u16) = (50, 40);
-    pub const MEDIUM: (u16, u16) = (70, 65);
-    pub const LARGE: (u16, u16) = (80, 85);
-    pub const DROPDOWN: (u16, u16) = (40, 50);
-    pub const HELP: (u16, u16) = (90, 80);
-}
-
-/// Centered modal area of a standard size (percent of `r`).
-#[must_use]
-pub fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
-    r.centered(
-        Constraint::Percentage(size.0),
-        Constraint::Percentage(size.1),
-    )
-}
+/// Widest a dialog gets, however wide the terminal
+pub(crate) const MAX_DIALOG_WIDTH: u16 = 76;
 
 /// The bordered, rounded block used by every panel.
 #[must_use]
@@ -37,54 +23,124 @@ pub fn rounded_block<'a>() -> Block<'a> {
     Block::bordered().border_type(BorderType::Rounded)
 }
 
-/// Draw a text modal (inspect details, delete confirmation): clears what is
-/// below, draws a padded block of the given border type and wraps `lines`.
-pub fn render_text_modal(
+/// The block of a dialog: rounded border, bold title, one column of padding.
+/// Dialogs paint no background of their own (the area is cleared first), so
+/// they use the terminal's colours like everything else.
+#[must_use]
+pub fn dialog_block(title: &str) -> Block<'_> {
+    rounded_block()
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(format!(" {title} "), theme::bold()))
+}
+
+/// Area of a dialog `width`×`height` cells big (borders included), centred in
+/// `area` and shrunk to fit it.
+#[must_use]
+pub fn modal_rect(area: Rect, width: u16, height: u16) -> Rect {
+    area.centered(Constraint::Max(width), Constraint::Max(height))
+}
+
+/// Clear `rect` and draw `block` there; returns the area inside it.
+pub fn open_dialog(frame: &mut Frame, rect: Rect, block: Block) -> Rect {
+    frame.render_widget(Clear, rect);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+    inner
+}
+
+/// "Enter save · Esc cancel": keys highlighted, hints separated by dots
+#[must_use]
+pub fn hint_line<'a>(hints: &[(&'a str, &'a str)]) -> Line<'a> {
+    let mut spans = Vec::with_capacity(hints.len() * 4);
+    for (i, (key, label)) in hints.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(" · ", theme::dim()));
+        }
+        spans.push(Span::styled(*key, theme::key()));
+        spans.push(Span::raw(" "));
+        spans.push(Span::raw(*label));
+    }
+    Line::from(spans)
+}
+
+/// Key hints for the bottom border of a dialog, right-aligned with a space
+/// before the corner
+#[must_use]
+pub fn border_hints<'a>(hints: &[(&'a str, &'a str)]) -> Line<'a> {
+    let mut line = hint_line(hints);
+    line.spans.insert(0, Span::raw(" "));
+    line.spans.push(Span::raw(" "));
+    line.alignment(Alignment::Right)
+}
+
+/// Draw a dialog sized to its text: `lines`, a blank line and the `hints`
+/// ("Enter delete · Esc cancel"). Lines are never wrapped, so every line,
+/// including the hints, is visible whenever the terminal is tall enough.
+pub fn render_text_dialog<'a>(
     frame: &mut Frame,
     area: Rect,
     title: &str,
-    border: BorderType,
-    lines: Vec<Line>,
+    mut lines: Vec<Line<'a>>,
+    hints: &[(&'a str, &'a str)],
 ) {
-    let popup_area = centered_modal(modal_size::SMALL, area);
-    frame.render_widget(Clear, popup_area);
-    let block = Block::bordered()
-        .border_type(border)
-        .padding(Padding::horizontal(1))
-        .title(title)
-        .style(Style::default().bg(colors::UI_MODAL_BG));
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, popup_area);
+    if !hints.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(hint_line(hints));
+    }
+    let content_width = lines
+        .iter()
+        .map(Line::width)
+        .chain([text_width(title) + 2])
+        .max()
+        .unwrap_or(0);
+    // Borders and padding take 4 columns, the borders 2 rows
+    let width = u16::try_from(content_width + 4)
+        .unwrap_or(u16::MAX)
+        .min(MAX_DIALOG_WIDTH);
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let rect = modal_rect(area, width, height);
+    let inner = open_dialog(frame, rect, dialog_block(title));
+    // Short of rows: drop lines above the hints rather than the hints
+    let rows = usize::from(inner.height);
+    if lines.len() > rows && rows > 0 && !hints.is_empty() {
+        let hints = lines.pop();
+        lines.truncate(rows - 1);
+        lines.extend(hints);
+    }
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// A "Label: value" line for detail modals; `placeholder` dims the value.
+/// "Label  value" rows for detail and confirmation dialogs, labels aligned;
+/// a `placeholder` value is dimmed.
 #[must_use]
-pub fn field_line<'a>(label: &str, value: &'a str, placeholder: bool) -> Line<'a> {
-    let value_style = if placeholder {
-        Style::default()
-            .fg(colors::UI_SECONDARY)
-            .add_modifier(Modifier::ITALIC)
-    } else {
-        Style::default().fg(colors::UI_TEXT)
-    };
-    Line::from(vec![
-        Span::styled(
-            format!("{label}: "),
-            Style::default().fg(colors::UI_SECONDARY),
-        ),
-        Span::styled(value, value_style),
-    ])
+pub fn detail_lines<'a>(rows: &[(&'a str, &'a str, bool)]) -> Vec<Line<'a>> {
+    let label_width = rows.iter().map(|(l, ..)| text_width(l)).max().unwrap_or(0);
+    rows.iter()
+        .map(|&(label, value, placeholder)| {
+            let pad = label_width - text_width(label) + 2;
+            Line::from(vec![
+                Span::styled(label, theme::dim()),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(
+                    value,
+                    if placeholder {
+                        theme::dim().add_modifier(Modifier::ITALIC)
+                    } else {
+                        theme::text()
+                    },
+                ),
+            ])
+        })
+        .collect()
 }
 
 /// Draw a vertical scrollbar over the right border of a bordered widget.
 ///
 /// `area` is the widget's outer area (with borders), `header_rows` the rows
-/// inside the border that do not scroll (e.g. a table header and its margin),
-/// `total` the number of scrollable rows and `offset` the first visible one (as
-/// reported by the widget's `ListState`/`TableState` after rendering). Nothing is
-/// drawn when everything fits.
+/// inside the border that do not scroll (e.g. a table header), `total` the
+/// number of scrollable rows and `offset` the first visible one (as reported by
+/// the widget's `ListState`/`TableState` after rendering). Nothing is drawn when
+/// everything fits.
 pub fn render_scrollbar(
     frame: &mut Frame,
     area: Rect,
@@ -109,374 +165,354 @@ pub fn render_scrollbar(
         .symbols(symbols::scrollbar::VERTICAL)
         .begin_symbol(None)
         .end_symbol(None)
-        .thumb_style(Style::default().fg(colors::UI_HIGHLIGHT));
+        .thumb_style(theme::accent());
     frame.render_stateful_widget(scrollbar, track, &mut state);
 }
 
-/// Get focus-aware border style
-///
-/// Returns magenta (bold) border for focused elements, gray for unfocused.
-/// This provides consistent visual feedback across all TUI widgets.
-pub const fn focus_border_style(focused: bool) -> Style {
-    if focused {
-        Style::new().fg(colors::UI_FOCUS)
-    } else {
-        Style::new().fg(colors::UI_SECONDARY)
+// ============================================================================
+// One-row forms
+// ============================================================================
+
+/// The value part of a form row
+pub enum FieldValue<'a> {
+    /// An editable text field; `placeholder` is shown (dimmed) while it is empty
+    Text {
+        input: &'a Input,
+        placeholder: Cow<'a, str>,
+    },
+    /// A value that is not typed (a selector or a checkbox), drawn as given
+    Fixed(Line<'a>),
+}
+
+/// One row of a form: marker, label column, value, optional trailing hint
+pub struct FormField<'a> {
+    pub label: &'a str,
+    pub value: FieldValue<'a>,
+    /// Shown at the right end of the row (a key hint or a validation mark)
+    pub trailing: Option<Span<'a>>,
+    pub focused: bool,
+}
+
+/// Width of a form's label column
+fn label_column(fields: &[FormField]) -> u16 {
+    let widest = fields
+        .iter()
+        .map(|f| text_width(f.label))
+        .max()
+        .unwrap_or(0);
+    u16::try_from(widest).unwrap_or(u16::MAX)
+}
+
+/// Columns a form needs to show every label and `value_width` of value
+#[must_use]
+pub fn form_width(fields: &[FormField], value_width: u16) -> u16 {
+    // marker + label + gap + value
+    1 + label_column(fields) + 2 + value_width
+}
+
+/// Draw `fields` one per row into `area`. The focused row gets a marker, a
+/// bold label and the cursor. When `area` is shorter than the form, the rows
+/// scroll so the focused one stays visible.
+pub fn render_form(frame: &mut Frame, area: Rect, fields: &[FormField]) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let label_width = label_column(fields);
+    let rows = usize::from(area.height);
+    let focused = fields.iter().position(|f| f.focused).unwrap_or(0);
+    let first = focused.saturating_sub(rows - 1);
+
+    for (row, field) in fields.iter().skip(first).take(rows).enumerate() {
+        let y = area.y + u16::try_from(row).unwrap_or(u16::MAX);
+        let row_area = Rect::new(area.x, y, area.width, 1);
+        let trailing_width = field
+            .trailing
+            .as_ref()
+            .map_or(0, |s| u16::try_from(s.width() + 1).unwrap_or(u16::MAX));
+        let [marker, label, value, trailing] = Layout::horizontal([
+            Constraint::Length(1),
+            Constraint::Length(label_width + 2),
+            Constraint::Fill(1),
+            Constraint::Length(trailing_width),
+        ])
+        .areas(row_area);
+
+        if field.focused {
+            frame.render_widget(Span::styled("▌", theme::focus()), marker);
+        }
+        let label_style = if field.focused {
+            theme::bold()
+        } else {
+            theme::dim()
+        };
+        frame.render_widget(Span::styled(field.label, label_style), label);
+        if let Some(span) = &field.trailing {
+            frame.render_widget(
+                Line::from(span.clone()).alignment(Alignment::Right),
+                trailing,
+            );
+        }
+
+        match &field.value {
+            FieldValue::Fixed(line) => frame.render_widget(line.clone(), value),
+            FieldValue::Text { input, placeholder } => {
+                if input.value().is_empty() {
+                    frame.render_widget(
+                        Span::styled(
+                            placeholder.as_ref(),
+                            theme::dim().add_modifier(Modifier::ITALIC),
+                        ),
+                        value,
+                    );
+                    if field.focused {
+                        frame.set_cursor_position((value.x, value.y));
+                    }
+                } else {
+                    render_input_text(frame, value, input, field.focused);
+                }
+            }
+        }
     }
 }
 
-/// Validation state for input fields
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ValidationState {
-    /// Input is valid
-    Valid,
-    /// Input is invalid
-    Invalid,
-    /// Input has not been validated or is in neutral state
-    Neutral,
-}
-
-/// Render a text input field with validation-aware border colors
-///
-/// Shows green border for valid input, red for invalid, magenta for focused.
-/// If not focused and validation state is provided, shows green/red for valid/invalid.
-pub fn render_validated_input(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    input: &Input,
-    focused: bool,
-    validation: ValidationState,
-) {
-    let border_style = if focused {
-        // Focused always gets magenta border
-        Style::new().fg(colors::UI_FOCUS)
-    } else {
-        // When not focused, show validation state
-        match validation {
-            ValidationState::Valid => Style::new().fg(colors::UI_VALID),
-            ValidationState::Invalid => Style::new().fg(colors::UI_INVALID),
-            ValidationState::Neutral => Style::new().fg(colors::UI_SECONDARY),
-        }
-    };
-
-    let block = rounded_block().border_style(border_style).title(title);
-
-    let inner_area = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Compute scrolling
-    let width = inner_area.width.max(1) as usize;
-    let scroll = input.visual_scroll(width);
-
-    // Render input using Paragraph
+/// Draw the text of `input` scrolled to keep the cursor in `area` (one row),
+/// placing the terminal cursor if `focused`.
+fn render_input_text(frame: &mut Frame, area: Rect, input: &Input, focused: bool) {
+    let width = usize::from(area.width.max(1));
+    // Leave the last column for the cursor at the end of the text
+    let scroll = input.visual_scroll(width.saturating_sub(1).max(1));
     let scroll_u16 = u16::try_from(scroll).unwrap_or(u16::MAX);
-    let p = Paragraph::new(input.value()).scroll((0, scroll_u16));
-    frame.render_widget(p, inner_area);
-
-    // Render cursor
+    frame.render_widget(Paragraph::new(input.value()).scroll((0, scroll_u16)), area);
     if focused {
-        let cursor_offset = input.visual_cursor().max(scroll) - scroll;
-        let cursor_offset_u16 = u16::try_from(cursor_offset).unwrap_or(u16::MAX);
-        frame.set_cursor_position((inner_area.x + cursor_offset_u16, inner_area.y));
+        let offset = input.visual_cursor().saturating_sub(scroll);
+        let offset = u16::try_from(offset).unwrap_or(u16::MAX);
+        frame.set_cursor_position((area.x + offset.min(area.width.saturating_sub(1)), area.y));
     }
 }
 
-/// Render a text input field with a block and correct scrolling/cursor
-pub fn render_input(frame: &mut Frame, area: Rect, title: &str, input: &Input, focused: bool) {
-    render_validated_input(frame, area, title, input, focused, ValidationState::Neutral);
-}
-
-/// Render a button-like selector widget
-///
-/// Creates a bordered widget that looks clickable with clear selection state.
-/// When focused, shows cyan border and "(Space to select)" hint.
-///
-/// # Arguments
-/// * `frame` - Frame to render into
-/// * `area` - Rect to render within
-/// * `label` - Field label (e.g., "Target Sink")
-/// * `value` - Current value, or None to show "Select..."
-/// * `focused` - Whether this widget is currently focused
-pub fn render_selector_button(
-    frame: &mut Frame,
-    area: Rect,
-    label: &str,
-    value: Option<&str>,
-    focused: bool,
-) {
-    let border_style = focus_border_style(focused);
-
-    // Build content spans without allocating intermediate strings
-    let mut spans = vec![Span::raw(label), Span::raw(": ")];
-
-    let display_value = value.unwrap_or("Select...");
-
-    if focused {
-        // Focused: Show as clickable button with dropdown arrow and hint
-        spans.push(Span::styled(
-            "↓ [ ",
-            Style::default()
-                .fg(colors::UI_HIGHLIGHT)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            display_value,
-            Style::default()
-                .fg(colors::UI_HIGHLIGHT)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            " ]",
-            Style::default()
-                .fg(colors::UI_HIGHLIGHT)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            " ◄ Space to select",
-            Style::default().fg(colors::UI_WARNING),
-        ));
+/// A checkbox value: "[x] label" / "[ ] label"
+#[must_use]
+pub fn checkbox(checked: bool, label: &str) -> Line<'_> {
+    let (mark, style) = if checked {
+        ("[x] ", theme::success())
     } else {
-        // Unfocused: Show as button with subtle dropdown arrow
-        spans.push(Span::styled(
-            "↓ [ ",
-            Style::default().fg(colors::UI_SECONDARY),
-        ));
-        spans.push(Span::raw(display_value));
-        spans.push(Span::styled(
-            " ]",
-            Style::default().fg(colors::UI_SECONDARY),
-        ));
-    }
-
-    let paragraph =
-        Paragraph::new(Line::from(spans)).block(rounded_block().border_style(border_style));
-    frame.render_widget(paragraph, area);
+        ("[ ] ", theme::dim())
+    };
+    Line::from(vec![Span::styled(mark, style), Span::raw(label)])
 }
 
-/// Truncate a description string to `max_width` characters, appending `...` when truncated.
+// ============================================================================
+// Display-width text helpers
+// ============================================================================
+
+/// Display width of one character (0 for control characters)
+#[must_use]
+pub fn char_width(c: char) -> usize {
+    let mut buf = [0u8; 4];
+    Span::raw(&*c.encode_utf8(&mut buf)).width()
+}
+
+/// Display width of `text` in terminal columns
+#[must_use]
+pub fn text_width(text: &str) -> usize {
+    Span::raw(text).width()
+}
+
+/// `text` cut to at most `max` columns, ending in `…` when it was cut.
+#[must_use]
+pub fn ellipsize(text: &str, max: usize) -> Cow<'_, str> {
+    if text_width(text) <= max {
+        return Cow::Borrowed(text);
+    }
+    if max == 0 {
+        return Cow::Borrowed("");
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for c in text.chars() {
+        let w = char_width(c);
+        if width + w > max - 1 {
+            break;
+        }
+        out.push(c);
+        width += w;
+    }
+    // "Sony …" reads worse than "Sony…"
+    out.truncate(out.trim_end().len());
+    out.push('…');
+    Cow::Owned(out)
+}
+
+/// The column widths a `Table` with these `constraints`, default flex and
+/// spacing gives its columns in `width` columns (after `selection` columns for
+/// the highlight symbol); used to cut cell text with [`ellipsize`] instead of
+/// letting the table clip it.
+#[must_use]
+pub fn column_widths(constraints: &[Constraint], width: u16, selection: u16) -> Vec<usize> {
+    let area = Rect::new(0, 0, width.saturating_sub(selection), 1);
+    Layout::horizontal(constraints.iter().copied())
+        .flex(Flex::Start)
+        .spacing(1)
+        .split(area)
+        .iter()
+        .map(|r| usize::from(r.width))
+        .collect()
+}
+
+/// Rows for a picker list: descriptions in one column, node names (dimmed) in
+/// a second, aligned, both cut to fit `width` columns together
+#[must_use]
+pub fn picker_lines(entries: &[(&str, &str)], width: usize) -> Vec<Line<'static>> {
+    let widest_desc = entries
+        .iter()
+        .map(|(d, _)| text_width(d))
+        .max()
+        .unwrap_or(0);
+    let widest_node = entries
+        .iter()
+        .map(|(_, n)| text_width(n))
+        .max()
+        .unwrap_or(0);
+    let node_col = widest_node.min(width / 2);
+    let desc_col = widest_desc.min(width.saturating_sub(node_col + 2));
+    let node_room = width.saturating_sub(desc_col + 2);
+    entries
+        .iter()
+        .map(|(desc, node)| {
+            let desc = ellipsize(desc, desc_col);
+            let pad = desc_col.saturating_sub(text_width(&desc)) + 2;
+            Line::from(vec![
+                Span::raw(format!("{desc}{}", " ".repeat(pad))),
+                Span::styled(
+                    truncate_node_name(node, node_room).into_owned(),
+                    theme::dim(),
+                ),
+            ])
+        })
+        .collect()
+}
+
+/// Shorten a `PipeWire` node name to `max` columns, keeping what tells nodes
+/// apart:
 ///
-/// This is a visual truncation helper for UI rendering. It operates on character counts
-/// (not grapheme clusters) which is acceptable for typical sink descriptions.
-/// Uses character-based truncation (not byte-based) to safely handle UTF-8 strings.
-pub fn truncate_desc(text: &str, max_width: u16) -> String {
-    let max = max_width as usize;
-    let char_count = text.chars().count();
-    if char_count <= max {
-        text.to_string()
-    } else if max <= 3 {
-        text.chars().take(max).collect()
+/// - ALSA (`alsa_output.pci-0000_00_1f.3.analog-stereo`): prefix and profile,
+///   `alsa_output…analog-stereo`
+/// - Bluetooth (`bluez_output.40_ED_98_1C_1D_08.1`): prefix, last two address
+///   octets and device number, `bluez_output…1D_08.1`
+/// - anything else, or when those still do not fit: cut with [`ellipsize`]
+#[must_use]
+pub fn truncate_node_name(text: &str, max: usize) -> Cow<'_, str> {
+    if text_width(text) <= max {
+        return Cow::Borrowed(text);
+    }
+    let parts: Vec<&str> = text.split('.').collect();
+    let shortened = if (text.starts_with("alsa_output.") || text.starts_with("alsa_input."))
+        && parts.len() >= 3
+    {
+        Some(format!("{}…{}", parts[0], parts[parts.len() - 1]))
+    } else if (text.starts_with("bluez_output.") || text.starts_with("bluez_input."))
+        && parts.len() >= 3
+    {
+        let mac = parts[1];
+        // Last two octets ("1D_08"), on a character boundary
+        let mac_suffix = mac
+            .char_indices()
+            .rev()
+            .nth(4)
+            .map_or(mac, |(i, _)| &mac[i..]);
+        Some(format!("{}…{mac_suffix}.{}", parts[0], parts[2]))
     } else {
-        let take = max.saturating_sub(3);
-        let truncated: String = text.chars().take(take).collect();
-        format!("{truncated}...")
+        None
+    };
+    match shortened {
+        Some(s) if text_width(&s) <= max => Cow::Owned(s),
+        Some(s) => Cow::Owned(ellipsize(&s, max).into_owned()),
+        None => ellipsize(text, max),
     }
-}
-
-/// Truncate a node/sink name intelligently to fit within display width
-///
-/// Handles different node types with appropriate truncation strategies:
-///
-/// **ALSA nodes** (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`):
-/// - Keeps prefix and profile suffix: `alsa_output...analog-stereo`
-/// - If still too long, truncates suffix: `alsa_output...iec958-ac3-surround...`
-///
-/// **Bluetooth nodes** (e.g., `bluez_output.40_ED_98_1C_1D_08.1`):
-/// - Keeps prefix, last 2 MAC octets, and device number: `bluez_output...1D_08.1`
-/// - Format: `{prefix}...{last_2_mac_octets}.{device_num}`
-///
-/// **Other nodes**: Uses simple truncation with ellipsis.
-pub fn truncate_node_name(text: &str, max_width: u16) -> String {
-    let max_len = max_width as usize;
-
-    let width = |s: &str| s.chars().count();
-
-    if width(text) <= max_len {
-        return text.to_string();
-    }
-
-    // For ALSA nodes, use intelligent truncation (prefix...suffix)
-    if text.starts_with("alsa_output.") || text.starts_with("alsa_input.") {
-        let parts: Vec<&str> = text.split('.').collect();
-        if parts.len() >= 3 {
-            let prefix = parts[0];
-            let suffix = parts[parts.len() - 1];
-            let combined = format!("{prefix}...{suffix}");
-
-            // If the intelligent format fits, use it
-            if width(&combined) <= max_len {
-                return combined;
-            }
-
-            // Otherwise, truncate the suffix to fit within max_width
-            // Format: "prefix...truncated_suffix..."
-            let prefix_len = width(prefix);
-            let ellipsis_len = 3; // "..."
-            let available_for_suffix =
-                max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
-
-            if available_for_suffix > 3 {
-                let suffix_char_count = suffix.chars().count();
-                let truncated_suffix: String = suffix
-                    .chars()
-                    .take(available_for_suffix.min(suffix_char_count))
-                    .collect();
-                return format!("{prefix}...{truncated_suffix}...");
-            }
-
-            // If we can't fit anything meaningful, just use prefix
-            return format!("{prefix}...");
-        }
-    }
-
-    // For Bluetooth nodes, use intelligent truncation (prefix...last_mac_octets.device_num)
-    // Format: bluez_output.XX_XX_XX_XX_XX_XX.N -> bluez_output...XX_XX.N
-    if text.starts_with("bluez_output.") || text.starts_with("bluez_input.") {
-        let parts: Vec<&str> = text.split('.').collect();
-        if parts.len() >= 3 {
-            let prefix = parts[0]; // "bluez_output" or "bluez_input"
-            let mac = parts[1]; // "40_ED_98_1C_1D_08"
-            let device_num = parts[2]; // "1"
-
-            // Extract last 2 octets from MAC (last 5 chars: "1D_08"), on a char boundary
-            let mac_suffix = mac
-                .char_indices()
-                .rev()
-                .nth(4)
-                .map_or(mac, |(i, _)| &mac[i..]);
-
-            let combined = format!("{prefix}...{mac_suffix}.{device_num}");
-
-            // If the intelligent format fits, use it
-            if width(&combined) <= max_len {
-                return combined;
-            }
-
-            // If still too long, just show prefix and device number
-            return format!("{prefix}...{device_num}");
-        }
-    }
-
-    // Fallback to simple truncation for other node types
-    truncate_desc(text, max_width)
 }
 
 #[cfg(test)]
 mod tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
 
     #[test]
-    fn test_truncate_desc() {
-        assert_eq!(truncate_desc("short", 10), "short");
-        assert_eq!(truncate_desc("this is long", 8), "this ...");
-        assert_eq!(truncate_desc("abc", 3), "abc");
-        assert_eq!(truncate_desc("abcdef", 3), "abc");
+    fn test_ellipsize_by_display_width() {
+        assert_eq!(ellipsize("short", 10), "short");
+        assert_eq!(ellipsize("this is long", 8), "this is…");
+        assert_eq!(ellipsize("abc", 3), "abc");
+        assert_eq!(ellipsize("abcdef", 3), "ab…");
+        assert_eq!(ellipsize("abcdef", 1), "…");
+        assert_eq!(ellipsize("abcdef", 0), "");
+        // Wide characters count two columns and are never split
+        assert_eq!(ellipsize("日本語テキスト", 7), "日本語…");
+        assert_eq!(ellipsize("日本語テキスト", 6), "日本…");
+        assert_eq!(text_width(&ellipsize("🎵 music player", 6)), 6);
+        assert_eq!(ellipsize("✳ sparkle", 5), "✳ sp…");
+        assert_eq!(
+            ellipsize("Sony WH-1000XM4", 6),
+            "Sony…",
+            "no space before …"
+        );
     }
 
     #[test]
-    fn test_truncate_node_name_no_truncation_needed() {
-        // Short names should pass through unchanged
+    fn test_truncate_node_name_keeps_what_tells_nodes_apart() {
         assert_eq!(truncate_node_name("short", 35), "short");
         assert_eq!(
-            truncate_node_name("alsa_output.analog-stereo", 35),
-            "alsa_output.analog-stereo"
+            truncate_node_name("alsa_output.pci-0000_0c_00.4.analog-stereo", 35),
+            "alsa_output…analog-stereo"
         );
-    }
-
-    #[test]
-    fn test_truncate_node_name_alsa_intelligent() {
-        // ALSA nodes should use intelligent truncation (prefix...suffix)
-        let alsa_long = "alsa_output.pci-0000_0c_00.4.analog-stereo";
         assert_eq!(
-            truncate_node_name(alsa_long, 35),
-            "alsa_output...analog-stereo"
+            truncate_node_name("alsa_input.pci-0000_0c_00.4.analog-stereo", 35),
+            "alsa_input…analog-stereo"
         );
-
-        // ALSA input nodes
-        let alsa_input = "alsa_input.pci-0000_0c_00.4.analog-stereo";
         assert_eq!(
-            truncate_node_name(alsa_input, 35),
-            "alsa_input...analog-stereo"
+            truncate_node_name("bluez_output.40_ED_98_1C_1D_08.1", 30),
+            "bluez_output…1D_08.1"
         );
-
-        // Very long profile names should be truncated further
-        let alsa_very_long = "alsa_output.pci-0000_0c_00.4.iec958-ac3-surround-51-analog-stereo";
-        let result = truncate_node_name(alsa_very_long, 35);
-        assert!(result.starts_with("alsa_output..."));
-        assert!(result.len() <= 35);
-    }
-
-    #[test]
-    fn test_truncate_node_name_bluetooth_intelligent() {
-        // Bluetooth nodes should keep prefix, last 2 MAC octets, and device number when truncated
-        // This node is 33 chars, so with max=30 it will be truncated
-        let bt_output = "bluez_output.40_ED_98_1C_1D_08.1";
-        assert_eq!(truncate_node_name(bt_output, 30), "bluez_output...1D_08.1");
-
-        let bt_input = "bluez_input.A0_B1_C2_D3_E4_F5.2";
-        assert_eq!(truncate_node_name(bt_input, 30), "bluez_input...E4_F5.2");
-
-        // If under the limit, no truncation
-        assert_eq!(truncate_node_name(bt_output, 35), bt_output);
-    }
-
-    #[test]
-    fn test_truncate_node_name_bluetooth_very_short_width() {
-        // If even the intelligent format is too long, fallback to prefix + device num
-        let bt_output = "bluez_output.40_ED_98_1C_1D_08.1";
-        assert_eq!(truncate_node_name(bt_output, 20), "bluez_output...1");
-    }
-
-    #[test]
-    fn test_truncate_node_name_other_types() {
-        // Non-ALSA, non-Bluetooth nodes should use simple truncation
-        let other = "some_very_long_sink_name_that_needs_truncation";
-        let result = truncate_node_name(other, 20);
-        assert_eq!(result, "some_very_long_si...");
-        assert!(result.len() <= 20);
-    }
-
-    #[test]
-    fn test_truncate_desc_utf8() {
-        // Test UTF-8 multibyte characters (emoji, special symbols)
-        // ✳ is 3 bytes, but 1 character
-        assert_eq!(truncate_desc("✳ sparkle", 10), "✳ sparkle");
-        assert_eq!(truncate_desc("✳ sparkle", 5), "✳ ..."); // max=5: take 2 chars + "..."
-
-        // Emoji test (4-byte characters)
-        assert_eq!(truncate_desc("🎵 music", 10), "🎵 music");
-        assert_eq!(truncate_desc("🎵 music", 4), "🎵...");
-
-        // Mixed ASCII and UTF-8
-        let mixed = "device ✓ ready";
-        assert_eq!(truncate_desc(mixed, 20), "device ✓ ready");
-        assert_eq!(truncate_desc(mixed, 10), "device ..."); // max=10: take 7 chars + "..." ("device " = 7 chars)
-
-        // Edge case: exactly at boundary
-        assert_eq!(truncate_desc("test✳", 5), "test✳");
-        assert_eq!(truncate_desc("test✳", 4), "t...");
-    }
-
-    #[test]
-    fn test_truncate_node_name_utf8() {
-        // Test ALSA node with UTF-8 in profile suffix (unlikely but possible)
-        // This tests the suffix truncation path with UTF-8
-        let alsa_utf8 = "alsa_output.device.test✓profile✳suffix";
-        let result = truncate_node_name(alsa_utf8, 20);
-        // Should use ALSA intelligent truncation
-        assert!(result.starts_with("alsa_output..."));
-        assert!(result.len() <= 20);
-
-        // Fallback path with UTF-8
-        let generic_utf8 = "device✳with✓special★chars";
-        let result = truncate_node_name(generic_utf8, 15);
-        assert_eq!(result, "device✳with✓...");
-
-        // Non-ASCII MAC part must not split a character
+        assert_eq!(
+            truncate_node_name("bluez_input.A0_B1_C2_D3_E4_F5.2", 30),
+            "bluez_input…E4_F5.2"
+        );
         assert_eq!(
             truncate_node_name("bluez_output.ÄÖ_ÜÄ_ÖÜ_ÄÖ_ÜÄ_ÖÜ.1", 25),
-            "bluez_output...ÜÄ_ÖÜ.1"
+            "bluez_output…ÜÄ_ÖÜ.1"
         );
+        assert_eq!(
+            truncate_node_name("some_very_long_sink_name_that_needs_truncation", 20),
+            "some_very_long_sink…"
+        );
+        // Never wider than asked, whatever the shape
+        for name in [
+            "alsa_output.pci-0000_0c_00.4.iec958-ac3-surround-51-analog-stereo",
+            "bluez_output.40_ED_98_1C_1D_08.1",
+            "alsa_output.device.test✓profile✳suffix",
+            "device✳with✓special★chars",
+        ] {
+            for max in [1, 5, 12, 20] {
+                assert!(
+                    text_width(&truncate_node_name(name, max)) <= max,
+                    "{name} {max}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_column_widths_match_fill_constraints() {
+        let widths = column_widths(
+            &[
+                Constraint::Length(3),
+                Constraint::Fill(1),
+                Constraint::Fill(1),
+            ],
+            30,
+            2,
+        );
+        assert_eq!(widths.iter().sum::<usize>() + 2, 28);
+        assert_eq!(widths[0], 3);
     }
 
     #[test]

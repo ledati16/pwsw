@@ -17,11 +17,11 @@ use crate::config::Config;
 use crate::ipc::WindowInfo;
 use crate::pipewire::{ActiveSink, ProfileSink};
 use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
-use crate::tui::app::{App, AppUpdate, Screen};
+use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
 use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::{BINDINGS, Context};
 use crate::tui::render_ui;
-use crate::tui::screens::DashboardView;
+use crate::tui::screens::dashboard::DashboardView;
 use crate::tui::screens::rules::{RuleField, RulesMode};
 use crate::tui::screens::sinks::{SinkField, SinksMode, selector_names};
 
@@ -91,7 +91,8 @@ fn base(dir: &Path) -> App {
             profile_name: "p".to_string(),
         }],
     });
-    app.set_status("status".to_string());
+    // An info message: it expires by time, so no key press clears it as a side effect
+    app.set_status(StatusKind::Info, "status");
     app
 }
 
@@ -214,6 +215,33 @@ fn setups(context: Context) -> Vec<Setup> {
                 }));
             }
         }
+        Context::Discard(screen) => {
+            out.push(Box::new(move |app: &mut App| {
+                app.current_screen = screen;
+                app.sinks_screen.selected = 1;
+                app.rules_screen.selected = 1;
+                if screen == Screen::Sinks {
+                    app.sinks_screen.start_edit(&app.config.sinks);
+                    app.sinks_screen.editor.default.toggle();
+                } else {
+                    app.rules_screen.start_edit(&app.config.rules);
+                    app.rules_screen.editor.notify = Some(true);
+                }
+                simulate_key_event(app, KeyEvent::from(crossterm::event::KeyCode::Esc));
+                assert!(
+                    app.sinks_screen.confirm_discard || app.rules_screen.confirm_discard,
+                    "Esc with edits asks first"
+                );
+            }));
+        }
+        Context::Conflict => {
+            for screen in [Screen::Dashboard, Screen::Rules] {
+                out.push(Box::new(move |app: &mut App| {
+                    app.current_screen = screen;
+                    app.save_conflict = true;
+                }));
+            }
+        }
         Context::TextInput => {
             let text = || Input::new("hello world".to_string()).with_cursor(5);
             for field in [SinkField::Name, SinkField::Desc, SinkField::Icon] {
@@ -313,5 +341,54 @@ fn test_every_binding_lists_its_keys() {
             binding.keys
         );
         assert_ne!(binding.description, "");
+    }
+}
+
+#[test]
+fn test_footer_hints_come_from_bindings_and_fit() {
+    use crate::tui::keymap::{Hint, footer_hints};
+
+    let mut contexts: Vec<Context> = Vec::new();
+    for binding in BINDINGS {
+        if !contexts.contains(&binding.context) {
+            contexts.push(binding.context);
+        }
+        if let Some(hint) = binding.hint {
+            assert!(
+                binding.keys.contains(hint.keys),
+                "hint keys {:?} are not among {:?}",
+                hint.keys,
+                binding.keys
+            );
+            assert!(!hint.label.is_empty() && !hint.label.contains("  "));
+        }
+    }
+    for context in contexts {
+        if context == Context::TextInput {
+            continue; // typed into, never the footer's context
+        }
+        let active = if matches!(context, Context::List(_)) {
+            vec![context, Context::Global]
+        } else {
+            vec![context]
+        };
+        for width in [40, 76, 200] {
+            let hints = footer_hints(&active, true, width);
+            let used: usize =
+                hints.iter().map(Hint::width).sum::<usize>() + 2 * hints.len().saturating_sub(1);
+            assert!(used <= width, "{context:?} at {width}: {used}");
+            assert!(!hints.is_empty(), "{context:?} has footer hints");
+            // The most important hint is always kept
+            let best = BINDINGS
+                .iter()
+                .filter(|b| active.contains(&b.context))
+                .filter_map(|b| b.hint)
+                .min_by_key(|h| h.priority)
+                .expect("a hint");
+            assert!(hints.contains(&best), "{context:?} at {width}");
+        }
+        // Ctrl+S only when there is something to save
+        let clean = footer_hints(&active, false, 200);
+        assert!(clean.iter().all(|h| !h.only_unsaved), "{context:?}");
     }
 }

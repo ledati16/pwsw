@@ -122,7 +122,7 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 :   `Shift+↑/↓`: Move the selected item (rule order is the priority with *match_by_index*)
 :   `a` / `e` / `x`: Add / edit / delete
 :   `Enter`: Show details
-:   `Space` (Sinks): Make the selected sink the default
+:   `Space` (Sinks): Make the selected sink the fallback (used when no rule matches)
 
 **Editors**
 :   `↑/↓`, `Tab` / `Shift+Tab`: Switch field

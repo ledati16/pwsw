@@ -14,19 +14,17 @@ use std::time::Duration;
 use color_eyre::eyre::{self, Result};
 use crossterm::event::EventStream;
 use futures_util::StreamExt;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{BorderType, Paragraph, Tabs};
 use ratatui::{Frame, Terminal};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
-use crate::style::colors;
-use crate::tui::app::{AppUpdate, BgCommand};
+use crate::tui::app::{AppUpdate, BgCommand, StatusKind};
 
 mod app;
+mod chrome;
 mod daemon_control;
 mod editor_state;
 mod input;
@@ -35,6 +33,7 @@ mod log_tailer;
 mod preview;
 mod screens;
 mod terminal;
+mod theme;
 mod widgets;
 mod worker;
 
@@ -102,18 +101,27 @@ pub async fn run() -> Result<()> {
                             app.handle_update(AppUpdate::DaemonLogs(lines));
                         }
                         Ok(_) => {}
-                        Err(e) => app.set_status(format!("Could not read daemon log: {e:#}")),
+                        Err(e) => app.set_status(
+                            StatusKind::Warning,
+                            format!("Could not read daemon log: {e:#}"),
+                        ),
                     }
                     Some(tailer)
                 }
                 Err(e) => {
-                    app.set_status(format!("Daemon log unavailable: {e:#}"));
+                    app.set_status(
+                        StatusKind::Warning,
+                        format!("Daemon log unavailable: {e:#}"),
+                    );
                     None
                 }
             }
         }
         Err(e) => {
-            app.set_status(format!("Daemon log unavailable: {e:#}"));
+            app.set_status(
+                StatusKind::Warning,
+                format!("Daemon log unavailable: {e:#}"),
+            );
             None
         }
     };
@@ -137,6 +145,7 @@ pub async fn run() -> Result<()> {
         update_rx,
         &visible_tx,
         &mut worker.0,
+        true,
     )
     .await;
     // Restore the terminal before anything else can print.
@@ -147,14 +156,17 @@ pub async fn run() -> Result<()> {
 /// Main application loop
 ///
 /// Draws when the state changed (at most every [`MIN_FRAME_TIME`]) and otherwise
-/// sleeps until an input event, a worker update or — only while work is
-/// pending — a spinner tick.
+/// sleeps until an input event, a worker update, a status message expiring or —
+/// only while work is pending — a spinner tick. With `synchronized`, each frame
+/// is wrapped in a synchronized update (stdout is the terminal) so terminals
+/// that support it never show a half-drawn frame.
 async fn run_app<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     mut updates: mpsc::UnboundedReceiver<AppUpdate>,
     sinks_visible: &watch::Sender<bool>,
     worker: &mut JoinHandle<()>,
+    synchronized: bool,
 ) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
@@ -178,7 +190,22 @@ where
                 Some(next) if next > now => redraw_at = Some(next),
                 _ => {
                     app.refresh_preview();
-                    terminal.draw(|frame| render_ui(frame, app))?;
+                    if synchronized {
+                        // Unsupported terminals ignore it; a failed write shows
+                        // up in the draw below
+                        let _ = crossterm::execute!(
+                            std::io::stdout(),
+                            crossterm::terminal::BeginSynchronizedUpdate
+                        );
+                    }
+                    let drawn = terminal.draw(|frame| render_ui(frame, app)).map(|_| ());
+                    if synchronized {
+                        let _ = crossterm::execute!(
+                            std::io::stdout(),
+                            crossterm::terminal::EndSynchronizedUpdate
+                        );
+                    }
+                    drawn?;
                     app.dirty = false;
                     last_frame = Some(now);
                 }
@@ -191,12 +218,16 @@ where
 
         let animating = app.is_busy();
         let quit_deadline = app.quit_save_deadline();
+        let status_deadline = app.status_deadline();
         tokio::select! {
             () = tokio::time::sleep_until(redraw_at.unwrap_or_else(Instant::now)),
                 if redraw_at.is_some() => {}
             // A quit waiting for an in-flight save gives up (the app stays open)
             () = tokio::time::sleep_until(quit_deadline.unwrap_or_else(Instant::now)),
                 if quit_deadline.is_some() => app.quit_save_wait_expired(),
+            // A success/info message has been shown long enough
+            () = tokio::time::sleep_until(status_deadline.unwrap_or_else(Instant::now)),
+                if status_deadline.is_some() => app.expire_status(),
             _ = anim.tick(), if animating => app.advance_throbber(),
             event = events.next() => match event {
                 Some(Ok(event)) => {
@@ -228,44 +259,31 @@ fn worker_ended(joined: Result<(), tokio::task::JoinError>) -> eyre::Report {
     }
 }
 
-/// Render the complete UI
+/// Render the complete UI: header, screen, footer, then dialogs on top
 pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Cap TUI width for better proportions on wide screens
-    // This prevents content from stretching excessively and looking lost
     const MAX_TUI_WIDTH: u16 = 180;
 
     let size = frame.area();
+    if chrome::too_small(size) {
+        chrome::render_too_small(frame, size);
+        return;
+    }
     let content_area = if size.width > MAX_TUI_WIDTH {
-        let margin = (size.width - MAX_TUI_WIDTH) / 2;
-        Rect {
-            x: size.x + margin,
-            y: size.y,
-            width: MAX_TUI_WIDTH,
-            height: size.height,
-        }
+        size.centered_horizontally(Constraint::Length(MAX_TUI_WIDTH))
     } else {
         size
     };
 
-    // Get context bar content
-    let context_text = app.context_bar_text();
-
-    // Create main layout: [Header (tabs) | Content | Context Bar | Footer (status)]
-    let [header_area, main_area, ctx_bar_area, footer_area] = Layout::vertical([
-        Constraint::Length(3), // Header with tabs
-        Constraint::Min(0),    // Content area (now gets more space)
-        Constraint::Length(3), // Context bar with border (fixed 3 lines)
-        Constraint::Length(1), // Footer (temporary, for status - Phase 1 only)
+    let [header_area, main_area, footer_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
     ])
     .areas(content_area);
 
-    // Render header (tab bar)
-    render_header(frame, header_area, app.current_screen);
+    chrome::render_header(frame, header_area, app.current_screen, app.config_dirty);
 
-    // Render context bar (at bottom, with border)
-    render_context_bar(frame, ctx_bar_area, context_text);
-
-    // Render screen content
     match app.current_screen {
         Screen::Dashboard => {
             let mut ctx = screens::DashboardRenderContext {
@@ -283,7 +301,6 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         Screen::Sinks => render_sinks(frame, main_area, &mut SinksRenderContext {
             sinks: &app.config.sinks,
             screen_state: &mut app.sinks_screen,
-            active_sinks: &app.active_sinks,
             active_sink_list: &app.active_sink_list,
             profile_sink_list: &app.profile_sink_list,
             pipewire_available: app.pipewire_available,
@@ -303,163 +320,51 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         ),
     }
 
-    // Render footer (status message, spinner while background work is pending)
-    let (status, busy, throbber) = app.footer_parts();
-    render_footer(frame, footer_area, status, busy, throbber);
-
     if app.save_conflict {
-        render_conflict_dialog(frame, content_area);
+        render_conflict_dialog(frame, main_area);
     }
-
-    // Render help overlay on top if active
     if app.show_help {
         render_help(
             frame,
-            content_area,
+            main_area,
             app.current_screen,
             &mut app.help_scroll_state,
             &mut app.help_viewport_height,
             &app.help_collapsed_sections,
         );
     }
+
+    // Footer last: its hints describe whatever is on top
+    let contexts = app.active_contexts();
+    let unsaved = app.config_dirty;
+    let (status, busy, throbber) = app.footer_parts();
+    let footer = chrome::Footer {
+        status,
+        busy,
+        contexts: &contexts,
+        unsaved,
+    };
+    chrome::render_footer(frame, footer_area, &footer, throbber);
 }
 
 /// Render the "config changed on disk" dialog shown when a save was refused
 fn render_conflict_dialog(frame: &mut Frame, area: Rect) {
-    let key = |k: &'static str| Span::styled(k, Style::default().fg(colors::UI_HIGHLIGHT));
+    let option = |key: &'static str, text: &'static str| {
+        Line::from(vec![
+            Span::styled(format!("{key:<4}"), theme::key()),
+            Span::raw(text),
+        ])
+    };
     let lines = vec![
-        Line::from(""),
         Line::from(Span::styled(
             "The config file changed on disk since it was loaded.",
-            Style::default()
-                .fg(colors::UI_WARNING)
-                .add_modifier(Modifier::BOLD),
+            theme::warning(),
         )),
         Line::from("Saving now would overwrite those changes."),
         Line::from(""),
-        Line::from(vec![
-            key("[o]"),
-            Span::raw(" Overwrite the file with your changes"),
-        ]),
-        Line::from(vec![
-            key("[r]"),
-            Span::raw(" Reload from disk (discards your unsaved edits)"),
-        ]),
-        Line::from(vec![
-            key("[Esc]"),
-            Span::raw(" Cancel (keep editing, nothing saved)"),
-        ]),
+        option("o", "Overwrite the file with your changes"),
+        option("r", "Reload from disk (discards your unsaved edits)"),
+        option("Esc", "Cancel (keep editing, nothing saved)"),
     ];
-    widgets::render_text_modal(
-        frame,
-        area,
-        " Config Changed on Disk ",
-        BorderType::Double,
-        lines,
-    );
-}
-
-/// Render the header with tab navigation
-fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen) {
-    // Build tab titles with gray styling (highlight_style will override for selected)
-    let titles: Vec<Line> = Screen::all()
-        .iter()
-        .map(|s| {
-            let name = s.name();
-            let mut t = String::with_capacity(1 + 1 + 1 + name.len()); // +1 for space
-            t.push('[');
-            t.push(s.key());
-            t.push(']');
-            t.push(' '); // Add space
-            t.push_str(name);
-            Line::styled(t, Style::default().fg(colors::UI_SECONDARY))
-        })
-        .collect();
-
-    let selected = Screen::all()
-        .iter()
-        .position(|&s| s == current_screen)
-        .unwrap_or(0);
-
-    // Build left title (version only - save indicator moved to context bar)
-    let version = crate::version_string();
-    let left_title = Line::from(vec![Span::raw("PWSW "), Span::raw(&version)]);
-
-    // Minimal right title
-    let right_title = Line::from(vec![
-        Span::styled("[F1/?]", Style::default().fg(colors::UI_HIGHLIGHT)),
-        Span::raw(" Help "),
-    ])
-    .alignment(Alignment::Right);
-
-    let tabs = Tabs::new(titles)
-        .block(
-            widgets::rounded_block()
-                .title(left_title)
-                .title_top(right_title),
-        )
-        .select(selected)
-        .divider(Span::styled(
-            "·",
-            Style::default().add_modifier(Modifier::DIM),
-        ))
-        .highlight_style(
-            Style::default()
-                .fg(colors::UI_FOCUS)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    frame.render_widget(tabs, area);
-}
-
-/// Render the context bar with border at bottom of screen
-fn render_context_bar(frame: &mut Frame, area: Rect, content: Line) {
-    let block = widgets::rounded_block().title_bottom(
-        Line::from(vec![
-            Span::styled("[q]", Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" Quit "),
-        ])
-        .alignment(Alignment::Right),
-    );
-
-    let paragraph = Paragraph::new(content)
-        .block(block)
-        .style(Style::default().fg(colors::UI_TEXT));
-
-    frame.render_widget(paragraph, area);
-}
-
-/// Render the footer with status message (Phase 1: simplified, quit hint moved to context bar)
-fn render_footer(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    status_message: Option<&str>,
-    busy: bool,
-    throbber_state: &mut throbber_widgets_tui::ThrobberState,
-) {
-    use throbber_widgets_tui::Throbber;
-
-    // Split footer: [Throbber (3) | Status (Min 0)]
-    let [throbber_area, status_area] = Layout::horizontal([
-        Constraint::Length(3), // Throbber/Dot area
-        Constraint::Min(0),    // Status message
-    ])
-    .areas(area);
-
-    // 1. Throbber/Status Dot
-    if busy {
-        let throb = Throbber::default().style(Style::default().fg(colors::UI_WARNING));
-        frame.render_stateful_widget(throb, throbber_area, throbber_state);
-    } else if status_message.is_some() {
-        let dot = Paragraph::new(Span::styled("● ", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(dot, throbber_area);
-    }
-
-    // 2. Status Message
-    let status_text = if let Some(msg) = status_message {
-        Span::styled(msg, Style::default().fg(colors::UI_TEXT))
-    } else {
-        Span::raw("")
-    };
-    frame.render_widget(Paragraph::new(status_text), status_area);
+    widgets::render_text_dialog(frame, area, "Config Changed on Disk", lines, &[]);
 }

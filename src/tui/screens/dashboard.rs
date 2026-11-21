@@ -2,48 +2,27 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Paragraph};
+use ratatui::widgets::{Cell, Padding, Paragraph, Row, Table};
 
 use crate::config::Config;
-use crate::style::colors;
-use crate::tui::widgets::{rounded_block, truncate_node_name};
+use crate::tui::theme;
+use crate::tui::widgets::{
+    char_width, column_widths, ellipsize, render_scrollbar, rounded_block, text_width,
+    truncate_node_name,
+};
 
-/// Patterns to highlight in log messages (keyword, color, bold)
-const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
-    // Important events (bold)
-    ("Rule matched:", colors::LOG_EVENT, true),
-    ("Rule unmatched:", colors::UI_WARNING, true),
-    ("Switching:", colors::LOG_EVENT, true),
-    ("Switching profile:", colors::UI_HIGHLIGHT, true),
-    ("Window opened:", colors::LOG_EVENT, true),
-    ("Window closed:", colors::LOG_EVENT_CLOSE, true),
-    ("Tracked window closed:", colors::LOG_EVENT_CLOSE, true),
-    ("Set default sink:", colors::LOG_EVENT, true),
-    // Daemon lifecycle events
-    ("Starting PWSW daemon", colors::LOG_EVENT, true),
-    ("Monitoring window events", colors::LOG_EVENT, true),
-    ("Compositor event thread started", colors::UI_SUCCESS, false),
-    ("IPC server listening on", colors::UI_SUCCESS, false),
-    ("Loaded", colors::UI_SUCCESS, false),
-    ("sinks,", colors::UI_HIGHLIGHT, false),
-    ("rules", colors::UI_HIGHLIGHT, false),
-    // Shutdown and warnings
-    ("Shutting down", colors::UI_WARNING, false),
-    ("Shutdown requested", colors::UI_WARNING, false),
-    ("Config file changed", colors::UI_WARNING, false),
-    // Field labels (not bold, just markers)
-    ("app_id=", colors::LOG_KEYWORD, false),
-    ("title=", colors::LOG_KEYWORD, false),
-    ("id=", colors::LOG_KEYWORD, false),
-];
+/// Height of the daemon and "playing on" cards
+const CARD_HEIGHT: u16 = 5;
 
-/// Maximum display width for truncating `app_id` in window tracking display
-const WINDOW_APPID_MAX_WIDTH: usize = 15;
+/// Index of each daemon action in `DashboardScreen::selected_action`
+const ACTION_START: usize = 0;
+const ACTION_STOP: usize = 1;
+const ACTION_RESTART: usize = 2;
 
-/// Maximum display width for truncating window title in window tracking display
-const WINDOW_TITLE_MAX_WIDTH: usize = 20;
+/// Daemon action buttons, in selection order (the last two need the systemd unit)
+const ACTIONS: [&str; 5] = ["Start", "Stop", "Restart", "Enable", "Disable"];
 
 /// Dashboard view mode (toggle between Logs and Windows)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +93,19 @@ impl DashboardScreen {
             self.selected_action -= 1;
         } else {
             self.selected_action = self.max_action_index; // Wrap to last
+        }
+    }
+
+    /// Select the action that makes sense for the daemon's new state: restart
+    /// when it runs (instead of start), start when it does not (instead of
+    /// stop/restart). Other choices are left alone.
+    pub(crate) const fn preselect_action(&mut self, running: bool) {
+        if running && self.selected_action == ACTION_START {
+            self.selected_action = ACTION_RESTART;
+        } else if !running
+            && (self.selected_action == ACTION_STOP || self.selected_action == ACTION_RESTART)
+        {
+            self.selected_action = ACTION_START;
         }
     }
 
@@ -192,22 +184,6 @@ impl DashboardScreen {
     }
 }
 
-// Note: format_duration helper will be added when uptime/PID tracking is implemented
-// with background polling infrastructure (Phase 9A future enhancement)
-
-/// Truncate string with ellipsis if exceeds max length
-///
-/// Uses character-based truncation (not byte-based) to safely handle UTF-8 strings.
-fn truncate(s: &str, max_len: usize) -> String {
-    let char_count = s.chars().count();
-    if char_count <= max_len {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max_len.saturating_sub(1)).collect();
-        format!("{truncated}…")
-    }
-}
-
 /// Context for rendering the dashboard screen
 pub struct DashboardRenderContext<'a> {
     pub config: &'a Config,
@@ -223,369 +199,217 @@ pub struct DashboardRenderContext<'a> {
     pub pipewire_available: bool,
 }
 
+/// "1 rule", "8 rules"
+fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 /// Render the dashboard screen
 pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &mut DashboardRenderContext) {
-    // Two-section layout (top section + toggleable bottom)
-    let [top_section, bottom_section] = Layout::vertical([
-        Constraint::Length(10), // Top section (daemon + sink + summary)
-        Constraint::Min(0),     // Bottom section (logs OR windows - toggleable)
-    ])
-    .areas(area);
+    let [top, bottom] =
+        Layout::vertical([Constraint::Length(CARD_HEIGHT), Constraint::Fill(1)]).areas(area);
+    let [daemon_area, sink_area] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(top);
 
-    // Split top section horizontally (left: daemon+summary, right: sink+stats)
-    let [left_col, right_col] =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .areas(top_section);
-
-    // Split left column vertically (daemon above, summary below)
-    let [daemon_area, summary_area] = Layout::vertical([
-        Constraint::Length(6), // Daemon control
-        Constraint::Length(4), // Window summary
-    ])
-    .areas(left_col);
-
-    // Split right column vertically (sink above, stats below)
-    let [sink_area, stats_area] = Layout::vertical([
-        Constraint::Length(6), // Active sink details
-        Constraint::Length(4), // Statistics
-    ])
-    .areas(right_col);
-
-    // Render top section components
-    render_daemon_section(frame, daemon_area, ctx.screen_state, ctx.daemon_running);
-
-    // Calculate matched windows count
     let matched_count = ctx.windows.iter().filter(|w| w.tracked.is_some()).count();
+    render_daemon_card(frame, daemon_area, ctx, matched_count);
+    render_sink_card(frame, sink_area, ctx);
 
-    render_window_summary(
-        frame,
-        summary_area,
-        ctx.window_count,
-        matched_count,
-        ctx.screen_state.current_view,
-    );
-
-    render_sink_card(
-        frame,
-        sink_area,
-        ctx.config,
-        ctx.active_sinks,
-        ctx.pipewire_available,
-    );
-    render_statistics_card(
-        frame,
-        stats_area,
-        ctx.config,
-        matched_count,
-        ctx.window_count,
-    );
-
-    // Bottom section: render logs OR windows based on current view
     match ctx.screen_state.current_view {
-        DashboardView::Logs => {
-            render_log_viewer(
-                frame,
-                bottom_section,
-                ctx.daemon_logs,
-                ctx.daemon_running,
-                ctx.screen_state,
-            );
-        }
-        DashboardView::Windows => {
-            render_window_tracking(
-                frame,
-                bottom_section,
-                ctx.windows,
-                matched_count,
-                ctx.screen_state,
-            );
-        }
-    }
-}
-
-/// Render daemon status widget with control buttons (compact vertical layout)
-fn render_daemon_section(
-    frame: &mut Frame,
-    area: Rect,
-    screen_state: &DashboardScreen,
-    daemon_running: bool,
-) {
-    let block = rounded_block().title(" Daemon ");
-    frame.render_widget(block.clone(), area);
-
-    let inner = block.inner(area);
-
-    let (status_text, status_color, status_icon) = if daemon_running {
-        ("RUNNING", colors::UI_SUCCESS, "●")
-    } else {
-        ("STOPPED", colors::UI_ERROR, "○")
-    };
-
-    // Build compact status line
-    let mut status_spans = vec![
-        Span::styled(status_icon, Style::default().fg(status_color)),
-        Span::raw(" "),
-        Span::styled(
-            status_text,
-            Style::default()
-                .fg(status_color)
-                .add_modifier(Modifier::BOLD),
+        DashboardView::Logs => render_log_viewer(
+            frame,
+            bottom,
+            ctx.daemon_logs,
+            ctx.daemon_running,
+            ctx.screen_state,
         ),
-    ];
-
-    // Append systemd status if available
-    if let Some(enabled) = screen_state.service_enabled {
-        status_spans.push(Span::styled(
-            " · ",
-            Style::default().fg(colors::UI_SECONDARY),
-        ));
-        let (unit_icon, unit_text, unit_color) = if enabled {
-            ("✓", "enabled", colors::UI_SUCCESS)
-        } else {
-            ("✗", "disabled", colors::UI_ERROR)
-        };
-        status_spans.push(Span::styled(unit_icon, Style::default().fg(unit_color)));
-        status_spans.push(Span::raw(" "));
-        status_spans.push(Span::styled(unit_text, Style::default().fg(unit_color)));
-    }
-
-    let mut lines = vec![
-        Line::from(status_spans),
-        Line::from(""), // Spacing
-    ];
-
-    // Helper for buttons
-    let render_button = |label: &'static str, index: usize| -> Vec<Span> {
-        let is_selected = index == screen_state.selected_action;
-        let mut spans = Vec::new();
-        if is_selected {
-            spans.push(Span::styled("[", Style::default().fg(colors::UI_HIGHLIGHT)));
-            spans.push(Span::styled(
-                label,
-                Style::default()
-                    .fg(colors::UI_SELECTED)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled("]", Style::default().fg(colors::UI_HIGHLIGHT)));
-        } else {
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                label,
-                Style::default().fg(colors::UI_SECONDARY),
-            ));
-            spans.push(Span::raw(" "));
+        DashboardView::Windows => {
+            render_window_tracking(frame, bottom, ctx.windows, matched_count, ctx.screen_state);
         }
-        spans
-    };
-
-    // Row 1: Runtime actions
-    let mut row1 = Vec::new();
-    row1.extend(render_button("START", 0));
-    row1.push(Span::raw("  "));
-    row1.extend(render_button("STOP", 1));
-    row1.push(Span::raw("  "));
-    row1.extend(render_button("RESTART", 2));
-
-    lines.push(Line::from(row1));
-
-    // Row 2: Persistence actions (only if systemd available)
-    if screen_state.max_action_index == 4 {
-        let mut row2 = Vec::new();
-        row2.extend(render_button("ENABLE", 3));
-        row2.push(Span::raw("   "));
-        row2.extend(render_button("DISABLE", 4));
-        lines.push(Line::from(row2));
     }
-
-    let paragraph = Paragraph::new(lines).alignment(Alignment::Center);
-    frame.render_widget(paragraph, inner);
 }
 
-/// Render window summary card (shows counts and toggle hint)
-fn render_window_summary(
+/// Daemon card: state in the title, action buttons, window summary
+fn render_daemon_card(
     frame: &mut Frame,
     area: Rect,
-    window_count: usize,
+    ctx: &DashboardRenderContext,
     matched_count: usize,
-    current_view: DashboardView,
 ) {
-    let block = rounded_block().title(" Windows ");
-    frame.render_widget(block.clone(), area);
-
+    let state = &ctx.screen_state;
+    let mut title = vec![Span::styled(" Daemon ", theme::bold())];
+    if ctx.daemon_running {
+        title.push(Span::styled("● running", theme::success()));
+    } else {
+        title.push(Span::styled("○ stopped", theme::error()));
+    }
+    if let Some(enabled) = state.service_enabled {
+        title.push(Span::styled(" · ", theme::dim()));
+        title.push(if enabled {
+            Span::styled("enabled", theme::success())
+        } else {
+            Span::styled("disabled", theme::dim())
+        });
+    }
+    title.push(Span::raw(" "));
+    let block = rounded_block()
+        .padding(Padding::horizontal(1))
+        .title(Line::from(title));
     let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let lines = vec![
+    let button = |index: usize| -> Span<'static> {
+        let label = format!(" {} ", ACTIONS[index]);
+        if index == state.selected_action {
+            Span::styled(label, theme::selected().add_modifier(Modifier::BOLD))
+        } else {
+            Span::raw(label)
+        }
+    };
+    let buttons: Vec<usize> = (0..=state.max_action_index).collect();
+    let row_width = |indices: &[usize]| -> usize {
+        indices
+            .iter()
+            .map(|&i| text_width(ACTIONS[i]) + 2)
+            .sum::<usize>()
+            + indices.len()
+    };
+    let rows: Vec<&[usize]> = if row_width(&buttons) <= usize::from(inner.width) {
+        vec![&buttons[..]]
+    } else {
+        buttons.chunks(3).collect()
+    };
+    let mut lines: Vec<Line> = rows
+        .into_iter()
+        .map(|row| {
+            let mut spans = Vec::new();
+            for (n, &i) in row.iter().enumerate() {
+                if n > 0 {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(button(i));
+            }
+            Line::from(spans)
+        })
+        .collect();
+
+    lines.push(if ctx.daemon_running {
         Line::from(vec![
-            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                matched_count.to_string(),
-                Style::default()
-                    .fg(colors::UI_SUCCESS)
-                    .add_modifier(Modifier::BOLD),
+                format!("{matched_count}/{}", ctx.window_count),
+                theme::bold(),
             ),
-            Span::styled("/", Style::default().fg(colors::UI_STAT)),
-            Span::styled(
-                window_count.to_string(),
-                Style::default()
-                    .fg(colors::UI_STAT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![Span::styled(
-            match current_view {
-                DashboardView::Logs => "Press [w] to view details",
-                DashboardView::Windows => "Viewing below (press [w] for logs)",
-            },
-            Style::default().fg(colors::UI_SECONDARY),
-        )]),
-    ];
-
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
+            Span::styled(" windows matched", theme::dim()),
+        ])
+    } else {
+        Line::from(Span::styled(
+            "no windows tracked while stopped",
+            theme::dim(),
+        ))
+    });
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Render current sink card from the last `PipeWire` snapshot (no I/O here)
-fn render_sink_card(
-    frame: &mut Frame,
-    area: Rect,
-    config: &Config,
-    active_sinks: &[crate::pipewire::ActiveSink],
-    pipewire_available: bool,
-) {
-    let default_sink = active_sinks.iter().find(|s| s.is_default);
-    let (sink_desc, sink_icon, node_name) = match default_sink {
-        Some(active) => match config.sinks.iter().find(|s| s.name == active.name) {
-            Some(configured) => (
-                configured.desc.as_str(),
-                configured.icon.as_deref().unwrap_or("🔊"),
-                active.name.as_str(),
-            ),
-            // Default sink not in the config: show what PipeWire calls it
-            None => (active.description.as_str(), "?", active.name.as_str()),
-        },
-        None if !pipewire_available => ("PipeWire unavailable", "?", "unknown"),
-        None => ("Unknown Sink", "?", "unknown"),
+/// "Playing on" card: the current default sink from the last `PipeWire`
+/// snapshot (no I/O here) and what is configured
+fn render_sink_card(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
+    let block = rounded_block()
+        .padding(Padding::horizontal(1))
+        .title(Span::styled(" Playing on ", theme::bold()));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let width = usize::from(inner.width);
+
+    let config = ctx.config;
+    let default_sink = ctx.active_sinks.iter().find(|s| s.is_default);
+    let (first, second) = match default_sink {
+        Some(active) => {
+            let node = Line::from(Span::styled(
+                truncate_node_name(&active.name, width).into_owned(),
+                theme::dim(),
+            ));
+            let line = if let Some(configured) = config.sinks.iter().find(|s| s.name == active.name)
+            {
+                Line::from(Span::styled(
+                    ellipsize(&configured.desc, width).into_owned(),
+                    theme::bold(),
+                ))
+            } else {
+                // Default sink not in the config: show what PipeWire calls it
+                const NOTE: &str = " (not configured)";
+                let room = width.saturating_sub(text_width(NOTE));
+                Line::from(vec![
+                    Span::styled(
+                        ellipsize(&active.description, room).into_owned(),
+                        theme::bold(),
+                    ),
+                    Span::styled(NOTE, theme::dim()),
+                ])
+            };
+            (line, node)
+        }
+        None if !ctx.pipewire_available => (
+            Line::from(Span::styled("⚠ PipeWire unavailable", theme::warning())),
+            Line::from(Span::styled("sink state unknown", theme::dim())),
+        ),
+        None => (
+            Line::from(Span::styled("No default sink", theme::dim())),
+            Line::from(""),
+        ),
     };
 
-    let text = vec![
-        Line::from(vec![
-            Span::styled(sink_icon, Style::default().fg(colors::UI_HIGHLIGHT)),
-            Span::raw(" "),
-            Span::styled(
-                sink_desc,
-                Style::default()
-                    .fg(colors::UI_TEXT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("Node: ", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(
-                truncate_node_name(node_name, 35),
-                Style::default().fg(colors::UI_TEXT),
-            ),
-        ]),
+    let present = config
+        .sinks
+        .iter()
+        .filter(|s| ctx.active_sinks.iter().any(|a| a.name == s.name))
+        .count();
+    let summary = format!(
+        "{} · {present} present · {}",
+        count(config.sinks.len(), "sink", "sinks"),
+        count(config.rules.len(), "rule", "rules"),
+    );
+    let lines = vec![
+        first,
+        second,
         Line::from(Span::styled(
-            "Active Audio Output",
-            Style::default().fg(colors::UI_SECONDARY),
+            ellipsize(&summary, width).into_owned(),
+            theme::dim(),
         )),
     ];
-
-    let paragraph = Paragraph::new(text)
-        .block(
-            rounded_block()
-                .title(" Active Sink ")
-                .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
-        )
-        .alignment(Alignment::Left);
-
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Render statistics card showing quick overview
-fn render_statistics_card(
-    frame: &mut Frame,
-    area: Rect,
-    config: &Config,
-    _matched_count: usize,
-    _window_count: usize,
-) {
-    let rule_count = config.rules.len();
-    let sink_count = config.sinks.len();
+/// Columns of the window table: marker, app ID, title, sink
+const WINDOW_COLUMNS: [Constraint; 4] = [
+    Constraint::Length(1),
+    Constraint::Fill(2),
+    Constraint::Fill(3),
+    Constraint::Fill(2),
+];
 
-    let lines = vec![
-        Line::from(vec![
-            Span::styled("Rules: ", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(
-                format!("{rule_count} active"),
-                Style::default()
-                    .fg(colors::UI_STAT)
-                    .add_modifier(Modifier::BOLD),
-            ),
+/// One row of the window table, cells cut to `cols`
+fn window_row<'a>(win: &'a crate::ipc::WindowInfo, cols: &[usize]) -> Row<'a> {
+    let cut = |text: &str, col: usize| ellipsize(text, cols[col]).into_owned();
+    match &win.tracked {
+        Some(tracked) => Row::new(vec![
+            Cell::from(Span::styled("●", theme::success())),
+            Cell::from(Span::styled(cut(&win.app_id, 1), theme::bold())),
+            Cell::from(cut(&win.title, 2)),
+            Cell::from(Span::styled(
+                cut(&format!("→ {}", tracked.sink_desc), 3),
+                theme::accent(),
+            )),
         ]),
-        Line::from(vec![
-            Span::styled("Sinks: ", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(
-                format!("{sink_count} available"),
-                Style::default()
-                    .fg(colors::UI_STAT)
-                    .add_modifier(Modifier::BOLD),
-            ),
+        None => Row::new(vec![
+            Cell::from(Span::styled("○", theme::dim())),
+            Cell::from(cut(&win.app_id, 1)),
+            Cell::from(Span::styled(cut(&win.title, 2), theme::dim())),
+            Cell::from(""),
         ]),
-    ];
-
-    let paragraph = Paragraph::new(lines).block(rounded_block().title(" Overview "));
-
-    frame.render_widget(paragraph, area);
+    }
 }
 
-/// One row of the window list
-fn window_line(win: &crate::ipc::WindowInfo) -> Line<'_> {
-    let matched = win.tracked.is_some();
-    let mut spans = if matched {
-        vec![
-            Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
-            Span::styled(
-                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
-                Style::default()
-                    .fg(colors::UI_TEXT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]
-    } else {
-        vec![
-            Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
-            Span::styled(
-                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-        ]
-    };
-
-    // Add title inline if present
-    if !win.title.is_empty() {
-        spans.push(Span::styled(
-            " · ",
-            Style::default().add_modifier(Modifier::DIM),
-        ));
-        spans.push(Span::styled(
-            truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
-            Style::default().fg(colors::UI_SECONDARY),
-        ));
-    }
-
-    if let Some(tracked) = &win.tracked {
-        spans.push(Span::raw(" → "));
-        spans.push(Span::styled(
-            tracked.sink_desc.as_str(),
-            Style::default().fg(colors::UI_HIGHLIGHT),
-        ));
-    }
-    Line::from(spans)
-}
-
-/// Render window tracking section (full width bottom section when view is Windows)
+/// Render the window table (bottom section when the view is Windows)
 fn render_window_tracking(
     frame: &mut Frame,
     area: Rect,
@@ -593,157 +417,130 @@ fn render_window_tracking(
     matched_count: usize,
     state: &mut DashboardScreen,
 ) {
-    /// Rows above the list: the "Matched" line and a spacer
-    const HEADER_ROWS: usize = 2;
-
-    let title = " Window Tracking - [w] to toggle back to Logs ";
-    let block = rounded_block()
-        .title(title)
-        .border_style(Style::default().fg(colors::UI_HIGHLIGHT));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     let total = windows.len();
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(
-                format!("{matched_count}/{total} windows"),
-                Style::default()
-                    .fg(colors::UI_STAT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-    ];
+    let block = rounded_block();
+    let inner = block.inner(area);
 
-    if windows.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No windows tracked",
-            Style::default().fg(colors::UI_SECONDARY),
-        )));
-    }
-
-    // Matched windows first, then the rest
-    let ordered = windows
-        .iter()
-        .filter(|w| w.tracked.is_some())
-        .chain(windows.iter().filter(|w| w.tracked.is_none()));
-
-    // Rows for the list; one is given up for the position indicator if it overflows
-    let list_rows = usize::from(inner.height).saturating_sub(HEADER_ROWS);
-    let overflows = total > list_rows;
-    let visible = if overflows {
-        list_rows.saturating_sub(1)
-    } else {
-        list_rows
-    };
+    // One row for the header; the rest list windows
+    let visible = usize::from(inner.height).saturating_sub(1);
     state.window_page = visible;
     state.window_max_offset = total.saturating_sub(visible);
     state.window_scroll_offset = state.window_scroll_offset.min(state.window_max_offset);
     let start = state.window_scroll_offset;
 
-    lines.extend(ordered.skip(start).take(visible).map(window_line));
-
-    if overflows && visible > 0 {
+    let mut right = Vec::new();
+    if total > visible && visible > 0 {
         let end = (start + visible).min(total);
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  [{}-{end}/{total}] ", start + 1),
-                Style::default().fg(colors::UI_STAT),
-            ),
-            Span::styled(
-                "↑↓/PgUp/PgDn/Home/End to scroll",
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-        ]));
+        right.push(Span::styled(
+            format!("[{}-{end}/{total}] · ", start + 1),
+            theme::dim(),
+        ));
+    }
+    right.extend([Span::styled("w", theme::key()), Span::raw(" logs ")]);
+    let block = block
+        .title(Line::from(vec![
+            Span::styled(" Windows ", theme::bold()),
+            Span::styled(format!("· {matched_count}/{total} matched "), theme::dim()),
+        ]))
+        .title_top(Line::from(right).alignment(Alignment::Right));
+
+    if windows.is_empty() {
+        frame.render_widget(block, area);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No windows tracked (the daemon lists them while it runs)",
+                theme::dim(),
+            )),
+            inner,
+        );
+        return;
     }
 
-    frame.render_widget(Paragraph::new(lines), inner);
+    let cols = column_widths(&WINDOW_COLUMNS, inner.width, 0);
+    // Matched windows first, then the rest
+    let rows: Vec<Row> = windows
+        .iter()
+        .filter(|w| w.tracked.is_some())
+        .chain(windows.iter().filter(|w| w.tracked.is_none()))
+        .skip(start)
+        .take(visible)
+        .map(|w| window_row(w, &cols))
+        .collect();
+    let table = Table::new(rows, WINDOW_COLUMNS)
+        .header(Row::new(vec!["", "App ID", "Title", "Sink"]).style(theme::bold()))
+        .block(block);
+    frame.render_widget(table, area);
+    render_scrollbar(frame, area, 1, total, start);
 }
 
-/// Highlight patterns in log message (`app_id`, `title`, `Rule matched`, etc.)
+/// Whether `word` (up to `=`) is a log field name like `app_id`
+fn is_field_name(word: &str) -> bool {
+    !word.is_empty() && word.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Style the structure of a log message: the `tracing` target, `field=` names,
+/// quoted values and arrows. Words are never highlighted for what they say.
 fn highlight_message(message: &str) -> Vec<Span<'_>> {
+    /// Push `text` unstyled unless it is empty
+    fn plain<'a>(spans: &mut Vec<Span<'a>>, text: &'a str) {
+        if !text.is_empty() {
+            spans.push(Span::raw(text));
+        }
+    }
+
     let mut spans = Vec::new();
-    let mut last_end = 0;
+    let mut rest = message;
 
-    // Track positions of all pattern matches
-    let mut matches: Vec<(usize, usize, Color, bool)> = Vec::new();
-
-    for (pattern, color, bold) in HIGHLIGHT_PATTERNS {
-        let mut start = 0;
-        while let Some(pos) = message[start..].find(pattern) {
-            let abs_pos = start + pos;
-            let end = abs_pos + pattern.len();
-            matches.push((abs_pos, end, *color, *bold));
-            start = end;
-        }
+    // "pwsw::state: message": the target
+    if let Some((target, _)) = rest.split_once(' ')
+        && let Some(path) = target.strip_suffix(':')
+        && path.contains("::")
+        && path.split("::").all(is_field_name)
+    {
+        spans.push(Span::styled(&rest[..=target.len()], theme::dim()));
+        rest = &rest[target.len() + 1..];
     }
 
-    // Sort matches by position, then by length (longer first for same position)
-    matches.sort_by(|(start_a, end_a, ..), (start_b, end_b, ..)| {
-        start_a
-            .cmp(start_b)
-            .then_with(|| (end_b - start_b).cmp(&(end_a - start_a)))
-    });
-
-    // Remove overlapping matches (keep first/longer match)
-    let mut filtered_matches: Vec<(usize, usize, Color, bool)> = Vec::new();
-    for (start, end, color, bold) in matches {
-        // Check if this match overlaps with any already filtered match
-        let overlaps = filtered_matches
-            .iter()
-            .any(|(f_start, f_end, ..)| start < *f_end && end > *f_start);
-        if !overlaps {
-            filtered_matches.push((start, end, color, bold));
-        }
-    }
-
-    // Build spans with highlighted patterns
-    for (start, end, color, bold) in filtered_matches {
-        // Add text before this match
-        if last_end < start {
-            spans.push(Span::styled(
-                &message[last_end..start],
-                Style::default().fg(colors::LOG_MESSAGE),
-            ));
-        }
-
-        // Add highlighted match
-        let style = if bold {
-            Style::default().fg(color).add_modifier(Modifier::BOLD)
+    let mut plain_start = 0;
+    let mut i = 0;
+    let bytes = rest.as_bytes();
+    while i < rest.len() {
+        let tail = &rest[i..];
+        let at_word_start = i == 0 || matches!(bytes[i - 1], b' ' | b'(' | b'[' | b'=' | b',');
+        let token = if tail.starts_with('→') {
+            Some(('→'.len_utf8(), theme::accent().add_modifier(Modifier::BOLD)))
+        } else if tail.starts_with("->") || tail.starts_with("=>") {
+            Some((2, theme::accent().add_modifier(Modifier::BOLD)))
+        } else if at_word_start && (tail.starts_with('\'') || tail.starts_with('"')) {
+            let quote = &tail[..1];
+            tail[1..].find(quote).map(|end| (end + 2, theme::accent()))
+        } else if at_word_start {
+            tail.split_once('=')
+                .filter(|(name, _)| is_field_name(name))
+                .map(|(name, _)| (name.len() + 1, theme::dim()))
         } else {
-            Style::default().fg(color)
+            None
         };
-        spans.push(Span::styled(&message[start..end], style));
-        last_end = end;
+        match token {
+            Some((len, style)) => {
+                plain(&mut spans, &rest[plain_start..i]);
+                spans.push(Span::styled(&rest[i..i + len], style));
+                i += len;
+                plain_start = i;
+            }
+            None => i += tail.chars().next().map_or(1, char::len_utf8),
+        }
     }
-
-    // Add remaining text
-    if last_end < message.len() {
-        spans.push(Span::styled(
-            &message[last_end..],
-            Style::default().fg(colors::LOG_MESSAGE),
-        ));
-    }
-
-    // If no matches, return whole message
+    plain(&mut spans, &rest[plain_start..]);
     if spans.is_empty() {
-        spans.push(Span::styled(
-            message,
-            Style::default().fg(colors::LOG_MESSAGE),
-        ));
+        spans.push(Span::raw(message));
     }
-
     spans
 }
 
-/// Parse and style a log line with colored components
+/// Parse and style a log line: time, padded level, message
 fn style_log_line(line: &str) -> Line<'_> {
-    // Try to parse log format: "TIMESTAMP LEVEL message"
-    // Example: "2025-12-17T10:00:00.123456Z  INFO message here"
-
-    // The level may be padded ("…Z  INFO msg")
+    // "2025-12-17T10:00:00.123456Z  INFO pwsw::state: message here"
     let Some((full_timestamp, rest)) = line.split_once(' ') else {
         return Line::from(Span::raw(line));
     };
@@ -752,9 +549,8 @@ fn style_log_line(line: &str) -> Line<'_> {
         return Line::from(Span::raw(line));
     };
 
-    // Extract time-only from ISO 8601 timestamp (HH:MM:SS)
-    // Format: "2025-12-17T10:00:00.123456Z" -> "10:00:00". Character-based: the
-    // line may contain anything, so never cut inside a character.
+    // Time only ("10:00:00"); character-based: the line may contain anything,
+    // so never cut inside a character.
     let timestamp = full_timestamp
         .split_once('T')
         .map_or(full_timestamp, |(_, time)| {
@@ -762,42 +558,15 @@ fn style_log_line(line: &str) -> Line<'_> {
             time.char_indices().nth(8).map_or(time, |(i, _)| &time[..i])
         });
 
-    // Determine colors based on log level
-    let (level_color, level_bold) = match level {
-        "TRACE" => (colors::LOG_LEVEL_TRACE, false),
-        "DEBUG" => (colors::LOG_LEVEL_DEBUG, false),
-        "INFO" => (colors::LOG_LEVEL_INFO, false),
-        "WARN" => (colors::LOG_LEVEL_WARN, true),
-        "ERROR" => (colors::LOG_LEVEL_ERROR, true),
-        _ => (colors::LOG_MESSAGE, false),
-    };
-
-    let level_style = if level_bold {
-        Style::default()
-            .fg(level_color)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(level_color)
-    };
-
-    // Build styled line with colored components
-    let mut line_spans = vec![
-        Span::styled(timestamp, Style::default().fg(colors::LOG_TIMESTAMP)),
+    let mut spans = vec![
+        Span::styled(timestamp, theme::dim()),
         Span::raw(" "),
-        Span::styled(level, level_style),
+        // Levels padded to the same width so messages line up
+        Span::styled(format!("{level:>5}"), theme::log_level(level)),
         Span::raw(" "),
     ];
-
-    // Add highlighted message spans
-    line_spans.extend(highlight_message(message));
-
-    Line::from(line_spans)
-}
-
-/// Display width of one character (0 for control characters).
-fn char_width(c: char) -> usize {
-    let mut buf = [0u8; 4];
-    Span::raw(&*c.encode_utf8(&mut buf)).width()
+    spans.extend(highlight_message(message));
+    Line::from(spans)
 }
 
 /// Split `line` into rows of at most `width` columns, breaking anywhere.
@@ -880,19 +649,8 @@ fn render_log_viewer(
     daemon_running: bool,
     state: &mut DashboardScreen,
 ) {
-    let (status_text, status_color) = if daemon_running {
-        ("Live", colors::UI_SUCCESS)
-    } else {
-        ("Stopped", colors::UI_ERROR)
-    };
-    let border_color = if daemon_running {
-        colors::UI_BORDER_ACTIVE
-    } else {
-        colors::UI_BORDER_INACTIVE
-    };
-
     // Measure the viewport first: scroll limits depend on it
-    let block: Block = rounded_block().border_style(Style::default().fg(border_color));
+    let block = rounded_block();
     let inner = block.inner(area);
     let width = usize::from(inner.width);
     let height = usize::from(inner.height);
@@ -902,32 +660,36 @@ fn render_log_viewer(
     state.log_scroll_offset = state.log_scroll_offset.min(max_offset);
     let scroll_offset = state.log_scroll_offset;
 
-    // Title with scroll position and toggle hint
-    let mut title = vec![
-        Span::raw(" Daemon Logs ("),
-        Span::styled(status_text, Style::default().fg(status_color)),
-        Span::raw(")"),
-    ];
+    let mut title = vec![Span::styled(" Logs ", theme::bold())];
     if scroll_offset > 0 {
-        title.push(Span::raw(" - "));
         title.push(Span::styled(
-            format!("↑{scroll_offset} (End: live)"),
-            Style::default().fg(colors::UI_WARNING),
+            format!("· ↑{scroll_offset}, End for live "),
+            theme::warning(),
         ));
+    } else if daemon_running {
+        title.push(Span::styled("· live ", theme::success()));
+    } else {
+        title.push(Span::styled("· daemon stopped ", theme::dim()));
     }
-    title.push(Span::raw(" - [w] to toggle to Windows "));
+    // The daemon logs in UTC
+    title.push(Span::styled("· UTC ", theme::dim()));
+    let block = block.title(Line::from(title)).title_top(
+        Line::from(vec![
+            Span::styled("w", theme::key()),
+            Span::raw(" windows "),
+        ])
+        .alignment(Alignment::Right),
+    );
 
     let log_text = if daemon_logs.is_empty() {
         vec![Line::from(Span::styled(
-            "No logs available. Start the daemon to see logs here.",
-            Style::default().fg(colors::UI_SECONDARY),
+            "No logs yet. Start the daemon to see its log here.",
+            theme::dim(),
         ))]
     } else {
         rows
     };
-
-    let paragraph = Paragraph::new(log_text).block(block.title(Line::from(title)));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(Paragraph::new(log_text).block(block), area);
 }
 
 #[cfg(test)]
@@ -1054,38 +816,11 @@ mod tests {
         let line = style_log_line("2025-12-17T10:00:00.1Z  INFO Starting");
         let spans: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
         assert_eq!(spans[0], "10:00:00");
-        assert_eq!(spans[2], "INFO");
-    }
-
-    #[test]
-    fn test_truncate_utf8_window_titles() {
-        // Test UTF-8 multibyte characters in window titles
-        // ✳ is 3 bytes, but 1 character
-        assert_eq!(
-            truncate("sparkling-crab | ✳ Git Commit", 30),
-            "sparkling-crab | ✳ Git Commit"
-        );
-        assert_eq!(
-            truncate("sparkling-crab | ✳ Git Commit", 20),
-            "sparkling-crab | ✳ …"
-        ); // 19 chars + ellipsis
-
-        // Emoji test (4-byte characters)
-        assert_eq!(truncate("🎵 Music Player", 20), "🎵 Music Player");
-        assert_eq!(truncate("🎵 Music Player", 10), "🎵 Music P…"); // 9 chars: "🎵 Music P" + ellipsis
-
-        // Mixed ASCII and UTF-8 (this was the crash scenario)
-        let window_title = "browser | ✓ Logged In";
-        assert_eq!(truncate(window_title, 25), "browser | ✓ Logged In");
-        assert_eq!(truncate(window_title, 15), "browser | ✓ Lo…"); // 14 chars + ellipsis
-
-        // Edge case: exactly at character boundary
-        assert_eq!(truncate("test✳", 5), "test✳");
-        assert_eq!(truncate("test✳", 4), "tes…"); // 3 chars + ellipsis
-
-        // Multiple emoji
-        assert_eq!(truncate("🎮 Game | 🎯 Target", 20), "🎮 Game | 🎯 Target");
-        assert_eq!(truncate("🎮 Game | 🎯 Target", 12), "🎮 Game | 🎯 …"); // 11 chars: "🎮 Game | 🎯 " + ellipsis
+        assert_eq!(spans[2], " INFO", "levels are padded to five columns");
+        let warn = style_log_line("2025-12-17T10:00:00.1Z  WARN x");
+        assert_eq!(warn.spans[2].content, " WARN");
+        let error = style_log_line("2025-12-17T10:00:00.1Z ERROR x");
+        assert_eq!(error.spans[2].content, "ERROR");
     }
 
     // ============================================================================
@@ -1175,14 +910,39 @@ mod tests {
     }
 
     #[test]
-    fn test_highlight_message_overlapping_patterns() {
-        // "Loaded" and "rules" are both patterns - they shouldn't overlap
+    fn test_highlight_message_ignores_words() {
+        // Words are not highlighted for what they say
         let spans = highlight_message("Loaded 5 sinks, 3 rules");
-        // Should handle without crashing
-        assert!(!spans.is_empty(), "expected at least one span");
-        // The full message content should be preserved
-        let full: String = spans.iter().map(|s| s.content.to_string()).collect();
-        assert_eq!(full, "Loaded 5 sinks, 3 rules");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "Loaded 5 sinks, 3 rules");
+        // An apostrophe inside a word is not a quote
+        assert_eq!(highlight_message("the window's sink").len(), 1);
+    }
+
+    #[test]
+    fn test_highlight_message_structure() {
+        let text = |spans: &[Span]| {
+            spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        let spans = highlight_message("pwsw::state: Rule matched: 'firefox' → Sony (A2DP)");
+        assert_eq!(text(&spans), vec![
+            "pwsw::state: ",
+            "Rule matched: ",
+            "'firefox'",
+            " ",
+            "→",
+            " Sony (A2DP)"
+        ]);
+        let spans = highlight_message("now: app_id='mpv' title='x y' id=3");
+        assert_eq!(text(&spans), vec![
+            "now: ", "app_id=", "'mpv'", " ", "title=", "'x y'", " ", "id=", "3"
+        ]);
+        // Unclosed quote and non-ASCII stay intact
+        let full: String = text(&highlight_message("grüße 'open → ü")).concat();
+        assert_eq!(full, "grüße 'open → ü");
     }
 
     #[test]

@@ -298,17 +298,17 @@ async fn run_action<B: Backend>(
     action: DaemonAction,
     updates: &mpsc::UnboundedSender<AppUpdate>,
 ) {
-    let (message, refresh) = match backend.daemon_action(action).await {
+    let (result, refresh) = match backend.daemon_action(action).await {
         Ok(msg) => (
-            msg,
+            Ok(msg),
             matches!(
                 action,
                 DaemonAction::Start | DaemonAction::Stop | DaemonAction::Restart
             ),
         ),
-        Err(e) => (format!("Failed: {e:#}"), false),
+        Err(e) => (Err(format!("Failed: {e:#}")), false),
     };
-    let _ = updates.send(AppUpdate::ActionResult(message));
+    let _ = updates.send(AppUpdate::ActionResult(result));
     if refresh {
         let _ = updates.send(backend.daemon_state().await);
     }

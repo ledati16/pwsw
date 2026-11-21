@@ -3,7 +3,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 
-use super::app::{App, BgCommand, DaemonAction, Screen};
+use super::app::{App, BgCommand, DaemonAction, Screen, StatusKind};
 use super::screens::rules::{RuleField, RulesMode};
 use super::screens::settings::LOG_LEVELS;
 use super::screens::sinks::{SinkField, SinksMode, selector_names};
@@ -59,6 +59,9 @@ fn is_modal_active(app: &App) -> bool {
 fn handle_key_event(app: &mut App, key: KeyEvent) {
     let ctrl_c = key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL;
 
+    // A warning or error stays until the user does something next
+    app.dismiss_sticky_status();
+
     // A pending "unsaved changes" quit prompt: the very next key decides. q (where
     // it is a command, not text) or Ctrl+C quits; Esc only dismisses the prompt;
     // any other key dismisses it and then does its normal job.
@@ -87,7 +90,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             // config_dirty stays until the save reports back
             app.request_save(false);
         } else {
-            app.set_status("No unsaved changes".to_string());
+            app.set_status(StatusKind::Info, "No unsaved changes");
         }
         return;
     }
@@ -105,7 +108,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Esc => {
                 app.save_conflict = false;
-                app.set_status("Not saved; your changes are kept".to_string());
+                app.set_status(StatusKind::Info, "Not saved; your changes are kept");
             }
             _ => {}
         }
@@ -349,10 +352,10 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 _ => return,
             };
             if app.daemon_action_pending {
-                app.set_status("A daemon action is already running".to_string());
+                app.set_status(StatusKind::Warning, "A daemon action is already running");
             } else if app.send_command(BgCommand::DaemonAction(action)) {
                 app.daemon_action_pending = true;
-                app.set_status("Daemon action requested".to_string());
+                app.set_status(StatusKind::Info, format!("{}…", action.progress()));
             }
         }
 
@@ -438,7 +441,9 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                                 app.sinks_screen.selected = idx - 1;
                                 app.mark_dirty();
                             }
-                            Err(e) => app.set_status(format!("Cannot move sink: {e}")),
+                            Err(e) => {
+                                app.set_status(StatusKind::Error, format!("Cannot move sink: {e}"));
+                            }
                         }
                     }
                 }
@@ -451,7 +456,9 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                                 app.sinks_screen.selected = idx + 1;
                                 app.mark_dirty();
                             }
-                            Err(e) => app.set_status(format!("Cannot move sink: {e}")),
+                            Err(e) => {
+                                app.set_status(StatusKind::Error, format!("Cannot move sink: {e}"));
+                            }
                         }
                     }
                 }
@@ -475,7 +482,10 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                             Ok(()) => {
                                 app.mark_dirty();
                             }
-                            Err(e) => app.set_status(format!("Cannot set default: {e}")),
+                            Err(e) => app.set_status(
+                                StatusKind::Error,
+                                format!("Cannot make it the fallback: {e}"),
+                            ),
                         }
                     }
                 }
@@ -496,7 +506,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     if idx < app.config.sinks.len() {
                         // Refuses (with the referencing rules named) if any rule uses it
                         if let Err(e) = app.config.remove_sink(idx) {
-                            app.set_status(format!("{e}"));
+                            app.set_status(StatusKind::Warning, format!("{e}"));
                             app.sinks_screen.cancel();
                             return;
                         }
@@ -504,7 +514,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         app.sinks_screen.clamp_selection(app.config.sinks.len());
 
                         app.mark_dirty();
-                        app.set_status("Sink deleted".to_string());
+                        app.set_status(StatusKind::Success, "Sink deleted");
                     }
                     app.sinks_screen.cancel();
                 }
@@ -543,7 +553,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
 /// the selector was open cannot substitute a different node.
 fn pick_selected_node(app: &mut App) {
     let Some(node) = app.sinks_screen.selector_node.clone() else {
-        app.set_status("No node selected".to_string());
+        app.set_status(StatusKind::Warning, "No node selected");
         return;
     };
     let found = app
@@ -558,7 +568,10 @@ fn pick_selected_node(app: &mut App) {
                 .map(|s| s.description.clone())
         });
     let Some(description) = found else {
-        app.set_status(format!("Node {node} is no longer available"));
+        app.set_status(
+            StatusKind::Warning,
+            format!("Node {node} is no longer available"),
+        );
         return;
     };
     app.sinks_screen.editor.name.set_value(node);
@@ -566,8 +579,26 @@ fn pick_selected_node(app: &mut App) {
     app.sinks_screen.mode = SinksMode::AddEdit;
 }
 
+/// Answer to the "discard changes?" question: `Some(true)` discard, `Some(false)`
+/// keep editing, `None` for any other key (ignored).
+const fn discard_answer(key: KeyEvent) -> Option<bool> {
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+        _ => None,
+    }
+}
+
 /// Handle sink editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
+    if app.sinks_screen.confirm_discard {
+        match discard_answer(key) {
+            Some(true) => app.sinks_screen.cancel(),
+            Some(false) => app.sinks_screen.confirm_discard = false,
+            None => {}
+        }
+        return;
+    }
     match key.code {
         // --- Navigation (Field Switching) ---
         KeyCode::Up => {
@@ -607,7 +638,7 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             if app.sinks_screen.editor.name.value().is_empty()
                 || app.sinks_screen.editor.desc.value().is_empty()
             {
-                app.set_status("Name and Description are required".to_string());
+                app.set_status(StatusKind::Warning, "Node and Description are required");
                 return;
             }
 
@@ -632,10 +663,10 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                 app.config.add_sink(new_sink).map(|()| "Sink added")
             };
             match result {
-                Ok(msg) => app.set_status(msg.to_string()),
+                Ok(msg) => app.set_status(StatusKind::Success, msg),
                 Err(e) => {
                     // Keep the editor open so the user can fix the input
-                    app.set_status(format!("{e}"));
+                    app.set_status(StatusKind::Warning, format!("{e}"));
                     return;
                 }
             }
@@ -644,7 +675,11 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
             app.sinks_screen.cancel();
         }
         KeyCode::Esc => {
-            app.sinks_screen.cancel();
+            if app.sinks_screen.editor.is_modified() {
+                app.sinks_screen.confirm_discard = true;
+            } else {
+                app.sinks_screen.cancel();
+            }
         }
         // --- Field Specific Input (the Default checkbox only responds to Space) ---
         _ => {
@@ -675,7 +710,9 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                                 app.rules_screen.selected = idx - 1;
                                 app.mark_dirty();
                             }
-                            Err(e) => app.set_status(format!("Cannot move rule: {e}")),
+                            Err(e) => {
+                                app.set_status(StatusKind::Error, format!("Cannot move rule: {e}"));
+                            }
                         }
                     }
                 }
@@ -688,14 +725,16 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                                 app.rules_screen.selected = idx + 1;
                                 app.mark_dirty();
                             }
-                            Err(e) => app.set_status(format!("Cannot move rule: {e}")),
+                            Err(e) => {
+                                app.set_status(StatusKind::Error, format!("Cannot move rule: {e}"));
+                            }
                         }
                     }
                 }
                 (KeyCode::Char('a'), KeyModifiers::NONE) => {
                     // Rules require sinks to reference
                     if app.config.sinks.is_empty() {
-                        app.set_status("Add a sink first before creating rules".to_string());
+                        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
                         return;
                     }
                     app.rules_screen.start_add();
@@ -703,7 +742,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                 (KeyCode::Char('e'), KeyModifiers::NONE) => {
                     // Rules require sinks to reference
                     if app.config.sinks.is_empty() {
-                        app.set_status("Add a sink first before editing rules".to_string());
+                        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
                         return;
                     }
                     app.rules_screen.start_edit(&app.config.rules);
@@ -728,7 +767,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                 let idx = app.rules_screen.selected;
                 if idx < app.config.rules.len() {
                     if let Err(e) = app.config.remove_rule(idx) {
-                        app.set_status(format!("{e}"));
+                        app.set_status(StatusKind::Warning, format!("{e}"));
                         app.rules_screen.cancel();
                         return;
                     }
@@ -736,7 +775,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                     app.rules_screen.clamp_selection(app.config.rules.len());
 
                     app.mark_dirty();
-                    app.set_status("Rule deleted".to_string());
+                    app.set_status(StatusKind::Success, "Rule deleted");
                 }
                 app.rules_screen.cancel();
             }
@@ -783,6 +822,14 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 /// Handle rule editor input (add/edit modal)
 // Match arms handle conceptually different field types despite similar-looking actions
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
+    if app.rules_screen.confirm_discard {
+        match discard_answer(key) {
+            Some(true) => app.rules_screen.cancel(),
+            Some(false) => app.rules_screen.confirm_discard = false,
+            None => {}
+        }
+        return;
+    }
     match key.code {
         // --- Navigation (Field Switching) ---
         KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
@@ -811,12 +858,12 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             // Save the rule
             if app.rules_screen.editor.app_id_pattern.value().is_empty() {
-                app.set_status("App ID pattern is required".to_string());
+                app.set_status(StatusKind::Warning, "App ID pattern is required");
                 return;
             }
 
             if app.rules_screen.editor.sink_ref.is_empty() {
-                app.set_status("Target sink is required".to_string());
+                app.set_status(StatusKind::Warning, "Target sink is required");
                 return;
             }
 
@@ -825,7 +872,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 match compile_rule_regex(app.rules_screen.editor.app_id_pattern.value()) {
                     Ok(r) => r,
                     Err(e) => {
-                        app.set_status(format!("Invalid app_id regex: {e}"));
+                        app.set_status(StatusKind::Warning, format!("Invalid app_id regex: {e}"));
                         return;
                     }
                 };
@@ -836,7 +883,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 match compile_rule_regex(app.rules_screen.editor.title_pattern.value()) {
                     Ok(r) => Some(r),
                     Err(e) => {
-                        app.set_status(format!("Invalid title regex: {e}"));
+                        app.set_status(StatusKind::Warning, format!("Invalid title regex: {e}"));
                         return;
                     }
                 }
@@ -869,10 +916,10 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 app.config.add_rule(new_rule).map(|()| "Rule added")
             };
             match result {
-                Ok(msg) => app.set_status(msg.to_string()),
+                Ok(msg) => app.set_status(StatusKind::Success, msg),
                 Err(e) => {
                     // Keep the editor open so the user can fix the input
-                    app.set_status(format!("{e}"));
+                    app.set_status(StatusKind::Warning, format!("{e}"));
                     return;
                 }
             }
@@ -881,7 +928,11 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             app.rules_screen.cancel();
         }
         KeyCode::Esc => {
-            app.rules_screen.cancel();
+            if app.rules_screen.editor.is_modified() {
+                app.rules_screen.confirm_discard = true;
+            } else {
+                app.rules_screen.cancel();
+            }
         }
         // --- Field Specific Input (sink and notify only respond to Space) ---
         // (the live preview follows the pattern text by itself; see `App::refresh_preview`)

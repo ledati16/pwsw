@@ -7,13 +7,11 @@
 
 use std::collections::HashMap;
 
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use regex::Regex;
 
 use crate::config::compile_rule_regex;
 use crate::ipc::WindowInfo;
-use crate::style::colors;
 
 /// How many matching windows the preview lists (the rest are counted).
 pub(crate) const MAX_SHOWN: usize = 5;
@@ -169,8 +167,7 @@ pub(crate) fn build_preview_lines(matches: &[String]) -> Vec<Line<'_>> {
         .iter()
         .map(|s| {
             Line::from(vec![
-                Span::raw("  "),
-                Span::styled("✓ ", Style::default().fg(colors::UI_SUCCESS)),
+                Span::styled("✓ ", crate::tui::theme::success()),
                 Span::raw(s.as_str()),
             ])
         })
@@ -284,6 +281,6 @@ mod tests {
         let lines = build_preview_lines(&inputs);
         assert_eq!(lines.len(), 1);
         let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "  ✓ firefox | Firefox Browser");
+        assert_eq!(text, "✓ firefox | Firefox Browser");
     }
 }

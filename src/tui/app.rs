@@ -5,20 +5,20 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::Result;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
 use throbber_widgets_tui::ThrobberState;
 
+use super::keymap::Context;
 use super::preview::LivePreview;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::{Config, ConfigModifiedOnDisk};
-use crate::style::colors;
 
 /// Longest paste accepted into a text field (characters).
 const MAX_PASTE_CHARS: usize = 4096;
 
 /// Maximum number of daemon log lines kept for the log view.
 pub(crate) const MAX_LOG_LINES: usize = 500;
+/// How long a success or info status message stays in the footer.
+pub(crate) const STATUS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// How long quitting waits for an in-flight config save before giving up and staying open.
 pub(crate) const QUIT_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
@@ -29,15 +29,6 @@ pub enum Screen {
     Sinks,
     Rules,
     Settings,
-}
-
-/// Screen mode for context-aware UI elements
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScreenMode {
-    /// Normal list/view mode
-    List,
-    /// Modal/dialog/editor mode
-    Modal,
 }
 
 impl Screen {
@@ -87,6 +78,35 @@ impl Screen {
     }
 }
 
+/// What a status message reports; decides its icon, colour and lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusKind {
+    /// Something is going on ("Saving configuration…"); expires
+    Info,
+    /// Something worked; expires
+    Success,
+    /// Something was refused or needs attention; stays until the next key press
+    Warning,
+    /// Something failed; stays until the next key press
+    Error,
+}
+
+impl StatusKind {
+    /// Whether messages of this kind go away by themselves after [`STATUS_TIMEOUT`]
+    pub(crate) const fn expires(self) -> bool {
+        matches!(self, Self::Info | Self::Success)
+    }
+}
+
+/// The message shown in the footer
+#[derive(Debug, Clone)]
+pub(crate) struct Status {
+    pub(crate) text: String,
+    pub(crate) kind: StatusKind,
+    /// When an expiring message is removed
+    expires_at: Option<tokio::time::Instant>,
+}
+
 /// Messages sent from background worker to UI
 pub enum AppUpdate {
     /// Full sink data including active and profile sinks
@@ -114,10 +134,10 @@ pub enum AppUpdate {
         /// Whether the unit is enabled; `None` when it is not installed
         service_enabled: Option<bool>,
     },
-    /// Result message from daemon control action (start/stop/restart/enable/disable)
+    /// Result of a daemon control action (start/stop/restart/enable/disable)
     ///
-    /// Sent immediately after a daemon action completes, containing success or error message.
-    ActionResult(String),
+    /// Sent immediately after a daemon action completes: what was done, or why it failed.
+    ActionResult(Result<String, String>),
     /// Config save result
     ///
     /// Sent by background worker after a `SaveConfig` command completes. `saved` is
@@ -207,7 +227,7 @@ pub struct App {
     /// Snapshot of config at last save (for dirty comparison)
     original_config: Config,
     /// Status message to display (errors, confirmations)
-    status_message: Option<String>,
+    status: Option<Status>,
     /// Live preview of the rule editor's patterns
     pub(crate) preview: LivePreview,
     /// State for throbber animation
@@ -234,6 +254,8 @@ pub struct App {
     pub(crate) confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
     pub(crate) daemon_running: bool,
+    /// Whether a daemon state snapshot arrived yet
+    daemon_state_seen: bool,
     /// Cached window count (updated by background worker)
     pub(crate) window_count: usize,
     /// Cached window list for live preview (updated by background worker)
@@ -252,8 +274,6 @@ pub struct App {
     quit_wait_expired: bool,
     /// Whether a config reload sent to the background worker has not reported back yet
     pub(crate) reload_pending: bool,
-    /// Cached active sinks snapshot (updated by background worker)
-    pub(crate) active_sinks: Vec<String>,
     /// Cached full active sinks with descriptions
     pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
     /// Cached profile sinks for sink selector
@@ -275,6 +295,19 @@ pub enum DaemonAction {
     Restart,
     Enable,
     Disable,
+}
+
+impl DaemonAction {
+    /// What the footer says while the action runs
+    pub(crate) const fn progress(self) -> &'static str {
+        match self {
+            Self::Start => "Starting the daemon",
+            Self::Stop => "Stopping the daemon",
+            Self::Restart => "Restarting the daemon",
+            Self::Enable => "Enabling the service",
+            Self::Disable => "Disabling the service",
+        }
+    }
 }
 
 impl App {
@@ -304,7 +337,7 @@ impl App {
             config_path: None,
             save_conflict: false,
             original_config,
-            status_message: None,
+            status: None,
             preview: LivePreview::default(),
             throbber_state: ThrobberState::default(),
             dashboard_screen,
@@ -318,10 +351,10 @@ impl App {
             help_collapsed_sections: std::collections::HashSet::new(),
             confirm_quit: false,
             daemon_running: false,
+            daemon_state_seen: false,
             window_count: 0,
             windows: Vec::new(),
             windows_generation: 0,
-            active_sinks: Vec::new(),
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
@@ -355,37 +388,6 @@ impl App {
         self.clear_status();
     }
 
-    /// Get the current screen mode (list vs modal)
-    pub(crate) fn get_screen_mode(&self) -> ScreenMode {
-        use super::screens::rules::RulesMode;
-        use super::screens::sinks::SinksMode;
-
-        match self.current_screen {
-            Screen::Dashboard => ScreenMode::List,
-            Screen::Sinks => {
-                if self.sinks_screen.mode == SinksMode::List {
-                    ScreenMode::List
-                } else {
-                    ScreenMode::Modal
-                }
-            }
-            Screen::Rules => {
-                if self.rules_screen.mode == RulesMode::List {
-                    ScreenMode::List
-                } else {
-                    ScreenMode::Modal
-                }
-            }
-            Screen::Settings => {
-                if self.settings_screen.editing_log_level {
-                    ScreenMode::Modal
-                } else {
-                    ScreenMode::List
-                }
-            }
-        }
-    }
-
     /// Check if any text input field is currently focused
     pub(crate) fn is_input_focused(&self) -> bool {
         use super::screens::rules::RulesMode;
@@ -395,10 +397,12 @@ impl App {
             Screen::Dashboard | Screen::Settings => false,
             Screen::Sinks => {
                 self.sinks_screen.mode == SinksMode::AddEdit
+                    && !self.sinks_screen.confirm_discard
                     && self.sinks_screen.editor.focused_field.is_text()
             }
             Screen::Rules => {
                 self.rules_screen.mode == RulesMode::AddEdit
+                    && !self.rules_screen.confirm_discard
                     && self.rules_screen.editor.focused_field.is_text()
             }
         }
@@ -438,22 +442,100 @@ impl App {
         self.dirty = true;
     }
 
-    /// Set a status message to display to the user
-    pub(crate) fn set_status(&mut self, message: String) {
-        self.status_message = Some(message);
+    /// Show a status message in the footer (replacing any other).
+    ///
+    /// Info and success messages expire after [`STATUS_TIMEOUT`]; warnings and
+    /// errors stay until the next key press (see [`Self::dismiss_sticky_status`]).
+    pub(crate) fn set_status(&mut self, kind: StatusKind, message: impl Into<String>) {
+        let expires_at = kind
+            .expires()
+            .then(|| tokio::time::Instant::now() + STATUS_TIMEOUT);
+        self.status = Some(Status {
+            text: message.into(),
+            kind,
+            expires_at,
+        });
         self.dirty = true;
     }
 
     /// Clear the current status message
     pub(crate) fn clear_status(&mut self) {
-        self.status_message = None;
+        self.status = None;
         self.dirty = true;
+    }
+
+    /// A key was pressed: a warning or error has been seen and goes away
+    pub(crate) fn dismiss_sticky_status(&mut self) {
+        if self.status.as_ref().is_some_and(|s| !s.kind.expires()) {
+            self.clear_status();
+        }
+    }
+
+    /// When the current status message expires (`None`: it does not, or there is none)
+    pub(crate) fn status_deadline(&self) -> Option<tokio::time::Instant> {
+        self.status.as_ref().and_then(|s| s.expires_at)
+    }
+
+    /// Remove the status message if its time is up
+    pub(crate) fn expire_status(&mut self) {
+        if self
+            .status_deadline()
+            .is_some_and(|t| t <= tokio::time::Instant::now())
+        {
+            self.clear_status();
+        }
     }
 
     /// Read-only accessor for status message
     #[cfg(test)]
     pub(crate) fn status_message(&self) -> Option<&str> {
-        self.status_message.as_deref()
+        self.status.as_ref().map(|s| s.text.as_str())
+    }
+
+    /// Kind of the current status message
+    #[cfg(test)]
+    pub(crate) fn status_kind(&self) -> Option<StatusKind> {
+        self.status.as_ref().map(|s| s.kind)
+    }
+
+    /// The key binding contexts active now (they decide the footer hints)
+    pub(crate) fn active_contexts(&self) -> Vec<Context> {
+        use super::screens::rules::RulesMode;
+        use super::screens::sinks::SinksMode;
+
+        if self.show_help {
+            return vec![Context::Help];
+        }
+        if self.save_conflict {
+            return vec![Context::Conflict];
+        }
+        let screen = self.current_screen;
+        let modal = match screen {
+            Screen::Dashboard => None,
+            Screen::Sinks => match self.sinks_screen.mode {
+                SinksMode::List => None,
+                SinksMode::AddEdit if self.sinks_screen.confirm_discard => {
+                    Some(Context::Discard(screen))
+                }
+                SinksMode::AddEdit => Some(Context::Editor(screen)),
+                SinksMode::SelectSink => Some(Context::Dropdown(screen)),
+                SinksMode::Delete | SinksMode::Inspect => Some(Context::Dialog(screen)),
+            },
+            Screen::Rules => match self.rules_screen.mode {
+                RulesMode::List => None,
+                RulesMode::AddEdit if self.rules_screen.confirm_discard => {
+                    Some(Context::Discard(screen))
+                }
+                RulesMode::AddEdit => Some(Context::Editor(screen)),
+                RulesMode::SelectSink => Some(Context::Dropdown(screen)),
+                RulesMode::Delete | RulesMode::Inspect => Some(Context::Dialog(screen)),
+            },
+            Screen::Settings => self
+                .settings_screen
+                .editing_log_level
+                .then_some(Context::Dropdown(screen)),
+        };
+        modal.map_or_else(|| vec![Context::List(screen), Context::Global], |c| vec![c])
     }
 
     /// Whether background work the user is waiting for is in flight (drives the
@@ -470,13 +552,9 @@ impl App {
 
     /// Borrow what the footer renders: the status message, whether to spin,
     /// and the spinner state.
-    pub(crate) fn footer_parts(&mut self) -> (Option<&str>, bool, &mut ThrobberState) {
+    pub(crate) fn footer_parts(&mut self) -> (Option<&Status>, bool, &mut ThrobberState) {
         let busy = self.is_busy();
-        (
-            self.status_message.as_deref(),
-            busy,
-            &mut self.throbber_state,
-        )
+        (self.status.as_ref(), busy, &mut self.throbber_state)
     }
 
     /// Queue a command for the background worker.
@@ -488,17 +566,23 @@ impl App {
         use tokio::sync::mpsc::error::TrySendError;
 
         let Some(tx) = &self.bg_cmd_tx else {
-            self.set_status("Background worker not available".to_string());
+            self.set_status(StatusKind::Error, "Background worker not available");
             return false;
         };
         match tx.try_send(cmd) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                self.set_status("Busy: too many pending requests, try again".to_string());
+                self.set_status(
+                    StatusKind::Warning,
+                    "Busy: too many pending requests, try again",
+                );
                 false
             }
             Err(TrySendError::Closed(_)) => {
-                self.set_status("Background worker stopped; restart the TUI".to_string());
+                self.set_status(
+                    StatusKind::Error,
+                    "Background worker stopped; restart the TUI",
+                );
                 false
             }
         }
@@ -536,7 +620,10 @@ impl App {
         if self.quit_after_save.is_none() {
             self.quit_after_save = Some(tokio::time::Instant::now() + QUIT_SAVE_WAIT);
         }
-        self.set_status("Saving configuration… (quitting once it is written)".to_string());
+        self.set_status(
+            StatusKind::Info,
+            "Saving configuration… (quitting once it is written)",
+        );
     }
 
     /// When a quit waiting for an in-flight save gives up; `None` when not waiting
@@ -553,7 +640,10 @@ impl App {
     /// Stop waiting to quit after the save; the app stays open
     pub(crate) fn cancel_quit_after_save(&mut self) {
         if self.quit_after_save.take().is_some() {
-            self.set_status("Quit cancelled; the save is still running".to_string());
+            self.set_status(
+                StatusKind::Info,
+                "Quit cancelled; the save is still running",
+            );
         }
     }
 
@@ -565,8 +655,8 @@ impl App {
         }
         self.quit_wait_expired = true;
         self.set_status(
-            "Save still running; not quitting so it is not lost. Quit again to exit anyway"
-                .to_string(),
+            StatusKind::Warning,
+            "Save still running; not quitting so it is not lost. Quit again to exit anyway",
         );
     }
 
@@ -576,9 +666,9 @@ impl App {
         if self.config_dirty {
             self.confirm_quit = true;
             self.set_status(
+                StatusKind::Warning,
                 "Unsaved changes! Press q or Ctrl+C again to quit without saving, any other key \
-                 to stay"
-                    .to_string(),
+                 to stay",
             );
         } else {
             self.quit();
@@ -610,7 +700,7 @@ impl App {
     /// `force` overwrites changes made to the file by someone else.
     pub(crate) fn request_save(&mut self, force: bool) {
         let Some(path) = self.config_path.clone() else {
-            self.set_status("No config file to save to".to_string());
+            self.set_status(StatusKind::Error, "No config file to save to");
             return;
         };
         let snapshot = Box::new(self.config.clone());
@@ -621,7 +711,7 @@ impl App {
                 force,
             }) {
                 self.save_pending = true;
-                self.set_status("Saving configuration...".to_string());
+                self.set_status(StatusKind::Info, "Saving configuration…");
             }
         } else {
             let outcome = save_blocking(&snapshot, &path, force);
@@ -637,13 +727,13 @@ impl App {
     /// Runs on the background worker; without one (tests) it loads right away.
     pub(crate) fn request_reload(&mut self) {
         let Some(path) = self.config_path.clone() else {
-            self.set_status("No config file to reload".to_string());
+            self.set_status(StatusKind::Error, "No config file to reload");
             return;
         };
         if self.bg_cmd_tx.is_some() {
             if self.send_command(BgCommand::ReloadConfig(path)) {
                 self.reload_pending = true;
-                self.set_status("Reloading configuration...".to_string());
+                self.set_status(StatusKind::Info, "Reloading configuration…");
             }
         } else {
             let result = load_blocking(&path);
@@ -664,212 +754,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// Generate the context bar text based on current app state
-    pub(crate) fn context_bar_text(&self) -> Line<'static> {
-        use super::screens::rules::RulesMode;
-        use super::screens::sinks::SinksMode;
-
-        let mode = self.get_screen_mode();
-        let key = |k: &'static str| Span::styled(k, Style::default().fg(colors::UI_HIGHLIGHT));
-
-        if self.save_conflict {
-            return Line::from(vec![
-                key("[o]"),
-                Span::raw(" Overwrite  "),
-                key("[r]"),
-                Span::raw(" Reload from disk  "),
-                key("[Esc]"),
-                Span::raw(" Cancel"),
-            ]);
-        }
-
-        // Build screen-specific content
-        let base_line = match (self.current_screen, mode) {
-            (Screen::Dashboard, ScreenMode::List) => {
-                // Phase 9B: View-aware context bar for dashboard
-                use crate::tui::screens::DashboardView;
-                let mut spans = vec![
-                    Span::styled("[←→]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                    Span::raw(" Select Action  "),
-                    Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                    Span::raw(" Execute  "),
-                ];
-
-                // Add view-specific scrolling hints
-                match self.dashboard_screen.current_view {
-                    DashboardView::Logs => {
-                        spans.push(key("[↑↓/PgUp/PgDn]"));
-                        spans.push(Span::raw(" Scroll  "));
-                        spans.push(key("[End]"));
-                        spans.push(Span::raw(" Live  "));
-                        spans.push(Span::styled(
-                            "[w]",
-                            Style::default().fg(colors::UI_HIGHLIGHT),
-                        ));
-                        spans.push(Span::raw(" View Windows"));
-                    }
-                    DashboardView::Windows => {
-                        spans.push(key("[↑↓/PgUp/PgDn]"));
-                        spans.push(Span::raw(" Scroll Windows  "));
-                        spans.push(Span::styled(
-                            "[w]",
-                            Style::default().fg(colors::UI_HIGHLIGHT),
-                        ));
-                        spans.push(Span::raw(" View Logs"));
-                    }
-                }
-
-                Line::from(spans)
-            }
-            (Screen::Sinks, ScreenMode::List) => Line::from(vec![
-                Span::raw("↑↓ Navigate  "),
-                Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Reorder  "),
-                Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Add  "),
-                Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Edit  "),
-                Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Delete  "),
-                Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Default  "),
-                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Inspect"),
-            ]),
-            (Screen::Sinks, ScreenMode::Modal) => {
-                // Determine which modal we're in
-                match self.sinks_screen.mode {
-                    SinksMode::AddEdit => Line::from(vec![
-                        Span::raw("↑↓/"),
-                        Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Switch field  "),
-                        Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Select  "),
-                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Save  "),
-                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Cancel"),
-                    ]),
-                    SinksMode::Delete => Line::from(vec![
-                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Confirm  "),
-                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Cancel"),
-                    ]),
-                    SinksMode::SelectSink => Line::from(vec![
-                        Span::raw("↑↓ Navigate  "),
-                        key("[Space/Enter]"),
-                        Span::raw(" Select  "),
-                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Cancel"),
-                    ]),
-                    SinksMode::Inspect => Line::from(vec![
-                        Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Close Details"),
-                    ]),
-                    SinksMode::List => Line::from(""), // Should not happen in Modal mode
-                }
-            }
-            (Screen::Rules, ScreenMode::List) => Line::from(vec![
-                Span::raw("↑↓ Navigate  "),
-                Span::styled("[Shift+↑↓]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Reorder  "),
-                Span::styled("[a]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Add  "),
-                Span::styled("[e]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Edit  "),
-                Span::styled("[x]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Delete  "),
-                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Inspect"),
-            ]),
-            (Screen::Rules, ScreenMode::Modal) => {
-                // Determine which modal we're in
-                match self.rules_screen.mode {
-                    RulesMode::AddEdit => {
-                        let mut spans = vec![
-                            Span::raw("↑↓/"),
-                            Span::styled("Tab", Style::default().fg(colors::UI_HIGHLIGHT)),
-                            Span::raw(" Switch field  "),
-                            Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                            Span::raw(" Select  "),
-                            Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                            Span::raw(" Save  "),
-                            Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                            Span::raw(" Cancel"),
-                        ];
-                        // Show live preview indicator once there is a pattern to match
-                        if !self.rules_screen.editor.app_id_pattern.value().is_empty() {
-                            spans.push(Span::raw("  "));
-                            spans.push(Span::styled(
-                                "⚡ Live preview",
-                                Style::default().fg(colors::UI_SUCCESS),
-                            ));
-                        }
-                        Line::from(spans)
-                    }
-                    RulesMode::Delete => Line::from(vec![
-                        Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Confirm  "),
-                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Cancel"),
-                    ]),
-                    RulesMode::SelectSink => Line::from(vec![
-                        Span::raw("↑↓ Navigate  "),
-                        key("[Space/Enter]"),
-                        Span::raw(" Select  "),
-                        Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Cancel"),
-                    ]),
-                    RulesMode::Inspect => Line::from(vec![
-                        Span::styled("[Enter/Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                        Span::raw(" Close Details"),
-                    ]),
-                    RulesMode::List => Line::from(""), // Should not happen in Modal mode
-                }
-            }
-            (Screen::Settings, ScreenMode::List) => Line::from(vec![
-                Span::raw("↑↓ Navigate  "),
-                Span::styled("[PgUp/PgDn]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Scroll Info  "),
-                Span::styled("[Enter/Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Toggle/Edit"),
-            ]),
-            (Screen::Settings, ScreenMode::Modal) => Line::from(vec![
-                Span::raw("↑↓ Navigate  "),
-                Span::styled("[Enter]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Confirm  "),
-                Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Cancel"),
-            ]),
-            _ => Line::from(""),
-        };
-
-        // Append save indicator if config has unsaved changes
-        if self.config_dirty {
-            let mut spans = base_line.spans;
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                "[Ctrl+S]",
-                Style::default()
-                    .fg(colors::UI_WARNING)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            spans.push(Span::styled(
-                " Save",
-                Style::default().fg(colors::UI_WARNING),
-            ));
-            Line::from(spans)
-        } else {
-            base_line
-        }
-    }
-
     /// Process a background update message
     pub(crate) fn handle_update(&mut self, update: AppUpdate) {
         match update {
             AppUpdate::SinksData { active, profiles } => {
-                self.active_sinks = active.iter().map(|s| s.name.clone()).collect();
                 self.active_sink_list = active;
                 self.profile_sink_list = profiles;
                 self.pipewire_available = true;
@@ -885,6 +773,10 @@ impl App {
                 unit_installed,
                 service_enabled,
             } => {
+                if running != self.daemon_running || !self.daemon_state_seen {
+                    self.dashboard_screen.preselect_action(running);
+                }
+                self.daemon_state_seen = true;
                 self.daemon_running = running;
                 self.window_count = windows.len();
                 let changed = windows.len() != self.windows.len()
@@ -901,8 +793,11 @@ impl App {
                 self.dashboard_screen.set_max_actions(unit_installed);
                 self.dirty = true;
             }
-            AppUpdate::ActionResult(msg) => {
-                self.set_status(msg);
+            AppUpdate::ActionResult(result) => {
+                match result {
+                    Ok(msg) => self.set_status(StatusKind::Success, msg),
+                    Err(msg) => self.set_status(StatusKind::Error, msg),
+                }
                 // Clear daemon action pending flag when an action completes
                 self.daemon_action_pending = false;
                 // set_status sets dirty already
@@ -919,22 +814,28 @@ impl App {
                         self.original_config = *saved;
                         self.mark_dirty();
                         self.save_conflict = false;
-                        self.set_status(if self.config_dirty {
-                            "Configuration saved (changes made since are not saved yet)".to_string()
+                        if self.config_dirty {
+                            self.set_status(
+                                StatusKind::Warning,
+                                "Configuration saved (changes made since are not saved yet)",
+                            );
                         } else {
-                            "Configuration saved successfully".to_string()
-                        });
+                            self.set_status(StatusKind::Success, "Configuration saved");
+                        }
                     }
                     SaveOutcome::ModifiedOnDisk => {
                         self.save_conflict = true;
                         self.set_status(
-                            "Config file changed on disk; not saved (choose in the dialog)"
-                                .to_string(),
+                            StatusKind::Warning,
+                            "Config file changed on disk; not saved (choose in the dialog)",
                         );
                     }
                     SaveOutcome::Failed(message) => {
                         // Dirty flag stays: the user still sees the save indicator
-                        self.set_status(format!("Failed to save config: {message}"));
+                        self.set_status(
+                            StatusKind::Error,
+                            format!("Failed to save config: {message}"),
+                        );
                     }
                 }
                 // A quit waiting for this save: exit once it is on disk (the user
@@ -943,8 +844,16 @@ impl App {
                 if quitting && succeeded {
                     self.should_quit = true;
                 } else if quitting {
-                    let reason = self.status_message.take().unwrap_or_default();
-                    self.set_status(format!("Not quitting: {reason}"));
+                    let (kind, reason) = self.status.take().map_or_else(
+                        || (StatusKind::Warning, String::new()),
+                        |s| (s.kind, s.text),
+                    );
+                    let kind = if kind.expires() {
+                        StatusKind::Warning
+                    } else {
+                        kind
+                    };
+                    self.set_status(kind, format!("Not quitting: {reason}"));
                 }
             }
             AppUpdate::ConfigReloaded(result) => {
@@ -952,9 +861,12 @@ impl App {
                 match result {
                     Ok(config) => {
                         self.replace_config(*config);
-                        self.set_status("Configuration reloaded from disk".to_string());
+                        self.set_status(StatusKind::Success, "Configuration reloaded from disk");
                     }
-                    Err(message) => self.set_status(format!("Failed to reload config: {message}")),
+                    Err(message) => self.set_status(
+                        StatusKind::Error,
+                        format!("Failed to reload config: {message}"),
+                    ),
                 }
             }
             AppUpdate::DaemonLogs(new_lines) => {

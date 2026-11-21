@@ -11,7 +11,8 @@
 //! - Cyan for headers and technical terms
 //! - Bold for important identifiers, dim for secondary information
 //!
-//! The TUI uses the [`colors`] palette with `ratatui` instead.
+//! The TUI draws with `ratatui` styles instead and asks [`colors_enabled`] whether
+//! it may use colour at all.
 
 use std::ffi::OsStr;
 use std::fmt;
@@ -135,6 +136,13 @@ pub fn color_enabled(stream: Stream) -> bool {
     }
 }
 
+/// Whether the TUI may use colour: the decision [`init`] made for stdout, which the
+/// TUI draws to (`--color never` or `NO_COLOR` turn it off)
+#[must_use]
+pub fn colors_enabled() -> bool {
+    color_enabled(Stream::Stdout)
+}
+
 /// The colour rule: `--color` wins; otherwise a non-empty `NO_COLOR` turns colour
 /// off, `CLICOLOR_FORCE` (set and not `0`) turns it on, and else it follows whether
 /// the stream is a terminal.
@@ -255,101 +263,6 @@ pub trait PwswStyle: Sized + fmt::Display {
 }
 
 impl<T: fmt::Display> PwswStyle for T {}
-
-// ============================================================================
-// Ratatui TUI Color Helpers
-// ============================================================================
-
-/// Semantic color palette for TUI use with `ratatui`
-#[cfg(feature = "tui")]
-pub mod colors {
-    use ratatui::style::Color;
-
-    // Log styling colors
-
-    /// Color for log timestamps (dark gray)
-    pub const LOG_TIMESTAMP: Color = Color::DarkGray;
-
-    /// Color for INFO log level (green)
-    pub const LOG_LEVEL_INFO: Color = Color::Green;
-
-    /// Color for DEBUG log level (cyan)
-    pub const LOG_LEVEL_DEBUG: Color = Color::Cyan;
-
-    /// Color for TRACE log level (magenta)
-    pub const LOG_LEVEL_TRACE: Color = Color::Magenta;
-
-    /// Color for WARN log level (yellow, use with bold modifier)
-    pub const LOG_LEVEL_WARN: Color = Color::Yellow;
-
-    /// Color for ERROR log level (red, use with bold modifier)
-    pub const LOG_LEVEL_ERROR: Color = Color::Red;
-
-    /// Color for log keywords (`app_id=`, `title=`, etc.)
-    pub const LOG_KEYWORD: Color = Color::Cyan;
-
-    /// Color for log events ("Rule matched:", "Switching:", use with bold)
-    pub const LOG_EVENT: Color = Color::Green;
-
-    /// Color for log close events ("Window closed:", use with bold)
-    pub const LOG_EVENT_CLOSE: Color = Color::Yellow;
-
-    /// Color for log message text (default readable)
-    pub const LOG_MESSAGE: Color = Color::White;
-
-    // UI element colors
-
-    /// Color for active/live UI borders (green)
-    pub const UI_BORDER_ACTIVE: Color = Color::Green;
-
-    /// Color for inactive/stopped UI borders (gray)
-    pub const UI_BORDER_INACTIVE: Color = Color::Gray;
-
-    /// Color for selected UI elements (cyan, use with bold)
-    pub const UI_SELECTED: Color = Color::Cyan;
-
-    /// Background color for selected UI elements (dark gray)
-    pub const UI_SELECTED_BG: Color = Color::DarkGray;
-
-    /// Color for UI highlights (cyan)
-    pub const UI_HIGHLIGHT: Color = Color::Cyan;
-
-    /// Color for statistics/counts (yellow, use with bold)
-    pub const UI_STAT: Color = Color::Yellow;
-
-    /// Color for success states (green)
-    pub const UI_SUCCESS: Color = Color::Green;
-
-    /// Color for error states (red)
-    pub const UI_ERROR: Color = Color::Red;
-
-    /// Color for warning states (yellow)
-    pub const UI_WARNING: Color = Color::Yellow;
-
-    /// Color for secondary/dimmed text (gray)
-    pub const UI_SECONDARY: Color = Color::Gray;
-
-    /// Color for normal UI text (white)
-    pub const UI_TEXT: Color = Color::White;
-
-    /// Color for focused input fields (magenta, use with bold for borders)
-    pub const UI_FOCUS: Color = Color::Magenta;
-
-    /// Color for valid input/state (green, lighter than success)
-    pub const UI_VALID: Color = Color::Green;
-
-    /// Color for invalid input/state (red, for validation feedback)
-    pub const UI_INVALID: Color = Color::Red;
-
-    /// Color for matched/active items (green, for items that match rules)
-    pub const UI_MATCHED: Color = Color::Green;
-
-    /// Color for unmatched/inactive items (dark gray, dimmed)
-    pub const UI_UNMATCHED: Color = Color::DarkGray;
-
-    /// Background color for modals, overlays, and popups (black for contrast)
-    pub const UI_MODAL_BG: Color = Color::Black;
-}
 
 #[cfg(test)]
 mod tests {

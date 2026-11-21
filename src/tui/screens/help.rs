@@ -7,14 +7,17 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Clear, Padding, Row, Table, TableState};
+use ratatui::widgets::{Cell, Clear, Row, Table, TableState};
 
-use crate::style::colors;
 use crate::tui::app::Screen;
 use crate::tui::keymap::{BINDINGS, Binding, Context, REGEX_EXAMPLES};
-use crate::tui::widgets::{centered_modal, modal_size, render_scrollbar, rounded_block};
+use crate::tui::theme;
+use crate::tui::widgets::{border_hints, dialog_block, modal_rect, render_scrollbar};
+
+/// Widest the help overlay gets
+const HELP_WIDTH: u16 = 100;
 
 /// Width of the key column
 const KEY_COLUMN_WIDTH: u16 = 22;
@@ -186,39 +189,26 @@ fn build_help_rows(layout: Vec<HelpRow>, desc_width: usize) -> Vec<Row<'static>>
             HelpRow::Section { name, collapsed } => {
                 let indicator = if collapsed { "›" } else { "▾" };
                 let action = if collapsed { "expand" } else { "collapse" };
-                let hint_style = Style::default()
-                    .fg(colors::UI_SECONDARY)
-                    .add_modifier(Modifier::ITALIC);
+                let hint_style = theme::dim().add_modifier(Modifier::ITALIC);
                 Row::new(vec![
                     Cell::from(Span::styled(
                         format!("{indicator} {name}"),
-                        Style::default()
-                            .fg(colors::UI_WARNING)
-                            .add_modifier(Modifier::BOLD),
+                        theme::bold().add_modifier(Modifier::UNDERLINED),
                     )),
                     Cell::from(Line::from(vec![
-                        Span::styled("<", hint_style),
-                        Span::styled(
-                            "space",
-                            Style::default()
-                                .fg(colors::UI_SUCCESS)
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                        Span::styled(format!(" to {action}>"), hint_style),
+                        Span::styled("Space", theme::key()),
+                        Span::styled(format!(" to {action}"), hint_style),
                     ])),
                 ])
             }
             HelpRow::Hint(text) => Row::new(vec![
                 Cell::from(""),
-                Cell::from(Span::styled(
-                    text,
-                    Style::default().fg(colors::UI_SECONDARY),
-                )),
+                Cell::from(Span::styled(text, theme::dim())),
             ]),
             HelpRow::Key(keys, description) => {
                 let (wrapped, height) = wrap_text(description, desc_width);
                 Row::new(vec![
-                    Cell::from(Span::styled(keys, Style::default().fg(colors::UI_SUCCESS))),
+                    Cell::from(Span::styled(keys, theme::key())),
                     Cell::from(wrapped),
                 ])
                 .height(height)
@@ -236,8 +226,8 @@ pub fn render_help(
     viewport_height: &mut usize,
     collapsed_sections: &HashSet<String>,
 ) {
-    // Create centered modal
-    let popup_area = centered_modal(modal_size::HELP, area);
+    // As wide as useful, as tall as the screen allows (it scrolls)
+    let popup_area = modal_rect(area, HELP_WIDTH, area.height);
 
     // Clear background to prevent bleed-through from underlying screens
     frame.render_widget(Clear, popup_area);
@@ -258,17 +248,10 @@ pub fn render_help(
         Constraint::Fill(1), // Description column (take remaining space and wrap)
     ])
     .block(
-        rounded_block()
-            .padding(Padding::horizontal(1))
-            .title(" Help "),
+        dialog_block("Help").title_bottom(border_hints(&[("↑/↓", "sections"), ("Esc", "close")])),
     )
     .column_spacing(2)
-    .row_highlight_style(
-        Style::default()
-            .bg(colors::UI_SELECTED_BG)
-            .fg(colors::UI_HIGHLIGHT)
-            .add_modifier(Modifier::BOLD),
-    );
+    .row_highlight_style(theme::selected());
 
     // Ensure a row is selected for cursor visibility
     if scroll_state.selected().is_none() {

@@ -2,22 +2,20 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
+use ratatui::widgets::{
+    Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph, Wrap,
+};
 
 use crate::config::Settings;
-use crate::style::colors;
-use crate::tui::widgets::{centered_modal, modal_size, render_scrollbar, rounded_block};
+use crate::tui::theme;
+use crate::tui::widgets::{
+    border_hints, dialog_block, modal_rect, render_scrollbar, rounded_block, text_width,
+};
 
 /// Log levels offered by the dropdown, least verbose first
 pub(crate) const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
-
-/// Minimum height of the description panel at the bottom of the settings screen
-const DESCRIPTION_PANEL_MIN_HEIGHT: u16 = 14;
-
-/// Target percentage of the screen height for the description panel
-const DESCRIPTION_PANEL_PERCENT: u16 = 40;
 
 /// Selected setting item
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -273,31 +271,32 @@ pub fn render_settings(
     settings: &Settings,
     screen_state: &mut SettingsScreen,
 ) {
-    // Calculate dynamic height: 40% of screen, but at least 14 lines
-    let desc_height =
-        (area.height * DESCRIPTION_PANEL_PERCENT / 100).max(DESCRIPTION_PANEL_MIN_HEIGHT);
+    // The list takes what its items need, the description the rest
+    let list_height = u16::try_from(SettingItem::all().len() + 2).unwrap_or(u16::MAX);
+    let [list_area, desc_area] =
+        Layout::vertical([Constraint::Length(list_height), Constraint::Fill(1)]).areas(area);
 
-    // Split into [settings list | description]
-    let [list_area, desc_area] = Layout::vertical([
-        Constraint::Min(10),             // Settings list
-        Constraint::Length(desc_height), // Description (dynamic height)
-    ])
-    .areas(area);
-
-    // Render settings list
     render_settings_list(frame, list_area, settings, screen_state);
-
-    // Render description
     render_description(frame, desc_area, screen_state);
 
-    // The dropdown goes on top of everything, centred on the whole screen
     if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
-        render_log_level_dropdown(frame, frame.area(), screen_state);
+        render_log_level_dropdown(frame, area, screen_state);
+    }
+}
+
+/// Whether a boolean setting is on (`None` for the log level)
+const fn bool_value(item: SettingItem, settings: &Settings) -> Option<bool> {
+    match item {
+        SettingItem::DefaultOnStartup => Some(settings.default_on_startup),
+        SettingItem::SetSmartToggle => Some(settings.set_smart_toggle),
+        SettingItem::NotifyManual => Some(settings.notify_manual),
+        SettingItem::NotifyRules => Some(settings.notify_rules),
+        SettingItem::MatchByIndex => Some(settings.match_by_index),
+        SettingItem::LogLevel => None,
     }
 }
 
 /// Render the settings list
-// Settings screen rendering - complex interactive list with multiple field types
 fn render_settings_list(
     frame: &mut Frame,
     area: Rect,
@@ -308,71 +307,30 @@ fn render_settings_list(
         .iter()
         .enumerate()
         .map(|(i, item)| {
-            let value_text = get_setting_value(*item, settings);
-            let is_selected = i == screen_state.selected;
-
-            let style = if is_selected {
-                Style::default()
-                    .fg(colors::UI_TEXT)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(colors::UI_TEXT)
-            };
-
             let padded_name = screen_state
                 .padded_names
                 .get(i)
                 .map_or(item.name(), String::as_str);
-
-            // Apply color styling to boolean toggles
-            let value_span = if *item == SettingItem::LogLevel {
-                Span::styled(value_text, style)
-            } else {
-                let enabled = match item {
-                    SettingItem::DefaultOnStartup => settings.default_on_startup,
-                    SettingItem::SetSmartToggle => settings.set_smart_toggle,
-                    SettingItem::NotifyManual => settings.notify_manual,
-                    SettingItem::NotifyRules => settings.notify_rules,
-                    SettingItem::MatchByIndex => settings.match_by_index,
-                    SettingItem::LogLevel => false,
-                };
-
-                if enabled {
-                    Span::styled("✓ enabled", Style::default().fg(colors::UI_SUCCESS))
-                } else {
-                    Span::styled("✗ disabled", Style::default().fg(colors::UI_ERROR))
-                }
+            let value = match bool_value(*item, settings) {
+                Some(true) => Span::styled("[x] on", theme::success()),
+                Some(false) => Span::styled("[ ] off", theme::dim()),
+                None => Span::styled(settings.log_level.clone(), theme::accent()),
             };
-
-            let mut spans = vec![];
-
-            // Add standard Cyan indicator if selected
-            if is_selected {
-                spans.push(Span::styled("▎", Style::default().fg(colors::UI_HIGHLIGHT)));
-            } else {
-                spans.push(Span::raw(" "));
-            }
-
-            spans.push(Span::styled(padded_name, style));
-            spans.push(Span::raw("     ")); // Separation
-            spans.push(value_span);
-
-            let line = Line::from(spans);
-
-            let mut item_style = Style::default();
-            if is_selected {
-                item_style = item_style.bg(colors::UI_SELECTED_BG);
-            }
-
-            ListItem::new(line).style(item_style)
+            ListItem::new(Line::from(vec![
+                Span::raw(padded_name.to_string()),
+                Span::raw("   "),
+                value,
+            ]))
         })
         .collect();
 
     let list = List::new(items)
-        .block(rounded_block().title(" Settings "))
+        .block(rounded_block().title(Span::styled(" Settings ", theme::bold())))
+        .highlight_style(theme::selected())
+        .highlight_symbol(theme::SELECTED_SYMBOL)
+        .highlight_spacing(HighlightSpacing::Always)
         .scroll_padding(1);
 
-    // Sync state
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(list, area, &mut screen_state.state);
     render_scrollbar(
@@ -384,76 +342,26 @@ fn render_settings_list(
     );
 }
 
-/// Get the display value for a setting
-fn get_setting_value(item: SettingItem, settings: &Settings) -> String {
-    match item {
-        SettingItem::DefaultOnStartup => format_bool(settings.default_on_startup),
-        SettingItem::SetSmartToggle => format_bool(settings.set_smart_toggle),
-        SettingItem::NotifyManual => format_bool(settings.notify_manual),
-        SettingItem::NotifyRules => format_bool(settings.notify_rules),
-        SettingItem::MatchByIndex => format_bool(settings.match_by_index),
-        SettingItem::LogLevel => settings.log_level.clone(),
-    }
-}
-
-/// Format boolean as colored text
-fn format_bool(value: bool) -> String {
-    if value {
-        "✓ enabled".to_string()
-    } else {
-        "✗ disabled".to_string()
-    }
-}
-
-/// Render the log level dropdown
+/// Render the log level dropdown, sized to its levels, centred on `area`
 fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
-    // Create dropdown in center of screen, hiding what is below it
-    let popup_area = centered_modal(modal_size::DROPDOWN, area);
-    frame.render_widget(Clear, popup_area);
+    const TITLE: &str = "Log Level";
+    let hints = border_hints(&[("Enter", "apply"), ("Esc", "cancel")]);
+    let selection = text_width(theme::SELECTED_SYMBOL);
+    let widest = LOG_LEVELS.iter().map(|l| text_width(l)).max().unwrap_or(0) + selection;
+    let width =
+        u16::try_from(widest.max(hints.width()).max(text_width(TITLE) + 4) + 4).unwrap_or(u16::MAX);
+    let height = u16::try_from(LOG_LEVELS.len() + 2).unwrap_or(u16::MAX);
+    let rect = modal_rect(area, width, height);
 
-    let items: Vec<ListItem> = LOG_LEVELS
-        .iter()
-        .enumerate()
-        .map(|(i, level)| {
-            let is_selected = i == screen_state.log_level_index;
-            let style = if is_selected {
-                Style::default()
-                    .fg(colors::UI_SELECTED)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(colors::UI_TEXT)
-            };
-
-            let mut spans = vec![];
-
-            // Add arrow prefix only if selected
-            if is_selected {
-                spans.push(Span::styled(
-                    " → ",
-                    Style::default().fg(colors::UI_HIGHLIGHT),
-                ));
-            } else {
-                spans.push(Span::raw("   "));
-            }
-
-            spans.push(Span::styled(*level, style));
-
-            let line = Line::from(spans);
-
-            ListItem::new(line)
-        })
-        .collect();
-
+    let items: Vec<ListItem> = LOG_LEVELS.iter().map(|l| ListItem::new(*l)).collect();
     let list = List::new(items)
-        .block(
-            rounded_block()
-                .padding(Padding::horizontal(1))
-                .title("Select Log Level")
-                .style(Style::default().bg(colors::UI_MODAL_BG)),
-        )
-        .scroll_padding(1);
-
-    frame.render_widget(list, popup_area);
+        .block(dialog_block(TITLE).title_bottom(hints))
+        .highlight_style(theme::selected())
+        .highlight_symbol(theme::SELECTED_SYMBOL)
+        .highlight_spacing(HighlightSpacing::Always);
+    let mut state = ListState::default().with_selected(Some(screen_state.log_level_index));
+    frame.render_widget(Clear, rect);
+    frame.render_stateful_widget(list, rect, &mut state);
 }
 
 /// Render the description panel
@@ -462,84 +370,52 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
     let short_desc = current_item.description();
     let detailed_desc = current_item.detailed_description();
 
-    let mut lines = vec![];
+    let mut lines = vec![
+        Line::from(Span::styled(short_desc, theme::bold())),
+        Line::from(""),
+    ];
 
-    // Short description at top (highlighted)
-    lines.push(Line::from(Span::styled(
-        short_desc,
-        Style::default()
-            .fg(colors::UI_HIGHLIGHT)
-            .add_modifier(Modifier::BOLD),
-    )));
-
-    lines.push(Line::from("")); // Spacing
-
-    // Parse the detailed description with simpler, consistent coloring
     for line in detailed_desc.lines() {
-        if line.is_empty() {
-            lines.push(Line::from(""));
-        } else if line.starts_with("When enabled:") {
-            // "When enabled:" prefix - green, rest white
-            let rest = line.trim_start_matches("When enabled:");
+        if let Some(rest) = line.strip_prefix("When enabled:") {
             lines.push(Line::from(vec![
-                Span::styled("When enabled:", Style::default().fg(colors::UI_SUCCESS)),
-                Span::styled(rest, Style::default().fg(colors::UI_TEXT)),
+                Span::styled("When enabled:", theme::success()),
+                Span::raw(rest),
             ]));
-        } else if line.starts_with("When disabled:") {
-            // "When disabled:" prefix - red, rest white
-            let rest = line.trim_start_matches("When disabled:");
+        } else if let Some(rest) = line.strip_prefix("When disabled:") {
             lines.push(Line::from(vec![
-                Span::styled("When disabled:", Style::default().fg(colors::UI_ERROR)),
-                Span::styled(rest, Style::default().fg(colors::UI_TEXT)),
+                Span::styled("When disabled:", theme::dim().add_modifier(Modifier::BOLD)),
+                Span::raw(rest),
             ]));
-        } else if line.ends_with(':') && !line.contains("pw") && !line.starts_with("• ") {
-            // Section headers (lines ending with colon) - bold white
-            lines.push(Line::from(Span::styled(
-                line,
-                Style::default()
-                    .fg(colors::UI_TEXT)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        } else if line.starts_with("• ") {
-            // Bullet points - cyan bullet with white text
-            let content = line.trim_start_matches("• ");
+        } else if let Some(rest) = line.strip_prefix("• ") {
             lines.push(Line::from(vec![
-                Span::styled("• ", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::styled(content, Style::default().fg(colors::UI_TEXT)),
+                Span::styled("• ", theme::accent()),
+                Span::raw(rest),
             ]));
         } else if line.starts_with("Default:") {
-            // Default value - dimmed
             lines.push(Line::from(Span::styled(
                 line,
-                Style::default()
-                    .fg(colors::UI_SECONDARY)
-                    .add_modifier(Modifier::ITALIC),
+                theme::dim().add_modifier(Modifier::ITALIC),
             )));
+        } else if line.ends_with(':') && !line.contains("pw") {
+            lines.push(Line::from(Span::styled(line, theme::bold())));
         } else {
-            // All other lines - normal white text for readability
-            lines.push(Line::from(Span::styled(
-                line,
-                Style::default().fg(colors::UI_TEXT),
-            )));
+            lines.push(Line::from(line));
         }
     }
 
     let block = rounded_block()
         .padding(Padding::horizontal(1))
-        .title(" Description ");
+        .title(Span::styled(" About this setting ", theme::bold()));
 
     let inner_area = block.inner(area);
     // A zero-width panel (tiny terminal) still counts one row per line
     let width = usize::from(inner_area.width).max(1);
     let height = usize::from(inner_area.height);
 
-    // Calculate total visual lines (accounting for wrapping)
+    // Rows the text takes once wrapped (word wrapping may need a few more than
+    // this estimate; the paragraph decides)
     let total_visual_lines: usize = lines.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
-
-    // Determine max scroll
     let max_scroll = u16::try_from(total_visual_lines.saturating_sub(height)).unwrap_or(u16::MAX);
-
-    // Clamp scroll state
     screen_state.desc_scroll = screen_state.desc_scroll.min(max_scroll);
 
     let paragraph = Paragraph::new(lines)
