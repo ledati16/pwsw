@@ -71,12 +71,12 @@ impl SettingItem {
     /// Get short description for this setting
     pub(crate) const fn description(self) -> &'static str {
         match self {
-            Self::DefaultOnStartup => "Switch to default sink when daemon starts",
+            Self::DefaultOnStartup => "Apply the rules' sink when the daemon starts",
             Self::SetSmartToggle => "Intelligent toggling for manual sink switches",
-            Self::NotifyManual => "Show notifications for manual sink switches",
+            Self::NotifyManual => "Show notifications for manual switches and daemon events",
             Self::NotifyRules => "Show notifications for rule-triggered switches",
             Self::MatchByIndex => "Rule priority strategy for window matching",
-            Self::SwitchDelay => "Settle time before a rule-driven switch",
+            Self::SwitchDelay => "Delay before rule-triggered switches",
             Self::LogLevel => "Logging verbosity level",
         }
     }
@@ -85,12 +85,15 @@ impl SettingItem {
     pub(crate) const fn detailed_description(self) -> &'static str {
         match self {
             Self::DefaultOnStartup => {
-                "Automatically switches to the configured default sink when the daemon starts.\n\
+                "Switches to the sink the rules want when the daemon starts.\n\
                  \n\
-                 When enabled: Daemon activates default sink on startup.\n\
-                 When disabled: Leaves the currently active sink unchanged.\n\
+                 When enabled: On startup, activates the sink of the highest-priority\n\
+                 open window that matches a rule, or the default sink if none matches.\n\
+                 When disabled: Leaves the current sink alone until the rules want a\n\
+                 different one (e.g. a matching window opens).\n\
                  \n\
-                 Useful for ensuring a consistent audio output when the daemon starts.\n\
+                 Either way the daemon first waits (up to 2 s) for the list of open\n\
+                 windows, so startup switches at most once.\n\
                  \n\
                  Default: disabled"
             }
@@ -98,22 +101,22 @@ impl SettingItem {
                 "Intelligent toggling behavior for manual sink switches via CLI.\n\
                  \n\
                  When enabled: Running 'pwsw set-sink <name>' toggles back to default\n\
-                 if the sink is already active.\n\
-                 When disabled: Always switches to the specified sink, even if already active.\n\
+                 if the sink is already active ('pwsw set-source' likewise for mics).\n\
+                 When disabled: Asking for the sink that is already active does nothing.\n\
                  \n\
                  Example: If headphones are active:\n\
                  • Enabled: 'pwsw set-sink headphones' → switches to default sink\n\
                  • Disabled: 'pwsw set-sink headphones' → stays on headphones\n\
                  \n\
-                 Default: disabled"
+                 Default: enabled"
             }
             Self::NotifyManual => {
-                "Desktop notifications for manual sink switches and daemon lifecycle events.\n\
+                "Desktop notifications for manual switches and daemon events.\n\
                  \n\
                  When enabled: Shows notifications for:\n\
-                 • Manual sink switches: 'pwsw set-sink <name>'\n\
+                 • Manual switches: 'pwsw set-sink <name>', 'pwsw set-source <name>'\n\
                  • Cycling commands: 'pwsw prev-sink' and 'pwsw next-sink'\n\
-                 • Daemon lifecycle: start and stop events\n\
+                 • Daemon events: start/stop, config reload/rejection, pause/resume\n\
                  \n\
                  When disabled: All manual operations happen silently.\n\
                  \n\
@@ -128,6 +131,7 @@ impl SettingItem {
                  window matching a rule.\n\
                  When disabled: Rule-based switches happen silently.\n\
                  \n\
+                 A rule's own Notify option overrides this setting for that rule.\n\
                  Useful for debugging rules or understanding why switches occur.\n\
                  \n\
                  Default: enabled"
@@ -137,23 +141,23 @@ impl SettingItem {
                  \n\
                  When enabled: Uses rule priority - higher priority rules always win.\n\
                  Rules at the top of the list have higher priority than those below.\n\
-                 When disabled: Most recently opened matching window determines active sink.\n\
+                 When disabled: The most recently opened matching window decides the sink.\n\
                  \n\
-                 Example: Firefox (rule 1, higher priority) and Discord (rule 2, lower priority):\n\
-                 • Enabled: Firefox's sink stays active regardless of which window opened last\n\
-                 • Disabled: Whichever window you focused most recently determines the sink\n\
+                 Example: Firefox (rule 1) and Discord (rule 2) are both open:\n\
+                 • Enabled: Firefox's sink stays active whichever window opened last\n\
+                 • Disabled: Whichever window opened (or started matching) last wins\n\
                  \n\
                  Tip: Reorder rules in the Rules tab (arrow keys + Shift+Up/Down) to adjust priority.\n\
                  \n\
                  Default: disabled (most recent window)"
             }
             Self::SwitchDelay => {
-                "Wait this long for the rules' answer to settle before switching;\n\
-                 0 = switch immediately. Useful against splash screens and flickering titles.\n\
+                "Delay before a rule-triggered switch, in milliseconds.\n\
                  \n\
-                 A switch happens only if the rules still want the same sink after the\n\
-                 delay; a change back to the current sink cancels it. Manual switches,\n\
-                 retries and the start-up switch are never delayed.\n\
+                 When 0: Switches as soon as the rules want a different sink.\n\
+                 When set: Waits this long; switches only if that sink is still wanted.\n\
+                 Stops launchers and splash screens from flipping your audio. Manual\n\
+                 switches, retries and the startup switch are never delayed.\n\
                  \n\
                  Default: 0 (switch immediately)"
             }

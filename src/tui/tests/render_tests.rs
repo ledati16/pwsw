@@ -1483,7 +1483,10 @@ fn test_settings_show_the_switch_delay_and_its_editor() {
     let mut app = state("settings switch delay");
     app.settings_screen.delay_input = None;
     let screen = draw_rows(&mut app, 80, 24).join("\n");
-    assert!(screen.contains("Wait this long for the rules"), "{screen}");
+    assert!(
+        screen.contains("Delay before a rule-triggered switch"),
+        "{screen}"
+    );
     assert!(
         screen.contains("Default: 0 (switch immediately)"),
         "{screen}"

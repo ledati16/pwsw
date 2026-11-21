@@ -684,7 +684,7 @@ notify_manual = true       # Desktop notifications for manual switches
 notify_rules = true        # Desktop notifications for rule-triggered switches
 match_by_index = false     # Priority: false = recent window, true = rule order
 log_level = "info"         # error, warn, info, debug, trace
-switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle before switching
+switch_delay_ms = 0        # Delay (ms) before rule-triggered switches; 0 = immediately
 
 # Audio sinks - add at least one with default = true before starting daemon
 # Find available sinks with: pwsw list-sinks
