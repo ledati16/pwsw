@@ -690,8 +690,10 @@ mod tests {
     fn test_resolve_restores_microphone_from_output_only_profile() {
         // The card sits on an output-only profile (microphone gone): the duplex
         // profile wins over `output:analog-stereo`, bringing the microphone back.
-        let sw =
-            switch(resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.analog-stereo").unwrap());
+        let sw = switch(
+            resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.analog-stereo")
+                .expect("target resolves"),
+        );
         assert_eq!(sw.device_id, 43);
         assert_eq!(sw.profile_index, 1);
         assert_eq!(sw.profile_name, "output:analog-stereo+input:analog-stereo");
@@ -703,8 +705,10 @@ mod tests {
     fn test_resolve_keeps_current_input_over_priority() {
         // `+input:analog-mic` has the higher priority, but the card currently records
         // from `analog-stereo`, so that input is kept.
-        let sw =
-            switch(resolve(&snap(SYNTH), "alsa_output.pci-0000_00_1f.3.iec958-stereo").unwrap());
+        let sw = switch(
+            resolve(&snap(SYNTH), "alsa_output.pci-0000_00_1f.3.iec958-stereo")
+                .expect("target resolves"),
+        );
         assert_eq!(sw.profile_name, "output:iec958-stereo+input:analog-stereo");
     }
 
@@ -715,7 +719,7 @@ mod tests {
                 &snap(SYNTH),
                 "alsa_output.usb-Example_USB_Headset-00.analog-stereo",
             )
-            .unwrap(),
+            .expect("target resolves"),
         );
         assert_eq!(sw.device_id, 60);
         assert_eq!(sw.profile_name, "output:analog-stereo+input:mono-fallback");
@@ -728,21 +732,23 @@ mod tests {
                 &snap(SYNTH),
                 "alsa_output.pci-0000_00_1f.3.analog-surround-51",
             )
-            .unwrap(),
+            .expect("target resolves"),
         );
         assert_eq!(sw.profile_name, "output:analog-surround-51");
     }
 
     #[test]
     fn test_resolve_all_unavailable_is_clear_error() {
-        let err = resolve(&snap(SYNTH), "alsa_output.pci-0000_00_1f.3.hdmi-stereo").unwrap_err();
+        let err = resolve(&snap(SYNTH), "alsa_output.pci-0000_00_1f.3.hdmi-stereo")
+            .expect_err("`resolve` fails");
         assert!(format!("{err}").contains("unavailable"), "{err}");
     }
 
     #[test]
     fn test_resolve_active_sink_sets_default_only() {
         assert_eq!(
-            resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.iec958-stereo").unwrap(),
+            resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.iec958-stereo")
+                .expect("target resolves"),
             Plan::SetDefault {
                 node_name: "alsa_output.pci-0000_0c_00.4.iec958-stereo".to_string()
             }
@@ -754,7 +760,7 @@ mod tests {
         let mut s = snap(SYNTH);
         s.sinks[0].name = "renamed_by_wireplumber".to_string();
         assert_eq!(
-            resolve(&s, "alsa_output.pci-0000_00_1f.3.analog-stereo").unwrap(),
+            resolve(&s, "alsa_output.pci-0000_00_1f.3.analog-stereo").expect("target resolves"),
             Plan::SetDefault {
                 node_name: "renamed_by_wireplumber".to_string()
             }
@@ -769,7 +775,7 @@ mod tests {
             "alsa_output.pci-0000_0c_00.4.analog-stereo-analog-stereo",
             "alsa_output.pci-0000_0c_00.4.",
         ] {
-            let err = resolve(&s, name).unwrap_err();
+            let err = resolve(&s, name).expect_err("`resolve` fails");
             assert!(format!("{err}").contains("not found"), "{name}: {err}");
         }
     }
@@ -779,14 +785,16 @@ mod tests {
     fn test_resolve_missing_non_alsa_sinks_say_not_present() {
         let s = snap(REAL);
         let err = resolve(&s, "bluez_output.00_11_22_33_44_55.1")
-            .unwrap_err()
+            .expect_err("`resolve` fails")
             .to_string();
         assert_eq!(
             err,
             "Sink 'bluez_output.00_11_22_33_44_55.1' is not present (Bluetooth device \
              disconnected?)"
         );
-        let err = resolve(&s, "my_renamed_speakers").unwrap_err().to_string();
+        let err = resolve(&s, "my_renamed_speakers")
+            .expect_err("`resolve` fails")
+            .to_string();
         assert!(
             err.contains("is not present and not reachable by a profile switch"),
             "{err}"
@@ -796,14 +804,17 @@ mod tests {
 
     #[test]
     fn test_resolve_never_offers_ucm_switch() {
-        let err = resolve(&snap(SYNTH), "alsa_output.platform-example_ucm.HiFi").unwrap_err();
+        let err = resolve(&snap(SYNTH), "alsa_output.platform-example_ucm.HiFi")
+            .expect_err("`resolve` fails");
         assert!(format!("{err}").contains("not found"), "{err}");
     }
 
     #[test]
     fn test_produced_matches_by_card_profile_device() {
-        let sw =
-            switch(resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.analog-stereo").unwrap());
+        let sw = switch(
+            resolve(&snap(REAL), "alsa_output.pci-0000_0c_00.4.analog-stereo")
+                .expect("target resolves"),
+        );
         let node = Node {
             id: 99,
             name: "custom".to_string(),
@@ -821,6 +832,92 @@ mod tests {
             card_profile_device: Some(11),
             ..node
         }));
+    }
+
+    /// A profile with several outputs: a node reporting the *other* mapping is not
+    /// the one the switch waits for, even though its card device belongs to the
+    /// profile; a node without a mapping falls back to the card device
+    #[test]
+    fn test_produced_with_several_outputs_matches_only_the_wanted_mapping() {
+        let sw = ProfileSwitch {
+            device_id: 7,
+            device_name: "alsa_card.pci-test".to_string(),
+            profile_index: 2,
+            profile_name: "output:analog-stereo+output:hdmi-stereo".to_string(),
+            kind: Endpoint::Sink,
+            mapping: "analog-stereo".to_string(),
+            card_devices: vec![3, 4],
+        };
+        let node = |profile_name: Option<&str>, card_device: u32| Node {
+            id: 99,
+            name: "node".to_string(),
+            description: String::new(),
+            device_id: Some(7),
+            profile_name: profile_name.map(String::from),
+            card_profile_device: Some(card_device),
+        };
+        assert!(sw.produced(&node(Some("analog-stereo"), 3)));
+        assert!(
+            !sw.produced(&node(Some("hdmi-stereo"), 4)),
+            "the profile's other output is not the wanted node"
+        );
+        assert!(
+            sw.produced(&node(Some("analog-stereo"), 4)),
+            "a reported mapping wins over the card device"
+        );
+        assert!(
+            sw.produced(&node(None, 4)),
+            "no mapping: card device decides"
+        );
+        assert!(!sw.produced(&node(None, 9)));
+    }
+
+    fn profile(index: u32, name: &str, priority: i64) -> Profile {
+        Profile {
+            index,
+            name: name.to_string(),
+            description: name.to_string(),
+            available: Availability::Yes,
+            priority,
+            sink_card_devices: vec![0],
+            source_card_devices: Vec::new(),
+            has_input: name.contains("input:"),
+        }
+    }
+
+    /// Profiles that rank the same (same priority, both keep or both lack an input)
+    /// go to the lower index, wherever they sit in the list
+    #[test]
+    fn test_choose_profile_tie_goes_to_the_lower_index() {
+        let device = Device {
+            id: 7,
+            name: "alsa_card.pci-test".to_string(),
+            description: "Test card".to_string(),
+            // The lower index comes first: `max_by` alone would pick the last one
+            profiles: vec![
+                profile(2, "output:analog-stereo", 100),
+                profile(5, "output:analog-stereo+output:hdmi-stereo", 100),
+                profile(9, "output:hdmi-stereo", 100),
+            ],
+            active_profile: Some(9),
+        };
+        let chosen = choose_profile(&device, Endpoint::Sink, "analog-stereo", None)
+            .expect("two profiles provide the output");
+        assert_eq!(chosen.index, 2);
+
+        // Listed the other way round, still the lower index
+        let mut reversed = device.clone();
+        reversed.profiles.reverse();
+        let chosen = choose_profile(&reversed, Endpoint::Sink, "analog-stereo", None)
+            .expect("two profiles provide the output");
+        assert_eq!(chosen.index, 2);
+
+        // A higher priority beats a lower index
+        let mut preferred = device;
+        preferred.profiles[1].priority = 101;
+        let chosen = choose_profile(&preferred, Endpoint::Sink, "analog-stereo", None)
+            .expect("two profiles provide the output");
+        assert_eq!(chosen.index, 5);
     }
 
     const IN_REAL: &str = "alsa_input.pci-0000_0c_00.4.analog-stereo";
@@ -864,7 +961,9 @@ mod tests {
 
     #[test]
     fn test_resolve_source_keeps_the_current_output() {
-        let sw = switch(resolve_endpoint(&snap(REAL), Endpoint::Source, IN_REAL).unwrap());
+        let sw = switch(
+            resolve_endpoint(&snap(REAL), Endpoint::Source, IN_REAL).expect("target resolves"),
+        );
         assert_eq!(sw.kind, Endpoint::Source);
         assert_eq!(sw.profile_name, "output:iec958-stereo+input:analog-stereo");
         assert_eq!(sw.mapping, "analog-stereo");
@@ -878,7 +977,7 @@ mod tests {
                 Endpoint::Source,
                 "alsa_input.pci-0000_00_1f.3.analog-stereo"
             )
-            .unwrap(),
+            .expect("target resolves"),
             Plan::SetDefault {
                 node_name: "alsa_input.pci-0000_00_1f.3.analog-stereo".to_string()
             }
@@ -888,14 +987,14 @@ mod tests {
             Endpoint::Source,
             "alsa_input.pci-0000_00_1f.3.analog-mic",
         )
-        .unwrap_err()
+        .expect_err("`resolve_endpoint` fails")
         .to_string();
         assert!(
             err.contains("while keeping its current output 'analog-stereo'"),
             "{err}"
         );
         let err = resolve_endpoint(&s, Endpoint::Source, "bluez_input.00_11_22_33_44_55.0")
-            .unwrap_err()
+            .expect_err("`resolve_endpoint` fails")
             .to_string();
         assert!(err.starts_with("Source '"), "{err}");
         assert!(err.contains("Bluetooth device disconnected?"), "{err}");
@@ -905,7 +1004,7 @@ mod tests {
             Endpoint::Source,
             "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
         )
-        .unwrap_err()
+        .expect_err("`resolve_endpoint` fails")
         .to_string();
         assert!(err.contains("not present"), "{err}");
     }
@@ -932,7 +1031,9 @@ mod tests {
         // Synthetic PCI card: digital output with the `analog-mic` input exists only
         // as profile 4 (the sink alone would keep the current `analog-stereo` input)
         let s = snap(SYNTH);
-        let alone = switch(resolve(&s, "alsa_output.pci-0000_00_1f.3.iec958-stereo").unwrap());
+        let alone = switch(
+            resolve(&s, "alsa_output.pci-0000_00_1f.3.iec958-stereo").expect("target resolves"),
+        );
         assert_eq!(alone.profile_index, 3);
         let plan = joint(&s, &["alsa_output.pci-0000_00_1f.3.iec958-stereo"], &[
             "alsa_input.pci-0000_00_1f.3.analog-mic",

@@ -111,6 +111,11 @@ impl Sandbox {
             .env("XDG_RUNTIME_DIR", self.dir("runtime"))
             .env("NO_COLOR", "1")
             .current_dir(self.dir("files"));
+        // Under `cargo llvm-cov` the instrumented binary writes its profile here;
+        // without it, it would drop a `default_*.profraw` into the sandbox
+        if let Some(profile) = std::env::var_os("LLVM_PROFILE_FILE") {
+            cmd.env("LLVM_PROFILE_FILE", profile);
+        }
         cmd
     }
 }
@@ -542,7 +547,11 @@ fn cli_init_writes_template_and_refuses_overwrite() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        let mode = std::fs::metadata(&path)
+            .expect("stat file")
+            .permissions()
+            .mode()
+            & 0o777;
         assert_eq!(mode, 0o600);
     }
 
@@ -553,18 +562,21 @@ fn cli_init_writes_template_and_refuses_overwrite() {
     assert!(stdout(&output).contains(&path.display().to_string()));
 
     // A second init refuses and leaves the file alone
-    std::fs::write(&path, VALID_CONFIG).unwrap();
+    std::fs::write(&path, VALID_CONFIG).expect("write file");
     let output = run(sb.cmd().arg("init"));
     assert_exit(&output, 1);
     assert_stderr_contains(&output, "Config already exists");
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), VALID_CONFIG);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read file"),
+        VALID_CONFIG
+    );
 
     // --force replaces it and keeps a backup
     let output = run(sb.cmd().args(["init", "--force"]));
     assert_exit(&output, 0);
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), template);
+    assert_eq!(std::fs::read_to_string(&path).expect("read file"), template);
     assert_eq!(
-        std::fs::read_to_string(path.with_file_name("config.toml.bak")).unwrap(),
+        std::fs::read_to_string(path.with_file_name("config.toml.bak")).expect("read file"),
         VALID_CONFIG
     );
 }
@@ -954,7 +966,8 @@ fn cli_list_sinks_warns_when_config_fails_to_load() {
     assert_stderr_contains(&output, "2 default sinks found");
 }
 
-/// Every path under `dir`, recursively, sorted
+/// Every path under `dir`, recursively, sorted (coverage profiles excluded: an
+/// instrumented binary may write them wherever `LLVM_PROFILE_FILE` points)
 fn tree(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -963,6 +976,8 @@ fn tree(dir: &Path) -> Vec<PathBuf> {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
                 stack.push(path.clone());
+            } else if path.extension().is_some_and(|ext| ext == "profraw") {
+                continue;
             }
             out.push(path);
         }
@@ -1028,25 +1043,112 @@ fn cli_doctor_reports_what_is_missing_and_changes_nothing() {
     assert_eq!(tree(sb.root.path()), before, "doctor must not create files");
 }
 
-/// Sanity check for the helper itself: the sandbox must not inherit session variables.
+/// Set (to anything) in the re-run of [`sandbox_environment_is_isolated`] that
+/// reports what the sandbox hands a child
+const PROBE_VAR: &str = "PWSW_SANDBOX_PROBE";
+/// Session variables the outer run sets so the probe can prove they are dropped
+const LEAKY_VARS: [&str; 5] = [
+    "WAYLAND_DISPLAY",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "PIPEWIRE_REMOTE",
+    "PWSW_CONFIG",
+    "XDG_CONFIG_DIRS",
+];
+/// Everything the sandbox may pass to a child
+const ALLOWED_VARS: [&str; 9] = [
+    "PATH",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_RUNTIME_DIR",
+    "NO_COLOR",
+    "LLVM_PROFILE_FILE",
+];
+
+/// The helper itself: a child started by the sandbox sees only the sandbox's
+/// variables, even when the test process has session variables set.
+///
+/// `Command::get_envs` only lists explicit changes, never inherited variables, so the
+/// check runs `env` inside the sandbox. The test re-runs itself with session variables
+/// set (setting them in this multi-threaded process would be unsound); the re-run
+/// prints the child's environment and the sandbox root between markers.
 #[test]
 fn sandbox_environment_is_isolated() {
-    let sb = Sandbox::new();
-    let cmd = sb.cmd();
-    let envs: Vec<_> = cmd.get_envs().collect();
-    for var in ["WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS", "PWSW_CONFIG"] {
+    if std::env::var_os(PROBE_VAR).is_some() {
+        let sb = Sandbox::new();
+        let output = run(&mut sb.cmd_for("env"));
+        assert_exit(&output, 0);
+        println!("\n<<<ROOT {}>>>", sb.root.path().display());
+        println!("<<<ENV>>>\n{}<<<END>>>", stdout(&output));
+        return;
+    }
+
+    let mut probe = Command::new(std::env::current_exe().expect("test binary path"));
+    probe
+        .args([
+            "--exact",
+            "sandbox_environment_is_isolated",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(PROBE_VAR, "1");
+    for var in LEAKY_VARS {
+        probe.env(var, format!("leaked-{var}"));
+    }
+    let output = run(&mut probe);
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    let root = out
+        .split_once("<<<ROOT ")
+        .and_then(|(_, rest)| rest.split_once(">>>"))
+        .map_or_else(
+            || panic!("probe printed no sandbox root:\n{out}"),
+            |(root, _)| PathBuf::from(root),
+        );
+    let env = out
+        .split_once("<<<ENV>>>\n")
+        .and_then(|(_, rest)| rest.split_once("<<<END>>>"))
+        .map_or_else(
+            || panic!("probe printed no environment:\n{out}"),
+            |(env, _)| env,
+        );
+
+    let vars: Vec<(&str, &str)> = env
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    for (name, value) in &vars {
         assert!(
-            !envs
-                .iter()
-                .any(|(k, v)| k.to_str() == Some(var) && v.is_some()),
-            "{var} must not be passed to the binary"
+            ALLOWED_VARS.contains(name),
+            "{name}={value} must not reach the binary:\n{env}"
+        );
+        assert!(!value.starts_with("leaked-"), "{name} leaked:\n{env}");
+    }
+    for var in LEAKY_VARS {
+        assert!(
+            vars.iter().all(|(name, _)| *name != var),
+            "{var} must not be passed to the binary:\n{env}"
         );
     }
-    let home = envs
-        .iter()
-        .find(|(k, _)| k.to_str() == Some("HOME"))
-        .and_then(|(_, v)| *v)
-        .map(Path::new)
-        .expect("HOME must be set");
-    assert!(home.starts_with(sb.root.path()));
+    for var in [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+    ] {
+        let value = vars.iter().find(|(name, _)| *name == var).map_or_else(
+            || panic!("{var} must be set:\n{env}"),
+            |(_, value)| Path::new(value),
+        );
+        assert!(
+            value.starts_with(&root),
+            "{var}={} is outside the sandbox {}",
+            value.display(),
+            root.display()
+        );
+    }
 }

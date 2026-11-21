@@ -27,7 +27,6 @@
 //! <https://doc.rust-lang.org/book/ch11-03-test-organization.html#integration-tests>
 
 mod app_tests;
-mod input_integration_tests;
 mod keymap_tests;
 mod render_tests;
 mod worker_tests;

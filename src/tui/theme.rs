@@ -8,35 +8,43 @@
 
 use ratatui::style::{Color, Modifier, Style};
 
-/// Whether styles may carry colours
-#[cfg(not(test))]
+/// Whether styles may carry colours: what [`crate::style::init`] decided for stdout.
+///
+/// Tests render with colour unless they turn it off ([`without_colors`]); one test
+/// clears the override to check this production answer.
 fn colors_enabled() -> bool {
+    #[cfg(test)]
+    if let Some(forced) = COLOR_OVERRIDE.with(std::cell::Cell::get) {
+        return forced;
+    }
     crate::style::colors_enabled()
 }
 
 #[cfg(test)]
 thread_local! {
-    /// Tests render with colour unless [`without_colors`] says otherwise
-    static NO_COLOR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// This thread's answer for [`colors_enabled`]; `None` asks [`crate::style`]
+    static COLOR_OVERRIDE: std::cell::Cell<Option<bool>> =
+        const { std::cell::Cell::new(Some(true)) };
 }
 
+/// Run `f` with [`colors_enabled`] answering `value` on this thread (`None`: the
+/// production decision), restoring the previous answer afterwards
 #[cfg(test)]
-fn colors_enabled() -> bool {
-    !NO_COLOR.with(std::cell::Cell::get)
+fn with_color_override<R>(value: Option<bool>, f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<bool>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            COLOR_OVERRIDE.with(|c| c.set(self.0));
+        }
+    }
+    let _restore = Restore(COLOR_OVERRIDE.with(|c| c.replace(value)));
+    f()
 }
 
 /// Run `f` with colour turned off on this thread (tests only)
 #[cfg(test)]
 pub(crate) fn without_colors<R>(f: impl FnOnce() -> R) -> R {
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            NO_COLOR.with(|c| c.set(false));
-        }
-    }
-    NO_COLOR.with(|c| c.set(true));
-    let _restore = Restore;
-    f()
+    with_color_override(Some(false), f)
 }
 
 /// `base` in `color` when colour is enabled, `base` plus `fallback` otherwise
@@ -142,5 +150,19 @@ mod tests {
             }
         });
         assert!(all().iter().any(|s| s.fg.is_some()), "restored afterwards");
+    }
+
+    /// Without the test override, styles follow [`crate::style::colors_enabled`]:
+    /// `crate::style::init` never runs in unit tests, so stdout is uncoloured there
+    #[test]
+    fn test_production_wiring_follows_the_style_decision() {
+        assert!(!crate::style::colors_enabled(), "init never ran");
+        with_color_override(None, || {
+            assert!(!colors_enabled());
+            assert_eq!(accent(), Style::new());
+            assert_eq!(error(), Style::new().add_modifier(Modifier::BOLD));
+            assert_eq!(focus().fg, None);
+        });
+        assert_eq!(accent().fg, Some(Color::Cyan), "test override restored");
     }
 }

@@ -828,7 +828,7 @@ mod tests {
     fn test_activate_node_never_appears_errors_after_deadline() {
         let backend = FakeBackend::new(None);
         let clock = FakeClock::new();
-        let err = activate(&backend, &clock, POLICY, ANALOG).unwrap_err();
+        let err = activate(&backend, &clock, POLICY, ANALOG).expect_err("`activate` fails");
         assert!(
             format!("{err}").contains("did not appear within 1000 ms"),
             "{err}"
@@ -852,7 +852,8 @@ mod tests {
     #[test]
     fn test_activate_unknown_sink_touches_nothing() {
         let backend = FakeBackend::new(Some(0));
-        let err = activate(&backend, &FakeClock::new(), POLICY, "nope").unwrap_err();
+        let err =
+            activate(&backend, &FakeClock::new(), POLICY, "nope").expect_err("`activate` fails");
         assert!(format!("{err}").contains("is not present"), "{err}");
         assert_eq!(backend.calls(), vec![Call::Snapshot]);
     }
@@ -935,7 +936,7 @@ mod tests {
             &names(&["bluez_output.a", "bluez_output.b"]),
             None,
         )
-        .unwrap_err();
+        .expect_err("`activate_first` fails");
         let text = format!("{err:#}");
         assert!(text.contains("every candidate failed"), "{text}");
         assert!(
@@ -1044,7 +1045,10 @@ mod tests {
         let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
         let (sink, source) = joint(&backend, &[surround], &[mic]);
         assert_eq!(chosen(sink).activation.node_name, surround);
-        let err = source.expect("asked").unwrap_err().to_string();
+        let err = source
+            .expect("asked")
+            .expect_err("the source fails")
+            .to_string();
         assert!(
             err.contains("not reachable together with the sink"),
             "{err}"
@@ -1093,7 +1097,10 @@ mod tests {
         let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
         let (sink, source) = joint_keep(&backend, &[surround], &[mic]);
         assert_eq!(chosen(sink).activation.node_name, surround);
-        let err = source.expect("asked").unwrap_err().to_string();
+        let err = source
+            .expect("asked")
+            .expect_err("the source fails")
+            .to_string();
         assert!(
             err.contains("not reachable together with the sink"),
             "{err}"
@@ -1171,7 +1178,10 @@ mod tests {
         backend.never_appears_source = Some("analog-stereo");
         let (sink, source) = joint(&backend, &[ANALOG], &[IN_ANALOG, "bluez_input.gone"]);
         assert_eq!(chosen(sink).activation.node_name, ANALOG);
-        let err = format!("{:#}", source.expect("asked").unwrap_err());
+        let err = format!(
+            "{:#}",
+            source.expect("asked").expect_err("the source fails")
+        );
         assert!(err.contains("every candidate failed"), "{err}");
         assert!(err.contains("did not appear"), "{err}");
         assert_eq!(backend.switches(), vec![Call::SetProfile(43, 1)]);

@@ -2617,17 +2617,18 @@ mod tests {
             ],
             vec![],
         );
-        assert!(config.validate().is_ok());
+        config
+            .validate()
+            .expect("one default among two sinks is valid");
     }
 
     /// Empty sinks is valid at config level (TUI can work with it, daemon checks at startup)
     #[test]
     fn test_validate_accepts_empty_sinks() {
         let config = make_config(vec![], vec![]);
-        assert!(
-            config.validate().is_ok(),
-            "Config with no sinks and no rules should be valid"
-        );
+        config
+            .validate()
+            .expect("Config with no sinks and no rules should be valid");
     }
 
     /// Parameterized test for validation rejection cases
@@ -2713,12 +2714,10 @@ mod tests {
             config.settings.log_level = level.to_string();
         }
 
-        let result = config.validate();
-        assert!(
-            result.is_err(),
-            "Expected validation to fail for case: {name}"
-        );
-        let error_msg = result.unwrap_err().to_string();
+        let Err(err) = config.validate() else {
+            panic!("Expected validation to fail for case: {name}");
+        };
+        let error_msg = err.to_string();
         assert!(
             error_msg.contains(expected_error_substring),
             "Expected error to contain '{expected_error_substring}', but got: {error_msg}"
@@ -2730,10 +2729,9 @@ mod tests {
         for level in &["error", "warn", "info", "debug", "trace"] {
             let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
             config.settings.log_level = (*level).to_string();
-            assert!(
-                config.validate().is_ok(),
-                "Log level '{level}' should be valid"
-            );
+            config
+                .validate()
+                .unwrap_or_else(|e| panic!("Log level '{level}' should be valid: {e}"));
         }
     }
 
@@ -2757,7 +2755,7 @@ mod tests {
 
     #[test]
     fn test_switch_delay_loads_and_rejects_out_of_range() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(
             &dir,
             "ok.toml",
@@ -2771,7 +2769,10 @@ mod tests {
             "big.toml",
             &format!("[settings]\nswitch_delay_ms = 5001\n{TWO_SINKS}"),
         );
-        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("`load_from_path` fails")
+        );
         assert!(err.contains("switch_delay_ms"), "{err}");
 
         let path = write(
@@ -2779,13 +2780,20 @@ mod tests {
             "negative.toml",
             &format!("[settings]\nswitch_delay_ms = -1\n{TWO_SINKS}"),
         );
-        assert!(Config::load_from_path(&path).is_err());
+        let err = Config::load_from_path(&path).expect_err("negative delay");
+        assert!(
+            err.to_string().starts_with("Failed to parse config: "),
+            "{err:#}"
+        );
+        assert!(format!("{err:#}").contains("switch_delay_ms"), "{err:#}");
     }
 
     #[test]
     fn test_validate_allows_name_equal_to_own_desc() {
         let config = make_config(vec![make_sink("same", "same", true)], vec![]);
-        assert!(config.validate().is_ok());
+        config
+            .validate()
+            .expect("a sink may use its own name as description");
     }
 
     // resolve_sink() tests
@@ -2800,11 +2808,11 @@ mod tests {
         );
         let result = config.resolve_sink("1");
         assert!(result.is_some());
-        assert_eq!(result.unwrap().name, "sink1");
+        assert_eq!(result.expect("result is Ok").name, "sink1");
 
         let result2 = config.resolve_sink("2");
         assert!(result2.is_some());
-        assert_eq!(result2.unwrap().name, "sink2");
+        assert_eq!(result2.expect("result2 is Ok").name, "sink2");
     }
 
     #[test]
@@ -2830,7 +2838,7 @@ mod tests {
         );
         let result = config.resolve_sink("HDMI Output");
         assert!(result.is_some());
-        assert_eq!(result.unwrap().name, "sink1");
+        assert_eq!(result.expect("result is Ok").name, "sink1");
     }
 
     #[test]
@@ -2844,7 +2852,7 @@ mod tests {
         );
         let result = config.resolve_sink("alsa_output.test.stereo");
         assert!(result.is_some());
-        assert_eq!(result.unwrap().desc, "Test");
+        assert_eq!(result.expect("result is Ok").desc, "Test");
     }
 
     #[test]
@@ -2866,7 +2874,7 @@ mod tests {
         );
         let result = config.get_default_sink();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().desc, "Default Sink");
+        assert_eq!(result.expect("result is Ok").desc, "Default Sink");
     }
 
     #[test]
@@ -2875,26 +2883,30 @@ mod tests {
         {
             let cfg = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
             let path = dir.path().join("pwsw").join("config.toml");
-            cfg.save_to(&path).unwrap();
+            cfg.save_to(&path).expect("save config");
 
             assert!(path.exists());
 
-            let contents = std::fs::read_to_string(&path).unwrap();
+            let contents = std::fs::read_to_string(&path).expect("read file");
             assert!(contents.contains("Sink 1"));
 
             // On Unix, ensure permissions are 0o600
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+                let mode = std::fs::metadata(&path)
+                    .expect("stat file")
+                    .permissions()
+                    .mode()
+                    & 0o777;
                 assert_eq!(mode, 0o600);
             }
 
             // Ensure only config.toml exists in the config dir
-            let config_dir = path.parent().unwrap();
+            let config_dir = path.parent().expect("path has a parent");
             let entries: Vec<_> = std::fs::read_dir(config_dir)
-                .unwrap()
-                .map(|e| e.unwrap().file_name())
+                .expect("read dir")
+                .map(|e| e.expect("dir entry").file_name())
                 .collect();
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], std::ffi::OsString::from("config.toml"));
@@ -2915,9 +2927,9 @@ mod tests {
             );
 
             let path = dir.path().join("pwsw").join("config.toml");
-            cfg.save_to(&path).unwrap();
+            cfg.save_to(&path).expect("save config");
 
-            let loaded = Config::load_from_path(&path).unwrap();
+            let loaded = Config::load_from_path(&path).expect("load config");
             assert_eq!(loaded, cfg);
             assert_eq!(loaded.rules[0].sink_ref, "Sink 1");
         }
@@ -2951,31 +2963,43 @@ mod tests {
 
     #[test]
     fn test_config_override_absent_or_empty_env_falls_back_to_default() {
-        assert_eq!(resolve_config_override(None, None).unwrap(), None);
         assert_eq!(
-            resolve_config_override(None, Some(std::ffi::OsStr::new(""))).unwrap(),
+            resolve_config_override(None, None).expect("`resolve_config_override` succeeds"),
+            None
+        );
+        assert_eq!(
+            resolve_config_override(None, Some(std::ffi::OsStr::new("")))
+                .expect("`resolve_config_override` succeeds"),
             None
         );
     }
 
     #[test]
     fn test_absolute_config_path_rejects_empty() {
-        assert!(absolute_config_path(Path::new("")).is_err());
+        assert_eq!(
+            absolute_config_path(Path::new(""))
+                .expect_err("empty path")
+                .to_string(),
+            "Config path must not be empty"
+        );
     }
 
     #[test]
     fn test_refuse_empty_overwrite() {
         use tempfile::tempdir;
         // Create tempdir and a non-empty file
-        let dir = tempdir().unwrap();
+        let dir = tempdir().expect("create temp dir");
         let cfg_dir = dir.path().join("pwsw");
-        std::fs::create_dir_all(&cfg_dir).unwrap();
+        std::fs::create_dir_all(&cfg_dir).expect("create dir");
         let path = cfg_dir.join("config.toml");
-        std::fs::write(&path, "non-empty").unwrap();
+        std::fs::write(&path, "non-empty").expect("write file");
 
         // Attempt to overwrite with empty content should fail
-        let r = Config::save_str_for_test("", &path);
-        assert!(r.is_err());
+        let err = Config::save_str_for_test("", &path).expect_err("empty overwrite");
+        assert_eq!(
+            err.to_string(),
+            "Refusing to overwrite non-empty config with empty data"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -2988,10 +3012,7 @@ mod tests {
     #[test_case("(.*)*" ; "nested_star")]
     #[test_case("(?i)discord" ; "case_insensitive")]
     fn test_compile_rule_regex_accepts_valid_patterns(pattern: &str) {
-        assert!(
-            compile_rule_regex(pattern).is_ok(),
-            "{pattern} should compile"
-        );
+        compile_rule_regex(pattern).unwrap_or_else(|e| panic!("{pattern} should compile: {e}"));
     }
 
     #[test]
@@ -3002,26 +3023,34 @@ mod tests {
 
     #[test]
     fn test_load_rejects_oversized_regex_naming_rule() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(
             &dir,
             "c.toml",
             "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n\n[[rules]]\napp_id = \
              '\\w{50000}'\nsink = \"A\"\n",
         );
-        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("`load_from_path` fails")
+        );
         assert!(err.contains("Rule 1: invalid app_id regex"), "got: {err}");
     }
 
     #[test]
     fn test_save_rejects_pattern_load_would_reject() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let mut rule = make_rule("firefox", None, "A");
         // Simulate an editor that compiled with a laxer builder
         rule.app_id_pattern = r"\w{50000}".to_string();
         let cfg = make_config(vec![make_sink("a", "A", true)], vec![rule]);
         let path = dir.path().join("c.toml");
-        assert!(cfg.save_to(&path).is_err());
+        let err = cfg.save_to(&path).expect_err("pattern too large to load");
+        assert!(
+            err.to_string()
+                .starts_with("Rule 1: invalid app_id regex: Compiled regex exceeds size limit"),
+            "{err}"
+        );
         assert!(!path.exists());
     }
 
@@ -3045,9 +3074,133 @@ name = "alsa_output.hdmi"
 desc = "HDMI"
 "#;
 
+    /// A hand-written file using every settings key and the optional sink and rule
+    /// keys: loads as written, a save over the (world-readable) file makes it `0600`,
+    /// and the saved file loads back equal
+    #[test]
+    fn test_load_full_toml_then_save_and_reload() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let path = write(
+            &dir,
+            "config.toml",
+            r#"
+[settings]
+default_on_startup = false
+set_smart_toggle = false
+notify_manual = true
+notify_rules = false
+match_by_index = true
+log_level = "debug"
+
+[[sinks]]
+name = "alsa_output.pci-0000_00_1f.3.analog-stereo"
+desc = "Built-in Audio"
+default = true
+
+[[sinks]]
+name = "alsa_output.usb-0000_01_00.0.analog-stereo"
+desc = "USB Headphones"
+icon = "audio-headphones"
+
+[[rules]]
+app_id = "firefox"
+sink = "Built-in Audio"
+desc = "Browser audio"
+
+[[rules]]
+app_id = "mpv"
+title = ".*Music.*"
+sink = "USB Headphones"
+notify = false
+"#,
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+            .expect("loosen permissions");
+
+        let loaded = Config::load_from_path(&path).expect("load hand-written config");
+        let s = &loaded.settings;
+        assert_eq!(
+            (
+                s.default_on_startup,
+                s.set_smart_toggle,
+                s.notify_manual,
+                s.notify_rules,
+                s.match_by_index,
+                s.log_level.as_str()
+            ),
+            (false, false, true, false, true, "debug")
+        );
+        assert_eq!(loaded.sinks.len(), 2);
+        assert!(loaded.sinks[0].default && !loaded.sinks[1].default);
+        assert_eq!(loaded.sinks[0].icon, None);
+        assert_eq!(loaded.sinks[1].icon.as_deref(), Some("audio-headphones"));
+        let rule = &loaded.rules[0];
+        assert_eq!(
+            (rule.app_id_pattern.as_str(), rule.title_pattern.as_deref()),
+            ("firefox", None)
+        );
+        assert_eq!(
+            (rule.sink_ref.as_str(), rule.desc.as_deref(), rule.notify),
+            ("Built-in Audio", Some("Browser audio"), None)
+        );
+        let rule = &loaded.rules[1];
+        assert_eq!(rule.title_pattern.as_deref(), Some(".*Music.*"));
+        assert_eq!(
+            (rule.sink_ref.as_str(), rule.desc.as_deref(), rule.notify),
+            ("USB Headphones", None, Some(false))
+        );
+
+        loaded.save_to(&path).expect("save over the file");
+        let mode = std::fs::metadata(&path)
+            .expect("stat saved config")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "a save makes the file private");
+        let reloaded = Config::load_from_path(&path).expect("reload saved config");
+        assert_eq!(reloaded, loaded);
+    }
+
+    /// Loading runs the full validation (each rule itself is covered by
+    /// `test_validate_rejection_cases`)
+    #[test_case(
+        ("a", "A", false),
+        ("b", "B", false),
+        "none marked as default" ; "no_default"
+    )]
+    #[test_case(
+        ("a", "Same", true),
+        ("b", "Same", false),
+        "Duplicate sink description: 'Same'" ; "duplicate_desc"
+    )]
+    #[test_case(
+        ("same", "A", true),
+        ("same", "B", false),
+        "Duplicate sink name: 'same'" ; "duplicate_name"
+    )]
+    fn test_load_rejects_invalid_config(
+        first: (&str, &str, bool),
+        second: (&str, &str, bool),
+        why: &str,
+    ) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let sink = |(name, desc, default): (&str, &str, bool)| {
+            format!("[[sinks]]\nname = \"{name}\"\ndesc = \"{desc}\"\ndefault = {default}\n")
+        };
+        let contents = format!("{}{}", sink(first), sink(second));
+        let path = write(&dir, "invalid.toml", &contents);
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("invalid config")
+        );
+        assert!(err.contains(why), "{err}\n--- config:\n{contents}");
+    }
+
     #[test]
     fn test_sink_ref_accepts_integer_and_strings() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!(
             "{TWO_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = 2\n\n[[rules]]\napp_id = \"b\"\nsink \
              = \"1\"\n\n[[rules]]\napp_id = \"c\"\nsink = \"HDMI\"\n\n[[rules]]\napp_id = \
@@ -3060,17 +3213,24 @@ desc = "HDMI"
         let targets: Vec<_> = cfg
             .rules
             .iter()
-            .map(|r| cfg.resolve_sink(&r.sink_ref).unwrap().desc.as_str())
+            .map(|r| {
+                cfg.resolve_sink(&r.sink_ref)
+                    .expect("sink resolves")
+                    .desc
+                    .as_str()
+            })
             .collect();
         assert_eq!(targets, ["HDMI", "Speakers", "HDMI", "Speakers"]);
     }
 
     #[test]
     fn test_sink_ref_rejects_other_types() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!("{TWO_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = true\n");
         let path = write(&dir, "c.toml", &contents);
-        let err = Config::load_from_path(&path).unwrap_err().to_string();
+        let err = Config::load_from_path(&path)
+            .expect_err("`load_from_path` fails")
+            .to_string();
         assert!(
             err.contains("sink description, node name, or 1-based position"),
             "{err}"
@@ -3086,18 +3246,20 @@ desc = "HDMI"
     )]
     #[test_case("[setting]\nlog_level = \"info\"\n", "setting" ; "section_typo")]
     fn test_unknown_fields_rejected_with_key_and_path(contents: &str, key: &str) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "typo.toml", contents);
-        let err = Config::load_from_path(&path).unwrap_err().to_string();
+        let err = Config::load_from_path(&path)
+            .expect_err("`load_from_path` fails")
+            .to_string();
         assert!(err.contains(&format!("unknown field `{key}`")), "{err}");
         assert!(err.contains(&path.display().to_string()), "{err}");
     }
 
     #[test]
     fn test_load_missing_file_errors_without_creating() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("pwsw").join("config.toml");
-        let err = Config::load_from_path(&path).unwrap_err();
+        let err = Config::load_from_path(&path).expect_err("`load_from_path` fails");
         assert!(err.downcast_ref::<ConfigNotFound>().is_some());
         assert!(err.to_string().contains("pwsw init"), "{err}");
         assert!(!path.exists());
@@ -3143,7 +3305,7 @@ desc = "HDMI"
 
     #[test]
     fn test_default_template_loads_and_init_refuses_overwrite() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("pwsw").join("config.toml");
         Config::init_at(&path, false).expect("init into empty dir");
         let cfg = Config::load_from_path(&path).expect("template must load");
@@ -3152,16 +3314,28 @@ desc = "HDMI"
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            let mode = std::fs::metadata(&path)
+                .expect("stat file")
+                .permissions()
+                .mode()
+                & 0o777;
             assert_eq!(mode, 0o600);
         }
 
-        std::fs::write(&path, "# mine\n").unwrap();
-        assert!(Config::init_at(&path, false).is_err());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# mine\n");
+        std::fs::write(&path, "# mine\n").expect("write file");
+        let err = Config::init_at(&path, false).expect_err("config exists");
+        assert!(
+            err.to_string().starts_with("Config already exists: "),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            "# mine\n"
+        );
         Config::init_at(&path, true).expect("forced init");
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("pwsw").join("config.toml.bak")).unwrap(),
+            std::fs::read_to_string(dir.path().join("pwsw").join("config.toml.bak"))
+                .expect("read file"),
             "# mine\n"
         );
     }
@@ -3188,23 +3362,31 @@ desc = "HDMI"
     #[test]
     fn test_add_sink_rejects_duplicates_and_defaults_first() {
         let mut cfg = make_config(vec![], vec![]);
-        cfg.add_sink(make_sink("n.a", "A", false)).unwrap();
+        cfg.add_sink(make_sink("n.a", "A", false))
+            .expect("`add_sink` succeeds");
         assert!(cfg.sinks[0].default, "first sink becomes default");
 
-        let err = cfg.add_sink(make_sink("n.a", "Other", false)).unwrap_err();
+        let err = cfg
+            .add_sink(make_sink("n.a", "Other", false))
+            .expect_err("`add_sink` fails");
         assert!(err.to_string().contains("node name 'n.a'"), "{err}");
-        let err = cfg.add_sink(make_sink("n.b", "A", false)).unwrap_err();
+        let err = cfg
+            .add_sink(make_sink("n.b", "A", false))
+            .expect_err("`add_sink` fails");
         assert!(err.to_string().contains("description 'A'"), "{err}");
         assert_eq!(cfg.sinks.len(), 1, "rejected adds change nothing");
 
-        cfg.add_sink(make_sink("n.b", "B", true)).unwrap();
+        cfg.add_sink(make_sink("n.b", "B", true))
+            .expect("`add_sink` succeeds");
         assert!(!cfg.sinks[0].default && cfg.sinks[1].default);
     }
 
     #[test]
     fn test_add_sink_rejects_ambiguous_name() {
         let mut cfg = make_config(vec![make_sink("n.a", "A", true)], vec![]);
-        let err = cfg.add_sink(make_sink("A", "B", false)).unwrap_err();
+        let err = cfg
+            .add_sink(make_sink("A", "B", false))
+            .expect_err("`add_sink` fails");
         assert!(err.to_string().contains("ambiguous"), "{err}");
         assert_eq!(cfg.sinks.len(), 1);
     }
@@ -3215,12 +3397,17 @@ desc = "HDMI"
         let mut hdmi = cfg.sinks[1].clone();
         hdmi.desc = "Television".to_string();
         hdmi.name = "n.tv".to_string();
-        cfg.update_sink(1, hdmi).unwrap();
+        cfg.update_sink(1, hdmi).expect("`update_sink` succeeds");
 
         let refs: Vec<_> = cfg.rules.iter().map(|r| r.sink_ref.as_str()).collect();
         assert_eq!(refs, ["Television", "n.tv", "3"]);
         for rule in &cfg.rules[..2] {
-            assert_eq!(cfg.resolve_sink(&rule.sink_ref).unwrap().name, "n.tv");
+            assert_eq!(
+                cfg.resolve_sink(&rule.sink_ref)
+                    .expect("sink resolves")
+                    .name,
+                "n.tv"
+            );
         }
     }
 
@@ -3229,14 +3416,14 @@ desc = "HDMI"
         let mut cfg = three_sinks();
         let mut phones = cfg.sinks[2].clone();
         phones.default = true;
-        cfg.update_sink(2, phones).unwrap();
+        cfg.update_sink(2, phones).expect("`update_sink` succeeds");
         let defaults: Vec<_> = cfg.sinks.iter().map(|s| s.default).collect();
         assert_eq!(defaults, [false, false, true]);
 
         // Un-defaulting the default falls back to the first sink
         let mut phones = cfg.sinks[2].clone();
         phones.default = false;
-        cfg.update_sink(2, phones).unwrap();
+        cfg.update_sink(2, phones).expect("`update_sink` succeeds");
         let defaults: Vec<_> = cfg.sinks.iter().map(|s| s.default).collect();
         assert_eq!(defaults, [true, false, false]);
     }
@@ -3246,20 +3433,31 @@ desc = "HDMI"
         let mut cfg = three_sinks();
         let mut hdmi = cfg.sinks[1].clone();
         hdmi.desc = "Speakers".to_string();
-        assert!(cfg.update_sink(1, hdmi).is_err());
+        assert_eq!(
+            cfg.update_sink(1, hdmi)
+                .expect_err("duplicate description")
+                .to_string(),
+            "Sink 1 already uses description 'Speakers'"
+        );
         assert_eq!(cfg.sinks[1].desc, "HDMI");
     }
 
     #[test]
     fn test_remove_sink_refuses_when_referenced() {
         let mut cfg = three_sinks();
-        let err = cfg.remove_sink(1).unwrap_err().to_string();
+        let err = cfg
+            .remove_sink(1)
+            .expect_err("`remove_sink` fails")
+            .to_string();
         assert!(err.contains("Cannot remove sink 'HDMI'"), "{err}");
         assert!(
             err.contains("1 (by_desc)") && err.contains("2 (by_name)"),
             "{err}"
         );
-        let err = cfg.remove_sink(2).unwrap_err().to_string();
+        let err = cfg
+            .remove_sink(2)
+            .expect_err("`remove_sink` fails")
+            .to_string();
         assert!(err.contains("3 (by_pos)"), "{err}");
         assert_eq!(cfg.sinks.len(), 3);
     }
@@ -3268,10 +3466,11 @@ desc = "HDMI"
     fn test_remove_sink_rewrites_shifted_positional_refs() {
         let mut cfg = three_sinks();
         cfg.rules.clear();
-        cfg.add_rule(make_rule("p", None, "n.phones")).unwrap();
+        cfg.add_rule(make_rule("p", None, "n.phones"))
+            .expect("`add_rule` succeeds");
         // Positional ref to the last sink, which shifts when the first is removed
         cfg.rules[0].sink_ref = "3".to_string();
-        cfg.remove_sink(0).unwrap();
+        cfg.remove_sink(0).expect("`remove_sink` succeeds");
         assert_eq!(cfg.rules[0].sink_ref, "Headphones");
         assert!(
             cfg.sinks[0].default,
@@ -3283,13 +3482,18 @@ desc = "HDMI"
     fn test_move_sink_rewrites_positional_refs() {
         let mut cfg = three_sinks();
         cfg.rules.push(make_rule("first", None, "1"));
-        cfg.move_sink(2, 0).unwrap();
+        cfg.move_sink(2, 0).expect("`move_sink` succeeds");
         let names: Vec<_> = cfg.sinks.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["n.phones", "n.speakers", "n.hdmi"]);
         let targets: Vec<_> = cfg
             .rules
             .iter()
-            .map(|r| cfg.resolve_sink(&r.sink_ref).unwrap().name.as_str())
+            .map(|r| {
+                cfg.resolve_sink(&r.sink_ref)
+                    .expect("sink resolves")
+                    .name
+                    .as_str()
+            })
             .collect();
         assert_eq!(targets, ["n.hdmi", "n.hdmi", "n.phones", "n.speakers"]);
         assert_eq!(cfg.rules[2].sink_ref, "Headphones");
@@ -3299,27 +3503,53 @@ desc = "HDMI"
     #[test]
     fn test_rule_methods_store_desc_refs() {
         let mut cfg = three_sinks();
-        cfg.add_rule(make_rule("new", None, "n.phones")).unwrap();
+        cfg.add_rule(make_rule("new", None, "n.phones"))
+            .expect("`add_rule` succeeds");
         assert_eq!(cfg.rules[3].sink_ref, "Headphones");
-        cfg.update_rule(2, make_rule("by_pos", None, "2")).unwrap();
+        cfg.update_rule(2, make_rule("by_pos", None, "2"))
+            .expect("`update_rule` succeeds");
         assert_eq!(cfg.rules[2].sink_ref, "HDMI");
-        assert!(cfg.add_rule(make_rule("x", None, "nope")).is_err());
-        assert!(cfg.add_rule(make_rule("", None, "HDMI")).is_err());
+        assert_eq!(
+            cfg.add_rule(make_rule("x", None, "nope"))
+                .expect_err("unknown sink")
+                .to_string(),
+            "Rule references unknown sink 'nope'"
+        );
+        let err = cfg
+            .add_rule(make_rule("", None, "HDMI"))
+            .expect_err("empty app_id");
+        assert!(
+            err.to_string()
+                .starts_with("Rule 5 needs `app_id` or `output`"),
+            "{err}"
+        );
         assert_eq!(cfg.rules.len(), 4);
 
-        cfg.move_rule(3, 0).unwrap();
+        cfg.move_rule(3, 0).expect("`move_rule` succeeds");
         assert_eq!(cfg.rules[0].app_id_pattern, "new");
-        cfg.remove_rule(0).unwrap();
+        cfg.remove_rule(0).expect("`remove_rule` succeeds");
         assert_eq!(cfg.rules.len(), 3);
-        assert!(cfg.remove_rule(9).is_err());
+        assert_eq!(
+            cfg.remove_rule(9).expect_err("out of range").to_string(),
+            "No rule at position 10"
+        );
     }
 
     #[test]
     fn test_set_default_sink() {
         let mut cfg = three_sinks();
-        cfg.set_default_sink(1).unwrap();
-        assert_eq!(cfg.get_default_sink().unwrap().name, "n.hdmi");
-        assert!(cfg.set_default_sink(7).is_err());
+        cfg.set_default_sink(1)
+            .expect("`set_default_sink` succeeds");
+        assert_eq!(
+            cfg.get_default_sink().expect("default sink exists").name,
+            "n.hdmi"
+        );
+        assert_eq!(
+            cfg.set_default_sink(7)
+                .expect_err("out of range")
+                .to_string(),
+            "No sink at position 8"
+        );
     }
 
     // ------------------------------------------------------------------------
@@ -3328,13 +3558,13 @@ desc = "HDMI"
 
     #[test]
     fn test_save_refuses_invalid_config() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("c.toml");
         let cfg = make_config(
             vec![make_sink("a", "A", true), make_sink("b", "B", true)],
             vec![],
         );
-        let err = cfg.save_to(&path).unwrap_err().to_string();
+        let err = cfg.save_to(&path).expect_err("`save_to` fails").to_string();
         assert!(err.contains("default sinks found"), "{err}");
         assert!(!path.exists());
     }
@@ -3372,31 +3602,34 @@ sink = "HDMI"
 
     #[test]
     fn test_save_unchanged_is_byte_identical() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", COMMENTED);
-        let cfg = Config::load_from_path(&path).unwrap();
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), COMMENTED);
+        let cfg = Config::load_from_path(&path).expect("load config");
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            COMMENTED
+        );
     }
 
     #[test]
     fn test_save_preserves_comments_through_edits() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", COMMENTED);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
 
         cfg.settings.notify_manual = true;
         cfg.settings.match_by_index = true;
         let mut hdmi = cfg.sinks[1].clone();
         hdmi.desc = "Television".to_string();
-        cfg.update_sink(1, hdmi).unwrap();
+        cfg.update_sink(1, hdmi).expect("`update_sink` succeeds");
         cfg.add_sink(make_sink("bluez_output.phones", "Headphones", false))
-            .unwrap();
+            .expect("`add_sink` succeeds");
         cfg.add_rule(make_rule("^spotify$", None, "Headphones"))
-            .unwrap();
-        cfg.save_to(&path).unwrap();
+            .expect("`add_rule` succeeds");
+        cfg.save_to(&path).expect("save config");
 
-        let out = std::fs::read_to_string(&path).unwrap();
+        let out = std::fs::read_to_string(&path).expect("read file");
         for needle in [
             "# My pwsw config\n# (hand written)\n",
             "notify_manual = true # I find these noisy",
@@ -3415,177 +3648,186 @@ sink = "HDMI"
             assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
         }
         // New sink is placed with the other sinks, before the rules
-        let phones = out.find("bluez_output.phones").unwrap();
-        assert!(phones < out.find("# --- rules ---").unwrap(), "{out}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        let phones = out.find("bluez_output.phones").expect("item found");
+        assert!(
+            phones < out.find("# --- rules ---").expect("item found"),
+            "{out}"
+        );
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     /// A `[settings]` table added on save is separated from the table after it
     #[test]
     fn test_save_new_settings_table_gets_a_blank_line_after_it() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(
             &dir,
             "c.toml",
             "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n",
         );
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         cfg.settings.log_level = "debug".to_string();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert_eq!(
             out,
             "[settings]\nlog_level = \"debug\"\n\n[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = \
              true\n"
         );
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     /// An inline `sinks = [...]` array becomes an array of tables with a clean header
     #[test]
     fn test_save_inline_sinks_array_gets_clean_table_headers() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(
             &dir,
             "c.toml",
             "sinks = [ { name = \"a\", desc = \"A\", default = true } ]\n",
         );
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        cfg.add_sink(make_sink("b", "B", false)).unwrap();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        cfg.add_sink(make_sink("b", "B", false))
+            .expect("`add_sink` succeeds");
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(!out.contains("[[sinks ]]"), "{out}");
         assert_eq!(out.matches("[[sinks]]\n").count(), 2, "{out}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_save_moves_and_removes_entries_with_their_comments() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", COMMENTED);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        cfg.move_rule(1, 0).unwrap();
-        cfg.move_sink(1, 0).unwrap();
-        cfg.remove_rule(1).unwrap(); // the mpv rule
-        cfg.save_to(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        cfg.move_rule(1, 0).expect("`move_rule` succeeds");
+        cfg.move_sink(1, 0).expect("`move_sink` succeeds");
+        cfg.remove_rule(1).expect("`remove_rule` succeeds"); // the mpv rule
+        cfg.save_to(&path).expect("save config");
 
-        let out = std::fs::read_to_string(&path).unwrap();
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(!out.contains("^mpv$"), "{out}");
         assert!(!out.contains("video player"), "{out}");
-        let tv = out.find("# the TV").unwrap();
-        let speakers = out.find("desk speakers").unwrap();
+        let tv = out.find("# the TV").expect("item found");
+        let speakers = out.find("desk speakers").expect("item found");
         assert!(tv < speakers, "moved sink keeps its comment:\n{out}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_save_after_direct_vec_mutation_matches_by_name() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", COMMENTED);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         cfg.rules.clear();
         cfg.sinks.remove(0);
         cfg.sinks[0].default = true;
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(out.contains("# the TV\n[[sinks]]"), "{out}");
         assert!(!out.contains("[[rules]]"), "{out}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_save_through_symlink_updates_target() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let real = write(&dir, "real.toml", TWO_SINKS);
         let link_dir = dir.path().join("pwsw");
-        std::fs::create_dir(&link_dir).unwrap();
+        std::fs::create_dir(&link_dir).expect("create dir");
         let link = link_dir.join("config.toml");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        std::os::unix::fs::symlink(&real, &link).expect("create symlink");
 
-        let mut cfg = Config::load_from_path(&link).unwrap();
-        cfg.set_default_sink(1).unwrap();
-        cfg.save_to(&link).unwrap();
+        let mut cfg = Config::load_from_path(&link).expect("load config");
+        cfg.set_default_sink(1)
+            .expect("`set_default_sink` succeeds");
+        cfg.save_to(&link).expect("save config");
 
         assert!(
             std::fs::symlink_metadata(&link)
-                .unwrap()
+                .expect("stat file")
                 .file_type()
                 .is_symlink(),
             "symlink must survive the save"
         );
-        assert_eq!(std::fs::read_link(&link).unwrap(), real);
-        let loaded = Config::load_from_path(&real).unwrap();
-        assert_eq!(loaded.get_default_sink().unwrap().desc, "HDMI");
+        assert_eq!(std::fs::read_link(&link).expect("read symlink"), real);
+        let loaded = Config::load_from_path(&real).expect("load config");
+        assert_eq!(
+            loaded.get_default_sink().expect("default sink exists").desc,
+            "HDMI"
+        );
         // Backup sits next to the path that was saved
         assert_eq!(
-            std::fs::read_to_string(link_dir.join("config.toml.bak")).unwrap(),
+            std::fs::read_to_string(link_dir.join("config.toml.bak")).expect("read file"),
             TWO_SINKS
         );
     }
 
     #[test]
     fn test_backup_written_next_to_custom_path() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "custom.toml", TWO_SINKS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         cfg.settings.log_level = "warn".to_string();
-        cfg.save_to(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
         assert_eq!(
-            std::fs::read_to_string(dir.path().join("custom.toml.bak")).unwrap(),
+            std::fs::read_to_string(dir.path().join("custom.toml.bak")).expect("read file"),
             TWO_SINKS
         );
     }
 
     #[test]
     fn test_save_refuses_when_file_changed_on_disk() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", TWO_SINKS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         let external = format!("{TWO_SINKS}# edited in vim\n");
-        std::fs::write(&path, &external).unwrap();
+        std::fs::write(&path, &external).expect("write file");
 
         cfg.settings.log_level = "warn".to_string();
-        let err = cfg.save_to(&path).unwrap_err();
+        let err = cfg.save_to(&path).expect_err("`save_to` fails");
         assert!(
             err.downcast_ref::<ConfigModifiedOnDisk>().is_some(),
             "{err}"
         );
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+        assert_eq!(std::fs::read_to_string(&path).expect("read file"), external);
 
         cfg.save_impl(&path, true).expect("forced save overwrites");
         assert!(
             std::fs::read_to_string(&path)
-                .unwrap()
+                .expect("read file")
                 .contains("log_level = \"warn\"")
         );
     }
 
     #[test]
     fn test_consecutive_saves_through_clones_are_not_conflicts() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", TWO_SINKS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         // The TUI saves a clone in the background, then keeps editing the original
         let snapshot = cfg.clone();
         cfg.settings.log_level = "warn".to_string();
-        snapshot.save_to(&path).unwrap();
+        snapshot.save_to(&path).expect("save config");
         cfg.save_to(&path)
             .expect("second save must not see its own write as a conflict");
-        cfg.add_sink(make_sink("n.x", "X", false)).unwrap();
-        cfg.save_to(&path).unwrap();
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        cfg.add_sink(make_sink("n.x", "X", false))
+            .expect("`add_sink` succeeds");
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_fresh_config_generates_complete_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("c.toml");
         let cfg = three_sinks();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(out.starts_with("[settings]\n"), "{out}");
         assert!(out.contains("log_level = \"info\""), "{out}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     // ------------------------------------------------------------------------
@@ -3621,7 +3863,7 @@ desc = "BT Headphones"
 
     #[test]
     fn test_sink_list_parses_strings_integers_and_single_entries() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!(
             "{THREE_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = [\"BT Headphones\", \"HDMI\"]\n\n\
              [[rules]]\napp_id = \"b\"\nsink = [3, \"alsa_output.speakers\"]\n\n[[rules]]\napp_id \
@@ -3654,10 +3896,13 @@ desc = "BT Headphones"
     )]
     #[test_case("sink = [\"HDMI\", true]", "1-based position" ; "boolean_entry")]
     fn test_sink_list_rejections(sink: &str, expected: &str) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!("{THREE_SINKS}\n[[rules]]\napp_id = \"a\"\n{sink}\n");
         let path = write(&dir, "c.toml", &contents);
-        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("`load_from_path` fails")
+        );
         assert!(err.contains(expected), "{err}");
     }
 
@@ -3689,32 +3934,35 @@ sink = "HDMI"
 
     #[test]
     fn test_save_keeps_lists_and_strings_as_written() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_LISTS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            WITH_LISTS
+        );
 
         // An unrelated edit leaves every rule's text alone
         cfg.settings.log_level = "debug".to_string();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(
-            out.ends_with(&WITH_LISTS[WITH_LISTS.find("[[rules]]").unwrap()..]),
+            out.ends_with(&WITH_LISTS[WITH_LISTS.find("[[rules]]").expect("item found")..]),
             "{out}"
         );
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_save_writes_a_string_for_one_sink_and_an_array_for_several() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_LISTS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        set_sinks(&mut cfg, 0, &["HDMI"]).unwrap();
-        set_sinks(&mut cfg, 2, &["alsa_output.hdmi", "Speakers"]).unwrap();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        set_sinks(&mut cfg, 0, &["HDMI"]).expect("`set_sinks` succeeds");
+        set_sinks(&mut cfg, 2, &["alsa_output.hdmi", "Speakers"]).expect("`set_sinks` succeeds");
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(
             out.contains("app_id = \"^discord$\"\nsink = \"HDMI\" # phones first\n"),
             "single target is a string again, comment kept:\n{out}"
@@ -3723,7 +3971,7 @@ sink = "HDMI"
             out.contains("app_id = \"^steam$\"\nsink = [\"HDMI\", \"Speakers\"]\n"),
             "several targets are an inline array of descs:\n{out}"
         );
-        let reloaded = Config::load_from_path(&path).unwrap();
+        let reloaded = Config::load_from_path(&path).expect("load config");
         assert_eq!(reloaded, cfg);
         assert_eq!(refs(&reloaded, 2), ["HDMI", "Speakers"]);
 
@@ -3732,24 +3980,35 @@ sink = "HDMI"
             make_rule_with_fallbacks("x", None, &["BT Headphones", "HDMI"]),
         ]);
         let fresh_path = dir.path().join("fresh.toml");
-        fresh.save_to(&fresh_path).unwrap();
-        let out = std::fs::read_to_string(&fresh_path).unwrap();
+        fresh.save_to(&fresh_path).expect("save config");
+        let out = std::fs::read_to_string(&fresh_path).expect("read file");
         assert!(
             out.contains("sink = [\"BT Headphones\", \"HDMI\"]"),
             "{out}"
         );
-        assert_eq!(Config::load_from_path(&fresh_path).unwrap(), fresh);
+        assert_eq!(
+            Config::load_from_path(&fresh_path).expect("load config"),
+            fresh
+        );
     }
 
     #[test]
     fn test_rule_methods_validate_and_canonicalize_lists() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_LISTS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        set_sinks(&mut cfg, 1, &["1", "bluez_output.phones"]).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        set_sinks(&mut cfg, 1, &["1", "bluez_output.phones"]).expect("`set_sinks` succeeds");
         assert_eq!(refs(&cfg, 1), ["Speakers", "BT Headphones"]);
-        for bad in [&["Nope"][..], &["HDMI", "Nope"], &["Speakers", "HDMI", "2"]] {
-            assert!(set_sinks(&mut cfg, 1, bad).is_err(), "{bad:?}");
+        for (bad, why) in [
+            (&["Nope"][..], "Rule references unknown sink 'Nope'"),
+            (&["HDMI", "Nope"], "Rule references unknown sink 'Nope'"),
+            (
+                &["Speakers", "HDMI", "2"],
+                "Rule 2 lists sink 'HDMI' more than once",
+            ),
+        ] {
+            let err = set_sinks(&mut cfg, 1, bad).expect_err("invalid sink list");
+            assert_eq!(err.to_string(), why, "{bad:?}");
         }
         assert_eq!(refs(&cfg, 1), ["Speakers", "BT Headphones"], "unchanged");
 
@@ -3757,62 +4016,68 @@ sink = "HDMI"
             "3",
             "alsa_output.hdmi",
         ]))
-        .unwrap();
+        .expect("`add_rule` succeeds");
         assert_eq!(refs(&cfg, 3), ["BT Headphones", "HDMI"]);
         let dup = make_rule_with_fallbacks("dup", None, &["HDMI", "Speakers", "1"]);
-        assert!(cfg.add_rule(dup).is_err());
+        assert_eq!(
+            cfg.add_rule(dup).expect_err("duplicate sink").to_string(),
+            "Rule 5 lists sink 'Speakers' more than once"
+        );
         assert_eq!(cfg.rules.len(), 4);
     }
 
     #[test]
     fn test_sink_rename_and_move_cascade_into_fallbacks() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_LISTS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         let mut hdmi = cfg.sinks[1].clone();
         hdmi.desc = "Television".to_string();
-        cfg.update_sink(1, hdmi).unwrap();
+        cfg.update_sink(1, hdmi).expect("`update_sink` succeeds");
         // The positional fallback `2` still points at the renamed sink
         assert_eq!(refs(&cfg, 0), ["BT Headphones", "2"]);
         assert_eq!(refs(&cfg, 1), ["Television"]);
 
         let mut phones = cfg.sinks[2].clone();
         phones.desc = "Headset".to_string();
-        cfg.update_sink(2, phones).unwrap();
+        cfg.update_sink(2, phones).expect("`update_sink` succeeds");
         assert_eq!(refs(&cfg, 0), ["Headset", "2"]);
 
         // Moving the sinks rewrites the positional fallback so it keeps its target
-        cfg.move_sink(1, 0).unwrap();
+        cfg.move_sink(1, 0).expect("`move_sink` succeeds");
         assert_eq!(refs(&cfg, 0), ["Headset", "Television"]);
         assert_eq!(cfg.resolve_rule_sinks(&cfg.rules[0]), Some(vec![2, 0]));
 
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(
             out.contains("sink = [\"Headset\", \"Television\"] # phones first"),
             "{out}"
         );
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     #[test]
     fn test_remove_sink_refused_while_a_fallback_uses_it() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!(
             "{THREE_SINKS}\n[[rules]]\napp_id = \"^discord$\"\nsink = [\"HDMI\", \"BT \
              Headphones\"]\n"
         );
         let path = write(&dir, "c.toml", &contents);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        let err = cfg.remove_sink(2).unwrap_err().to_string();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        let err = cfg
+            .remove_sink(2)
+            .expect_err("`remove_sink` fails")
+            .to_string();
         assert!(
             err.contains("Cannot remove sink 'BT Headphones'") && err.contains("1 (^discord$)"),
             "{err}"
         );
         assert_eq!(cfg.sinks.len(), 3);
         // Once the rule no longer lists it, it can go
-        set_sinks(&mut cfg, 0, &["HDMI"]).unwrap();
-        cfg.remove_sink(2).unwrap();
+        set_sinks(&mut cfg, 0, &["HDMI"]).expect("`set_sinks` succeeds");
+        cfg.remove_sink(2).expect("`remove_sink` succeeds");
         assert_eq!(cfg.sinks.len(), 2);
     }
 
@@ -3834,34 +4099,35 @@ sink = "HDMI"
 
     #[test]
     fn test_rule_edits_keep_fallbacks() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_LISTS);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
 
         // Editing the description keeps the fallbacks (stored as descs now)
-        tui_edit(&mut cfg, 0, |r| r.desc = Some("Voice".to_string())).unwrap();
+        tui_edit(&mut cfg, 0, |r| r.desc = Some("Voice".to_string())).expect("`tui_edit` succeeds");
         assert_eq!(refs(&cfg, 0), ["BT Headphones", "HDMI"]);
         // Editing the pattern keeps them too
         tui_edit(&mut cfg, 0, |r| {
             r.app_id_pattern = "^(discord|vesktop)$".to_string();
-            r.app_id_regex = compile_rule_regex(&r.app_id_pattern).unwrap();
+            r.app_id_regex = compile_rule_regex(&r.app_id_pattern).expect("pattern compiles");
         })
-        .unwrap();
+        .expect("`tui_edit` succeeds");
         assert_eq!(refs(&cfg, 0), ["BT Headphones", "HDMI"]);
         // Promoting a fallback to first choice drops it from the fallbacks
-        tui_edit(&mut cfg, 0, |r| r.sink_ref = "alsa_output.hdmi".to_string()).unwrap();
+        tui_edit(&mut cfg, 0, |r| r.sink_ref = "alsa_output.hdmi".to_string())
+            .expect("`tui_edit` succeeds");
         assert_eq!(refs(&cfg, 0), ["HDMI"]);
-        set_sinks(&mut cfg, 0, &["BT Headphones", "HDMI"]).unwrap();
+        set_sinks(&mut cfg, 0, &["BT Headphones", "HDMI"]).expect("`set_sinks` succeeds");
 
         // Fallbacks follow their rule through moves and removals
-        cfg.move_rule(0, 2).unwrap();
+        cfg.move_rule(0, 2).expect("`move_rule` succeeds");
         assert_eq!(cfg.rules[2].app_id_pattern, "^(discord|vesktop)$");
         assert_eq!(refs(&cfg, 2), ["BT Headphones", "HDMI"]);
-        cfg.remove_rule(0).unwrap();
+        cfg.remove_rule(0).expect("`remove_rule` succeeds");
         assert_eq!(refs(&cfg, 1), ["BT Headphones", "HDMI"]);
 
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(
             out.contains(
                 "app_id = \"^(discord|vesktop)$\"\nsink = [\"BT Headphones\", \"HDMI\"] # phones \
@@ -3869,36 +4135,36 @@ sink = "HDMI"
             ),
             "{out}"
         );
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     /// Rules with identical patterns keep their own fallbacks through saves, cascades
     /// and moves
     #[test]
     fn test_identical_patterns_keep_their_own_fallbacks() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!(
             "{THREE_SINKS}\n[[rules]]\napp_id = \"^mpv$\"\nsink = [\"HDMI\", \"Speakers\"]\n\n\
              [[rules]]\napp_id = \"^mpv$\"\nsink = [\"BT Headphones\", 2]\n"
         );
         let path = write(&dir, "c.toml", &contents);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         assert_eq!(refs(&cfg, 0), ["HDMI", "Speakers"]);
         assert_eq!(refs(&cfg, 1), ["BT Headphones", "2"]);
 
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(std::fs::read_to_string(&path).expect("read file"), contents);
 
         let mut hdmi = cfg.sinks[1].clone();
         hdmi.desc = "Television".to_string();
-        cfg.update_sink(1, hdmi).unwrap();
-        cfg.move_sink(1, 2).unwrap();
-        cfg.move_rule(1, 0).unwrap();
+        cfg.update_sink(1, hdmi).expect("`update_sink` succeeds");
+        cfg.move_sink(1, 2).expect("`move_sink` succeeds");
+        cfg.move_rule(1, 0).expect("`move_rule` succeeds");
         assert_eq!(refs(&cfg, 0), ["BT Headphones", "Television"]);
         assert_eq!(refs(&cfg, 1), ["Television", "Speakers"]);
 
-        cfg.save_to(&path).unwrap();
-        let reloaded = Config::load_from_path(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let reloaded = Config::load_from_path(&path).expect("load config");
         assert_eq!(reloaded, cfg);
         assert_eq!(refs(&reloaded, 0), ["BT Headphones", "Television"]);
         assert_eq!(refs(&reloaded, 1), ["Television", "Speakers"]);
@@ -3944,9 +4210,9 @@ sink = "Headset"
 
     #[test]
     fn test_sources_parse_and_round_trip_byte_identical() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", WITH_SOURCES);
-        let cfg = Config::load_from_path(&path).unwrap();
+        let cfg = Config::load_from_path(&path).expect("load config");
         assert_eq!(cfg.sources.len(), 2);
         assert_eq!(
             cfg.get_default_source().map(|s| s.desc.as_str()),
@@ -3967,19 +4233,25 @@ sink = "Headset"
                 .map(|s| s.desc.as_str()),
             Some("Desk Mic")
         );
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_SOURCES);
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            WITH_SOURCES
+        );
     }
 
     #[test]
     fn test_no_sources_is_valid_and_saves_no_sources_key() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", TWO_SINKS);
-        let cfg = Config::load_from_path(&path).unwrap();
+        let cfg = Config::load_from_path(&path).expect("load config");
         assert_eq!(cfg.sources, Vec::<SinkConfig>::new());
         assert_eq!(cfg.get_default_source(), None);
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO_SINKS);
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            TWO_SINKS
+        );
     }
 
     #[test_case(
@@ -4029,18 +4301,21 @@ sink = "Headset"
         "volume" ; "unknown_source_key"
     )]
     fn test_source_validation_errors(contents: &str, expected: &str) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", contents);
-        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("`load_from_path` fails")
+        );
         assert!(err.contains(expected), "expected {expected:?} in: {err}");
     }
 
     #[test]
     fn test_positional_source_refs_are_accepted() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = WITH_SOURCES.replace("source = \"Headset Mic\"", "source = 1");
         let path = write(&dir, "c.toml", &contents);
-        let cfg = Config::load_from_path(&path).unwrap();
+        let cfg = Config::load_from_path(&path).expect("load config");
         assert_eq!(cfg.rules[0].source_refs, ["1"]);
         assert_eq!(
             cfg.resolve_rule_refs(Endpoint::Source, &cfg.rules[0]),
@@ -4050,19 +4325,20 @@ sink = "Headset"
 
     #[test]
     fn test_source_mutations_cascade_into_rules() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = WITH_SOURCES.replace("source = \"Headset Mic\"", "source = 1");
         let path = write(&dir, "c.toml", &contents);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
 
         // Rename: references by desc follow
         let mut headset = cfg.sources[0].clone();
         headset.desc = "Arctis Mic".to_string();
-        cfg.update_source(0, headset).unwrap();
+        cfg.update_source(0, headset)
+            .expect("`update_source` succeeds");
         assert_eq!(cfg.rules[1].source_refs, ["Arctis Mic", "Desk Mic"]);
 
         // Move: the positional reference keeps its target
-        cfg.move_source(0, 1).unwrap();
+        cfg.move_source(0, 1).expect("`move_source` succeeds");
         assert_eq!(cfg.sources[1].desc, "Arctis Mic");
         assert_eq!(cfg.rules[0].source_refs, ["Arctis Mic"]);
         assert_eq!(
@@ -4071,7 +4347,10 @@ sink = "Headset"
         );
 
         // Remove: refused while used, with the rules named
-        let err = cfg.remove_source(1).unwrap_err().to_string();
+        let err = cfg
+            .remove_source(1)
+            .expect_err("`remove_source` fails")
+            .to_string();
         assert!(
             err.contains("Cannot remove source 'Arctis Mic': used by rule 1"),
             "{err}"
@@ -4081,27 +4360,28 @@ sink = "Headset"
         // Sinks are a separate namespace: a sink rename leaves sources alone
         let mut sink = cfg.sinks[1].clone();
         sink.desc = "Desk Mic".to_string();
-        cfg.update_sink(1, sink).unwrap();
+        cfg.update_sink(1, sink).expect("`update_sink` succeeds");
         assert_eq!(cfg.rules[1].source_refs, ["Arctis Mic", "Desk Mic"]);
         assert_eq!(cfg.rules[0].sink_ref, "Desk Mic");
 
         // Default handling mirrors sinks
-        cfg.set_default_source(1).unwrap();
+        cfg.set_default_source(1)
+            .expect("`set_default_source` succeeds");
         let defaults: Vec<bool> = cfg.sources.iter().map(|s| s.default).collect();
         assert_eq!(defaults, [false, true]);
         let err = cfg
             .add_source(make_sink("alsa_input.desk.analog-stereo", "Dup", false))
-            .unwrap_err()
+            .expect_err("`add_source` fails")
             .to_string();
         assert!(
             err.contains("Source 1 ('Desk Mic') already uses node name"),
             "{err}"
         );
 
-        cfg.save_to(&path).unwrap();
-        let reloaded = Config::load_from_path(&path).unwrap();
+        cfg.save_to(&path).expect("save config");
+        let reloaded = Config::load_from_path(&path).expect("load config");
         assert_eq!(reloaded, cfg);
-        let text = std::fs::read_to_string(&path).unwrap();
+        let text = std::fs::read_to_string(&path).expect("read file");
         assert!(
             text.contains("desc = \"Arctis Mic\" # USB headset"),
             "{text}"
@@ -4121,55 +4401,55 @@ sink = "Headset"
             "1",
             "Mic B",
         ]);
-        cfg.add_rule(rule).unwrap();
+        cfg.add_rule(rule).expect("`add_rule` succeeds");
         assert_eq!(cfg.rules[0].source_refs, ["Mic B", "Mic A"]);
         // A rule with a source cannot outlive the sources it needs
         let mut bare = cfg.clone();
         bare.rules[0].source_refs.clear();
-        bare.remove_source(1).unwrap();
-        bare.remove_source(0).unwrap();
+        bare.remove_source(1).expect("`remove_source` succeeds");
+        bare.remove_source(0).expect("`remove_source` succeeds");
         assert_eq!(bare.sources, Vec::<SinkConfig>::new());
         let err = cfg
             .add_rule(crate::test_utils::fixtures::with_sources(
                 make_rule("y", None, "out"),
                 &["Mic C"],
             ))
-            .unwrap_err()
+            .expect_err("`add_rule` fails")
             .to_string();
         assert!(err.contains("unknown source 'Mic C'"), "{err}");
     }
 
     #[test]
     fn test_new_sources_and_source_keys_are_written_on_save() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let contents = format!("{TWO_SINKS}\n[[rules]]\napp_id = \"x\"\nsink = \"HDMI\"\n");
         let path = write(&dir, "c.toml", &contents);
-        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut cfg = Config::load_from_path(&path).expect("load config");
         cfg.add_source(make_sink("alsa_input.mic", "Mic", false))
-            .unwrap();
+            .expect("`add_source` succeeds");
         assert!(cfg.sources[0].default, "first source becomes default");
         let mut rule = cfg.rules[0].clone();
         rule.source_refs = vec!["alsa_input.mic".to_string()];
-        cfg.update_rule(0, rule).unwrap();
-        cfg.save_to(&path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
+        cfg.update_rule(0, rule).expect("`update_rule` succeeds");
+        cfg.save_to(&path).expect("save config");
+        let text = std::fs::read_to_string(&path).expect("read file");
         assert!(text.contains("[[sources]]"), "{text}");
         assert!(text.contains("source = \"Mic\""), "{text}");
-        let reloaded = Config::load_from_path(&path).unwrap();
+        let reloaded = Config::load_from_path(&path).expect("load config");
         assert_eq!(reloaded, cfg);
 
         // Dropping the rule's source removes the key
         let mut rule = cfg.rules[0].clone();
         rule.source_refs.clear();
-        cfg.update_rule(0, rule).unwrap();
-        cfg.save_to(&path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
+        cfg.update_rule(0, rule).expect("`update_rule` succeeds");
+        cfg.save_to(&path).expect("save config");
+        let text = std::fs::read_to_string(&path).expect("read file");
         assert!(!text.contains("source ="), "{text}");
     }
 
     #[test]
     fn test_fresh_config_with_sources_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("fresh.toml");
         let mut cfg = make_config(vec![make_sink("out", "Speakers", true)], vec![
             crate::test_utils::fixtures::with_sources(make_rule("x", None, "Speakers"), &[
@@ -4181,14 +4461,14 @@ sink = "Headset"
             make_sink("alsa_input.b", "Mic B", false),
         ]);
         cfg.settings.log_level = "debug".to_string();
-        cfg.save_to(&path).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let sinks = text.find("[[sinks]]").unwrap();
-        let sources = text.find("[[sources]]").unwrap();
-        let rules = text.find("[[rules]]").unwrap();
+        cfg.save_to(&path).expect("save config");
+        let text = std::fs::read_to_string(&path).expect("read file");
+        let sinks = text.find("[[sinks]]").expect("item found");
+        let sources = text.find("[[sources]]").expect("item found");
+        let rules = text.find("[[rules]]").expect("item found");
         assert!(sinks < sources && sources < rules, "{text}");
         assert!(text.contains("source = [\"Mic B\", \"Mic A\"]"), "{text}");
-        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+        assert_eq!(Config::load_from_path(&path).expect("load config"), cfg);
     }
 
     // ------------------------------------------------------------------------
@@ -4217,7 +4497,7 @@ sink = "TV"
 
     #[test]
     fn test_output_rules_load_and_match() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", MONITOR_RULES);
         let cfg = Config::load_from_path(&path).expect("output rules are valid");
         assert!(cfg.has_output_rules());
@@ -4257,14 +4537,17 @@ sink = "TV"
         "Rule 1: invalid output regex" ; "huge_output_regex"
     )]
     fn test_output_rule_errors(rule: &str, expected: &str) {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let sinks = MONITOR_RULES
             .split("# any window")
             .next()
             .expect("sinks part");
         let contents = format!("{sinks}{rule}");
         let path = write(&dir, "c.toml", &contents);
-        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        let err = format!(
+            "{:#}",
+            Config::load_from_path(&path).expect_err("`load_from_path` fails")
+        );
         assert!(err.contains(expected), "expected {expected:?}, got: {err}");
     }
 
@@ -4272,14 +4555,23 @@ sink = "TV"
     #[test]
     fn test_add_rule_requires_app_id_or_output() {
         let mut cfg = make_config(vec![make_sink("tv", "TV", true)], vec![]);
-        let err = cfg.add_rule(make_rule("", None, "TV")).unwrap_err();
+        let err = cfg
+            .add_rule(make_rule("", None, "TV"))
+            .expect_err("`add_rule` fails");
         assert!(
             format!("{err:#}").contains("needs `app_id` or `output`"),
             "{err:#}"
         );
         let mut empty_output = with_output(make_rule("", None, "TV"), "x");
         empty_output.output_pattern = Some(String::new());
-        assert!(cfg.add_rule(empty_output).is_err());
+        let err = cfg
+            .add_rule(empty_output)
+            .expect_err("empty output pattern");
+        assert!(
+            err.to_string()
+                .starts_with("Rule 1 has an empty output pattern"),
+            "{err}"
+        );
         cfg.add_rule(with_output(make_rule("", None, "TV"), "^DP-"))
             .expect("output-only rule");
         assert_eq!(cfg.rules.len(), 1);
@@ -4289,22 +4581,25 @@ sink = "TV"
     /// (an output-only rule is written without `app_id`)
     #[test]
     fn test_output_rules_round_trip() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = write(&dir, "c.toml", MONITOR_RULES);
-        let mut cfg = Config::load_from_path(&path).unwrap();
-        cfg.save_to(&path).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), MONITOR_RULES);
+        let mut cfg = Config::load_from_path(&path).expect("load config");
+        cfg.save_to(&path).expect("save config");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read file"),
+            MONITOR_RULES
+        );
 
-        let mut cfg2 = Config::load_from_path(&path).unwrap();
+        let mut cfg2 = Config::load_from_path(&path).expect("load config");
         let mut edited = cfg2.rules[0].clone();
         edited.sink_ref = "Speakers".to_string();
-        cfg2.update_rule(0, edited).unwrap();
+        cfg2.update_rule(0, edited).expect("`update_rule` succeeds");
         cfg2.add_rule(with_output(make_rule("", Some("YouTube"), "TV"), "^DP-1$"))
-            .unwrap();
+            .expect("`add_rule` succeeds");
         cfg2.add_rule(with_output(make_rule("^vlc$", None, "TV"), "HDMI"))
-            .unwrap();
-        cfg2.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+            .expect("`add_rule` succeeds");
+        cfg2.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         for needle in [
             "# any window on the TV\n[[rules]]\noutput = \"HDMI-A-1\" # connector\nsink = \
              \"Speakers\"\n",
@@ -4313,16 +4608,16 @@ sink = "TV"
         ] {
             assert!(out.contains(needle), "missing {needle:?} in:\n{out}");
         }
-        let back = Config::load_from_path(&path).unwrap();
+        let back = Config::load_from_path(&path).expect("load config");
         assert_eq!(back.rules, cfg2.rules);
         assert_eq!(back.rules[2].output_pattern.as_deref(), Some("^DP-1$"));
         assert!(!back.rules[2].has_app_id());
 
         // Removing an output rule keeps the others in their slots
         cfg = back;
-        cfg.remove_rule(0).unwrap();
-        cfg.save_to(&path).unwrap();
-        let out = std::fs::read_to_string(&path).unwrap();
+        cfg.remove_rule(0).expect("`remove_rule` succeeds");
+        cfg.save_to(&path).expect("save config");
+        let out = std::fs::read_to_string(&path).expect("read file");
         assert!(!out.contains("# connector"), "{out}");
         assert!(
             out.contains("app_id = \"^mpv$\"\noutput = \"^HDMI-\"\n"),

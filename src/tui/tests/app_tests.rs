@@ -1057,3 +1057,52 @@ fn test_rule_preview_uses_output_matching() {
     app.refresh_preview();
     assert_eq!(app.preview.view().total, 1);
 }
+
+/// Typing in the sink editor reaches its focused field
+#[test]
+fn test_sink_editor_receives_typed_keys() {
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.current_screen = Screen::Sinks;
+    app.sinks_screen.start_add();
+    app.sinks_screen.editor.name = tui_input::Input::new(String::new());
+    app.sinks_screen.editor.focused_field = SinkField::Name;
+
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    assert_eq!(app.sinks_screen.editor.name.value(), "a");
+    simulate_key_event(&mut app, key(KeyCode::Backspace));
+    assert_eq!(app.sinks_screen.editor.name.value(), "");
+}
+
+/// Typing in the rule editor appends to its focused field
+#[test]
+fn test_rule_editor_receives_typed_keys() {
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.current_screen = Screen::Rules;
+    app.rules_screen.start_add();
+    app.rules_screen.editor.app_id_pattern = tui_input::Input::new("foo".to_string());
+    app.rules_screen.editor.focused_field = RuleField::AppId;
+
+    simulate_key_event(&mut app, key(KeyCode::Char('d')));
+    assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "food");
+}
+
+/// Confirming the deletion of a sink a rule uses is refused and reported
+#[test]
+fn test_sink_delete_refuses_sink_used_by_rule() {
+    let mut app = App::with_config(make_config(
+        vec![make_sink("s1", "d1", true), make_sink("s2", "d2", false)],
+        vec![make_rule("foo", None, "d2")],
+    ));
+    app.current_screen = Screen::Sinks;
+    app.sinks_screen.selected = 1;
+    app.sinks_screen.start_delete();
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+
+    assert_eq!(
+        app.config.sinks.len(),
+        2,
+        "referenced sink must not be removed"
+    );
+    let status = app.status_message().expect("refusal is reported");
+    assert!(status.contains("Cannot remove sink 'd2'"), "{status}");
+}

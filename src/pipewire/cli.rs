@@ -198,11 +198,25 @@ pub(crate) fn tool_works(tool: &str) -> bool {
 }
 
 /// [`AudioBackend`] backed by `pw-dump`, `pw-metadata` and `pw-cli`.
-pub(crate) struct CliBackend;
+pub(crate) struct CliBackend {
+    /// The programs run (looked up in `PATH`); tests substitute recording fakes
+    dump: &'static str,
+    metadata: &'static str,
+    cli: &'static str,
+}
+
+impl CliBackend {
+    /// The real `PipeWire` tools
+    pub(crate) const SYSTEM: Self = Self {
+        dump: "pw-dump",
+        metadata: "pw-metadata",
+        cli: "pw-cli",
+    };
+}
 
 impl AudioBackend for CliBackend {
     fn snapshot(&self) -> Result<Snapshot> {
-        parse_dump(&dump_bytes()?)
+        parse_dump(&run(self.dump, &[], PW_DUMP_TIMEOUT, MAX_DUMP_BYTES)?)
     }
 
     /// Writes `default.configured.audio.sink` (or `….audio.source`, as `wpctl
@@ -215,7 +229,7 @@ impl AudioBackend for CliBackend {
         };
         let value = serde_json::json!({ "name": node_name }).to_string();
         run(
-            "pw-metadata",
+            self.metadata,
             &["0", key, &value, "Spa:String:JSON"],
             PW_COMMAND_TIMEOUT,
             MAX_COMMAND_BYTES,
@@ -230,7 +244,7 @@ impl AudioBackend for CliBackend {
     fn set_profile(&self, device_id: u32, profile_index: u32) -> Result<()> {
         let param = serde_json::json!({ "index": profile_index, "save": true }).to_string();
         run(
-            "pw-cli",
+            self.cli,
             &["set-param", &device_id.to_string(), "Profile", &param],
             PW_COMMAND_TIMEOUT,
             MAX_COMMAND_BYTES,
@@ -253,15 +267,18 @@ mod tests {
 
     #[test]
     fn test_run_kills_on_timeout() {
+        // Without the kill, `run` would wait the full minute for `sleep` to exit; the
+        // bound only has to separate "killed" from "waited", so it is generous
         let start = Instant::now();
-        let err = run("sleep", &["5"], Duration::from_millis(100), 1024).unwrap_err();
+        let err = run("sleep", &["60"], Duration::from_millis(100), 1024)
+            .expect_err("sleep outlives the deadline");
         assert!(
             format!("{err}").contains("did not finish within 100 ms"),
             "{err}"
         );
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "child was not killed promptly"
+            start.elapsed() < Duration::from_secs(30),
+            "child was not killed at the deadline"
         );
     }
 
@@ -273,7 +290,7 @@ mod tests {
             Duration::from_secs(5),
             1024,
         )
-        .unwrap_err();
+        .expect_err("`run` fails");
         let msg = format!("{err}");
         assert!(msg.contains("failed"), "{msg}");
         assert!(
@@ -290,14 +307,110 @@ mod tests {
             Duration::from_secs(5),
             1000,
         )
-        .unwrap_err();
+        .expect_err("`run` fails");
         assert!(format!("{err}").contains("more than 1000 bytes"), "{err}");
     }
 
     #[test]
     fn test_run_missing_program() {
-        let err = run("pwsw-no-such-tool", &[], Duration::from_secs(1), 1024).unwrap_err();
+        let err =
+            run("pwsw-no-such-tool", &[], Duration::from_secs(1), 1024).expect_err("`run` fails");
         assert!(format!("{err}").contains("Failed to run"), "{err}");
+    }
+
+    /// A fake tool in `dir` that records its arguments, one per line, in
+    /// `<name>.args` (leaked: [`CliBackend`] holds `'static` program names)
+    fn recording_tool(dir: &std::path::Path, name: &str) -> &'static str {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let path = dir.join(name);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o755)
+            .open(&path)
+            .expect("create fake tool");
+        file.write_all(b"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.args\"\n")
+            .expect("write fake tool");
+        drop(file);
+        path.into_os_string()
+            .into_string()
+            .expect("UTF-8 temp path")
+            .leak()
+    }
+
+    /// A backend whose every tool is a [`recording_tool`] in `dir`
+    fn recording_backend(dir: &std::path::Path) -> CliBackend {
+        CliBackend {
+            dump: recording_tool(dir, "pw-dump"),
+            metadata: recording_tool(dir, "pw-metadata"),
+            cli: recording_tool(dir, "pw-cli"),
+        }
+    }
+
+    /// The arguments `tool` was last run with
+    fn recorded_args(tool: &str) -> Vec<String> {
+        std::fs::read_to_string(format!("{tool}.args"))
+            .expect("the fake tool ran")
+            .lines()
+            .map(String::from)
+            .collect()
+    }
+
+    /// Run `f`, retrying while the kernel reports the fake tool busy: another test
+    /// thread forking while it was being written briefly holds it open
+    fn retry_busy(mut f: impl FnMut() -> Result<()>) -> Result<()> {
+        for _ in 0..100 {
+            match f() {
+                Err(e) if format!("{e:#}").contains("Text file busy") => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                other => return other,
+            }
+        }
+        f()
+    }
+
+    #[test]
+    fn test_set_profile_passes_exact_pw_cli_arguments() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let backend = recording_backend(dir.path());
+        retry_busy(|| backend.set_profile(42, 7)).expect("fake pw-cli succeeds");
+        assert_eq!(recorded_args(backend.cli), [
+            "set-param",
+            "42",
+            "Profile",
+            r#"{"index":7,"save":true}"#,
+        ]);
+        assert!(
+            !std::path::Path::new(&format!("{}.args", backend.metadata)).exists(),
+            "a profile switch does not touch the defaults"
+        );
+    }
+
+    #[test]
+    fn test_set_default_passes_exact_pw_metadata_arguments() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let backend = recording_backend(dir.path());
+        for (kind, key) in [
+            (Endpoint::Sink, "default.configured.audio.sink"),
+            (Endpoint::Source, "default.configured.audio.source"),
+        ] {
+            // Quotes and backslashes in a node name stay inside the JSON string
+            retry_busy(|| backend.set_default(kind, r#"alsa "odd" \name"#))
+                .expect("fake pw-metadata succeeds");
+            assert_eq!(recorded_args(backend.metadata), [
+                "0",
+                key,
+                r#"{"name":"alsa \"odd\" \\name"}"#,
+                "Spa:String:JSON",
+            ]);
+        }
+        assert!(
+            !std::path::Path::new(&format!("{}.args", backend.cli)).exists(),
+            "setting a default never switches a profile"
+        );
     }
 
     #[test]

@@ -1288,16 +1288,24 @@ mod editor_tests {
         editor.picker_move(true, 3);
         editor.apply_picks(&sinks()).expect("picks");
         assert_eq!(editor.sink_refs, ["Headphones"]);
-        assert!(editor.apply_picks(&[]).is_ok(), "keeps the chosen sink");
+        editor
+            .apply_picks(&[])
+            .expect("a sink is already picked: nothing to choose");
         let mut empty = RuleEditor::blank();
-        assert!(empty.apply_picks(&[]).is_err(), "no sink to choose");
+        assert_eq!(
+            empty.apply_picks(&[]),
+            Err("No sink to choose: add one on the Sinks screen")
+        );
     }
 
     #[test]
     fn test_a_rule_needs_a_sink() {
         let mut editor = RuleEditor::blank();
         editor.app_id_pattern = Input::new("^mpv$".to_string());
-        assert!(editor.to_rule().is_err());
+        assert_eq!(
+            editor.to_rule().expect_err("no sink"),
+            "Choose at least one sink (Space on Sinks)"
+        );
         editor.sink_refs = vec!["Speakers".to_string()];
         let rule = editor.to_rule().expect("valid rule");
         assert_eq!(rule.fallback_refs, Vec::<String>::new());

@@ -219,7 +219,7 @@ impl PipeWire {
     /// Returns an error if `pw-dump` cannot be run, times out, fails, or returns
     /// invalid `JSON`.
     pub fn dump() -> Result<Snapshot> {
-        activate::AudioBackend::snapshot(&CliBackend)
+        activate::AudioBackend::snapshot(&CliBackend::SYSTEM)
     }
 
     /// Like [`Self::dump`], also returning what the dump says about the server and
@@ -408,7 +408,7 @@ impl PipeWire {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let outcome = activate::activate_joint(
-            &CliBackend,
+            &CliBackend::SYSTEM,
             &SystemClock,
             WaitPolicy::from_env(),
             sink.map(request),

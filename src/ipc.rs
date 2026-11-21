@@ -1075,16 +1075,16 @@ mod tests {
     #[test]
     fn test_request_status_roundtrip() {
         let request = Request::Status;
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&request).expect("serialize");
+        let deserialized: Request = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(deserialized, Request::Status));
     }
 
     #[test]
     fn test_request_list_windows_roundtrip() {
         let request = Request::ListWindows;
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&request).expect("serialize");
+        let deserialized: Request = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(deserialized, Request::ListWindows));
     }
 
@@ -1109,10 +1109,14 @@ mod tests {
     fn test_ensure_private_dir_creates_0700() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let dir = base.path().join("pwsw-test");
         ensure_private_dir(&dir, current_uid()).expect("fresh directory should be accepted");
-        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777;
+        let mode = std::fs::metadata(&dir)
+            .expect("stat file")
+            .permissions()
+            .mode()
+            & 0o7777;
         assert_eq!(mode, 0o700);
         // Idempotent on an existing, correct directory
         ensure_private_dir(&dir, current_uid()).expect("existing 0700 directory is fine");
@@ -1120,15 +1124,17 @@ mod tests {
 
     #[test]
     fn test_verify_private_dir_rejects_symlink() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let real = base.path().join("real");
-        std::fs::DirBuilder::new().create(&real).unwrap();
+        std::fs::DirBuilder::new()
+            .create(&real)
+            .expect("`create` succeeds");
         std::fs::set_permissions(&real, std::os::unix::fs::PermissionsExt::from_mode(0o700))
-            .unwrap();
+            .expect("set permissions");
         let link = base.path().join("link");
-        std::os::unix::fs::symlink(&real, &link).unwrap();
+        std::os::unix::fs::symlink(&real, &link).expect("create symlink");
 
-        let err = ensure_private_dir(&link, current_uid()).unwrap_err();
+        let err = ensure_private_dir(&link, current_uid()).expect_err("`ensure_private_dir` fails");
         assert!(format!("{err:#}").contains("symlink"), "{err:#}");
     }
 
@@ -1136,43 +1142,45 @@ mod tests {
     fn test_verify_private_dir_rejects_wrong_mode() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let dir = base.path().join("open");
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir(&dir).expect("create dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+            .expect("set permissions");
 
-        let err = ensure_private_dir(&dir, current_uid()).unwrap_err();
+        let err = ensure_private_dir(&dir, current_uid()).expect_err("`ensure_private_dir` fails");
         assert!(format!("{err:#}").contains("0755"), "{err:#}");
     }
 
     #[test]
     fn test_verify_private_dir_rejects_wrong_owner_and_files() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let dir = base.path().join("d");
-        ensure_private_dir(&dir, current_uid()).unwrap();
+        ensure_private_dir(&dir, current_uid()).expect("`ensure_private_dir` succeeds");
         let other_uid = current_uid().wrapping_add(1);
-        let err = verify_private_dir(&dir, other_uid).unwrap_err();
+        let err = verify_private_dir(&dir, other_uid).expect_err("`verify_private_dir` fails");
         assert!(format!("{err:#}").contains("owned by uid"), "{err:#}");
 
         let file = base.path().join("f");
-        std::fs::write(&file, b"").unwrap();
-        let err = verify_private_dir(&file, current_uid()).unwrap_err();
+        std::fs::write(&file, b"").expect("write file");
+        let err = verify_private_dir(&file, current_uid()).expect_err("`verify_private_dir` fails");
         assert!(format!("{err:#}").contains("not a directory"), "{err:#}");
     }
 
     #[test]
     fn test_verify_client_dir_missing_is_ok() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let loc = socket_location_from(None, base.path(), 7);
         verify_client_dir(&loc, current_uid()).expect("missing dir means no daemon, not an error");
     }
 
     #[tokio::test]
     async fn test_verify_peer_uid() {
-        let (a, b) = UnixStream::pair().unwrap();
+        let (a, b) = UnixStream::pair().expect("socket pair");
         verify_peer_uid(&a, current_uid()).expect("same process, same uid");
         verify_peer_uid(&b, current_uid()).expect("same process, same uid");
-        let err = verify_peer_uid(&a, current_uid().wrapping_add(1)).unwrap_err();
+        let err = verify_peer_uid(&a, current_uid().wrapping_add(1))
+            .expect_err("`verify_peer_uid` fails");
         assert!(format!("{err:#}").contains("expected uid"), "{err:#}");
     }
 
@@ -1180,26 +1188,29 @@ mod tests {
     fn test_remove_if_same_inode() {
         use std::os::unix::fs::MetadataExt;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let path = dir.path().join("f");
-        std::fs::write(&path, b"one").unwrap();
-        let meta = std::fs::metadata(&path).unwrap();
+        std::fs::write(&path, b"one").expect("write file");
+        let meta = std::fs::metadata(&path).expect("stat file");
         let id = (meta.dev(), meta.ino());
 
         // Replace the file: same path, different inode (keep the old inode alive
         // via a hard link so it cannot be reused)
         let keep = dir.path().join("keep");
-        std::fs::hard_link(&path, &keep).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, b"two").unwrap();
-        assert!(!remove_if_same_inode(&path, id).unwrap());
+        std::fs::hard_link(&path, &keep).expect("create hard link");
+        std::fs::remove_file(&path).expect("remove file");
+        std::fs::write(&path, b"two").expect("write file");
+        assert!(!remove_if_same_inode(&path, id).expect("`remove_if_same_inode` succeeds"));
         assert!(path.exists(), "replaced file must not be removed");
 
-        let meta = std::fs::metadata(&path).unwrap();
-        assert!(remove_if_same_inode(&path, (meta.dev(), meta.ino())).unwrap());
+        let meta = std::fs::metadata(&path).expect("stat file");
+        assert!(
+            remove_if_same_inode(&path, (meta.dev(), meta.ino()))
+                .expect("`remove_if_same_inode` succeeds")
+        );
         assert!(!path.exists());
         assert!(
-            !remove_if_same_inode(&path, id).unwrap(),
+            !remove_if_same_inode(&path, id).expect("`remove_if_same_inode` succeeds"),
             "missing file is not an error"
         );
     }
@@ -1208,11 +1219,11 @@ mod tests {
     async fn test_server_bind_mode_and_drop_cleanup() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let loc = socket_location_from(None, base.path(), current_uid());
         let server = IpcServer::bind_at(&loc).await.expect("bind in private dir");
         let mode = std::fs::symlink_metadata(&loc.path)
-            .unwrap()
+            .expect("stat file")
             .permissions()
             .mode()
             & 0o777;
@@ -1223,13 +1234,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_server_drop_keeps_replaced_socket() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let loc = socket_location_from(None, base.path(), current_uid());
         let server = IpcServer::bind_at(&loc).await.expect("bind in private dir");
 
         // Another daemon takes over the path after we stopped listening
-        std::fs::remove_file(&loc.path).unwrap();
-        let other = std::os::unix::net::UnixListener::bind(&loc.path).unwrap();
+        std::fs::remove_file(&loc.path).expect("remove file");
+        let other = std::os::unix::net::UnixListener::bind(&loc.path).expect("bind socket");
 
         drop(server);
         assert!(
@@ -1243,13 +1254,21 @@ mod tests {
     async fn test_server_rejects_unsafe_private_dir() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let loc = socket_location_from(None, base.path(), current_uid());
-        let dir = loc.private_dir.clone().unwrap();
-        std::fs::create_dir(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let dir = loc.private_dir.clone().expect("`clone` succeeds");
+        std::fs::create_dir(&dir).expect("create dir");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777))
+            .expect("set permissions");
 
-        assert!(IpcServer::bind_at(&loc).await.is_err());
+        let Err(err) = IpcServer::bind_at(&loc).await else {
+            panic!("bound in a world-writable directory");
+        };
+        assert!(
+            err.to_string()
+                .contains("it has mode 0777 (expected 0700)."),
+            "{err}"
+        );
         assert!(!loc.path.exists());
     }
 
@@ -1267,17 +1286,91 @@ mod tests {
         let mut client = client.expect("client accepts a socket served by our uid");
         let mut accepted = accepted.expect("server accepts a peer with our uid");
 
-        write_message(&mut client, &Request::Status).await.unwrap();
-        let req: Request = read_request(&mut accepted).await.unwrap().unwrap();
+        write_message(&mut client, &Request::Status)
+            .await
+            .expect("write message");
+        let req: Request = read_request(&mut accepted)
+            .await
+            .expect("read request")
+            .expect("a known request");
         assert!(matches!(req, Request::Status));
     }
 
     #[tokio::test]
     async fn test_client_roundtrip_with_peer_check() {
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let loc = socket_location_from(None, base.path(), current_uid());
-        let server = IpcServer::bind_at(&loc).await.unwrap();
+        let server = IpcServer::bind_at(&loc).await.expect("bind server");
         roundtrip(&server, &loc).await;
+    }
+
+    /// A peer running as another user is dropped by `accept`: the server is told
+    /// to expect a different uid than the (same-process) client has
+    #[tokio::test]
+    async fn test_server_accept_drops_peer_with_foreign_uid() {
+        let base = tempfile::tempdir().expect("create temp dir");
+        let loc = socket_location_from(None, base.path(), current_uid());
+        let mut server = IpcServer::bind_at(&loc).await.expect("bind in private dir");
+        server.uid = current_uid().wrapping_add(1);
+
+        let (client, accepted) = tokio::time::timeout(TEST_TIMEOUT, async {
+            tokio::join!(UnixStream::connect(&loc.path), server.accept())
+        })
+        .await
+        .expect("connect/accept timed out");
+        let mut client = client.expect("the kernel accepts the connection");
+        assert!(accepted.is_none(), "a foreign peer must be rejected");
+
+        // The rejected connection is closed: the client reads end-of-file at once
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(TEST_TIMEOUT, client.read(&mut buf))
+            .await
+            .expect("rejected connection is closed, not left hanging")
+            .expect("read from a closed connection");
+        assert_eq!(n, 0, "nothing is sent to a rejected peer");
+
+        // The same server still serves its own user
+        server.uid = current_uid();
+        roundtrip(&server, &loc).await;
+    }
+
+    /// A length prefix above [`MAX_MESSAGE_SIZE`] is refused before any payload
+    /// buffer is allocated or read; exactly the maximum is read
+    #[tokio::test]
+    async fn test_read_frame_rejects_oversized_length_prefix() {
+        let max = u32::try_from(MAX_MESSAGE_SIZE).expect("max fits in u32");
+        for len in [max + 1, u32::MAX] {
+            let (mut tx, mut rx) = UnixStream::pair().expect("socket pair");
+            tx.write_all(&len.to_be_bytes()).await.expect("send prefix");
+            // The sender stays open and sends no payload: reading one would time out
+            let err = tokio::time::timeout(TEST_TIMEOUT, read_frame(&mut rx))
+                .await
+                .expect("rejected without waiting for a payload")
+                .expect_err("oversized frame");
+            assert_eq!(
+                err.to_string(),
+                format!("Message too large: {len} bytes (max: {MAX_MESSAGE_SIZE})")
+            );
+            drop(tx);
+        }
+
+        // At the limit the payload is read (here: the sender hangs up early)
+        let (mut tx, mut rx) = UnixStream::pair().expect("socket pair");
+        tx.write_all(&max.to_be_bytes()).await.expect("send prefix");
+        drop(tx);
+        let err = read_frame(&mut rx).await.expect_err("truncated payload");
+        assert_eq!(err.to_string(), "Failed to read message payload");
+
+        // Through the server's entry point too
+        let (mut tx, mut rx) = UnixStream::pair().expect("socket pair");
+        tx.write_all(&(max + 1).to_be_bytes())
+            .await
+            .expect("send prefix");
+        let err = tokio::time::timeout(TEST_TIMEOUT, read_request(&mut rx))
+            .await
+            .expect("rejected without waiting for a payload")
+            .expect_err("oversized request");
+        assert!(err.to_string().starts_with("Message too large"), "{err}");
     }
 
     /// A runtime directory others can reach: the socket is staged in a private
@@ -1286,23 +1379,24 @@ mod tests {
     async fn test_server_bind_in_shared_dir_uses_private_staging() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let shared = base.path().join("run");
-        std::fs::create_dir(&shared).unwrap();
-        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir(&shared).expect("create dir");
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755))
+            .expect("set permissions");
         assert!(!dir_is_private(&shared, current_uid()));
 
         let loc = socket_location_from(Some(shared.as_os_str()), Path::new("/unused"), 1);
         let server = IpcServer::bind_at(&loc).await.expect("bind in shared dir");
         let mode = std::fs::symlink_metadata(&loc.path)
-            .unwrap()
+            .expect("stat file")
             .permissions()
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
         let leftovers: Vec<_> = std::fs::read_dir(&shared)
-            .unwrap()
-            .map(|e| e.unwrap().file_name())
+            .expect("read dir")
+            .map(|e| e.expect("dir entry").file_name())
             .filter(|name| name != SOCKET_FILE_NAME)
             .collect();
         assert!(
@@ -1320,30 +1414,37 @@ mod tests {
     async fn test_bind_private_never_replaces_existing_path() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
+        std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o755))
+            .expect("set permissions");
         let path = base.path().join(SOCKET_FILE_NAME);
-        std::fs::write(&path, b"someone else's").unwrap();
+        std::fs::write(&path, b"someone else's").expect("write file");
 
-        assert!(bind_private(&path, current_uid()).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"someone else's");
+        let err = bind_private(&path, current_uid()).expect_err("the path is taken");
+        assert!(
+            format!("{err:#}").contains("(is another daemon starting?): File exists"),
+            "{err:#}"
+        );
+        assert_eq!(std::fs::read(&path).expect("read file"), b"someone else's");
     }
 
     #[test]
     fn test_dir_is_private() {
         use std::os::unix::fs::PermissionsExt;
 
-        let base = tempfile::tempdir().unwrap();
+        let base = tempfile::tempdir().expect("create temp dir");
         let dir = base.path().join("d");
-        std::fs::create_dir(&dir).unwrap();
+        std::fs::create_dir(&dir).expect("create dir");
         for (mode, private) in [(0o700, true), (0o500, true), (0o710, false), (0o701, false)] {
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode))
+                .expect("set permissions");
             assert_eq!(dir_is_private(&dir, current_uid()), private, "{mode:o}");
         }
         assert!(!dir_is_private(&dir, current_uid().wrapping_add(1)));
         let link = base.path().join("link");
-        std::os::unix::fs::symlink(&dir, &link).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::os::unix::fs::symlink(&dir, &link).expect("create symlink");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .expect("set permissions");
         assert!(
             !dir_is_private(&link, current_uid()),
             "symlinks are not trusted"
@@ -1371,15 +1472,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_stale_socket_non_socket_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let socket_path = dir.path().join("pwsw.sock");
 
         // Create a regular file at the socket path
-        std::fs::write(&socket_path, b"not a socket").unwrap();
+        std::fs::write(&socket_path, b"not a socket").expect("write file");
 
         // Should not remove non-socket files
         assert_eq!(
-            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            cleanup_stale_socket_at(&socket_path)
+                .await
+                .expect("`cleanup_stale_socket_at` succeeds"),
             StaleSocketCheck::NotASocket
         );
         assert!(
@@ -1390,15 +1493,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_stale_socket_active_socket() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let socket_path = dir.path().join("pwsw.sock");
 
         // Bind and keep the listener alive to simulate active daemon
-        let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
 
         // Active socket should not be removed
         assert_eq!(
-            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            cleanup_stale_socket_at(&socket_path)
+                .await
+                .expect("`cleanup_stale_socket_at` succeeds"),
             StaleSocketCheck::Live
         );
         assert!(socket_path.exists(), "Active socket should not be removed");
@@ -1408,7 +1513,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cleanup_stale_socket_removes_on_econnrefused() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let socket_path = dir.path().join("pwsw.sock");
 
         // The file exists but nobody listens (ECONNREFUSED)
@@ -1416,12 +1521,16 @@ mod tests {
         assert!(socket_path.exists());
 
         assert_eq!(
-            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            cleanup_stale_socket_at(&socket_path)
+                .await
+                .expect("`cleanup_stale_socket_at` succeeds"),
             StaleSocketCheck::Removed
         );
         assert!(!socket_path.exists(), "stale socket should be removed");
         assert_eq!(
-            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            cleanup_stale_socket_at(&socket_path)
+                .await
+                .expect("`cleanup_stale_socket_at` succeeds"),
             StaleSocketCheck::Missing
         );
     }
@@ -1434,14 +1543,17 @@ mod tests {
         if current_uid() == 0 {
             return;
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().expect("create temp dir");
         let socket_path = dir.path().join("pwsw.sock");
         make_stale_socket(&socket_path);
         // No write permission on the socket: connect fails with EACCES, not ECONNREFUSED
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o000))
+            .expect("set permissions");
 
         assert_eq!(
-            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            cleanup_stale_socket_at(&socket_path)
+                .await
+                .expect("`cleanup_stale_socket_at` succeeds"),
             StaleSocketCheck::ProbeFailed(std::io::ErrorKind::PermissionDenied)
         );
         assert!(
@@ -1455,8 +1567,8 @@ mod tests {
         let request = Request::TestRule {
             pattern: "firefox".to_string(),
         };
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&request).expect("serialize");
+        let deserialized: Request = serde_json::from_str(&json).expect("deserialize");
         if let Request::TestRule { pattern } = deserialized {
             assert_eq!(pattern, "firefox");
         } else {
@@ -1467,8 +1579,8 @@ mod tests {
     #[test]
     fn test_request_shutdown_roundtrip() {
         let request = Request::Shutdown;
-        let json = serde_json::to_string(&request).unwrap();
-        let deserialized: Request = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&request).expect("serialize");
+        let deserialized: Request = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(deserialized, Request::Shutdown));
     }
 
@@ -1490,8 +1602,8 @@ mod tests {
             backend: Some("wlr".to_string()),
             monitor_info: true,
         };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&response).expect("serialize");
+        let deserialized: Response = serde_json::from_str(&json).expect("deserialize");
         if let Response::Status {
             version,
             protocol,
@@ -1529,7 +1641,7 @@ mod tests {
     #[test]
     fn test_response_status_without_protocol_is_protocol_zero() {
         let json = r#"{"type":"Status","version":"v0.5.0","uptime_secs":1,"current_sink":"s","active_window":null,"tracked_windows":0}"#;
-        let response: Response = serde_json::from_str(json).unwrap();
+        let response: Response = serde_json::from_str(json).expect("deserialize");
         assert!(matches!(response, Response::Status {
             protocol: 0,
             current_sink_fallback: false,
@@ -1557,29 +1669,29 @@ mod tests {
         let json = serde_json::to_string(&Request::SetSource {
             source: "Headset Mic".to_string(),
         })
-        .unwrap();
+        .expect("serialize");
         assert_eq!(json, r#"{"type":"SetSource","source":"Headset Mic"}"#);
-        let back: Request = serde_json::from_str(&json).unwrap();
+        let back: Request = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(back, Request::SetSource { source } if source == "Headset Mic"));
     }
 
     #[test]
     fn test_pause_requests_and_state_roundtrip() {
         for request in [Request::Pause, Request::Resume, Request::TogglePause] {
-            let json = serde_json::to_string(&request).unwrap();
-            let back: Request = serde_json::from_str(&json).unwrap();
+            let json = serde_json::to_string(&request).expect("serialize");
+            let back: Request = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(format!("{back:?}"), format!("{request:?}"), "{json}");
         }
         let json = serde_json::to_string(&Response::PauseState {
             paused: true,
             changed: false,
         })
-        .unwrap();
+        .expect("serialize");
         assert_eq!(
             json,
             r#"{"type":"PauseState","paused":true,"changed":false}"#
         );
-        let back: Response = serde_json::from_str(&json).unwrap();
+        let back: Response = serde_json::from_str(&json).expect("deserialize");
         assert!(matches!(back, Response::PauseState {
             paused: true,
             changed: false
@@ -1591,8 +1703,8 @@ mod tests {
         let response = Response::Ok {
             message: "Success".to_string(),
         };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&response).expect("serialize");
+        let deserialized: Response = serde_json::from_str(&json).expect("deserialize");
         if let Response::Ok { message } = deserialized {
             assert_eq!(message, "Success");
         } else {
@@ -1645,8 +1757,8 @@ mod tests {
         let response = Response::Error {
             message: "An error occurred".to_string(),
         };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&response).expect("serialize");
+        let deserialized: Response = serde_json::from_str(&json).expect("deserialize");
         if let Response::Error { message } = deserialized {
             assert_eq!(message, "An error occurred");
         } else {
@@ -1679,8 +1791,8 @@ mod tests {
         let response = Response::Windows {
             windows: vec![window_info],
         };
-        let json = serde_json::to_string(&response).unwrap();
-        let deserialized: Response = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&response).expect("serialize");
+        let deserialized: Response = serde_json::from_str(&json).expect("deserialize");
         if let Response::Windows { windows } = deserialized {
             assert_eq!(windows.len(), 1);
             assert_eq!(windows[0].app_id, "firefox");
@@ -1699,9 +1811,9 @@ mod tests {
     #[test]
     fn test_tracked_info_without_fallbacks_parses() {
         let tracked: TrackedInfo =
-            serde_json::from_str(r#"{"sink_name":"a","sink_desc":"A"}"#).unwrap();
+            serde_json::from_str(r#"{"sink_name":"a","sink_desc":"A"}"#).expect("deserialize");
         assert_eq!(tracked.fallbacks, []);
-        let json = serde_json::to_string(&tracked).unwrap();
+        let json = serde_json::to_string(&tracked).expect("serialize");
         assert!(!json.contains("fallbacks"), "{json}");
     }
 }

@@ -375,7 +375,9 @@ mod tests {
             switch_to(plan(&c, &set("2"), &probe(Some("speakers"), &[]))),
             "hdmi"
         );
-        assert!(plan(&c, &set("nope"), &probe(None, &[])).is_err());
+        let err =
+            plan(&c, &set("nope"), &probe(None, &[])).expect_err("an unknown sink is refused");
+        assert!(err.contains("nope"), "error should name the sink: {err}");
 
         let mut toggle_off = config();
         toggle_off.settings.set_smart_toggle = false;

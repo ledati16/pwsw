@@ -43,6 +43,31 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  # Informational: prints the line/region coverage summary, never fails the build.
+  # The CLI smoke tests pass `LLVM_PROFILE_FILE` into their sandbox, so the binary's
+  # own runs count too.
+  coverage:
+    name: Coverage (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust 1.100.0
+        uses: dtolnay/rust-toolchain@1.100.0
+        with:
+          components: llvm-tools-preview
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Coverage summary
+        run: cargo llvm-cov --locked --summary-only
+
   fmt:
     name: Formatting (nightly rustfmt)
     runs-on: ubuntu-latest

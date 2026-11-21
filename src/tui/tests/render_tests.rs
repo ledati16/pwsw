@@ -1065,9 +1065,10 @@ fn test_text_uses_the_terminal_colors() {
     );
 }
 
-/// Not an assertion: prints the 80x24 screens for review
-/// (`cargo test print_80x24 -- --nocapture`)
+/// Not an assertion: prints the 80x24 screens for review. Ignored so the suite
+/// does not count it as a test (`cargo test print_80x24_screens -- --ignored --nocapture`)
 #[test]
+#[ignore = "review aid, asserts nothing: cargo test print_80x24_screens -- --ignored --nocapture"]
 fn test_print_80x24_screens() {
     for name in [
         "dashboard",
@@ -1718,9 +1719,10 @@ fn test_dashboard_shows_the_current_mic_when_mics_are_configured() {
     assert!(!screen.contains("Mic "), "{screen}");
 }
 
-/// Not an assertion: prints the 80x24 mic and output screens for review
-/// (`cargo test print_80x24_mic -- --nocapture`)
+/// Not an assertion: prints the 80x24 mic and output screens for review. Ignored
+/// like [`test_print_80x24_screens`] (`cargo test print_80x24_mic -- --ignored --nocapture`)
 #[test]
+#[ignore = "review aid, asserts nothing: cargo test print_80x24_mic -- --ignored --nocapture"]
 fn test_print_80x24_mic_screens() {
     for name in [
         "mics",

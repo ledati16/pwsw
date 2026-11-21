@@ -453,8 +453,14 @@ mod tests {
 
     #[test]
     fn test_parse_rejects_non_array() {
-        assert!(parse_dump(b"{}").is_err());
-        assert!(parse_dump(b"not json").is_err());
+        for (input, why) in [
+            (&b"{}"[..], "invalid type: map, expected a sequence"),
+            (b"not json", "expected ident"),
+        ] {
+            let err = format!("{:#}", parse_dump(input).expect_err("not a pw-dump array"));
+            assert!(err.starts_with("Failed to parse pw-dump JSON: "), "{err}");
+            assert!(err.contains(why), "{err}");
+        }
     }
 
     #[test]

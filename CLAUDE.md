@@ -265,10 +265,17 @@ captured child output. `get_app_icon` accepts only plain icon names.
   explicit paths and connections (`Config::load_from_path`, `save_to`, `spawn_compositor_thread_on`).
 - **Never use the default config, runtime or data paths in tests.** Use `tempfile`
   directories. CLI smoke tests run the binary in a `Sandbox` with `env_clear()` and
-  HOME/XDG pointing into a temp dir.
+  HOME/XDG pointing into a temp dir; only `LLVM_PROFILE_FILE` is passed through (for
+  coverage). `sandbox_environment_is_isolated` re-runs itself with session variables set
+  and checks `env` inside the sandbox.
 - `bash scripts/verify_tests_safe.sh [cargo test args]` runs the suite with HOME, XDG and
-  TMPDIR sandboxed and session variables removed, then fails if the real pwsw dirs changed
-  or anything appeared at the sandbox's default pwsw locations. It must pass.
+  TMPDIR sandboxed and session variables removed, then fails if the real pwsw locations
+  changed (config, data and state dirs, `$XDG_RUNTIME_DIR/pwsw.{sock,lock}`,
+  `/tmp/pwsw-<uid>/`) or anything appeared at the sandbox's default pwsw locations
+  (including `pwsw.sock` and `pwsw.lock`). It must pass.
+- Coverage: `cargo llvm-cov --locked --summary-only` (needs `cargo-llvm-cov` and the
+  `llvm-tools-preview` component). CI runs it as an informational job; it is not a gate.
+  Review-only tests that assert nothing (`test_print_80x24_*`) are `#[ignore]`d.
 - **Every wait is bounded** (receives, joins, socket reads, child processes), so a bug
   fails the test instead of hanging it.
 - **No real sleeps as synchronisation.** Use sync points, channels, or tokio's paused

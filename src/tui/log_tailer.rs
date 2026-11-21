@@ -451,32 +451,64 @@ mod tests {
         assert!(!is_log_change(&other, path));
     }
 
+    /// The raw watcher events up to the first one about `sentinel`, which this
+    /// writes: the watcher reports a directory's events in order, so everything the
+    /// caller did before is in the result (no quiet period to guess)
+    fn events_until_sentinel(tailer: &LogTailer, sentinel: &Path) -> Vec<Event> {
+        append(sentinel, b"x");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut events = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let event = tailer
+                .event_rx
+                .recv_timeout(left)
+                .expect("the sentinel's event arrives")
+                .expect("watch event");
+            if event.paths.iter().any(|p| p == sentinel) {
+                return events;
+            }
+            events.push(event);
+        }
+    }
+
+    /// Whether [`LogTailer::has_file_changed`] reports a change for exactly `events`
+    fn reports_change(tailer: &mut LogTailer, events: Vec<Event>) -> bool {
+        let (tx, rx) = mpsc::channel();
+        for event in events {
+            tx.send(Ok(event)).expect("queue event");
+        }
+        let real = std::mem::replace(&mut tailer.event_rx, rx);
+        let changed = tailer.has_file_changed();
+        tailer.event_rx = real;
+        changed
+    }
+
     #[test]
     fn test_reading_the_log_does_not_count_as_a_change() {
         let dir = TempDir::new().expect("tempdir");
         let (mut tailer, path) = tailer_in(&dir);
-        append(&path, b"line\n");
 
         // The write is noticed...
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !tailer.has_file_changed() {
-            assert!(Instant::now() < deadline, "write never reported");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        // One append can produce several modify events that arrive spread out under
-        // load; let them all drain (300 ms of quiet) so only the read is measured.
-        let mut quiet_since = Instant::now();
-        while quiet_since.elapsed() < Duration::from_millis(300) {
-            assert!(Instant::now() < deadline, "write events never settled");
-            if tailer.has_file_changed() {
-                quiet_since = Instant::now();
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        append(&path, b"line\n");
+        let write_events = events_until_sentinel(&tailer, &dir.path().join("sentinel-1"));
+        assert!(
+            reports_change(&mut tailer, write_events),
+            "write never reported"
+        );
+
         // ...but the tailer's own open and read of the file are not
         assert_eq!(tailer.read_new_lines().expect("read"), vec!["line"]);
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(!tailer.has_file_changed(), "own read reported as a change");
+        let read_events = events_until_sentinel(&tailer, &dir.path().join("sentinel-2"));
+        assert!(
+            read_events.iter().any(|e| e.paths.contains(&path)),
+            "the read itself produces watch events (else this test proves nothing): \
+             {read_events:?}"
+        );
+        assert!(
+            !reports_change(&mut tailer, read_events),
+            "own read reported as a change"
+        );
     }
 
     #[test]

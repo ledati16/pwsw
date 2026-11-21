@@ -785,15 +785,26 @@ mod tests {
         assert_eq!(idx, 0);
     }
 
+    /// Why [`State::new`] refuses `config`
+    fn new_error(config: Config) -> String {
+        match State::new(Arc::new(config)) {
+            Ok(_) => panic!("config accepted"),
+            Err(e) => e.to_string(),
+        }
+    }
+
     #[test]
     fn test_new_rejects_empty_sinks() {
-        assert!(State::new(Arc::new(make_config(vec![], vec![]))).is_err());
+        assert_eq!(
+            new_error(make_config(vec![], vec![])),
+            "No sinks configured"
+        );
     }
 
     #[test]
     fn test_new_rejects_missing_default() {
         let config = make_config(vec![make_sink("a", "A", false)], vec![]);
-        assert!(State::new(Arc::new(config)).is_err());
+        assert_eq!(new_error(config), "No default sink configured");
     }
 
     #[test]
@@ -801,7 +812,8 @@ mod tests {
         let config = make_config(vec![make_sink("a", "A", true)], vec![make_rule(
             "x", None, "nope",
         )]);
-        assert!(State::new(Arc::new(config)).is_err());
+        let err = new_error(config);
+        assert!(err.ends_with("references an unknown sink (nope)"), "{err}");
     }
 
     #[test]
@@ -929,6 +941,54 @@ mod tests {
         assert_eq!(desired.first().name, "speakers");
         assert_eq!(desired.window.map(|w| w.rule_index), Some(0));
         assert_eq!(desired.window.map(|w| w.title), Some("Music"));
+        assert_eq!(
+            desired.window.map(|w| w.trigger),
+            Some("Music"),
+            "a different rule takes the trigger from the window as it is now"
+        );
+    }
+
+    /// While a window keeps matching the same rule, title changes neither renew its
+    /// priority nor replace the trigger it first matched with
+    #[test]
+    fn test_trigger_kept_from_first_match_while_the_same_rule_holds() {
+        let config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("hdmi", "HDMI", false),
+                make_sink("headphones", "Headphones", false),
+            ],
+            vec![
+                make_rule("firefox", Some("YouTube"), "hdmi"),
+                make_rule("^steam$", None, "headphones"),
+            ],
+        );
+        let mut s = state(config);
+        s.apply(opened(1, "firefox", "YouTube - First"));
+        assert_eq!(s.apply(changed(1, "firefox", "YouTube - Second")), None);
+        let desired = s.desired();
+        assert_eq!(desired.window.map(|w| w.title), Some("YouTube - Second"));
+        assert_eq!(desired.window.map(|w| w.trigger), Some("YouTube - First"));
+
+        // A newer matching window stays ahead of the retitled one
+        s.apply(opened(2, "steam", "Steam"));
+        s.apply(changed(1, "firefox", "YouTube - Third"));
+        assert_eq!(s.desired().window.map(|w| w.id), Some(2));
+        s.apply(WindowEvent::Closed { id: 2 });
+        assert_eq!(
+            s.desired().window.map(|w| w.trigger),
+            Some("YouTube - First")
+        );
+
+        // Leaving the rule reports the trigger it first matched with
+        assert_eq!(
+            s.apply(changed(1, "firefox", "Search")),
+            Some(Departure {
+                trigger: "YouTube - First".to_string(),
+                notify: true,
+                closed: false,
+            })
+        );
     }
 
     #[test]
@@ -1101,10 +1161,10 @@ mod tests {
     fn test_reconfigure_rejects_invalid_and_keeps_old() {
         let mut s = state(three_sink_config(false));
         s.apply(opened(1, "firefox", "Browser"));
-        assert!(
-            s.reconfigure(Arc::new(make_config(vec![], vec![])))
-                .is_err()
-        );
+        let err = s
+            .reconfigure(Arc::new(make_config(vec![], vec![])))
+            .expect_err("no sinks");
+        assert_eq!(err.to_string(), "No sinks configured");
         assert_eq!(s.desired_sink().name, "headphones");
     }
 
@@ -1323,7 +1383,11 @@ mod tests {
             make_rule("x", None, "a"),
             &["Mic"],
         )]);
-        assert!(State::new(Arc::new(config)).is_err());
+        let err = new_error(config);
+        assert!(
+            err.ends_with("sets a source but no sources are configured"),
+            "{err}"
+        );
     }
 
     // ------------------------------------------------------------------------
