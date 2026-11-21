@@ -78,11 +78,13 @@ journalctl --user -u pwsw.service -f
 - **PipeWire:** `Wants=` + `After=pipewire.service`. pwsw holds no PipeWire connection
   (it runs `pw-dump`/`pw-cli`/`pw-metadata` per action), so it is not bound to
   PipeWire's lifetime and keeps running across PipeWire restarts.
+- **Readiness and status:** `Type=notify`: the unit is active once the daemon is set
+  up, and `systemctl --user status pwsw` shows the current sink (`Sink: X · Mic: Y` with
+  `[[sources]]`, `(paused)` while paused).
 - **Restarts:** `Restart=on-failure` every 5 s, at most 5 starts per 60 s.
 - **Sandbox:** `ProtectSystem=strict` (everything read-only, including your home)
-  except `~/.local/share/pwsw` (log) and `$XDG_RUNTIME_DIR` (socket); the config is
-  only read; private
-  `/tmp`; `NoNewPrivileges`, `MemoryDenyWriteExecute`, `LockPersonality`,
+  except `~/.local/share/pwsw` (log) and `$XDG_RUNTIME_DIR` (socket and lock file); the
+  config is only read; private `/tmp`; `NoNewPrivileges`, `MemoryDenyWriteExecute`, `LockPersonality`,
   `RestrictRealtime`, `RestrictSUIDSGID`, `SystemCallArchitectures=native`,
   `UMask=0077`. `ExecStartPre=+mkdir -p …` creates the log directory outside
   the sandbox so a first start works.

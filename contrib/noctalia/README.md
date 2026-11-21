@@ -5,8 +5,8 @@ applied (and marks it while rule-driven switching is paused), live:
 
 - a service runs `pwsw status --watch --json` and passes every update to the widget
   (nothing is polled; the command reconnects by itself when the daemon restarts)
-- the widget shows a glyph and the output's name, with pwsw's tooltip (output,
-  microphone, deciding rule)
+- the widget shows a glyph for the state (active, fallback, paused, stopped) and the
+  output's name, with pwsw's tooltip (output, microphone, deciding rule)
 - **left click**: `pwsw next-sink`; **right click**: `pwsw toggle-pause`;
   **scroll**: next / previous sink; middle click keeps Noctalia's default (widget
   settings)

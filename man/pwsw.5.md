@@ -8,27 +8,27 @@ PWSW uses a TOML configuration file, by default *$XDG_CONFIG_HOME/pwsw/config.to
 
 Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Check it with **pwsw validate**. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
 
-When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and the save is refused if the file was changed on disk since it was loaded. Saved files have mode 0600.
+When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and if the file was changed on disk since it was loaded, the TUI asks whether to overwrite it or reload it. Saved files have mode 0600.
 
 ## SETTINGS
 The **[settings]** section controls global daemon behavior. The section and every key in it are optional.
 
 **default_on_startup** (boolean, default: false)
-:   Whether to switch when the daemon starts to the sink the rules want (the default sink if no open window matches). If false, the current sink stays until the rules want a different sink (e.g. a matching window opens; windows already open when the daemon starts count as opening).
+:   Whether to switch, when the daemon starts, to the sink (and, with **[[sources]]**, the source) the rules want: the default sink if no open window matches. Either way the daemon first waits (at most 2 seconds) for the compositor to list the windows already open and decides from all of them at once, so start-up switches at most once. If false, nothing is switched at start-up: the current sink stays until the rules' answer changes (e.g. a matching window opens after start-up).
 
 **set_smart_toggle** (boolean, default: true)
 :   If true, calling `set-sink` on a sink that is already the PipeWire default will toggle back to the default sink (`set-source` likewise for sources).
 
-    *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers").
+    *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers"). Without it, asking for the active sink does nothing.
 
 **notify_manual** (boolean, default: true)
-:   Show desktop notifications for manual sink switches and daemon events (start, configuration reloaded or rejected).
+:   Show desktop notifications for manual switches (**set-sink**, **next-sink**, **prev-sink**, **set-source**) and daemon events: start and stop, configuration reloaded or rejected, switching paused or resumed.
 
 **notify_rules** (boolean, default: true)
 :   Show desktop notifications for automatic rule-based switches. A rule's own *notify* key overrides it.
 
 **match_by_index** (boolean, default: false)
-:   Which window decides the sink when several match (see **PRIORITY**). If false, the most recently opened (or most recently matching) window wins. If true, the window matching the earliest rule in the list wins.
+:   Which window decides the sink (and the source) when several match (see **PRIORITY**). If false, the most recently opened (or most recently matching) window wins. If true, the window matching the earliest rule in the list wins.
 
     *Tip:* Rules can be reordered in the TUI using `Shift+Up/Down` to adjust priority.
 
@@ -42,7 +42,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
 
 **name** (string, required)
-:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`), as shown by **pwsw list-sinks**. Must be non-empty and unique. A sink that is not active yet but can be reached by switching its card's profile is listed there too, with the node name it will have. To reach such a sink, pwsw switches to an available profile providing that output, preferring one that also keeps (or provides) the card's input, so a microphone is never dropped silently; it picks such a duplex profile even when the current profile has no input. Profile switching predicts the default ALSA node names (`alsa_output.<card>.<output>`): a name that WirePlumber rules changed can only be activated while that node exists. A Bluetooth sink (`bluez_output.*`) exists only while its device is connected.
+:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`), as shown by **pwsw list-sinks**. Must be non-empty and unique. A sink that is not active yet but can be reached by switching its card's profile is listed there too, with the node name it will have. How pwsw reaches such a sink is described in **PROFILE SWITCHING**. A Bluetooth sink (`bluez_output.*`) exists only while its device is connected.
 
 **desc** (string, required)
 :   A friendly description for the sink used in rules and notifications. Must be non-empty, unique, not a number, and not equal to another sink's `name`.
@@ -56,9 +56,9 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty li
 ## SOURCES
 The optional **[[sources]]** list defines the audio inputs (microphones) PWSW may switch, with the same keys as **[[sinks]]**: **name** (the `Audio/Source` node name, e.g. `alsa_input.pci-0000_00_1f.3.analog-stereo` or `bluez_input.*`, as shown in the *INPUT DEVICES / SOURCES* section of **pwsw list-sinks**; monitors of sinks are not sources), **desc**, **default** and **icon** (default icon: `audio-input-microphone`). The same uniqueness rules apply within the list (a source may share a description with a sink). When sources are configured, exactly one must have `default = true`: it is used when no open window's rule asks for a source.
 
-Without any **[[sources]]** (the default), pwsw never touches the default source; existing configurations keep working unchanged. The default is written to `default.configured.audio.source`, like **wpctl set-default** does.
+Without any **[[sources]]** (the default), pwsw never touches the default source; existing configurations keep working unchanged.
 
-A source that is not present yet can be reached by switching its ALSA card's profile (predicted name `alsa_input.<card>.<input>`, recognised afterwards by device and profile like sinks). Such a switch always keeps the card's current output: pwsw never takes the audio output away to get a microphone. Renaming, reordering and deleting sources in the configuration keeps rule references pointing at the same source, and a source a rule uses cannot be deleted.
+A source that is not present yet can be reached by switching its ALSA card's profile (see **PROFILE SWITCHING**); such a switch always keeps the card's current output. Renaming, reordering and deleting sources in the TUI keeps rule references pointing at the same source, and a source a rule uses cannot be deleted.
 
 ## RULES
 The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. A rule matches a window when every condition it sets matches (**app_id**, **title**, **output**); each rule needs at least one of **app_id** and **output**. Each window is matched by the first rule in the list that matches it.
@@ -85,7 +85,7 @@ The **[[rules]]** list defines window-to-sink mappings. Rules require at least o
 :   The microphone this rule wants, referenced like **sink** (by `desc`, `name`, or a deprecated position) against **[[sources]]**; an array lists fallback sources in priority order, with the same rules as fallback sinks. Allowed only when sources are configured. A rule without **source** never affects the microphone: see **PRIORITY**.
 
 **desc** (string, optional)
-:   A custom label for this rule used in notifications.
+:   A custom label for this rule, used in notifications and in the status stream (**pwsw**(1), *STATUS STREAM*), which otherwise names the rule by its position (*#N*).
 
 **notify** (boolean, optional)
 :   Override the global `notify_rules` setting for this rule. It also applies when the sink falls back because this rule's window closed or stopped matching.
@@ -101,7 +101,14 @@ The answer is the winning rule's list of sinks (see **sink** above); which of th
 
 The source is an independent second answer: the same priority applies, but only among windows whose rule has a **source**; when none matches, the default source. So with Discord (sink *Headset*, source *Headset Mic*) open and then Firefox (sink *Speakers*, no source), the output follows Firefox and the microphone stays with Discord. Retries, fallbacks and upgrades, manual choices (**pwsw set-source**), pausing and the settle delay work for the source exactly as for the sink, each on its own.
 
-When one switch needs both a sink and a source on the same ALSA card, the card's profile is switched once, to an available profile that provides the sink's output *and* the source's input (e.g. `output:analog-stereo+input:analog-stereo`). If no such profile exists, the sink wins: its profile is used and that source is reported as unreachable (a fallback source on another card is still used). Sinks and sources on different cards are switched independently.
+## PROFILE SWITCHING
+A sink or source that is not present right now, but that its ALSA card could provide in another profile, is reached by switching the card's profile (**pwsw list-sinks** lists such nodes with the name they will have). pwsw predicts the default ALSA node names, `alsa_output.<card>.<output>` and `alsa_input.<card>.<input>`, from the card's profiles; after the switch it recognises the new node by its device and profile, so a node WirePlumber renames is still found, but a configured name that WirePlumber rules changed can only be activated while that node exists. Only profiles marked available are used; UCM (`HiFi`) and Pro Audio profiles are never switched to, so their nodes work only while already active.
+
+*   For a sink, pwsw picks a profile providing that output that also keeps the card's current input (or provides one), so a microphone is never dropped silently.
+*   For a source, the profile must keep the card's current output: pwsw never takes the audio output away to get a microphone.
+*   When one switch needs both a sink and a source on the same card, the card's profile is switched once, to a profile that provides the sink's output *and* the source's input (e.g. `output:analog-stereo+input:analog-stereo`). If no such profile exists, the sink wins: its profile is used and that source is reported as unreachable (a fallback source on another card is still used). With **[[sources]]** configured, a sink switch on the card of the microphone pwsw manages is planned the same way. Sinks and sources on different cards are switched independently.
+
+The profile is set with **pw-cli** and saved (`save: true`), so WirePlumber keeps it. pwsw then waits for the new node (by default up to 1.5 s; see *PROFILE_SWITCH_DELAY_MS* in **pwsw**(1), never more than 5 s) and makes it the default. Defaults are written to `default.configured.audio.sink` and `default.configured.audio.source`, as **wpctl set-default** does, so WirePlumber keeps them.
 
 ## HOT RELOAD
 The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is not needed for configuration changes, with one exception: a daemon started without rules with **output** uses the **ext** protocol when the compositor offers it, which reports no monitors. Adding the first **output** rules then logs a warning and they do not match until the daemon is restarted (**systemctl --user restart pwsw**); removing them later needs no restart.
@@ -147,6 +154,10 @@ desc = "Headset"
 name = "bluez_output.40_ED_98_1C_1D_08.1"
 desc = "BT Headphones"
 
+[[sinks]]
+name = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
+desc = "TV"
+
 [[sources]]
 name = "alsa_input.usb-Logitech_G_Pro-00.mono-fallback"
 desc = "Headset Mic"
@@ -167,10 +178,6 @@ title = "YouTube"
 sink = "Speakers"
 notify = false
 
-[[sinks]]
-name = "alsa_output.pci-0000_01_00.1.hdmi-stereo"
-desc = "TV"
-
 # Audio follows the screen: anything on the TV plays on the TV
 [[rules]]
 output = "^HDMI-A-1$"
@@ -188,7 +195,7 @@ sink = "TV"
 :   The default configuration file.
 
 *config.toml.bak*
-:   The previous version, written next to the file by **pwsw tui** saves and **pwsw init --force**.
+:   The previous version (*<name>.bak* for a file given with **--config**), written next to the file by **pwsw tui** saves and **pwsw init --force**.
 
 ## SEE ALSO
 **pwsw**(1)

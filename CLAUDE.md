@@ -17,8 +17,10 @@ that binary.
 | Path | Owns |
 |------|------|
 | `src/bin/pwsw.rs` | Entry point: dispatch, error printing, exit codes (0 ok / 1 error / 2 usage) |
+| `src/lib.rs` | Module list, `VERSION`/`version_string()` (`v<version>+<hash>`), `format_uptime`; `tui` only with the default `tui` feature |
 | `src/cli.rs` | `clap` definitions (`--config`, `--color`, subcommands, help text) |
-| `src/commands.rs` | CLI commands (`status` incl. `--json`, `list-*`, `test-rule`, `validate`, manual switches) |
+| `src/commands.rs` | CLI commands (`status` incl. `--json`, `list-*`, `test-rule` incl. `--output`, `validate`, manual switches, `pause`/`resume`) |
+| `src/doctor.rs` | `pwsw doctor`: read-only checks (Wayland protocols, `PipeWire` tools, config, sinks/mics, daemon, systemd unit, log), ✓/·/⚠/✗ report |
 | `src/status_watch.rs` | `status --watch [--json]`: follows the daemon's `Subscribe` stream, bar `JSON` lines, reconnect with backoff |
 | `src/config.rs` | Schema, path selection, validation, all mutations, comment-preserving atomic saves, `init` |
 | `src/state.rs` | Pure reducer: window events → tracked windows and rule matches; `desired()`, `desired_for(Endpoint)` |
@@ -27,17 +29,18 @@ that binary.
 | `src/daemon/` | `event_loop.rs` (the `select!` loop: reconcile, reload, retries, `sd_notify`), `worker.rs` (activations), `ipc_handler.rs` (per-connection tasks), `notifier.rs` (notification thread), `lock.rs` (`flock` instance lock) |
 | `src/daemon_manager.rs` | systemd vs direct detection (`/proc/self/cgroup`), `systemctl` queries with timeouts |
 | `src/ipc.rs` | Socket path, peer checks, framing, stale cleanup, `PROTOCOL_VERSION` |
-| `src/compositor/` | Wayland thread and detection; `tracker.rs` (`WindowTracker`, outbox), `ext_toplevel.rs`, `wlr_toplevel.rs` |
+| `src/compositor/` | `mod.rs` (Wayland thread, protocol detection, `ProtocolProbe`, `WindowEvent`), `tracker.rs` (`WindowTracker`, `EventOutbox` coalescing), `ext_toplevel.rs`, `wlr_toplevel.rs`, `output.rs` (`wl_output` connector names, `wlr` only) |
 | `src/pipewire/` | `model`, `parse` (pure), `resolve` (pure), `activate` (over `AudioBackend` + `Clock`), `cli` (only process spawning) |
 | `src/notification.rs` | `notify-rust` wrapper, markup capability detection, icon selection |
 | `src/sanitize.rs` | Untrusted text for logs, notifications, captured child output |
-| `src/logging.rs` | Size-rotated `daemon.log` appender (1 MB, one `.old`) and reloadable level filter |
+| `src/logging.rs` | Size-rotated `daemon.log` appender (1 MB, one `.old`, synchronous writes), reloadable level filter, panic hook that records panics in the log |
 | `src/style.rs` | `PwswStyle`/`Painted`, per-stream colour decision, non-panicking `outln!`/`errln!` |
-| `src/tui/` | `mod.rs` (loop), `app.rs` (state), `input.rs`, `keymap.rs` (binding table), `worker.rs`, `daemon_control.rs`, `log_tailer.rs`, `preview.rs`, `terminal.rs`, `screens/`, `tests/` |
+| `src/tui/` | `mod.rs` (loop), `app.rs` (state), `input.rs` (key handling, editors), `keymap.rs` (binding table), `worker.rs` (background polling and tasks), `daemon_control.rs`, `log_tailer.rs`, `preview.rs` (rule live preview), `terminal.rs` (raw mode/alternate screen, restored once), `chrome.rs` (one-row header and footer), `theme.rs` (every style; colourless with `NO_COLOR`), `widgets.rs` (dialogs, forms, text helpers), `screens/` (`list.rs`: the list/form/dialog code Sinks and Rules share; `dashboard`, `sinks`, `rules`, `settings`, `help`), `tests/` |
 | `src/test_utils.rs` | Test fixtures (`make_config`, `make_sink`, `make_rule`) |
 | `build.rs` | Man pages from `man/*.md` (`mandown`) into `OUT_DIR`; `PWSW_VERSION` (`<version>+<hash>[-dirty]`) |
-| `tests/` | CLI smoke tests (sandboxed binary), config integration, mock-compositor tests, `pw-dump` fixtures |
-| `contrib/` | `PKGBUILD`, systemd user unit, desktop entry, icons, `noctalia/` bar plugin |
+| `tests/` | CLI smoke tests (sandboxed binary, incl. config lifecycle), mock-compositor tests (`ext` and `wlr`), `pw-dump` fixtures (`tests/fixtures/README.md`) |
+| `contrib/` | `PKGBUILD`, systemd user unit, desktop entry, icons, `noctalia/` bar plugin (untested by CI) |
+| `scripts/` | `verify_tests_safe.sh` (sandboxed test run), `install_git_hook.sh` |
 | `docs/` | Local planning notes, gitignored; never commit or rely on it |
 
 ## Architecture you must not break
@@ -68,9 +71,13 @@ Pause stops both. Shared code takes an `Endpoint` instead of being duplicated.
 reconciles: if `desired()` differs from the previous answer (or a switch the rules still
 want failed), it submits a job. It never compares against the real PipeWire default, so a
 sink chosen in `pavucontrol` or by WirePlumber stays until the rules want something else.
-At startup the answer is the baseline; with `default_on_startup` it is activated. Failed
-rule switches retry after 2 s and 5 s, then once more on the next event or reload. A
-manual switch holds the same way; a failed manual switch changes nothing. "Changed" means
+At startup the loop first applies the windows the compositor already has (up to
+`WindowEvent::InitialSync`, at most `INITIAL_SYNC_TIMEOUT`, 2 s), then takes the answer
+as the baseline; with `default_on_startup` it is activated. Window events already queued
+when the loop wakes are applied together (up to `WINDOW_EVENT_BATCH`) before one
+reconcile. Failed rule switches retry after 2 s and 5 s, then once more on the next
+event or reload. A manual switch holds the same way; a failed manual switch changes
+nothing. "Changed" means
 the candidate list changed. A rule job activates the first reachable candidate against
 one snapshot (`pipewire::activate::activate_first`), trying the next reachable one if
 that activation fails; when it settled for a fallback, the next window event or reload
@@ -196,19 +203,24 @@ swapped.
 
 **Compositor.** Wayland runs on its own `std::thread` and must never block: it pushes
 into an `EventOutbox` drained by a forwarder thread into a bounded `tokio` channel.
-Coalescing per window: a newer `Changed` replaces a queued one *in place*; `Closed`
-drops queued `Changed` and cancels a not-yet-delivered `Opened`. Surviving events keep
-first-queued order (priority depends on it). IDs are a monotonic counter, windows are
-keyed by `ObjectId`; closed handles are destroyed; `Changed` is emitted only when
-`app_id` or title changed. `finished` or a dead connection ends the thread with an error,
-so the daemon exits non-zero and systemd restarts it. `ext` is preferred over `wlr`
-(`ProtocolPreference::Auto`); `PreferWlr` picks `wlr` when available, because only `wlr`
-reports which monitors a window is on and whether it is minimized: `WindowEvent::Placement`
-(sorted connector names from `wl_output` v4, emitted on `done` only when changed; coalesces
-in place like `Changed`, dropped by `Closed`; never emitted by `ext`). Window control
+Coalescing per window: a newer `Changed` (or `Placement`) replaces a queued one of the
+same kind *in place*; a `Placement` behind a not-yet-delivered `Opened` is folded into it (`Opened`
+carries the initial placement, so a window opening on a monitor is one event); `Closed`
+drops queued `Changed`/`Placement` and cancels a not-yet-delivered `Opened`. Surviving
+events keep first-queued order (priority depends on it). After binding, the thread makes
+`INITIAL_SYNC_ROUNDTRIPS` roundtrips and then queues `WindowEvent::InitialSync` once.
+IDs are a monotonic counter, windows are keyed by `ObjectId`; closed handles are
+destroyed; `Changed` is emitted only when `app_id` or title changed. `finished` or a dead
+connection ends the thread with an error, so the daemon exits non-zero and systemd
+restarts it. `ext` is preferred over `wlr` (`ProtocolPreference::Auto`); `PreferWlr`
+picks `wlr` when available, because only `wlr` reports which monitors a window is on and
+whether it is minimized: `WindowEvent::Placement` (sorted connector names from
+`wl_output` v4, see `compositor/output.rs`; emitted on `done` only when changed, or at
+once when an output the window is on goes away; never emitted by `ext`). Window control
 requests are never used. The daemon reports its `Capabilities` (backend, monitor info) in
 `Status` (`backend`, `monitor_info`) and `WindowInfo` carries `outputs`/`minimized`;
-`doctor` judges availability with `ProtocolProbe::capabilities(PreferWlr)`.
+`doctor` judges availability with `ProtocolProbe::capabilities(PreferWlr)` and binds
+nothing.
 
 **TUI.** Render does no I/O: everything drawn comes from `App`. The background worker
 (`tui/worker.rs`) polls daemon status every 1 s and `pw-dump` every 2 s (only while a
@@ -230,7 +242,8 @@ captured child output. `get_app_icon` accepts only plain icon names.
 ## Conventions (enforced)
 
 - **Toolchain** pinned in `rust-toolchain.toml` (1.100.0, also `rust-version`). Bump it
-  together with `.github/workflows/ci.yml`. Edition 2024.
+  together with both workflows, `Cargo.toml` and the README badge (checklist in
+  `MAINTENANCE.md`). Edition 2024.
 - **Formatting:** `cargo +nightly-2026-11-14 fmt`. `rustfmt.toml` uses nightly-only
   options; stable `cargo fmt` gives different output.
 - **Lints:** clippy pedantic is enabled in the `Cargo.toml` `[lints.clippy]` table, so
@@ -254,8 +267,10 @@ captured child output. `get_app_icon` accepts only plain icon names.
   is decided once per stream from `--color`, `NO_COLOR`, `CLICOLOR_FORCE` and the TTY.
 - **Files:** atomic writes for anything important, explicit `0600`/`0700` modes; verify
   type, owner and inode before deleting.
-- **User docs** live in `README.md`, `man/pwsw.1.md`, `man/pwsw.5.md` and `CHANGELOG.md`;
-  update them with any behaviour change.
+- **User docs** live in `README.md`, `man/pwsw.1.md`, `man/pwsw.5.md`, `CHANGELOG.md`
+  and the `contrib/` READMEs; update them with any behaviour change. The STATUS JSON and
+  STATUS STREAM schemas in pwsw(1) are a contract: only add fields. `MAINTENANCE.md` is
+  the maintainer's checklist, `SECURITY.md` the reporting policy.
 
 ## Testing rules
 
@@ -322,15 +337,33 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
   churn.
 - **`status --json` exits 0** and reports errors inside the document (every field
   present, `null` when unknown), so status bars always get parseable output.
+- **No per-app routing.** pwsw switches only the *default* sink/source; moving one
+  application's stream is left to WirePlumber, which remembers a stream moved once in
+  `pavucontrol` (README FAQ).
+- **`anyhow`, not `color-eyre`.** Only plain `error:` lines and `Debug` reports were
+  used; `color-eyre` pulled in a dozen crates for hooks pwsw did not need.
+- **The status stream never carries window titles** (they change per browser tab and
+  leak page titles into bars): the deciding window is `app_id`, rule `desc`/`#N` and
+  rule index.
+- **The compositor protocol is chosen once per daemon run**; a reload never swaps the
+  Wayland connection (see Hot reload).
+- **Maintenance mode** after 0.7.0: dependency/security updates and bug fixes; new
+  features only if they fit the one job (README "Project status").
 
 ## Known limitations
 
 - Compositors without `ext-foreign-toplevel-list-v1` or `wlr-foreign-toplevel-management`
   (GNOME/Mutter, KDE Plasma 6) are unsupported.
-- Profile switching works only for ACP profiles with an `output:` mapping; UCM and
-  pro-audio sinks can be used only while already active.
-- Default-sink changes made outside pwsw are not tracked; pwsw re-reads the real default
-  only for manual operations (`set-sink`, `next-sink`, `prev-sink`).
-- The daemon needs at least one configured sink to start.
+- `output` rules need `wlr-foreign-toplevel-management`; with `ext` they never match,
+  and a daemon started on `ext` needs a restart once `output` rules are added.
+- Profile switching works only for ACP profiles with an `output:`/`input:` mapping; UCM
+  and pro-audio nodes can be used only while already active. A node name changed by
+  WirePlumber rules cannot be predicted, so it is usable only while it exists.
+- Default-sink/source changes made outside pwsw are not tracked; pwsw re-reads the real
+  default only for manual operations (`set-sink`, `next-sink`, `prev-sink`,
+  `set-source`). A fallback is upgraded only on the next window event or reload (no
+  polling).
+- The daemon needs at least one configured sink to start; the status stream serves at
+  most 16 followers.
 - The code was written by LLMs and overhauled through an orchestrated multi-agent review;
   no human Rust expert has reviewed it. Validate changes thoroughly.

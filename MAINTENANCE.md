@@ -72,7 +72,11 @@ merged and pushed; before that, test a local tree with `cargo install --path .`.
 ## 6. Release
 
 1. Add a section to `CHANGELOG.md` (Keep a Changelog; "Security" for advisories fixed).
-2. Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` follows.
+   If a change touches `Request`/`Response` incompatibly, bump `PROTOCOL_VERSION` in
+   `src/ipc.rs` and tell users to restart the daemon; the `status --json` and
+   `status --watch --json` schemas in `man/pwsw.1.md` only ever gain fields.
+2. Bump `version` in `Cargo.toml` (and in `contrib/noctalia/plugin.toml`), run
+   `cargo build` so `Cargo.lock` follows.
 3. Commit, merge to `main`, then tag and push:
    `git tag -a vX.Y.Z -m "pwsw X.Y.Z" && git push origin main vX.Y.Z`
 4. Optionally create a GitHub release from the tag with the CHANGELOG section.

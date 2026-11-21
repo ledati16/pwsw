@@ -35,18 +35,27 @@ reporting instead, see [SECURITY.md](SECURITY.md).
 ## Features
 
 - **Automatic sink switching** from rules that match a window's `app_id` and title (regex)
-- **Fallback sinks**: a rule can list several sinks; the first one available right now
-  wins (e.g. Bluetooth headphones when connected, wired ones otherwise)
+- **Microphone switching** (optional): with `[[sources]]` configured, a rule can also
+  pick the default input; the mic is decided on its own, so a rule without one never
+  moves it
+- **Fallback sinks and mics**: a rule can list several; the first one available right
+  now wins (e.g. Bluetooth headphones when connected, wired ones otherwise)
 - **Audio follows the screen**: a rule can match the monitor a window is on
   (`output = "HDMI-A-1"`), so whatever you move to the TV plays on the TV (needs a
   compositor with `wlr-foreign-toplevel-management`)
 - **Respects your choices**: pwsw switches only when the rules' answer changes, so a sink
   you pick in pavucontrol (or a manual `pwsw set-sink`) stays until a rule wants
   something else
+- **Pause / resume** rule-driven switching (`pwsw pause`, `p` in the TUI), and an
+  optional settle delay (`switch_delay_ms`) for windows that match only for a moment
+- **Status bars and shells**: `pwsw status --watch --json` pushes one JSON line per
+  change (Waybar, eww, Quickshell; a Noctalia plugin is included)
+- **`pwsw doctor`** checks the whole setup and says what to fix
 - **Interactive TUI**:
-  - Dashboard with daemon status and controls, daemon log and window list
+  - Dashboard with daemon status and controls, daemon log and window list (make a rule
+    from a window with `n`)
   - Rule editor with a live preview of matching windows
-  - Sink editor that picks from the nodes PipeWire offers
+  - Sink and mic editors that pick from the nodes PipeWire offers
   - Context-aware help generated from the actual key bindings
 - **Priority modes**: most recently opened window wins, or the first matching rule wins
 - **Profile switching**: reaches outputs that need a card profile change (e.g. analog ↔
@@ -61,8 +70,9 @@ reporting instead, see [SECURITY.md](SECURITY.md).
 PWSW works with any compositor that implements one of:
 
 - **`ext-foreign-toplevel-list-v1`**: the official Wayland standard (preferred when both
-  are offered)
-- **`wlr-foreign-toplevel-management`**: wlroots-style compositors
+  are offered, unless the config has `output` rules)
+- **`wlr-foreign-toplevel-management`**: wlroots-style compositors; the only one that
+  reports which monitor a window is on, so `output` rules need it
 
 Compositors that implement one of them include Sway, Hyprland, Niri, River, Wayfire,
 labwc, dwl and COSMIC.
@@ -127,12 +137,14 @@ pwsw tui
 Use `Tab` or `1`-`4` to switch screens:
 1. **Dashboard**: daemon status and Start/Stop/Restart (Enable/Disable with the systemd
    unit), the daemon log and the window list (`w` toggles)
-2. **Sinks**: add, edit, reorder and delete outputs, pick the default
-3. **Rules**: create and edit rules with live preview
-4. **Settings**: global behaviour
+2. **Sinks**: add, edit, reorder and delete outputs, pick the default; `i` switches to
+   the microphones (`[[sources]]`)
+3. **Rules**: create and edit rules (sinks with fallbacks, optional mics and monitor)
+   with live preview
+4. **Settings**: global behaviour, including the switch delay
 
-`Ctrl+S` saves. Press `?` or `F1` for help on the current screen. On first run the TUI
-creates the config file for you.
+`Ctrl+S` saves, `p` pauses or resumes rule-driven switching. Press `?` or `F1` for help
+on the current screen. On first run the TUI creates the config file for you.
 
 ### Commands
 
@@ -205,7 +217,8 @@ Only `pwsw init` and `pwsw tui` create the file. Unknown keys (typos such as
 automatically when the file is saved; an invalid file is rejected and the previous
 configuration stays in effect. When the TUI saves, your comments and formatting are
 kept, the previous version is copied to `config.toml.bak`, a symlinked config stays a
-symlink, and the save is refused if the file was changed on disk in the meantime.
+symlink, and if the file was changed on disk in the meantime the TUI asks whether to
+overwrite or reload it.
 
 ### Example
 
@@ -232,6 +245,10 @@ icon = "audio-headphones"   # optional; otherwise picked from the description
 [[sinks]]
 name = "bluez_output.40_ED_98_1C_1D_08.1"
 desc = "BT Headphones"
+
+[[sinks]]
+name = "alsa_output.pci-0000_0a_00.1.hdmi-stereo"
+desc = "TV"
 
 # Optional: microphones. Without [[sources]] pwsw never touches the default input.
 [[sources]]
@@ -266,7 +283,7 @@ sink = "Headphones"
 
 [[rules]]
 output = "^HDMI-A-1$" # audio follows the screen: any window on this monitor
-sink = "Optical Out"  # (app_id optional; needs wlr-foreign-toplevel-management)
+sink = "TV"           # (app_id optional; needs wlr-foreign-toplevel-management)
 ```
 
 All `[settings]` keys are optional; the values above are the defaults.
@@ -300,9 +317,11 @@ providing both (the sink wins if none exists). `pwsw set-source <ref>` switches 
 microphone by hand.
 
 **Priority:** with `match_by_index = false` the most recently opened window that matches
-a rule (or most recently started matching, e.g. after a title change) decides the sink.
-With `true` the window matching the earliest rule wins (reorder rules in the TUI with
-`Shift+↑/↓`). When no window matches, the default sink is used.
+a rule (or most recently started matching, e.g. after a title change or a move onto a
+monitor an `output` rule names) decides the sink. With `true` the window matching the
+earliest rule wins (reorder rules in the TUI with `Shift+↑/↓`). When no window matches,
+the default sink is used. The microphone follows the same priority among windows whose
+rule has a `source`.
 
 **Regex:** Rust `regex` syntax, matched anywhere unless anchored:
 
@@ -320,15 +339,21 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
 ## How switching works
 
 - The daemon switches when the sink its rules want **changes**: a matching window opens,
-  closes, changes title or moves to another monitor, or a config change alters the rules. A sink chosen elsewhere
-  (pavucontrol, WirePlumber) stays until then.
-- At startup it switches only with `default_on_startup = true`.
+  closes, changes title or moves to another monitor, or a config change alters the
+  rules. A sink chosen elsewhere (pavucontrol, WirePlumber) stays until then.
+- At startup it waits (up to 2 s) for the compositor to list the open windows, then
+  switches to what the rules want only with `default_on_startup = true`.
+- With `switch_delay_ms` it switches only once the rules' answer has held that long;
+  `pwsw pause` stops rule-driven switching until `pwsw resume`.
+- With `[[sources]]` the microphone is decided the same way, independently of the sink.
 - The default is set the way `wpctl set-default` does it
-  (`default.configured.audio.sink`), so WirePlumber keeps it.
+  (`default.configured.audio.sink` / `.source`), so WirePlumber keeps it.
 - If the target needs a profile switch, pwsw picks an available profile that provides the
-  output (keeping the card's microphone when possible), switches with `pw-cli` (saved in
-  WirePlumber), waits up to 5 s for the new sink, then makes it the default. UCM (`HiFi`)
-  and Pro Audio profiles are not switched to automatically.
+  output (keeping the card's microphone when possible; a mic switch always keeps the
+  card's output, and a sink plus a mic on one card get one profile providing both),
+  switches with `pw-cli` (saved in WirePlumber), waits up to 5 s for the new node, then
+  makes it the default. UCM (`HiFi`) and Pro Audio profiles are not switched to
+  automatically.
 - A failed rule-driven switch is retried after 2 s and 5 s, then on the next window event
   or reload.
 
@@ -336,8 +361,8 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
 
 Run **`pwsw doctor` first.** It checks the Wayland session and the compositor's window
 protocols, the PipeWire tools and WirePlumber, the config, whether each configured sink
-can be activated right now, the daemon, the systemd unit and the last warning in the
-log, and says how to fix each problem it finds. It changes nothing.
+and mic can be activated right now, the daemon, the systemd unit and the last warning in
+the log, and says how to fix each problem it finds. It changes nothing.
 
 - **Logs:** `~/.local/share/pwsw/daemon.log` (rotated at 1 MB to `daemon.log.old`), also
   shown on the TUI dashboard. Under systemd the same lines go to

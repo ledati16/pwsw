@@ -24,7 +24,7 @@ In scope, for example:
 - **Config handling**: unsafe writes or permissions, following symlinks into files pwsw
   should not touch, deleting files it does not own.
 - **Untrusted window titles and `app_id`s**: injection into logs, terminal output, the
-  TUI or desktop notifications; regex denial of service from window input.
+  TUI, the `status --watch` stream or desktop notifications; regex denial of service from window input.
 - **Command execution**: anything that lets input reach `pw-dump`, `pw-cli` or
   `pw-metadata` arguments beyond the intended JSON values, or run other programs.
 - Vulnerable dependencies that pwsw actually reaches (`cargo audit` runs weekly in CI).
