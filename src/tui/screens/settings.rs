@@ -1,15 +1,19 @@
 //! Settings screen - Configure PWSW behavior
 
+use std::borrow::Cow;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{HighlightSpacing, List, ListItem, ListState, Padding, Paragraph};
+use tui_input::Input;
 
-use crate::config::Settings;
+use crate::config::{MAX_SWITCH_DELAY_MS, Settings};
 use crate::tui::theme;
 use crate::tui::widgets::{
-    border_hints, pick_list_rect, render_pick_list, render_scrollbar, rounded_block, text_width,
+    FieldValue, FormField, border_hints, dialog_block, form_width, modal_rect, open_dialog,
+    pick_list_rect, render_form, render_pick_list, render_scrollbar, rounded_block, text_width,
     wrap_line,
 };
 
@@ -24,6 +28,7 @@ pub enum SettingItem {
     NotifyManual,
     NotifyRules,
     MatchByIndex,
+    SwitchDelay,
     LogLevel,
 }
 
@@ -36,8 +41,18 @@ impl SettingItem {
             Self::NotifyManual,
             Self::NotifyRules,
             Self::MatchByIndex,
+            Self::SwitchDelay,
             Self::LogLevel,
         ]
+    }
+
+    /// Position of this setting in [`Self::all`]
+    #[cfg(test)]
+    pub(crate) fn index(self) -> usize {
+        Self::all()
+            .iter()
+            .position(|item| *item == self)
+            .unwrap_or_default()
     }
 
     /// Get the display name for this setting
@@ -48,6 +63,7 @@ impl SettingItem {
             Self::NotifyManual => "Manual Switch Notifications",
             Self::NotifyRules => "Rule-Based Notifications",
             Self::MatchByIndex => "Match by Rule Index",
+            Self::SwitchDelay => "Switch Delay",
             Self::LogLevel => "Log Level",
         }
     }
@@ -60,6 +76,7 @@ impl SettingItem {
             Self::NotifyManual => "Show notifications for manual sink switches",
             Self::NotifyRules => "Show notifications for rule-triggered switches",
             Self::MatchByIndex => "Rule priority strategy for window matching",
+            Self::SwitchDelay => "Settle time before a rule-driven switch",
             Self::LogLevel => "Logging verbosity level",
         }
     }
@@ -130,6 +147,16 @@ impl SettingItem {
                  \n\
                  Default: disabled (most recent window)"
             }
+            Self::SwitchDelay => {
+                "Wait this long for the rules' answer to settle before switching;\n\
+                 0 = switch immediately. Useful against splash screens and flickering titles.\n\
+                 \n\
+                 A switch happens only if the rules still want the same sink after the\n\
+                 delay; a change back to the current sink cancels it. Manual switches,\n\
+                 retries and the start-up switch are never delayed.\n\
+                 \n\
+                 Default: 0 (switch immediately)"
+            }
             Self::LogLevel => {
                 "Logging verbosity level for daemon output.\n\
                  \n\
@@ -162,6 +189,8 @@ pub struct SettingsScreen {
     pub state: ListState,
     /// Description panel scroll offset
     pub desc_scroll: u16,
+    /// The switch delay being typed (`Some` while its editor is open)
+    pub delay_input: Option<Input>,
 }
 
 impl SettingsScreen {
@@ -179,6 +208,7 @@ impl SettingsScreen {
             log_level_index,
             state: ListState::default(),
             desc_scroll: 0,
+            delay_input: None,
         }
     }
 
@@ -208,10 +238,11 @@ impl SettingsScreen {
         self.desc_scroll = self.desc_scroll.saturating_add(1);
     }
 
-    /// Toggle the currently selected boolean setting
+    /// Toggle the currently selected boolean setting (or open the editor of
+    /// the log level or the switch delay; returns `false` then)
     pub(crate) fn toggle_current(&mut self, settings: &mut Settings) -> bool {
-        if self.editing_log_level {
-            return false; // Don't toggle while editing log level
+        if self.editing_log_level || self.delay_input.is_some() {
+            return false; // Don't toggle while a dialog is open
         }
 
         match SettingItem::all()[self.selected] {
@@ -235,6 +266,10 @@ impl SettingsScreen {
                 settings.match_by_index.toggle();
                 true
             }
+            SettingItem::SwitchDelay => {
+                self.delay_input = Some(Input::new(settings.switch_delay_ms.to_string()));
+                false
+            }
             SettingItem::LogLevel => {
                 // Open dropdown for editing
                 self.editing_log_level = true;
@@ -243,9 +278,37 @@ impl SettingsScreen {
         }
     }
 
+    /// Whether a dialog (log level list or switch delay editor) is open
+    pub(crate) const fn dialog_open(&self) -> bool {
+        self.editing_log_level || self.delay_input.is_some()
+    }
+
     /// Get the current selected item
     pub(crate) fn current_item(&self) -> SettingItem {
         SettingItem::all()[self.selected]
+    }
+}
+
+/// Parse a switch delay typed in milliseconds, checked against the range
+/// [`Settings::switch_delay_ms`] accepts (`0` to [`MAX_SWITCH_DELAY_MS`]).
+///
+/// # Errors
+/// Returns the message to show when the text is empty, not a whole number or
+/// out of range.
+pub(crate) fn parse_switch_delay(text: &str) -> Result<u32, String> {
+    let text = text.trim();
+    let range = format!("between 0 and {MAX_SWITCH_DELAY_MS} ms");
+    if text.is_empty() {
+        return Err(format!("Enter a switch delay {range}"));
+    }
+    if !text.chars().all(|c| c.is_ascii_digit()) {
+        return Err(format!(
+            "Switch delay must be a whole number of milliseconds, {range}"
+        ));
+    }
+    match text.parse::<u32>() {
+        Ok(ms) if ms <= MAX_SWITCH_DELAY_MS => Ok(ms),
+        _ => Err(format!("Switch delay must be {range}")),
     }
 }
 
@@ -267,9 +330,45 @@ pub fn render_settings(
     if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
         render_log_level_dropdown(frame, area, screen_state);
     }
+    if let Some(input) = &screen_state.delay_input {
+        render_delay_editor(frame, area, input);
+    }
 }
 
-/// Whether a boolean setting is on (`None` for the log level)
+/// Render the switch delay editor: one text field and the accepted range,
+/// centred on `area`
+fn render_delay_editor(frame: &mut Frame, area: Rect, input: &Input) {
+    const TITLE: &str = "Switch Delay";
+    const HINTS: &[(&str, &str)] = &[("Enter", "apply"), ("Esc", "cancel")];
+    let note = format!("0 to {MAX_SWITCH_DELAY_MS}; 0 = switch immediately");
+    let fields = [FormField {
+        label: "Milliseconds",
+        value: FieldValue::Text {
+            input,
+            placeholder: Cow::Borrowed("0"),
+        },
+        trailing: None,
+        focused: true,
+    }];
+    // Borders and padding take 4 columns, the borders 2 rows
+    let content = usize::from(form_width(&fields, 8))
+        .max(text_width(&note))
+        .max(border_hints(HINTS).width())
+        .max(text_width(TITLE) + 2);
+    let width = u16::try_from(content + 4).unwrap_or(u16::MAX);
+    let rect = modal_rect(area, width, 4);
+    let inner = open_dialog(
+        frame,
+        rect,
+        dialog_block(TITLE).title_bottom(border_hints(HINTS)),
+    );
+    let [field_row, note_row] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
+    render_form(frame, field_row, &fields);
+    frame.render_widget(Span::styled(note, theme::dim()), note_row);
+}
+
+/// Whether a boolean setting is on (`None` for the log level and the delay)
 const fn bool_value(item: SettingItem, settings: &Settings) -> Option<bool> {
     match item {
         SettingItem::DefaultOnStartup => Some(settings.default_on_startup),
@@ -277,7 +376,7 @@ const fn bool_value(item: SettingItem, settings: &Settings) -> Option<bool> {
         SettingItem::NotifyManual => Some(settings.notify_manual),
         SettingItem::NotifyRules => Some(settings.notify_rules),
         SettingItem::MatchByIndex => Some(settings.match_by_index),
-        SettingItem::LogLevel => None,
+        SettingItem::SwitchDelay | SettingItem::LogLevel => None,
     }
 }
 
@@ -297,10 +396,16 @@ fn render_settings_list(
         .iter()
         .map(|item| {
             let pad = name_width - text_width(item.name()) + 3;
-            let value = match bool_value(*item, settings) {
-                Some(true) => Span::styled("[x] on", theme::success()),
-                Some(false) => Span::styled("[ ] off", theme::dim()),
-                None => Span::styled(settings.log_level.clone(), theme::accent()),
+            let value = match (bool_value(*item, settings), item) {
+                (Some(true), _) => Span::styled("[x] on", theme::success()),
+                (Some(false), _) => Span::styled("[ ] off", theme::dim()),
+                (None, SettingItem::SwitchDelay) if settings.switch_delay_ms == 0 => {
+                    Span::styled("0 ms (immediate)", theme::dim())
+                }
+                (None, SettingItem::SwitchDelay) => {
+                    Span::styled(format!("{} ms", settings.switch_delay_ms), theme::accent())
+                }
+                (None, _) => Span::styled(settings.log_level.clone(), theme::accent()),
             };
             ListItem::new(Line::from(vec![
                 Span::raw(item.name()),

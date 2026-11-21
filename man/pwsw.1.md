@@ -124,6 +124,7 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 :   `1-4`: Jump to screen (Dashboard, Sinks, Rules, Settings)
 :   `Ctrl+S`: Save the configuration file
 :   `q` or `Ctrl+C`: Quit (with unsaved changes: press again to confirm)
+:   `p`: Pause / resume rule-driven switching (like **toggle-pause**; needs a running daemon). While paused the header shows *⏸ paused* on every screen and the Dashboard's daemon card says *running · paused*
 :   `Esc`: Clear status message
 :   `?` or `F1`: Toggle the help overlay
 
@@ -154,7 +155,8 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 
 **Settings**
 :   `↑/↓`: Navigate
-:   `Enter` / `Space`: Toggle the setting, or open the log level list
+:   `Enter` / `Space`: Toggle the setting, open the log level list, or edit the switch delay (*switch_delay_ms*)
+:   In the switch delay editor: type the milliseconds (digits only), `Enter` applies a value from 0 to 5000 (anything else is refused with the reason), `Esc` cancels
 :   `PgUp/PgDn`: Scroll the description
 
 **Text fields**

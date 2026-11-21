@@ -57,6 +57,7 @@ impl Context {
     /// Sub-heading shown above this context's bindings inside a screen section
     pub(crate) const fn heading(self) -> Option<&'static str> {
         match self {
+            Self::Editor(Screen::Settings) => Some("In the switch delay editor:"),
             Self::Editor(_) => Some("In the add/edit dialog:"),
             Self::Dropdown(_) => Some("In a selection list:"),
             Self::Dialog(_) => Some("In the delete/details dialog:"),
@@ -515,7 +516,7 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::List(Screen::Settings),
         "Enter/Space",
-        "Toggle setting / open log level list",
+        "Toggle setting / open the log level list / edit the switch delay",
         SPACE_ENTER,
     )
     .hint("Enter", "change", 1),
@@ -541,6 +542,26 @@ pub(crate) static BINDINGS: &[Binding] = &[
     )
     .hint("Enter", "apply", 1),
     b(Context::Dropdown(Screen::Settings), "Esc", "Cancel", ESC).hint("Esc", "cancel", 2),
+    b(
+        Context::Editor(Screen::Settings),
+        "0-9",
+        "Type the delay in milliseconds (other characters are ignored)",
+        &[(KeyCode::Char('0'), NONE), (KeyCode::Char('9'), NONE)],
+    ),
+    b(
+        Context::Editor(Screen::Settings),
+        "Enter",
+        "Apply the delay (refused, with the reason, outside 0 to 5000 ms)",
+        ENTER,
+    )
+    .hint("Enter", "apply", 1),
+    b(
+        Context::Editor(Screen::Settings),
+        "Esc",
+        "Cancel (keep the old delay)",
+        ESC,
+    )
+    .hint("Esc", "cancel", 2),
     // --- Text fields ---
     b(Context::TextInput, "←/→", "Move cursor", &[
         (KeyCode::Left, NONE),
@@ -643,6 +664,13 @@ pub(crate) static BINDINGS: &[Binding] = &[
         &[(KeyCode::Char('q'), NONE), (KeyCode::Char('c'), CTRL)],
     )
     .hint("q", "quit", 1),
+    b(
+        Context::Global,
+        "p",
+        "Pause / resume automatic (rule-driven) switching; manual switches still work",
+        &[(KeyCode::Char('p'), NONE)],
+    )
+    .hint("p", "pause", 7),
     b(Context::Global, "Esc", "Clear status message", ESC),
     b(Context::Global, "F1, ?", "Show this help", &[
         (KeyCode::F(1), NONE),

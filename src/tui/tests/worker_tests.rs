@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use color_eyre::eyre::Result;
@@ -16,19 +17,24 @@ use crate::tui::input::simulate_key_event;
 use crate::tui::worker::{self, Backend, STATUS_POLL};
 
 /// Backend whose status poll is slow and whose save can be made to panic.
+#[derive(Default)]
 struct Fake {
     status_delay: Duration,
     panic_on_save: bool,
+    /// The daemon's pause state; a status poll reads it when it starts
+    paused: AtomicBool,
 }
 
 impl Backend for Fake {
     async fn daemon_state(&self) -> AppUpdate {
+        let paused = self.paused.load(Ordering::SeqCst);
         tokio::time::sleep(self.status_delay).await;
         AppUpdate::DaemonState {
             running: true,
             windows: Vec::new(),
             unit_installed: false,
             service_enabled: None,
+            paused,
         }
     }
 
@@ -38,6 +44,10 @@ impl Backend for Fake {
 
     fn daemon_action(&self, action: DaemonAction) -> impl Future<Output = Result<String>> + Send {
         std::future::ready(Ok(format!("{action:?} done")))
+    }
+
+    fn toggle_pause(&self) -> impl Future<Output = Result<bool>> + Send {
+        std::future::ready(Ok(!self.paused.fetch_xor(true, Ordering::SeqCst)))
     }
 
     fn save_config(
@@ -116,6 +126,7 @@ async fn test_worker_runs_commands_immediately_despite_slow_poll() {
         Fake {
             status_delay: Duration::from_secs(30),
             panic_on_save: false,
+            ..Fake::default()
         },
         false,
     );
@@ -163,6 +174,7 @@ async fn test_worker_snapshots_sinks_only_while_visible() {
         Fake {
             status_delay: Duration::ZERO,
             panic_on_save: false,
+            ..Fake::default()
         },
         false,
     );
@@ -197,6 +209,7 @@ async fn test_worker_stops_when_ui_goes_away() {
         Fake {
             status_delay: Duration::ZERO,
             panic_on_save: false,
+            ..Fake::default()
         },
         false,
     );
@@ -213,6 +226,7 @@ async fn test_worker_reraises_task_panics() {
         Fake {
             status_delay: Duration::ZERO,
             panic_on_save: true,
+            ..Fake::default()
         },
         false,
     );
@@ -290,4 +304,65 @@ fn test_successful_send_sets_pending_until_result() {
 
     app.handle_update(AppUpdate::ActionResult(Ok("ok".to_string())));
     assert!(!app.is_busy());
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_worker_toggles_pause_at_once_and_drops_stale_polls() {
+    // The first status poll starts at once (reading "not paused") and takes 5 s
+    let mut h = spawn_worker(
+        Fake {
+            status_delay: Duration::from_secs(5),
+            ..Fake::default()
+        },
+        false,
+    );
+    tokio::task::yield_now().await;
+    let start = Instant::now();
+
+    h.commands
+        .send(BgCommand::TogglePause)
+        .await
+        .expect("queued");
+    let toggled = recv_until(&mut h.updates, |u| {
+        matches!(
+            u,
+            AppUpdate::PauseToggled(_) | AppUpdate::DaemonState { .. }
+        )
+    })
+    .await;
+    assert!(
+        matches!(toggled, AppUpdate::PauseToggled(Ok(true))),
+        "the answer comes first"
+    );
+    assert!(start.elapsed() < STATUS_POLL, "did not wait for the poll");
+
+    // The poll that started before the request is dropped: every state that
+    // arrives afterwards says paused
+    for _ in 0..3 {
+        let state = recv_until(&mut h.updates, |u| {
+            matches!(u, AppUpdate::DaemonState { .. })
+        })
+        .await;
+        assert!(
+            matches!(state, AppUpdate::DaemonState { paused: true, .. }),
+            "stale pause state after the toggle"
+        );
+    }
+
+    // And back
+    h.commands
+        .send(BgCommand::TogglePause)
+        .await
+        .expect("queued");
+    let toggled = recv_until(&mut h.updates, |u| matches!(u, AppUpdate::PauseToggled(_))).await;
+    assert!(matches!(toggled, AppUpdate::PauseToggled(Ok(false))));
+    let state = recv_until(&mut h.updates, |u| {
+        matches!(u, AppUpdate::DaemonState { .. })
+    })
+    .await;
+    assert!(matches!(state, AppUpdate::DaemonState {
+        paused: false,
+        ..
+    }));
+    h.handle.abort();
 }

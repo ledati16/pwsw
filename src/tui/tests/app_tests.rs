@@ -283,6 +283,7 @@ fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly(
         windows: Vec::new(),
         unit_installed: true,
         service_enabled: Some(false),
+        paused: false,
     });
     assert_eq!(app.dashboard_screen.max_action_index, 4);
 
@@ -291,6 +292,7 @@ fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly(
         windows: Vec::new(),
         unit_installed: false,
         service_enabled: None,
+        paused: false,
     });
     assert_eq!(app.dashboard_screen.max_action_index, 2);
 }
@@ -446,6 +448,7 @@ fn windows_app(
         windows,
         unit_installed: false,
         service_enabled: None,
+        paused: false,
     });
     app.dashboard_screen.toggle_view();
     app
@@ -581,6 +584,7 @@ fn test_new_rule_follows_the_window_selection() {
         ],
         unit_installed: false,
         service_enabled: None,
+        paused: false,
     });
     simulate_key_event(&mut app, key(KeyCode::Char('n')));
     assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "^mpv$");
@@ -618,4 +622,180 @@ fn test_new_rule_without_windows_only_says_why() {
     simulate_key_event(&mut app, key(KeyCode::Char('n')));
     assert_eq!(app.current_screen, Screen::Dashboard);
     assert_eq!(app.status_message(), None);
+}
+
+/// The daemon's state as the status poll reports it
+fn daemon_state(running: bool, paused: bool) -> AppUpdate {
+    AppUpdate::DaemonState {
+        running,
+        windows: Vec::new(),
+        unit_installed: false,
+        service_enabled: None,
+        paused,
+    }
+}
+
+#[test]
+fn test_pause_key_sends_toggle_and_shows_the_answer() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.handle_update(daemon_state(true, false));
+
+    for screen in [Screen::Dashboard, Screen::Settings] {
+        app.current_screen = screen;
+        simulate_key_event(&mut app, key(KeyCode::Char('p')));
+        assert!(
+            matches!(rx.try_recv(), Ok(BgCommand::TogglePause)),
+            "{screen:?}: toggle sent"
+        );
+        assert!(app.pause_pending);
+        // Nothing is shown as paused before the daemon answered
+        let expected = screen == Screen::Settings;
+        assert_eq!(app.daemon_paused, expected, "{screen:?}");
+
+        // A second press while the request runs is refused
+        simulate_key_event(&mut app, key(KeyCode::Char('p')));
+        assert!(rx.try_recv().is_err(), "{screen:?}: not sent twice");
+        assert_eq!(
+            app.status_message(),
+            Some("Already changing the pause state")
+        );
+
+        app.handle_update(AppUpdate::PauseToggled(Ok(!expected)));
+        assert!(!app.pause_pending);
+        assert_eq!(app.daemon_paused, !expected);
+        let status = app.status_message().expect("status");
+        if expected {
+            assert_eq!(status, "Resumed automatic switching");
+        } else {
+            assert!(status.starts_with("Paused automatic switching"), "{status}");
+        }
+    }
+
+    // The next poll agrees; a failed request changes nothing and says why
+    app.handle_update(daemon_state(true, false));
+    simulate_key_event(&mut app, key(KeyCode::Char('p')));
+    assert!(matches!(rx.try_recv(), Ok(BgCommand::TogglePause)));
+    app.handle_update(AppUpdate::PauseToggled(Err(
+        "Failed to pause or resume: timeout".to_string(),
+    )));
+    assert!(!app.pause_pending);
+    assert!(!app.daemon_paused);
+    assert_eq!(app.status_kind(), Some(crate::tui::app::StatusKind::Error));
+}
+
+#[test]
+fn test_pause_key_refused_while_daemon_stopped() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.handle_update(daemon_state(false, false));
+
+    simulate_key_event(&mut app, key(KeyCode::Char('p')));
+    assert!(rx.try_recv().is_err(), "nothing sent");
+    assert!(!app.pause_pending);
+    let status = app.status_message().expect("status");
+    assert!(status.starts_with("Daemon not running"), "{status}");
+}
+
+#[test]
+fn test_pause_state_follows_the_status_poll() {
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.handle_update(daemon_state(true, true));
+    assert!(app.daemon_paused);
+    // A daemon that stopped is not paused (a restarted one starts unpaused)
+    app.handle_update(daemon_state(false, true));
+    assert!(!app.daemon_paused);
+    app.handle_update(daemon_state(true, false));
+    assert!(!app.daemon_paused);
+}
+
+#[test]
+fn test_pause_key_is_typed_into_text_fields() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.handle_update(daemon_state(true, false));
+    app.current_screen = Screen::Rules;
+    app.rules_screen.start_add();
+    simulate_key_event(&mut app, key(KeyCode::Char('p')));
+    assert!(rx.try_recv().is_err(), "typing p does not pause");
+    assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "p");
+}
+
+/// Open the switch delay editor on the Settings screen and type `text` over
+/// the current value
+fn type_delay(app: &mut App, text: &str) {
+    use crate::tui::screens::settings::SettingItem;
+
+    app.current_screen = Screen::Settings;
+    app.settings_screen.selected = SettingItem::SwitchDelay.index();
+    simulate_key_event(app, key(KeyCode::Enter));
+    assert!(app.settings_screen.delay_input.is_some(), "editor opened");
+    simulate_key_event(app, ctrl('u'));
+    for c in text.chars() {
+        simulate_key_event(app, key(KeyCode::Char(c)));
+    }
+}
+
+#[test]
+fn test_switch_delay_edit_applies_and_marks_dirty() {
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    type_delay(&mut app, "3x00");
+    assert_eq!(
+        app.settings_screen
+            .delay_input
+            .as_ref()
+            .map(tui_input::Input::value),
+        Some("300"),
+        "only digits are typed"
+    );
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(app.settings_screen.delay_input.is_none(), "editor closed");
+    assert_eq!(app.config.settings.switch_delay_ms, 300);
+    assert!(app.config_dirty);
+
+    // Esc keeps the old value
+    type_delay(&mut app, "40");
+    simulate_key_event(&mut app, key(KeyCode::Esc));
+    assert!(app.settings_screen.delay_input.is_none());
+    assert_eq!(app.config.settings.switch_delay_ms, 300);
+}
+
+#[test]
+fn test_switch_delay_out_of_range_is_refused_with_a_message() {
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    for text in ["5001", "99999999999", ""] {
+        type_delay(&mut app, text);
+        simulate_key_event(&mut app, key(KeyCode::Enter));
+        assert!(
+            app.settings_screen.delay_input.is_some(),
+            "{text:?}: editor stays open"
+        );
+        let status = app.status_message().expect("status");
+        assert!(
+            status.contains("between 0 and 5000 ms"),
+            "{text:?}: {status}"
+        );
+        assert_eq!(app.config.settings.switch_delay_ms, 0);
+        assert!(!app.config_dirty);
+        simulate_key_event(&mut app, key(KeyCode::Esc));
+    }
+
+    // The limit itself is accepted, and the saved config loads again
+    type_delay(&mut app, "5000");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.settings.switch_delay_ms, 5000);
+
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    app.config.save_to(&path).expect("valid config saves");
+    assert_eq!(
+        Config::load_from_path(&path)
+            .expect("load")
+            .settings
+            .switch_delay_ms,
+        5000
+    );
 }

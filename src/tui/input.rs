@@ -9,7 +9,7 @@ use super::preview::first_matching_rule;
 use super::screens::dashboard::DashboardView;
 use super::screens::list::{FormEditor, ListMode, ListScreen};
 use super::screens::rules::RuleField;
-use super::screens::settings::LOG_LEVELS;
+use super::screens::settings::{LOG_LEVELS, parse_switch_delay};
 use super::screens::sinks::{SinkField, selector_names};
 
 /// Handle a single input event and update app state
@@ -52,7 +52,7 @@ fn is_modal_active(app: &App) -> bool {
     match app.current_screen {
         Screen::Sinks => app.sinks_screen.mode != ListMode::List,
         Screen::Rules => app.rules_screen.mode != ListMode::List,
-        Screen::Settings => app.settings_screen.editing_log_level,
+        Screen::Settings => app.settings_screen.dialog_open(),
         Screen::Dashboard => false,
     }
 }
@@ -176,6 +176,10 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // Escape: clear status message
         (KeyCode::Esc, KeyModifiers::NONE) => app.clear_status(),
 
+        // p: pause / resume rule-driven switching (never reached while typing:
+        // every text field is in a dialog)
+        (KeyCode::Char('p'), KeyModifiers::NONE) => app.request_toggle_pause(),
+
         // F1, or ? while no text field has focus: help overlay
         (KeyCode::F(1), _) => app.open_help(),
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT)
@@ -285,6 +289,10 @@ fn new_rule_from_selected_window(app: &mut App) {
 
 /// Handle settings screen input
 fn handle_settings_input(app: &mut App, key: KeyEvent) {
+    if app.settings_screen.delay_input.is_some() {
+        handle_delay_editor_input(app, key);
+        return;
+    }
     // If editing log level dropdown
     if app.settings_screen.editing_log_level {
         match key.code {
@@ -337,6 +345,34 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+/// Handle the switch delay editor: digits and editing keys go into the field,
+/// Enter applies a value in range (or says why not and stays open), Esc cancels
+fn handle_delay_editor_input(app: &mut App, key: KeyEvent) {
+    let Some(input) = app.settings_screen.delay_input.as_mut() else {
+        return;
+    };
+    match key.code {
+        KeyCode::Enter => match parse_switch_delay(input.value()) {
+            Ok(ms) => {
+                app.settings_screen.delay_input = None;
+                app.config.settings.switch_delay_ms = ms;
+                app.mark_dirty();
+            }
+            Err(message) => app.set_status(StatusKind::Warning, message),
+        },
+        KeyCode::Esc => app.settings_screen.delay_input = None,
+        // Only digits are typed; other plain characters are ignored
+        KeyCode::Char(c)
+            if !c.is_ascii_digit()
+                && !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
+        _ => {
+            input.handle_event(&Event::Key(key));
+        }
     }
 }
 

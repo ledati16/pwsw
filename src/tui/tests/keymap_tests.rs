@@ -24,6 +24,7 @@ use crate::tui::render_ui;
 use crate::tui::screens::dashboard::DashboardView;
 use crate::tui::screens::list::{FormEditor, ListMode};
 use crate::tui::screens::rules::RuleField;
+use crate::tui::screens::settings::SettingItem;
 use crate::tui::screens::sinks::{SinkField, selector_names};
 
 fn draw(app: &mut App) {
@@ -75,6 +76,7 @@ fn base(dir: &Path) -> App {
             .collect(),
         unit_installed: true,
         service_enabled: Some(true),
+        paused: false,
     });
     let active = |name: &str| ActiveSink {
         name: name.to_string(),
@@ -160,6 +162,15 @@ fn setups(context: Context) -> Vec<Setup> {
                 }));
             }
         }
+        Context::Editor(Screen::Settings) => {
+            for value in ["300", ""] {
+                out.push(Box::new(move |app: &mut App| {
+                    app.current_screen = Screen::Settings;
+                    app.settings_screen.selected = SettingItem::SwitchDelay.index();
+                    app.settings_screen.delay_input = Some(Input::new(value.to_string()));
+                }));
+            }
+        }
         Context::Editor(_) => {
             for field in [
                 RuleField::AppId,
@@ -208,7 +219,7 @@ fn setups(context: Context) -> Vec<Setup> {
         Context::Dropdown(_) => {
             out.push(Box::new(|app: &mut App| {
                 app.current_screen = Screen::Settings;
-                app.settings_screen.selected = 5;
+                app.settings_screen.selected = SettingItem::LogLevel.index();
                 app.settings_screen.editing_log_level = true;
                 app.settings_screen.log_level_index = 2;
             }));

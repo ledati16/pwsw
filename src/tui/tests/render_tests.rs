@@ -16,6 +16,7 @@ use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
 use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::BINDINGS;
 use crate::tui::screens::list::ListMode;
+use crate::tui::screens::settings::SettingItem;
 use crate::tui::screens::sinks::{SinkField, selector_names};
 use crate::tui::{render_ui, theme};
 
@@ -128,6 +129,7 @@ fn fixture() -> App {
         ],
         unit_installed: true,
         service_enabled: Some(true),
+        paused: false,
     });
     app.handle_update(AppUpdate::DaemonLogs(vec![
         "2026-11-20T10:03:10.120Z  INFO pwsw::daemon: Starting PWSW daemon v0.7.0".to_string(),
@@ -148,6 +150,11 @@ type Setup = fn(&mut App);
 fn states() -> Vec<(&'static str, Setup)> {
     vec![
         ("dashboard", |_| {}),
+        ("dashboard paused", |app| {
+            app.daemon_paused = true;
+            app.config.settings.notify_rules.toggle();
+            app.mark_dirty();
+        }),
         ("dashboard windows", |app| {
             app.dashboard_screen.toggle_view();
         }),
@@ -218,8 +225,14 @@ fn states() -> Vec<(&'static str, Setup)> {
         ("settings", |app| app.current_screen = Screen::Settings),
         ("settings log level", |app| {
             app.current_screen = Screen::Settings;
-            app.settings_screen.selected = 5;
+            app.settings_screen.selected = SettingItem::LogLevel.index();
             app.settings_screen.editing_log_level = true;
+        }),
+        ("settings switch delay", |app| {
+            app.current_screen = Screen::Settings;
+            app.config.settings.switch_delay_ms = 300;
+            app.settings_screen.selected = SettingItem::SwitchDelay.index();
+            app.settings_screen.toggle_current(&mut app.config.settings);
         }),
         ("help", |app| {
             app.current_screen = Screen::Rules;
@@ -808,6 +821,7 @@ fn test_dashboard_preselects_the_sensible_action() {
         windows: Vec::new(),
         unit_installed: true,
         service_enabled: Some(true),
+        paused: false,
     };
     app.handle_update(state(true));
     assert_eq!(
@@ -892,6 +906,9 @@ fn test_text_uses_the_terminal_colors() {
 fn test_print_80x24_screens() {
     for name in [
         "dashboard",
+        "dashboard paused",
+        "settings",
+        "settings switch delay",
         "dashboard windows",
         "sinks",
         "sink edit",
@@ -980,6 +997,7 @@ fn test_rule_editor_preview_follows_window_updates() {
         windows,
         unit_installed: false,
         service_enabled: None,
+        paused: false,
     };
 
     app.handle_update(state(vec![window("firefox", "Browser", None)]));
@@ -1045,6 +1063,7 @@ fn windows_app(count: u64) -> App {
             .collect(),
         unit_installed: false,
         service_enabled: None,
+        paused: false,
     });
     app.dashboard_screen.toggle_view();
     app
@@ -1208,8 +1227,93 @@ fn test_dashboard_shows_enable_with_installed_unit() {
         windows: Vec::new(),
         unit_installed: true,
         service_enabled: Some(false),
+        paused: false,
     });
     let screen = draw(&mut app);
     assert!(screen.contains("Enable"), "{screen}");
     assert!(screen.contains("disabled"), "{screen}");
+}
+
+#[test]
+fn test_paused_daemon_is_marked_on_every_screen() {
+    for (width, height) in [(80, 24), (120, 40), (60, 16)] {
+        for &screen in Screen::all() {
+            let mut app = state("dashboard paused");
+            app.current_screen = screen;
+            let rows = draw_rows(&mut app, width, height);
+            let label = format!("{screen:?} at {width}x{height}");
+            let screen_text = rows.join("\n");
+            assert!(rows[0].contains('⏸'), "{label}:\n{screen_text}");
+            if width >= 80 {
+                assert!(
+                    rows[0].contains("⏸ paused  ● unsaved"),
+                    "{label}:\n{screen_text}"
+                );
+            }
+            assert!(rows[0].contains("4 Settings"), "{label}:\n{screen_text}");
+            if screen == Screen::Dashboard {
+                assert!(
+                    rows[1].contains("Daemon ● running · paused"),
+                    "{label}:\n{screen_text}"
+                );
+            }
+        }
+    }
+    // Not paused: no marker anywhere
+    let rows = draw_rows(&mut fixture(), 80, 24);
+    assert!(!rows[0].contains('⏸'), "{}", rows.join("\n"));
+    assert!(
+        rows[1].contains("Daemon ● running ·"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(!rows[1].contains("paused"), "{}", rows.join("\n"));
+}
+
+#[test]
+fn test_paused_marker_uses_the_warning_colour() {
+    let mut app = state("dashboard paused");
+    let terminal = terminal(&mut app, 80, 24);
+    let rows = rows_of(&terminal);
+    let x = rows[0].chars().position(|c| c == '⏸').expect("marker");
+    let cell = &terminal.backend().buffer()[(u16::try_from(x).expect("x"), 0)];
+    assert_eq!(cell.style().fg, theme::warning().fg);
+}
+
+#[test]
+fn test_settings_show_the_switch_delay_and_its_editor() {
+    let mut app = state("settings");
+    app.config.settings.switch_delay_ms = 300;
+    let screen = draw_rows(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("Switch Delay"), "{screen}");
+    assert!(screen.contains("300 ms"), "{screen}");
+
+    let mut app = state("settings");
+    let screen = draw_rows(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("0 ms (immediate)"), "{screen}");
+
+    let mut app = state("settings switch delay");
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("╭ Switch Delay "), "{screen}");
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Milliseconds") && r.contains("300")),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("0 to 5000; 0 = switch immediately"),
+        "{screen}"
+    );
+    assert!(screen.contains("Enter apply · Esc cancel"), "{screen}");
+
+    // Selected (editor closed): the description explains it without scrolling
+    let mut app = state("settings switch delay");
+    app.settings_screen.delay_input = None;
+    let screen = draw_rows(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("Wait this long for the rules"), "{screen}");
+    assert!(
+        screen.contains("Default: 0 (switch immediately)"),
+        "{screen}"
+    );
 }

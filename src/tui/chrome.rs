@@ -1,7 +1,7 @@
 //! The one-row header and footer around every screen.
 //!
-//! Header: `pwsw <version>`, the screen tabs, the unsaved-changes marker and the
-//! help key. Footer: the status message (icon and colour by kind), a spinner
+//! Header: `pwsw <version>`, the screen tabs, the paused and unsaved-changes
+//! markers and the help key. Footer: the status message (icon and colour by kind), a spinner
 //! while background work runs, and key hints generated from
 //! [`crate::tui::keymap::BINDINGS`] for what is on screen.
 
@@ -18,15 +18,28 @@ use crate::tui::widgets::{ellipsize, text_width};
 /// The marker shown in the header while the config has unsaved changes
 pub(crate) const UNSAVED_MARKER: &str = "● unsaved";
 
+/// The marker shown in the header while the daemon's rule-driven switching is
+/// paused
+pub(crate) const PAUSED_MARKER: &str = "⏸ paused";
+/// [`PAUSED_MARKER`] when the header has no room for the word
+const PAUSED_MARKER_SHORT: &str = "⏸";
+
 /// Frames of the footer spinner shown while background work runs
 pub(crate) const SPINNER: [&str; 6] = ["⠷", "⠯", "⠟", "⠻", "⠽", "⠾"];
 
 /// Columns between two footer hints
 pub(crate) const HINT_GAP: &str = "  ";
 
-/// Draw the header: brand, tabs, unsaved marker, help key. When the terminal is
-/// narrow the version goes first, then the help key, then the name.
-pub(crate) fn render_header(frame: &mut Frame, area: Rect, current: Screen, unsaved: bool) {
+/// Draw the header: brand, tabs, paused and unsaved markers, help key. When the
+/// terminal is narrow the version goes first, then the help key, then the name,
+/// then the word "paused" (its symbol stays).
+pub(crate) fn render_header(
+    frame: &mut Frame,
+    area: Rect,
+    current: Screen,
+    unsaved: bool,
+    paused: bool,
+) {
     let mut tabs: Vec<Span> = Vec::new();
     for &screen in Screen::all() {
         let key = screen.key().to_string();
@@ -51,7 +64,15 @@ pub(crate) fn render_header(frame: &mut Frame, area: Rect, current: Screen, unsa
     };
     let help_width = text_width("? help") + 1;
     let width = usize::from(area.width);
-    let mut used = tabs_width + unsaved_width + 1;
+    let paused_marker = if !paused {
+        None
+    } else if tabs_width + unsaved_width + text_width(PAUSED_MARKER) + 3 <= width {
+        Some(PAUSED_MARKER)
+    } else {
+        Some(PAUSED_MARKER_SHORT)
+    };
+    let paused_width = paused_marker.map_or(0, |m| text_width(m) + 2);
+    let mut used = tabs_width + unsaved_width + paused_width + 1;
     let show_name = used + 6 <= width;
     used += if show_name { 6 } else { 0 };
     let show_help = used + help_width <= width;
@@ -69,6 +90,10 @@ pub(crate) fn render_header(frame: &mut Frame, area: Rect, current: Screen, unsa
     left.extend(tabs);
 
     let mut right = Vec::new();
+    if let Some(marker) = paused_marker {
+        right.push(Span::styled(marker, theme::warning()));
+        right.push(Span::raw("  "));
+    }
     if unsaved {
         right.push(Span::styled(UNSAVED_MARKER, theme::warning()));
         right.push(Span::raw("  "));

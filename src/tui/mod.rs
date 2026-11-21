@@ -288,7 +288,13 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     ])
     .areas(content_area);
 
-    chrome::render_header(frame, header_area, app.current_screen, app.config_dirty);
+    chrome::render_header(
+        frame,
+        header_area,
+        app.current_screen,
+        app.config_dirty,
+        app.daemon_paused,
+    );
 
     match app.current_screen {
         Screen::Dashboard => {
@@ -296,6 +302,7 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
                 config: &app.config,
                 screen_state: &mut app.dashboard_screen,
                 daemon_running: app.daemon_running,
+                daemon_paused: app.daemon_paused,
                 daemon_logs: &app.daemon_log_lines,
                 windows: &app.windows,
                 active_sinks: &app.active_sink_list,

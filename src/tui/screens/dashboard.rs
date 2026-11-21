@@ -258,6 +258,8 @@ pub struct DashboardRenderContext<'a> {
     /// Rendering records viewport sizes in it for scrolling
     pub screen_state: &'a mut DashboardScreen,
     pub daemon_running: bool,
+    /// Whether the daemon's rule-driven switching is paused
+    pub daemon_paused: bool,
     pub daemon_logs: &'a [String],
     pub windows: &'a [WindowInfo],
     /// Active sinks from the last `PipeWire` snapshot (one has `is_default`)
@@ -305,7 +307,9 @@ fn render_daemon_card(
 ) {
     let state = &ctx.screen_state;
     let mut title = vec![Span::styled(" Daemon ", theme::bold())];
-    if ctx.daemon_running {
+    if ctx.daemon_running && ctx.daemon_paused {
+        title.push(Span::styled("● running · paused", theme::warning()));
+    } else if ctx.daemon_running {
         title.push(Span::styled("● running", theme::success()));
     } else {
         title.push(Span::styled("○ stopped", theme::error()));

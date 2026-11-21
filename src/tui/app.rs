@@ -134,7 +134,12 @@ pub enum AppUpdate {
         unit_installed: bool,
         /// Whether the unit is enabled; `None` when it is not installed
         service_enabled: Option<bool>,
+        /// Whether rule-driven switching is paused (`false` while not running)
+        paused: bool,
     },
+    /// Answer to [`BgCommand::TogglePause`]: whether rule-driven switching is
+    /// paused now, or why the request failed
+    PauseToggled(Result<bool, String>),
     /// Result of a daemon control action (start/stop/restart/enable/disable)
     ///
     /// Sent immediately after a daemon action completes: what was done, or why it failed.
@@ -207,6 +212,9 @@ pub enum BgCommand {
     },
     /// Re-read the config file at this path
     ReloadConfig(PathBuf),
+    /// Pause rule-driven switching when it runs, resume it when paused
+    /// (answered with [`AppUpdate::PauseToggled`])
+    TogglePause,
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
@@ -257,6 +265,11 @@ pub struct App {
     pub(crate) windows: Vec<crate::ipc::WindowInfo>,
     /// Bumped whenever `windows` changes `app_id`/title content (drives preview recompute)
     windows_generation: u64,
+    /// Whether the daemon's rule-driven switching is paused (as last reported by it)
+    pub(crate) daemon_paused: bool,
+    /// Whether a pause/resume request sent to the background worker has not
+    /// reported back yet
+    pub(crate) pause_pending: bool,
     /// Whether a daemon action (start/stop/restart) is pending
     pub(crate) daemon_action_pending: bool,
     /// Whether a config save sent to the background worker has not reported back yet
@@ -350,6 +363,8 @@ impl App {
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
+            daemon_paused: false,
+            pause_pending: false,
             daemon_action_pending: false,
             save_pending: false,
             quit_after_save: None,
@@ -383,7 +398,8 @@ impl App {
     /// Check if any text input field is currently focused
     pub(crate) fn is_input_focused(&self) -> bool {
         match self.current_screen {
-            Screen::Dashboard | Screen::Settings => false,
+            Screen::Dashboard => false,
+            Screen::Settings => self.settings_screen.delay_input.is_some(),
             Screen::Sinks => self.sinks_screen.text_focused(),
             Screen::Rules => self.rules_screen.text_focused(),
         }
@@ -398,7 +414,8 @@ impl App {
         match self.current_screen {
             Screen::Sinks => self.sinks_screen.editor.focused_input_mut(),
             Screen::Rules => self.rules_screen.editor.focused_input_mut(),
-            Screen::Dashboard | Screen::Settings => None,
+            Screen::Settings => self.settings_screen.delay_input.as_mut(),
+            Screen::Dashboard => None,
         }
     }
 
@@ -492,6 +509,9 @@ impl App {
             Screen::Dashboard => None,
             Screen::Sinks => self.sinks_screen.context(screen),
             Screen::Rules => self.rules_screen.context(screen),
+            Screen::Settings if self.settings_screen.delay_input.is_some() => {
+                Some(Context::Editor(screen))
+            }
             Screen::Settings => self
                 .settings_screen
                 .editing_log_level
@@ -511,7 +531,7 @@ impl App {
     /// Whether background work the user is waiting for is in flight (drives the
     /// footer spinner; the UI only animates while this is true).
     pub(crate) const fn is_busy(&self) -> bool {
-        self.daemon_action_pending || self.save_pending || self.reload_pending
+        self.daemon_action_pending || self.save_pending || self.reload_pending || self.pause_pending
     }
 
     /// Advance the footer spinner by one frame.
@@ -555,6 +575,34 @@ impl App {
                 );
                 false
             }
+        }
+    }
+
+    /// Pause rule-driven switching, or resume it when paused.
+    ///
+    /// The request runs on the background worker; the shown state changes only
+    /// when the daemon has answered ([`AppUpdate::PauseToggled`]). Refused with a
+    /// status message while the daemon is not running or a request is in flight.
+    pub(crate) fn request_toggle_pause(&mut self) {
+        if !self.daemon_running {
+            self.set_status(
+                StatusKind::Warning,
+                "Daemon not running: start it to pause or resume automatic switching",
+            );
+            return;
+        }
+        if self.pause_pending {
+            self.set_status(StatusKind::Warning, "Already changing the pause state");
+            return;
+        }
+        if self.send_command(BgCommand::TogglePause) {
+            self.pause_pending = true;
+            let progress = if self.daemon_paused {
+                "Resuming automatic switching…"
+            } else {
+                "Pausing automatic switching…"
+            };
+            self.set_status(StatusKind::Info, progress);
         }
     }
 
@@ -742,7 +790,9 @@ impl App {
                 windows,
                 unit_installed,
                 service_enabled,
+                paused,
             } => {
+                self.daemon_paused = running && paused;
                 if running != self.daemon_running || !self.daemon_state_seen {
                     self.dashboard_screen.preselect_action(running);
                 }
@@ -777,6 +827,23 @@ impl App {
                 // Clear daemon action pending flag when an action completes
                 self.daemon_action_pending = false;
                 // set_status sets dirty already
+            }
+            AppUpdate::PauseToggled(result) => {
+                self.pause_pending = false;
+                match result {
+                    Ok(paused) => {
+                        self.daemon_paused = paused;
+                        if paused {
+                            self.set_status(
+                                StatusKind::Success,
+                                "Paused automatic switching (p resumes)",
+                            );
+                        } else {
+                            self.set_status(StatusKind::Success, "Resumed automatic switching");
+                        }
+                    }
+                    Err(message) => self.set_status(StatusKind::Error, message),
+                }
             }
             AppUpdate::ConfigSaved { saved, outcome } => {
                 self.save_pending = false;

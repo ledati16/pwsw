@@ -10,6 +10,9 @@
 //!   is visible (and at once when one becomes visible).
 //! - Polls of one kind never overlap; daemon actions run one at a time in order;
 //!   saves run one at a time and a newer queued save replaces an older one.
+//! - A pause/resume request runs at once; no status poll starts while it runs and
+//!   the result of one that was running when it started is dropped, so the pause
+//!   state the UI sees never goes back to what it was before the request.
 //! - A panic in any task is re-raised in the worker, whose end the event loop
 //!   observes.
 
@@ -72,6 +75,9 @@ pub(crate) trait Backend: Send + Sync + 'static {
     fn sinks_snapshot(&self) -> impl Future<Output = AppUpdate> + Send;
     /// Run a daemon control action, returning a message for the status line.
     fn daemon_action(&self, action: DaemonAction) -> impl Future<Output = Result<String>> + Send;
+    /// Toggle the daemon's pause, returning whether rule-driven switching is
+    /// paused now.
+    fn toggle_pause(&self) -> impl Future<Output = Result<bool>> + Send;
     /// Save the config atomically to `path` (`force` overwrites external changes).
     fn save_config(
         &self,
@@ -104,19 +110,25 @@ impl Backend for System {
         } else {
             None
         };
-        let windows = if running {
-            match send_request(Request::ListWindows).await {
+        let (windows, paused) = if running {
+            let windows = match send_request(Request::ListWindows).await {
                 Ok(Response::Windows { windows }) => windows,
                 _ => Vec::new(),
-            }
+            };
+            let paused = matches!(
+                send_request(Request::Status).await,
+                Ok(Response::Status { paused: true, .. })
+            );
+            (windows, paused)
         } else {
-            Vec::new()
+            (Vec::new(), false)
         };
         AppUpdate::DaemonState {
             running,
             windows,
             unit_installed,
             service_enabled,
+            paused,
         }
     }
 
@@ -155,6 +167,16 @@ impl Backend for System {
         }
     }
 
+    async fn toggle_pause(&self) -> Result<bool> {
+        use crate::ipc::{Request, Response, send_request};
+
+        match send_request(Request::TogglePause).await? {
+            Response::PauseState { paused, .. } => Ok(paused),
+            Response::Error { message } => eyre::bail!("{message}"),
+            _ => eyre::bail!("unexpected response from the daemon"),
+        }
+    }
+
     async fn save_config(&self, config: Config, path: PathBuf, force: bool) -> SaveOutcome {
         detached(move || save_blocking(&config, &path, force))
             .await
@@ -170,9 +192,11 @@ impl Backend for System {
 
 /// Which task finished.
 enum Done {
-    Status,
+    /// A status poll, with its result and the pause generation it started in
+    Status(Box<AppUpdate>, u64),
     Sinks,
     Action,
+    Pause,
     Save,
     Reload,
 }
@@ -201,6 +225,11 @@ pub(crate) async fn run<B: Backend>(
     let mut next_save: Option<(Box<Config>, PathBuf, bool)> = None;
     let mut next_reload: Option<PathBuf> = None;
     let mut reload_busy = false;
+    let mut pause_queued = false;
+    let mut pause_busy = false;
+    // Bumped when a pause request starts: a status poll begun before then may
+    // report the old pause state and is dropped
+    let mut pause_generation: u64 = 0;
     let mut visible = *sinks_visible.borrow_and_update();
 
     loop {
@@ -211,10 +240,17 @@ pub(crate) async fn run<B: Backend>(
                     next_save = Some((config, path, force));
                 }
                 Some(BgCommand::ReloadConfig(path)) => next_reload = Some(path),
+                Some(BgCommand::TogglePause) => pause_queued = true,
                 None => break,
             },
             Some(done) = tasks.join_next() => match done {
-                Ok(Done::Status) => status_busy = false,
+                Ok(Done::Status(update, generation)) => {
+                    status_busy = false;
+                    if generation == pause_generation {
+                        let _ = updates.send(*update);
+                    }
+                }
+                Ok(Done::Pause) => pause_busy = false,
                 Ok(Done::Sinks) => sinks_busy = false,
                 Ok(Done::Action) => action_busy = false,
                 Ok(Done::Save) => save_busy = false,
@@ -223,12 +259,12 @@ pub(crate) async fn run<B: Backend>(
                 Err(_) => {}
             },
             _ = status_tick.tick() => {
-                if !status_busy {
+                if !status_busy && !pause_busy {
                     status_busy = true;
-                    let (backend, updates) = (Arc::clone(&backend), updates.clone());
+                    let backend = Arc::clone(&backend);
+                    let generation = pause_generation;
                     tasks.spawn(async move {
-                        let _ = updates.send(backend.daemon_state().await);
-                        Done::Status
+                        Done::Status(Box::new(backend.daemon_state().await), generation)
                     });
                 }
                 if let Some(tailer) = logs.as_mut() {
@@ -262,6 +298,25 @@ pub(crate) async fn run<B: Backend>(
             tasks.spawn(async move {
                 run_action(&*backend, action, &updates).await;
                 Done::Action
+            });
+        }
+        if pause_queued && !pause_busy {
+            pause_queued = false;
+            pause_busy = true;
+            pause_generation = pause_generation.wrapping_add(1);
+            let (backend, updates) = (Arc::clone(&backend), updates.clone());
+            tasks.spawn(async move {
+                let result = backend
+                    .toggle_pause()
+                    .await
+                    .map_err(|e| format!("Failed to pause or resume: {e:#}"));
+                let refresh = result.is_ok();
+                let _ = updates.send(AppUpdate::PauseToggled(result));
+                // The pause shows up in the status right away, not a poll later
+                if refresh {
+                    let _ = updates.send(backend.daemon_state().await);
+                }
+                Done::Pause
             });
         }
         if !save_busy && let Some((config, path, force)) = next_save.take() {

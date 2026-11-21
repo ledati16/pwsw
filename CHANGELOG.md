@@ -85,11 +85,13 @@ the daemon switches less eagerly than before.
   rules want another sink than the current one. The pause is not kept across daemon
   restarts. `pwsw status` shows it, `status --json` has `daemon.paused`, the systemd
   status line ends in `(paused)`, and with `notify_manual` pausing and resuming are
-  notified.
+  notified. In the TUI `p` pauses and resumes (on any screen), the header shows
+  `⏸ paused` and the Dashboard's daemon card `● running · paused`.
 - **`switch_delay_ms` setting** (default 0, up to 5000): a rule-driven switch happens only
   if the rules still want the same sink after this delay, so a splash screen or a
   flickering window title no longer switches back and forth. Manual switches, retries
-  and the start-up switch are not delayed.
+  and the start-up switch are not delayed. The TUI's Settings screen edits it as
+  **Switch Delay** (Enter, type the milliseconds, Enter).
 - `pwsw doctor`: one read-only command that checks the Wayland session and the
   compositor's window protocols, the PipeWire tools, version and WirePlumber, the config,
   whether each configured sink can be activated now (and by which profile switch), the
