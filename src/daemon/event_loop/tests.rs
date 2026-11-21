@@ -2,6 +2,10 @@
 //!
 //! Most run on a paused clock: retry backoffs and the reload debounce elapse
 //! instantly once the runtime is idle.
+//!
+//! Every wait is bounded by [`WAIT`] so a bug fails the test instead of hanging it.
+//! On a paused clock that bound is virtual time, which auto-advances as soon as the
+//! runtime is idle: a reply that will never come fails at once.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -16,6 +20,48 @@ use crate::daemon::ipc_handler::{ServerInfo, handle_connection};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::Request;
 use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+
+/// Upper bound for any single wait in these tests
+const WAIT: Duration = Duration::from_secs(30);
+
+/// Real-time limit for a whole harness test; see [`Watchdog`]
+const WATCHDOG: Duration = Duration::from_secs(120);
+
+/// Aborts the test process if the test that armed it is still running after
+/// [`WATCHDOG`] of real time.
+///
+/// On a paused clock [`within`] bounds are virtual, and tokio suspends auto-advance
+/// while a `spawn_blocking` task runs: a blocking task that never finished would
+/// freeze every timeout and leave the test parked forever (waking every millisecond,
+/// never failing). Aborting turns such a hang into a visible failure.
+struct Watchdog {
+    _disarm: std::sync::mpsc::Sender<()>,
+}
+
+impl Watchdog {
+    fn arm() -> Self {
+        let (disarm, armed) = std::sync::mpsc::channel::<()>();
+        let test = std::thread::current()
+            .name()
+            .unwrap_or("<unnamed test>")
+            .to_string();
+        std::thread::spawn(move || {
+            if armed.recv_timeout(WATCHDOG) == Err(std::sync::mpsc::RecvTimeoutError::Timeout) {
+                eprintln!("watchdog: {test} still running after {WATCHDOG:?}; aborting");
+                std::process::abort();
+            }
+        });
+        Self { _disarm: disarm }
+    }
+}
+
+/// Await `fut`, failing the test if it takes longer than [`WAIT`]
+async fn within<T>(what: &str, fut: impl Future<Output = T>) -> T {
+    let Ok(value) = tokio::time::timeout(WAIT, fut).await else {
+        panic!("timed out after {WAIT:?} waiting for {what}");
+    };
+    value
+}
 
 /// Records calls; can fail a sink N times, signal when an activation starts, and
 /// hold activations until released
@@ -37,7 +83,7 @@ impl FakeSwitcher {
         fake
     }
 
-    /// Hold every activation until `()` is sent (or the sender is dropped)
+    /// Hold every activation until `()` is sent (or the sender is dropped, or [`WAIT`])
     fn gated() -> (
         Self,
         std::sync::mpsc::Sender<()>,
@@ -59,7 +105,8 @@ impl SinkSwitcher for FakeSwitcher {
             let _ = tx.send(sink_name.to_string());
         }
         if let Some(gate) = &*self.gate.lock().expect("lock") {
-            let _ = gate.recv();
+            // Bounded: a held activation must never keep runtime shutdown waiting
+            let _ = gate.recv_timeout(WAIT);
         }
         let mut failures = self.failures.lock().expect("lock");
         if let Some(left) = failures.get_mut(sink_name)
@@ -102,9 +149,11 @@ struct Harness {
     config_path: PathBuf,
     task: JoinHandle<Result<()>>,
     _dir: tempfile::TempDir,
+    _watchdog: Watchdog,
 }
 
 fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harness {
+    let watchdog = Watchdog::arm();
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join("config.toml");
     let (windows_tx, windows_rx) = mpsc::channel(64);
@@ -146,15 +195,14 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
         config_path,
         task,
         _dir: dir,
+        _watchdog: watchdog,
     }
 }
 
 impl Harness {
     async fn event(&self, event: WindowEvent) {
-        self.windows
-            .as_ref()
-            .expect("window channel open")
-            .send(event)
+        let windows = self.windows.as_ref().expect("window channel open");
+        within("window event to be queued", windows.send(event))
             .await
             .expect("loop running");
     }
@@ -172,22 +220,28 @@ impl Harness {
         self.event(WindowEvent::Closed { id }).await;
     }
 
-    async fn snapshot(&self) -> Snapshot {
-        let (tx, rx) = oneshot::channel();
-        self.commands
-            .send(Command::Query(tx))
+    async fn command(&self, command: Command) {
+        within("command to be queued", self.commands.send(command))
             .await
             .expect("loop running");
-        rx.await.expect("snapshot")
+    }
+
+    async fn snapshot(&self) -> Snapshot {
+        let (tx, rx) = oneshot::channel();
+        self.command(Command::Query(tx)).await;
+        within("snapshot", rx).await.expect("snapshot")
     }
 
     async fn switch(&self, request: ManualSwitch) -> Response {
         let (reply, rx) = oneshot::channel();
-        self.commands
-            .send(Command::Switch { request, reply })
+        self.command(Command::Switch { request, reply }).await;
+        within("switch reply", rx).await.expect("switch reply")
+    }
+
+    async fn signal(&self, signal: Signal) {
+        within("signal to be queued", self.signals.send(signal))
             .await
             .expect("loop running");
-        rx.await.expect("switch reply")
     }
 
     fn calls(&self) -> Vec<String> {
@@ -200,7 +254,7 @@ impl Harness {
 
     /// Wait for the next notification
     async fn next_notice(&self) -> Notice {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + WAIT;
         loop {
             if let Ok(notice) = self.notices.try_recv() {
                 return notice;
@@ -215,7 +269,7 @@ impl Harness {
 
     /// Poll snapshots (letting the paused clock advance) until `cond` holds
     async fn wait_for(&self, what: &str, cond: impl Fn(&Snapshot, &[String]) -> bool) -> Snapshot {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + WAIT;
         loop {
             let snapshot = self.snapshot().await;
             if cond(&snapshot, &self.calls()) {
@@ -245,11 +299,8 @@ impl Harness {
     }
 
     async fn stop(self) -> Result<()> {
-        self.signals
-            .send(Signal::Terminate)
-            .await
-            .expect("loop running");
-        self.task.await.expect("loop task")
+        self.signal(Signal::Terminate).await;
+        within("loop to exit", self.task).await.expect("loop task")
     }
 }
 
@@ -304,7 +355,10 @@ async fn test_activation_is_not_awaited_inline() {
     let h = start(base_config(), fake, Some("speakers"));
 
     h.open(1, "firefox").await;
-    assert_eq!(started.recv().await.as_deref(), Some("headphones"));
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("headphones")
+    );
 
     // The activation is stuck; the loop still answers queries and takes events
     h.open(2, "zsh").await;
@@ -325,7 +379,10 @@ async fn test_rapid_changes_coalesce_to_latest() {
     let h = start(base_config(), fake, Some("speakers"));
 
     h.open(1, "firefox").await;
-    assert_eq!(started.recv().await.as_deref(), Some("headphones"));
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("headphones")
+    );
 
     // Three desired changes while the first activation is stuck: hdmi, usb, hdmi
     h.open(2, "steam").await;
@@ -556,20 +613,30 @@ async fn test_set_sink_over_ipc_stream() {
     })
     .expect("serialize");
     let len = u32::try_from(body.len()).expect("small message");
-    client.write_all(&len.to_be_bytes()).await.expect("write");
-    client.write_all(&body).await.expect("write");
+    within("request to be written", async {
+        client.write_all(&len.to_be_bytes()).await.expect("write");
+        client.write_all(&body).await.expect("write");
+    })
+    .await;
 
-    let mut len = [0_u8; 4];
-    client.read_exact(&mut len).await.expect("read length");
-    let mut buf = vec![0_u8; usize::try_from(u32::from_be_bytes(len)).expect("fits")];
-    client.read_exact(&mut buf).await.expect("read body");
+    let buf = within("response", async {
+        let mut len = [0_u8; 4];
+        client.read_exact(&mut len).await.expect("read length");
+        let mut buf = vec![0_u8; usize::try_from(u32::from_be_bytes(len)).expect("fits")];
+        client.read_exact(&mut buf).await.expect("read body");
+        buf
+    })
+    .await;
     let response: Response = serde_json::from_slice(&buf).expect("response json");
 
     assert!(
         matches!(&response, Response::SinkSwitched { node_name, .. } if node_name == "node.headphones"),
         "got {response:?}"
     );
-    server_task.await.expect("server task").expect("handled");
+    within("server task", server_task)
+        .await
+        .expect("server task")
+        .expect("handled");
     assert_eq!(h.snapshot().await.applied.as_deref(), Some("headphones"));
     h.stop().await.expect("clean shutdown");
 }
@@ -621,7 +688,7 @@ async fn test_sighup_reload_changing_default_switches_with_no_windows() {
     config.sinks[1].default = true;
     config.save_to(&h.config_path).expect("write config");
 
-    h.signals.send(Signal::Hangup).await.expect("loop running");
+    h.signal(Signal::Hangup).await;
     h.wait_applied("hdmi").await;
     assert_eq!(h.reloads.load(Ordering::SeqCst), 1);
     h.stop().await.expect("clean shutdown");
@@ -631,7 +698,7 @@ async fn test_sighup_reload_changing_default_switches_with_no_windows() {
 async fn test_invalid_reload_keeps_old_config() {
     let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
     std::fs::write(&h.config_path, "this is [not valid toml").expect("write");
-    h.signals.send(Signal::Hangup).await.expect("loop running");
+    h.signal(Signal::Hangup).await;
     // Signals and queries use different channels: wait for the reload's outcome
     let notice = h.next_notice().await;
     assert_eq!(notice.summary, "Reload Failed");
@@ -650,7 +717,7 @@ async fn test_invalid_reload_keeps_old_config() {
 async fn test_compositor_channel_close_is_an_error() {
     let mut h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
     h.windows = None;
-    let result = h.task.await.expect("loop task");
+    let result = within("loop to exit", h.task).await.expect("loop task");
     let err = result.expect_err("losing the compositor must fail");
     assert!(format!("{err}").contains("Compositor connection lost"));
 }
@@ -658,13 +725,16 @@ async fn test_compositor_channel_close_is_an_error() {
 #[tokio::test(start_paused = true)]
 async fn test_shutdown_command_and_signals_exit_cleanly() {
     let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
-    h.commands.send(Command::Shutdown).await.expect("send");
-    h.task.await.expect("loop task").expect("clean exit");
+    h.command(Command::Shutdown).await;
+    within("loop to exit", h.task)
+        .await
+        .expect("loop task")
+        .expect("clean exit");
 
     let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
-    h.signals
-        .send(Signal::Interrupt)
+    h.signal(Signal::Interrupt).await;
+    within("loop to exit", h.task)
         .await
-        .expect("loop running");
-    h.task.await.expect("loop task").expect("clean exit");
+        .expect("loop task")
+        .expect("clean exit");
 }

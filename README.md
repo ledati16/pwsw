@@ -294,7 +294,7 @@ With both Firefox and MPV open → Headphones (rule at index 0 wins, regardless 
 ### IPC Socket
 
 - **Location:** `$XDG_RUNTIME_DIR/pwsw.sock`. If `XDG_RUNTIME_DIR` is unset, empty or not an absolute path: `/tmp/pwsw-<uid>/pwsw.sock` (numeric UID), inside a directory created with mode `0700`; pwsw refuses to use it if it is a symlink, owned by another user, or has any other mode
-- **Permissions:** socket `0600` (user-only), created under a `077` umask so it is never briefly world-accessible
+- **Permissions:** socket `0600` (user-only); it is bound inside a directory only the daemon's user can enter (or a private staging directory, then linked into place), so it is never briefly reachable by other users
 - **Peer check:** the daemon drops connections from other users, and clients refuse a socket served by another user
 - Stale sockets (nobody listening) are cleaned up on daemon start; a socket that merely answers slowly is left alone
 

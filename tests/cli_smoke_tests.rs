@@ -12,7 +12,9 @@
 //! session's Wayland compositor / D-Bus (those variables are not passed through).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use tempfile::TempDir;
 
@@ -108,8 +110,34 @@ impl Sandbox {
     }
 }
 
+/// Longest a single `pwsw` invocation may take before the test fails
+const RUN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Run `cmd` to completion, capturing its output; fails (and kills it) after
+/// [`RUN_TIMEOUT`] instead of hanging the test
 fn run(cmd: &mut Command) -> Output {
-    cmd.output().expect("failed to run pwsw binary")
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to run pwsw binary");
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    if let Ok(output) = rx.recv_timeout(RUN_TIMEOUT) {
+        return output.expect("failed to collect pwsw output");
+    }
+    // The waiting thread still owns the child and reaps it once it dies
+    if let Some(pid) = i32::try_from(pid)
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+    }
+    panic!("pwsw did not exit within {RUN_TIMEOUT:?}: {cmd:?}");
 }
 
 fn stdout(output: &Output) -> String {

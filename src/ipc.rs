@@ -429,6 +429,27 @@ fn remove_if_same_inode(path: &Path, (dev, ino): (u64, u64)) -> std::io::Result<
     }
 }
 
+/// What [`cleanup_stale_socket_at`] found at the socket path, and what it did
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaleSocketCheck {
+    /// Nothing at the path
+    Missing,
+    /// The path is not a socket; left alone
+    NotASocket,
+    /// A socket owned by another user; left alone
+    ForeignOwner,
+    /// A listener accepted the probe connection: a live daemon; left alone
+    Live,
+    /// Nobody listening (`ECONNREFUSED`): the stale socket was removed
+    Removed,
+    /// Nobody listening, but the path was replaced before removal; left alone
+    Replaced,
+    /// The probe failed with another error (e.g. `EACCES`); left alone
+    ProbeFailed(std::io::ErrorKind),
+    /// The probe got no answer within [`STALE_SOCKET_CHECK_TIMEOUT_MS`]; left alone
+    TimedOut,
+}
+
 /// Clean up a stale socket file at `socket_path`.
 ///
 /// The file is removed only when it is a socket owned by the current user and a
@@ -439,12 +460,14 @@ fn remove_if_same_inode(path: &Path, (dev, ino): (u64, u64)) -> std::io::Result<
 ///
 /// # Errors
 /// Returns an error if the socket cannot be inspected or removal fails.
-async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
+async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<StaleSocketCheck> {
     use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
     let metadata = match std::fs::symlink_metadata(socket_path) {
         Ok(meta) => meta,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(StaleSocketCheck::Missing);
+        }
         Err(e) => {
             return Err(e)
                 .with_context(|| format!("Failed to stat socket: {}", socket_path.display()));
@@ -456,7 +479,7 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
             "Socket path exists but is not a socket: {}",
             socket_path.display()
         );
-        return Ok(());
+        return Ok(StaleSocketCheck::NotASocket);
     }
 
     let owner_uid = metadata.uid();
@@ -468,7 +491,7 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
             owner_uid,
             current_uid
         );
-        return Ok(());
+        return Ok(StaleSocketCheck::ForeignOwner);
     }
 
     let connect_result = tokio::time::timeout(
@@ -479,23 +502,27 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
 
     match connect_result {
         // A listener answered: the socket is live
-        Ok(Ok(_stream)) => Ok(()),
+        Ok(Ok(_stream)) => Ok(StaleSocketCheck::Live),
         // Nobody is listening: the socket is stale
         Ok(Err(e)) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
             debug!("Removing stale socket: {}", socket_path.display());
-            remove_if_same_inode(socket_path, (metadata.dev(), metadata.ino()))
-                .map(|_removed| ())
+            let removed = remove_if_same_inode(socket_path, (metadata.dev(), metadata.ino()))
                 .with_context(|| {
                     format!("Failed to remove stale socket: {}", socket_path.display())
-                })
+                })?;
+            Ok(if removed {
+                StaleSocketCheck::Removed
+            } else {
+                StaleSocketCheck::Replaced
+            })
         }
-        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(StaleSocketCheck::Missing),
         Ok(Err(e)) => {
             warn!(
                 "Could not probe socket {} ({e}); leaving it in place",
                 socket_path.display()
             );
-            Ok(())
+            Ok(StaleSocketCheck::ProbeFailed(e.kind()))
         }
         Err(_timeout) => {
             warn!(
@@ -503,7 +530,7 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
                 socket_path.display(),
                 STALE_SOCKET_CHECK_TIMEOUT_MS
             );
-            Ok(())
+            Ok(StaleSocketCheck::TimedOut)
         }
     }
 }
@@ -514,7 +541,7 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<()> {
 /// Returns an error if socket removal fails.
 pub async fn cleanup_stale_socket() -> Result<()> {
     let socket_path = get_socket_path();
-    cleanup_stale_socket_at(&socket_path).await
+    cleanup_stale_socket_at(&socket_path).await.map(|_| ())
 }
 
 // ============================================================================
@@ -640,23 +667,6 @@ pub struct IpcServer {
     uid: u32,
 }
 
-/// Restores the previous process umask when dropped.
-struct UmaskGuard(rustix::fs::Mode);
-
-impl UmaskGuard {
-    fn set(mask: u32) -> Self {
-        Self(rustix::process::umask(rustix::fs::Mode::from_raw_mode(
-            mask,
-        )))
-    }
-}
-
-impl Drop for UmaskGuard {
-    fn drop(&mut self) {
-        rustix::process::umask(self.0);
-    }
-}
-
 impl IpcServer {
     /// Create and bind a new IPC server
     ///
@@ -672,7 +682,7 @@ impl IpcServer {
     /// Returns an error if the private directory cannot be created or verified,
     /// stale-socket cleanup fails, or binding/permission setting fails.
     async fn bind_at(location: &SocketLocation) -> Result<Self> {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::MetadataExt;
 
         let uid = current_uid();
         let socket_path = location.path.clone();
@@ -682,26 +692,10 @@ impl IpcServer {
         }
 
         // Clean up any stale socket
-        cleanup_stale_socket_at(&socket_path).await?;
+        let check = cleanup_stale_socket_at(&socket_path).await?;
+        debug!("Stale socket check: {check:?}");
 
-        // Bind with a restrictive umask so the socket is never group/world
-        // accessible, not even between bind() and chmod(). The umask is
-        // process-wide; other threads creating files meanwhile only get
-        // stricter permissions.
-        let listener = {
-            let _umask = UmaskGuard::set(0o077);
-            UnixListener::bind(&socket_path)
-        }
-        .with_context(|| format!("Failed to bind IPC socket: {}", socket_path.display()))?;
-
-        // Belt and braces: user-only permissions regardless of the umask above
-        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| {
-                format!(
-                    "Failed to set socket permissions: {}",
-                    socket_path.display()
-                )
-            })?;
+        let listener = bind_private(&socket_path, uid)?;
 
         let meta = std::fs::symlink_metadata(&socket_path)
             .with_context(|| format!("Failed to stat IPC socket: {}", socket_path.display()))?;
@@ -740,6 +734,96 @@ impl IpcServer {
     pub fn socket_path(&self) -> &Path {
         &self.socket_path
     }
+}
+
+/// Whether `dir` is a real directory owned by `uid` with no group or other
+/// permission bits, i.e. nobody else can reach anything inside it.
+fn dir_is_private(dir: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    use rustix::fs::Mode;
+
+    std::fs::symlink_metadata(dir).is_ok_and(|meta| {
+        let mode = Mode::from_raw_mode(meta.permissions().mode());
+        meta.is_dir() && meta.uid() == uid && !mode.intersects(Mode::RWXG | Mode::RWXO)
+    })
+}
+
+/// Name prefix of the transient staging directory used by [`bind_private`]
+const STAGING_DIR_PREFIX: &str = ".pwsw-bind-";
+
+/// Bind a listening socket at `socket_path` that no other user can connect to at
+/// any instant.
+///
+/// `bind` creates the socket file with a mode derived from the process umask. The
+/// umask is process-wide, so changing it around `bind` races with every other
+/// thread creating files (and with concurrent binds restoring it in the wrong
+/// order); it is deliberately left alone. Instead:
+/// - if the parent directory is private ([`dir_is_private`]: the verified
+///   `/tmp/pwsw-<uid>` fallback, or a normal `0700` `$XDG_RUNTIME_DIR`), nobody
+///   else can even reach the path, so the socket is bound in place and then set
+///   to `0600`;
+/// - otherwise it is bound inside a fresh `0700` staging directory next to
+///   `socket_path`, set to `0600` there, and only then hard-linked to
+///   `socket_path` (which fails if the name is taken: an existing file is never
+///   replaced). The staging directory is removed afterwards. A socket is found by
+///   its inode, so connecting through the final name works.
+///
+/// # Errors
+/// Returns an error if binding, setting permissions, or linking fails.
+fn bind_private(socket_path: &Path, uid: u32) -> Result<UnixListener> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let user_only = || std::fs::Permissions::from_mode(0o600);
+    let bind = |path: &Path| {
+        UnixListener::bind(path)
+            .with_context(|| format!("Failed to bind IPC socket: {}", path.display()))
+    };
+    let chmod = |path: &Path| {
+        std::fs::set_permissions(path, user_only())
+            .with_context(|| format!("Failed to set socket permissions: {}", path.display()))
+    };
+
+    let parent = socket_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    if dir_is_private(parent, uid) {
+        let listener = bind(socket_path)?;
+        chmod(socket_path)?;
+        return Ok(listener);
+    }
+
+    debug!(
+        "{} is reachable by other users; binding via a private staging directory",
+        parent.display()
+    );
+    let staging = tempfile::Builder::new()
+        .prefix(STAGING_DIR_PREFIX)
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(parent)
+        .with_context(|| {
+            format!(
+                "Failed to create a staging directory in {}",
+                parent.display()
+            )
+        })?;
+    // mkdir applies the umask, which can only narrow 0700; make it exact
+    std::fs::set_permissions(staging.path(), std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Failed to set permissions on {}", staging.path().display()))?;
+    let staged = staging.path().join(SOCKET_FILE_NAME);
+    let listener = bind(&staged)?;
+    chmod(&staged)?;
+    std::fs::hard_link(&staged, socket_path).with_context(|| {
+        format!(
+            "Failed to bind IPC socket: {} (is another daemon starting?)",
+            socket_path.display()
+        )
+    })?;
+    if let Err(e) = staging.close() {
+        warn!("Failed to remove socket staging directory: {e}");
+    }
+    Ok(listener)
 }
 
 impl Drop for IpcServer {
@@ -959,20 +1043,120 @@ mod tests {
         assert!(!loc.path.exists());
     }
 
-    #[tokio::test]
-    async fn test_client_roundtrip_with_peer_check() {
-        let base = tempfile::tempdir().unwrap();
-        let loc = socket_location_from(None, base.path(), current_uid());
-        let server = IpcServer::bind_at(&loc).await.unwrap();
+    /// Bound for every wait in these tests, so a bug fails fast instead of hanging
+    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-        let client = connect_verified(&loc, Duration::from_secs(1));
-        let (client, accepted) = tokio::join!(client, server.accept());
+    /// Connect a client to `server` at `loc` and send one request through
+    async fn roundtrip(server: &IpcServer, loc: &SocketLocation) {
+        let client = connect_verified(loc, TEST_TIMEOUT);
+        let (client, accepted) = tokio::time::timeout(TEST_TIMEOUT, async {
+            tokio::join!(client, server.accept())
+        })
+        .await
+        .expect("connect/accept timed out");
         let mut client = client.expect("client accepts a socket served by our uid");
         let mut accepted = accepted.expect("server accepts a peer with our uid");
 
         write_message(&mut client, &Request::Status).await.unwrap();
         let req: Request = read_request(&mut accepted).await.unwrap();
         assert!(matches!(req, Request::Status));
+    }
+
+    #[tokio::test]
+    async fn test_client_roundtrip_with_peer_check() {
+        let base = tempfile::tempdir().unwrap();
+        let loc = socket_location_from(None, base.path(), current_uid());
+        let server = IpcServer::bind_at(&loc).await.unwrap();
+        roundtrip(&server, &loc).await;
+    }
+
+    /// A runtime directory others can reach: the socket is staged in a private
+    /// directory, then linked into place already `0600`
+    #[tokio::test]
+    async fn test_server_bind_in_shared_dir_uses_private_staging() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = tempfile::tempdir().unwrap();
+        let shared = base.path().join("run");
+        std::fs::create_dir(&shared).unwrap();
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!dir_is_private(&shared, current_uid()));
+
+        let loc = socket_location_from(Some(shared.as_os_str()), Path::new("/unused"), 1);
+        let server = IpcServer::bind_at(&loc).await.expect("bind in shared dir");
+        let mode = std::fs::symlink_metadata(&loc.path)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600);
+        let leftovers: Vec<_> = std::fs::read_dir(&shared)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .filter(|name| name != SOCKET_FILE_NAME)
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging directory left behind: {leftovers:?}"
+        );
+
+        roundtrip(&server, &loc).await;
+        drop(server);
+        assert!(!loc.path.exists(), "own socket removed on drop");
+    }
+
+    /// Binding never replaces a file that appears at the socket path
+    #[tokio::test]
+    async fn test_bind_private_never_replaces_existing_path() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(base.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = base.path().join(SOCKET_FILE_NAME);
+        std::fs::write(&path, b"someone else's").unwrap();
+
+        assert!(bind_private(&path, current_uid()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"someone else's");
+    }
+
+    #[test]
+    fn test_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("d");
+        std::fs::create_dir(&dir).unwrap();
+        for (mode, private) in [(0o700, true), (0o500, true), (0o710, false), (0o701, false)] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(dir_is_private(&dir, current_uid()), private, "{mode:o}");
+        }
+        assert!(!dir_is_private(&dir, current_uid().wrapping_add(1)));
+        let link = base.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            !dir_is_private(&link, current_uid()),
+            "symlinks are not trusted"
+        );
+    }
+
+    /// Leave a socket file at `path` with nobody listening on it.
+    ///
+    /// The socket is bound but never `listen()`ed. Binding a listener and dropping it
+    /// is not reliably "nobody listening": a child process forked by another test
+    /// thread holds a copy of every descriptor until it `exec`s, and meanwhile the
+    /// listener stays alive and accepts connections.
+    fn make_stale_socket(path: &Path) {
+        use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
+
+        let fd = rustix::net::socket_with(
+            AddressFamily::UNIX,
+            SocketType::STREAM,
+            SocketFlags::CLOEXEC,
+            None,
+        )
+        .expect("socket");
+        rustix::net::bind(&fd, &SocketAddrUnix::new(path).expect("socket address")).expect("bind");
     }
 
     #[tokio::test]
@@ -984,7 +1168,10 @@ mod tests {
         std::fs::write(&socket_path, b"not a socket").unwrap();
 
         // Should not remove non-socket files
-        cleanup_stale_socket_at(&socket_path).await.unwrap();
+        assert_eq!(
+            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            StaleSocketCheck::NotASocket
+        );
         assert!(
             socket_path.exists(),
             "Non-socket file should not be removed"
@@ -1000,7 +1187,10 @@ mod tests {
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
 
         // Active socket should not be removed
-        cleanup_stale_socket_at(&socket_path).await.unwrap();
+        assert_eq!(
+            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            StaleSocketCheck::Live
+        );
         assert!(socket_path.exists(), "Active socket should not be removed");
 
         drop(listener);
@@ -1011,12 +1201,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("pwsw.sock");
 
-        // Bind and drop: the file remains but nobody listens (ECONNREFUSED)
-        drop(std::os::unix::net::UnixListener::bind(&socket_path).unwrap());
+        // The file exists but nobody listens (ECONNREFUSED)
+        make_stale_socket(&socket_path);
         assert!(socket_path.exists());
 
-        cleanup_stale_socket_at(&socket_path).await.unwrap();
+        assert_eq!(
+            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            StaleSocketCheck::Removed
+        );
         assert!(!socket_path.exists(), "stale socket should be removed");
+        assert_eq!(
+            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            StaleSocketCheck::Missing
+        );
     }
 
     #[tokio::test]
@@ -1029,11 +1226,14 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("pwsw.sock");
-        drop(std::os::unix::net::UnixListener::bind(&socket_path).unwrap());
+        make_stale_socket(&socket_path);
         // No write permission on the socket: connect fails with EACCES, not ECONNREFUSED
         std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
-        cleanup_stale_socket_at(&socket_path).await.unwrap();
+        assert_eq!(
+            cleanup_stale_socket_at(&socket_path).await.unwrap(),
+            StaleSocketCheck::ProbeFailed(std::io::ErrorKind::PermissionDenied)
+        );
         assert!(
             socket_path.exists(),
             "only ECONNREFUSED proves a socket is stale"

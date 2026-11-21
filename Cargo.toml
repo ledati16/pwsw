@@ -60,7 +60,7 @@ notify = "8"
 # Atomic file writes
 tempfile = "3"
 
-# Unix UID lookup, umask for socket binding (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
+# Unix UID lookup, file modes, lock files (replaces unmaintained `users` crate - RUSTSEC-2025-0040)
 rustix = { version = "1", default-features = false, features = ["fs", "process"] }
 
 # TUI dependencies (optional - enabled by default via "tui" feature)
@@ -82,6 +82,7 @@ mandown = "1"
 [dev-dependencies]
 pretty_assertions = "1"
 tokio = { version = "1", features = ["test-util"] }   # paused clock for daemon loop and TUI worker tests
+rustix = { version = "1", default-features = false, features = ["net"] }   # sockets that never listened (IPC tests)
 rstest = "0.28"
 test-case = "3"
 wayland-server = "0.31"

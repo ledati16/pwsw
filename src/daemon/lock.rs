@@ -96,10 +96,17 @@ mod tests {
         assert!(second.is_none(), "second instance must be refused");
 
         drop(first);
-        assert!(
-            InstanceLock::try_acquire(&path).expect("lock io").is_some(),
-            "lock is free again once the holder is gone"
-        );
+        // A child forked by another test thread shares every open file description
+        // (and so the `flock`) until it `exec`s and `CLOEXEC` closes it: allow for that
+        // brief window instead of expecting the release to be instantaneous.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while InstanceLock::try_acquire(&path).expect("lock io").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock is free again once the holder is gone"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
 
     #[test]

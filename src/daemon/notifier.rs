@@ -225,8 +225,9 @@ mod tests {
 
         notifier.send(notice(NoticeKind::Switch, "first"));
         // Wait until the first is shown so the next ones hit the rate limit
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while shown.lock().expect("lock").is_empty() && Instant::now() < deadline {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while shown.lock().expect("lock").is_empty() {
+            assert!(Instant::now() < deadline, "first notice never shown");
             std::thread::sleep(Duration::from_millis(1));
         }
         notifier.send(notice(NoticeKind::Switch, "second"));
@@ -236,7 +237,7 @@ mod tests {
         let done = notifier.done;
         drop(notifier.tx);
         done.expect("done channel")
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .expect("thread finished");
 
         let shown = shown.lock().expect("lock");
