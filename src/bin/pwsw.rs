@@ -7,8 +7,8 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use anyhow::Result;
 use clap::{CommandFactory, Parser};
-use color_eyre::eyre::{self, Result};
 use pwsw::cli::{Args, Command};
 use pwsw::config::Config;
 use pwsw::style::{self, PwswStyle, Stream};
@@ -36,25 +36,12 @@ fn backtrace_requested() -> bool {
         .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty() && v != "0"))
 }
 
-/// Install `color-eyre`'s panic and error report hooks
-///
-/// Reports never show the source location (`Location: src/...`), and are only
-/// coloured when stderr is.
-fn install_error_hooks() {
-    let mut builder = color_eyre::config::HookBuilder::new().display_location_section(false);
-    if !style::color_enabled(Stream::Stderr) {
-        // The default builders use the dark theme; an empty theme has no colours
-        builder = builder.theme(color_eyre::config::Theme::new());
-    }
-    // Installing only fails if a hook is already set; reports then use that one
-    let _ = builder.install();
-}
-
 /// Print a failed command's error to stderr
 ///
 /// A short `error: cause: cause` line, unless backtraces were requested or the
-/// daemon runs in the foreground (logs, systemd): then the full `color-eyre` report.
-fn report_error(err: &eyre::Report, full_report: bool) {
+/// daemon runs in the foreground (logs, systemd): then the full report, `anyhow`'s
+/// `Debug` form (the message, a `Caused by:` list and, when enabled, the backtrace).
+fn report_error(err: &anyhow::Error, full_report: bool) {
     if full_report || backtrace_requested() {
         pwsw::errln!("Error: {err:?}");
     } else {
@@ -65,7 +52,6 @@ fn report_error(err: &eyre::Report, full_report: bool) {
 fn main() -> ExitCode {
     let args = Args::parse();
     style::init(args.color);
-    install_error_hooks();
 
     let full_report = matches!(args.command, Some(Command::Daemon { foreground: true }));
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -74,7 +60,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(e) => {
-            let err = eyre::Report::new(e).wrap_err("Failed to start the async runtime");
+            let err = anyhow::Error::new(e).context("Failed to start the async runtime");
             report_error(&err, false);
             return ExitCode::FAILURE;
         }
@@ -93,7 +79,7 @@ fn main() -> ExitCode {
 fn load_config_with_sinks() -> Result<Config> {
     let config = Config::load()?;
     if config.sinks.is_empty() {
-        eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
+        anyhow::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
     }
     Ok(config)
 }
@@ -134,7 +120,7 @@ async fn run(args: Args) -> Result<ExitCode> {
 
             // Daemon requires at least one sink to operate
             if config.sinks.is_empty() {
-                eyre::bail!(
+                anyhow::bail!(
                     "No sinks configured. The daemon cannot start without sinks.\n\n\
                      Add sinks via:\n  \
                      pwsw tui        (interactive setup)\n  \
@@ -274,7 +260,7 @@ async fn run(args: Args) -> Result<ExitCode> {
             }
             #[cfg(not(feature = "tui"))]
             {
-                eyre::bail!("TUI feature not enabled; rebuild with: cargo build --features tui")
+                anyhow::bail!("TUI feature not enabled; rebuild with: cargo build --features tui")
             }
         }
     }

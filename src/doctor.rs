@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use color_eyre::eyre::Result;
+use anyhow::Result;
 
 use crate::compositor::{Backend, ProtocolPreference, ProtocolProbe, probe_protocols};
 use crate::config::{Config, Endpoint};
@@ -406,7 +406,7 @@ fn version_of(output: &str) -> Option<&str> {
 /// snapshot, and `wireplumber --version` (if it ran)
 fn pipewire_checks(
     tools: &[(&str, Result<String>)],
-    dump: Result<&(Snapshot, GraphInfo), &color_eyre::Report>,
+    dump: Result<&(Snapshot, GraphInfo), &anyhow::Error>,
     wireplumber: Option<&String>,
 ) -> Section {
     const INSTALL_HINT: &str = "Install your distribution's PipeWire tools (pipewire-tools, \
@@ -915,7 +915,7 @@ mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
 
-    use color_eyre::eyre::eyre;
+    use anyhow::anyhow;
     use pretty_assertions::assert_eq;
 
     use super::*;
@@ -979,7 +979,7 @@ mod tests {
         );
 
         let display = OsString::from("wayland-1");
-        let broken = wayland_checks(Some(&display), Some(Err(eyre!("refused"))), false);
+        let broken = wayland_checks(Some(&display), Some(Err(anyhow!("refused"))), false);
         assert_eq!(broken.checks[0].level, Level::Fail);
         assert!(broken.checks[0].message.contains("wayland-1: refused"));
 
@@ -1099,14 +1099,14 @@ mod tests {
         assert_eq!(checks[2].level, Level::Warn);
 
         // No server: the dump fails although the tool runs
-        let err = eyre!("can't connect");
+        let err = anyhow!("can't connect");
         let checks = pipewire_checks(&tools(Ok(String::new())), Err(&err), Some(&wp)).checks;
         assert_eq!(checks[1].level, Level::Fail);
         assert!(checks[1].message.contains("can't connect"), "{checks:?}");
         assert_eq!(checks[2].level, Level::Info);
 
         // No tools: one ✗ per missing tool, the dump failure is not repeated
-        let checks = pipewire_checks(&tools(Err(eyre!("not found"))), Err(&err), None).checks;
+        let checks = pipewire_checks(&tools(Err(anyhow!("not found"))), Err(&err), None).checks;
         let fails: Vec<&str> = checks
             .iter()
             .filter(|c| c.level == Level::Fail)
@@ -1133,7 +1133,7 @@ mod tests {
         let invalid = config_checks(
             Some(&path),
             "--config",
-            Some(&Err(eyre!("2 default sinks"))),
+            Some(&Err(anyhow!("2 default sinks"))),
         );
         assert!(invalid.checks[1].message.contains("2 default sinks"));
 

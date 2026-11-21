@@ -3,7 +3,7 @@
 //! Parsing is permissive per object: an object that lacks what `pwsw` needs is
 //! skipped (logged at `trace`), so one odd node cannot hide every other sink.
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use serde_json::{Map, Value};
 use tracing::trace;
 

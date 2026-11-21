@@ -22,7 +22,7 @@
 use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use serde::Serialize;
 use tracing::{debug, info};
 
@@ -198,7 +198,7 @@ impl PipeWire {
             .collect();
 
         if !missing.is_empty() {
-            eyre::bail!(
+            anyhow::bail!(
                 "Missing required PipeWire tools: {}\n\
                  \n\
                  Please install the PipeWire utilities package for your distribution:\n\
@@ -371,9 +371,9 @@ impl PipeWire {
             Endpoint::Source => Self::activate_joint(None, request),
         };
         sink.or(source)
-            .unwrap_or_else(|| Err(eyre::eyre!("Internal error: no result")))?
+            .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no result")))?
             .map(|(_, node_name)| node_name)
-            .ok_or_else(|| eyre::eyre!("Internal error: nothing activated"))
+            .ok_or_else(|| anyhow::anyhow!("Internal error: nothing activated"))
     }
 
     /// Activate a job: the first reachable of the sink candidates and the first

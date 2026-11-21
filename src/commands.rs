@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::fmt::Write;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tracing::{info, warn};
 
 use crate::config::{Config, Endpoint};
@@ -316,14 +316,14 @@ async fn switch_via_daemon(request: Request) -> Result<()> {
             crate::outln!("{message}");
             Ok(())
         }
-        Response::Error { message } => eyre::bail!("{message}"),
+        Response::Error { message } => anyhow::bail!("{message}"),
         other => Err(unexpected_response(&other)),
     }
 }
 
 /// Error for a reply that does not fit the request (likely a version mismatch)
-fn unexpected_response(response: &Response) -> eyre::Report {
-    eyre::eyre!(
+fn unexpected_response(response: &Response) -> anyhow::Error {
+    anyhow::anyhow!(
         "Unexpected response from daemon ({}); {}",
         response_kind(response),
         ipc::RESTART_HINT
@@ -376,7 +376,7 @@ fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
 /// daemon's own rules ([`manual::plan`]), activate, print and notify
 fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
     if let Some(answer) = manual::answer_without_pipewire(config, request) {
-        let message = answer.map_err(|message| eyre::eyre!("{message}"))?;
+        let message = answer.map_err(|message| anyhow::anyhow!("{message}"))?;
         crate::outln!("{}", message.warning());
         return Ok(());
     }
@@ -388,7 +388,7 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
             crate::outln!("{message}");
             return Ok(());
         }
-        Err(message) => eyre::bail!("{message}"),
+        Err(message) => anyhow::bail!("{message}"),
     };
 
     let kind = request.kind();
@@ -534,7 +534,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     // `PipeWire` is queried directly (works with or without daemon)
     let defaults = match tokio::task::spawn_blocking(PipeWire::get_defaults).await {
         Ok(result) => result,
-        Err(e) => Err(eyre::eyre!("PipeWire query task failed: {e}")),
+        Err(e) => Err(anyhow::anyhow!("PipeWire query task failed: {e}")),
     };
     let describe = |kind: Endpoint, name: String| {
         let description = config
@@ -693,7 +693,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
 /// Returns an error if no daemon is running or IPC communication fails.
 pub async fn shutdown() -> Result<()> {
     if !ipc::is_daemon_running().await {
-        eyre::bail!("Daemon is not running");
+        anyhow::bail!("Daemon is not running");
     }
 
     let response = ipc::send_request(Request::Shutdown).await?;
@@ -704,7 +704,7 @@ pub async fn shutdown() -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            eyre::bail!("{message}");
+            anyhow::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
     }
@@ -725,7 +725,7 @@ pub enum PauseAction {
 /// does not support pausing (an older version: restart it).
 pub async fn pause(action: PauseAction) -> Result<()> {
     if !ipc::is_daemon_running().await {
-        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
+        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
     let request = match action {
         PauseAction::Pause => Request::Pause,
@@ -737,7 +737,7 @@ pub async fn pause(action: PauseAction) -> Result<()> {
             crate::outln!("{}", pause_message(paused, changed));
             Ok(())
         }
-        Response::Error { message } => eyre::bail!("{message}"),
+        Response::Error { message } => anyhow::bail!("{message}"),
         other => Err(unexpected_response(&other)),
     }
 }
@@ -760,7 +760,7 @@ fn pause_message(paused: bool, changed: bool) -> crate::style::Painted<&'static 
 /// Returns an error if no daemon is running or IPC communication fails.
 pub async fn list_windows(json_output: bool) -> Result<()> {
     if !ipc::is_daemon_running().await {
-        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
+        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
 
     let response = ipc::send_request(Request::ListWindows).await?;
@@ -833,7 +833,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            eyre::bail!("{message}");
+            anyhow::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
     }
@@ -916,9 +916,9 @@ pub async fn test_rule(
     let output_regex = output
         .map(crate::config::compile_rule_regex)
         .transpose()
-        .map_err(|e| eyre::eyre!("Invalid output regex: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Invalid output regex: {e}"))?;
     if !ipc::is_daemon_running().await {
-        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
+        anyhow::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
 
     let request = match pattern {
@@ -930,7 +930,7 @@ pub async fn test_rule(
     let (pattern, mut matches) = match ipc::send_request(request).await? {
         Response::RuleMatches { pattern, matches } => (Some(pattern), matches),
         Response::Windows { windows } => (None, windows),
-        Response::Error { message } => eyre::bail!("{message}"),
+        Response::Error { message } => anyhow::bail!("{message}"),
         other => return Err(unexpected_response(&other)),
     };
     if let Some(regex) = &output_regex {

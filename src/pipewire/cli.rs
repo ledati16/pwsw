@@ -11,7 +11,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::{self, Context, Result};
+use anyhow::{Context, Result};
 use tracing::{debug, warn};
 
 use super::activate::AudioBackend;
@@ -134,12 +134,12 @@ pub(crate) fn run(
         }
         if overflow.load(Ordering::SeqCst) {
             kill_and_reap(&mut child);
-            eyre::bail!("`{what}` produced more than {max_stdout} bytes of output; aborted");
+            anyhow::bail!("`{what}` produced more than {max_stdout} bytes of output; aborted");
         }
         let now = Instant::now();
         if now >= deadline {
             kill_and_reap(&mut child);
-            eyre::bail!(
+            anyhow::bail!(
                 "`{what}` did not finish within {} ms and was killed (is PipeWire responsive?)",
                 timeout.as_millis()
             );
@@ -154,7 +154,7 @@ pub(crate) fn run(
         };
         match rx.recv_timeout(PIPE_GRACE) {
             Ok(result) => result.with_context(|| format!("Failed to read {stream} of `{what}`")),
-            Err(_) => eyre::bail!("`{what}` exited but its {stream} stayed open"),
+            Err(_) => anyhow::bail!("`{what}` exited but its {stream} stayed open"),
         }
     };
     let (stdout, stdout_overflow) = collect(stdout_rx, "stdout")?;
@@ -162,10 +162,10 @@ pub(crate) fn run(
     let stderr = String::from_utf8_lossy(&stderr);
 
     if stdout_overflow {
-        eyre::bail!("`{what}` produced more than {max_stdout} bytes of output; aborted");
+        anyhow::bail!("`{what}` produced more than {max_stdout} bytes of output; aborted");
     }
     if !status.success() {
-        eyre::bail!("`{what}` failed ({status}): {}", stderr.trim());
+        anyhow::bail!("`{what}` failed ({status}): {}", stderr.trim());
     }
     if !stderr.trim().is_empty() {
         debug!("`{}` stderr: {}", what, stderr.trim());

@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinSet;
 use tokio::time::{MissedTickBehavior, interval};
@@ -58,11 +58,11 @@ where
         .spawn(move || {
             let _ = tx.send(std::panic::catch_unwind(AssertUnwindSafe(f)));
         })
-        .map_err(|e| eyre::eyre!("Failed to spawn worker thread: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("Failed to spawn worker thread: {e}"))?;
     match rx.await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(panic)) => std::panic::resume_unwind(panic),
-        Err(_) => eyre::bail!("worker thread ended without a result"),
+        Err(_) => anyhow::bail!("worker thread ended without a result"),
     }
 }
 
@@ -180,8 +180,8 @@ impl Backend for System {
 
         match send_request(Request::TogglePause).await? {
             Response::PauseState { paused, .. } => Ok(paused),
-            Response::Error { message } => eyre::bail!("{message}"),
-            _ => eyre::bail!("unexpected response from the daemon"),
+            Response::Error { message } => anyhow::bail!("{message}"),
+            _ => anyhow::bail!("unexpected response from the daemon"),
         }
     }
 

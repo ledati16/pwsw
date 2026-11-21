@@ -55,7 +55,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -1703,7 +1703,7 @@ impl Daemon {
             }
             Ok(Ok(config)) => {
                 let applied = if config.sinks.is_empty() {
-                    Err(eyre::eyre!("no sinks configured"))
+                    Err(anyhow::anyhow!("no sinks configured"))
                 } else {
                     self.state.reconfigure(Arc::new(config))
                 };
@@ -1772,9 +1772,9 @@ impl Daemon {
 }
 
 /// The compositor's window event channel closed (logged here)
-fn compositor_lost() -> eyre::Report {
+fn compositor_lost() -> anyhow::Error {
     error!("Compositor connection lost (window event channel closed)");
-    eyre::eyre!("Compositor connection lost: the window event channel closed")
+    anyhow::anyhow!("Compositor connection lost: the window event channel closed")
 }
 
 async fn sleep_until(at: Option<Instant>) {

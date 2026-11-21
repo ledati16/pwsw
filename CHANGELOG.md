@@ -233,4 +233,5 @@ the daemon switches less eagerly than before.
 - The systemd unit is sandboxed (`ProtectSystem=strict`, `NoNewPrivileges`,
   `MemoryDenyWriteExecute`, `PrivateTmp`, `UMask=0077`, ...).
 - Dependencies updated, clearing all `cargo audit` advisories; the unmaintained
-  `tui-logger` dependency chain was dropped.
+  `tui-logger` dependency chain was dropped, and `color-eyre` (with its backtrace and
+  span-trace crates) was replaced by `anyhow`.

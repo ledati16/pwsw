@@ -32,7 +32,7 @@
 
 use std::collections::HashSet;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tracing::debug;
 
 use super::ProfileSink;
@@ -334,15 +334,15 @@ pub(crate) fn resolve_endpoint(snapshot: &Snapshot, kind: Endpoint, target: &str
 
     let Some((device, mapping)) = card_for(snapshot, kind, target) else {
         if target.starts_with(bluez_prefix(kind)) {
-            eyre::bail!("{title} '{target}' is not present (Bluetooth device disconnected?)");
+            anyhow::bail!("{title} '{target}' is not present (Bluetooth device disconnected?)");
         }
         if target.starts_with(alsa_prefix(kind)) {
-            eyre::bail!(
+            anyhow::bail!(
                 "{title} '{target}' not found: no such node exists and no ALSA card matches the \
                  name (check `pwsw list-sinks`)"
             );
         }
-        eyre::bail!(
+        anyhow::bail!(
             "{title} '{target}' is not present and not reachable by a profile switch (check \
              `pwsw list-sinks`)"
         );
@@ -373,7 +373,7 @@ pub(crate) fn resolve_endpoint(snapshot: &Snapshot, kind: Endpoint, target: &str
         // output the card plays to now
         let outputs: Vec<&str> =
             active_profile(device).map_or_default(|p| p.output_mappings().collect());
-        eyre::bail!(
+        anyhow::bail!(
             "{title} '{target}' is not reachable: no available profile of {} provides input \
              '{mapping}' while keeping its current output '{}'",
             device.name,
@@ -381,13 +381,13 @@ pub(crate) fn resolve_endpoint(snapshot: &Snapshot, kind: Endpoint, target: &str
         );
     }
     if !providing.is_empty() {
-        eyre::bail!(
+        anyhow::bail!(
             "{title} '{target}' is not available: every profile of {} providing {word} \
              '{mapping}' is marked unavailable (is something plugged into that port?)",
             device.name
         );
     }
-    eyre::bail!(
+    anyhow::bail!(
         "{title} '{target}' not found: card {} has no profile with {word} '{mapping}' (check \
          `pwsw list-sinks`)",
         device.name

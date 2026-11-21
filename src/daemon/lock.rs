@@ -13,7 +13,7 @@
 use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::{self, Context, Result};
+use anyhow::{Context, Result};
 use rustix::fs::{Mode, OFlags};
 
 use crate::ipc;
@@ -63,7 +63,7 @@ impl InstanceLock {
             .metadata()
             .with_context(|| format!("Failed to stat lock file: {}", path.display()))?;
         if !meta.file_type().is_file() || meta.uid() != rustix::process::getuid().as_raw() {
-            eyre::bail!(
+            anyhow::bail!(
                 "Refusing to use lock file {}: not a regular file owned by the current user",
                 path.display()
             );

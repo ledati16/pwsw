@@ -14,7 +14,7 @@ use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt, reload};

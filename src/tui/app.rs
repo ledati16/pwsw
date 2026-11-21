@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use color_eyre::eyre::Result;
+use anyhow::Result;
 
 use super::chrome::SPINNER;
 use super::keymap::Context;

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{RecvTimeoutError, SyncSender};
 use std::time::Duration;
 
-use color_eyre::eyre::{self, Context, Result};
+use anyhow::{Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 use tracker::{EventOutbox, WindowTracker};
@@ -304,12 +304,12 @@ pub fn spawn_compositor_thread_on_with_preference(
 
     let protocol = match ready_rx.recv_timeout(SETUP_TIMEOUT) {
         Ok(result) => result?,
-        Err(RecvTimeoutError::Timeout) => eyre::bail!(
+        Err(RecvTimeoutError::Timeout) => anyhow::bail!(
             "Compositor did not answer the Wayland registry roundtrip within {}s",
             SETUP_TIMEOUT.as_secs()
         ),
         Err(RecvTimeoutError::Disconnected) => {
-            eyre::bail!("Wayland thread exited during protocol detection")
+            anyhow::bail!("Wayland thread exited during protocol detection")
         }
     };
     info!("Using {protocol:?} protocol ({preference:?} preference)");
@@ -374,7 +374,7 @@ fn run_wayland(
             .context("Lost the Wayland connection while listing existing windows")?;
         if tracker.is_finished() {
             let _ = conn.flush();
-            eyre::bail!("Compositor stopped reporting windows (`finished` event)");
+            anyhow::bail!("Compositor stopped reporting windows (`finished` event)");
         }
     }
     debug!("Initial window list complete");
@@ -390,7 +390,7 @@ fn run_wayland(
         if tracker.is_finished() {
             // Best effort: send the list `destroy` before the connection is dropped
             let _ = conn.flush();
-            eyre::bail!("Compositor stopped reporting windows (`finished` event)");
+            anyhow::bail!("Compositor stopped reporting windows (`finished` event)");
         }
         if tx_probe.is_closed() {
             debug!("Window event receiver dropped, stopping Wayland thread");
@@ -423,7 +423,7 @@ fn setup(
     });
 
     let Some(protocol) = protocol else {
-        eyre::bail!(
+        anyhow::bail!(
             "No supported window management protocol found.\n\
              \n\
              Supported protocols:\n\
@@ -520,11 +520,11 @@ pub(crate) fn probe_protocols(timeout: Duration) -> Result<ProtocolProbe> {
         .context("Failed to spawn Wayland probe thread")?;
     match rx.recv_timeout(timeout) {
         Ok(result) => result,
-        Err(RecvTimeoutError::Timeout) => eyre::bail!(
+        Err(RecvTimeoutError::Timeout) => anyhow::bail!(
             "Compositor did not answer the Wayland registry roundtrip within {}s",
             timeout.as_secs()
         ),
-        Err(RecvTimeoutError::Disconnected) => eyre::bail!("Wayland probe thread exited"),
+        Err(RecvTimeoutError::Disconnected) => anyhow::bail!("Wayland probe thread exited"),
     }
 }
 

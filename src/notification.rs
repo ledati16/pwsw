@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use notify_rust::Notification;
 use tracing::debug;
 

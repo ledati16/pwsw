@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use crossterm::event::EventStream;
 use futures_core::Stream;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -179,7 +179,7 @@ where
 
     loop {
         if terminal::panic_seen() {
-            eyre::bail!("a background task panicked (see the report above)");
+            anyhow::bail!("a background task panicked (see the report above)");
         }
 
         // Draw if needed and allowed by the frame cap; otherwise remember when.
@@ -236,7 +236,7 @@ where
                     sinks_visible.send_if_modified(|v| std::mem::replace(v, shows) != shows);
                 }
                 Some(Err(e)) => {
-                    return Err(eyre::Report::new(e).wrap_err("Failed to read terminal input"));
+                    return Err(anyhow::Error::new(e).context("Failed to read terminal input"));
                 }
                 None => return Ok(()), // input closed
             },
@@ -258,11 +258,11 @@ fn next_event(
 }
 
 /// The error for a background worker that ended while the UI was running.
-fn worker_ended(joined: Result<(), tokio::task::JoinError>) -> eyre::Report {
+fn worker_ended(joined: Result<(), tokio::task::JoinError>) -> anyhow::Error {
     if joined.is_err_and(|e| e.is_panic()) {
-        eyre::eyre!("background worker panicked (see the report above)")
+        anyhow::anyhow!("background worker panicked (see the report above)")
     } else {
-        eyre::eyre!("background worker stopped")
+        anyhow::anyhow!("background worker stopped")
     }
 }
 

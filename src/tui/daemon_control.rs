@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::{self, Context, Result};
+use anyhow::{Context, Result};
 
 use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, status_with_timeout};
 use crate::ipc;
@@ -103,7 +103,7 @@ impl DaemonManager {
                     Ok("Daemon started via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    eyre::bail!("systemctl start failed: {stderr}");
+                    anyhow::bail!("systemctl start failed: {stderr}");
                 }
             }
             Self::Direct => {
@@ -130,7 +130,7 @@ impl DaemonManager {
                 if output.status.success() {
                     Ok("Daemon started directly".to_string())
                 } else {
-                    eyre::bail!(
+                    anyhow::bail!(
                         "`pwsw daemon` failed ({}): {}",
                         output.status,
                         summarize_stderr(&output.stderr)
@@ -159,14 +159,14 @@ impl DaemonManager {
                     Ok("Daemon stopped via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    eyre::bail!("systemctl stop failed: {stderr}");
+                    anyhow::bail!("systemctl stop failed: {stderr}");
                 }
             }
             Self::Direct => {
                 // Send shutdown request via IPC
                 match ipc::send_request(ipc::Request::Shutdown).await {
                     Ok(_) => Ok("Daemon shutdown requested".to_string()),
-                    Err(e) => eyre::bail!("Failed to send shutdown request: {e:#}"),
+                    Err(e) => anyhow::bail!("Failed to send shutdown request: {e:#}"),
                 }
             }
         }
@@ -192,7 +192,7 @@ impl DaemonManager {
                     Ok("Daemon restarted via systemd".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    eyre::bail!("systemctl restart failed: {stderr}");
+                    anyhow::bail!("systemctl restart failed: {stderr}");
                 }
             }
             Self::Direct => {
@@ -226,11 +226,11 @@ impl DaemonManager {
                     Ok("Service enabled (will start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    eyre::bail!("systemctl enable failed: {stderr}");
+                    anyhow::bail!("systemctl enable failed: {stderr}");
                 }
             }
             Self::Direct => {
-                eyre::bail!("Enable/disable only supported with systemd service")
+                anyhow::bail!("Enable/disable only supported with systemd service")
             }
         }
     }
@@ -255,11 +255,11 @@ impl DaemonManager {
                     Ok("Service disabled (won't start on login)".to_string())
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    eyre::bail!("systemctl disable failed: {stderr}");
+                    anyhow::bail!("systemctl disable failed: {stderr}");
                 }
             }
             Self::Direct => {
-                eyre::bail!("Enable/disable only supported with systemd service")
+                anyhow::bail!("Enable/disable only supported with systemd service")
             }
         }
     }
@@ -290,9 +290,9 @@ impl DaemonManager {
     }
 }
 
-/// Condense a child's stderr (a coloured `color-eyre` report) into one line for
-/// the `TUI` status bar: strip `ANSI` escapes, drop blank lines and the
-/// backtrace/location boilerplate, join the rest with `" | "`.
+/// Condense a child's stderr (an `error: cause: cause` line, or with backtraces
+/// requested `anyhow`'s full report) into one line for the `TUI` status bar: strip
+/// `ANSI` escapes, drop blank lines and the backtrace, join the rest with `" | "`.
 fn summarize_stderr(stderr: &[u8]) -> String {
     const MAX_CHARS: usize = 400;
 
@@ -301,7 +301,7 @@ fn summarize_stderr(stderr: &[u8]) -> String {
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .take_while(|l| !l.starts_with("Location:") && !l.starts_with("Backtrace omitted"))
+        .take_while(|l| !l.starts_with("Stack backtrace:"))
         .collect();
     if lines.is_empty() {
         return "no error output".to_string();
@@ -314,11 +314,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_summarize_stderr_color_eyre_report() {
-        let report = "\u{1b}[31mError:\u{1b}[0m \n   0: \u{1b}[91mNo sinks configured\u{1b}[0m\n\nLocation:\n   src/bin/pwsw.rs:66\n\nBacktrace omitted.\n";
+    fn test_summarize_stderr_error_line() {
+        let line = "\u{1b}[31merror:\u{1b}[0m Failed to load config: No sinks configured\n";
+        assert_eq!(
+            summarize_stderr(line.as_bytes()),
+            "error: Failed to load config: No sinks configured"
+        );
+    }
+
+    #[test]
+    fn test_summarize_stderr_full_report() {
+        let report = "Error: Failed to load config\n\nCaused by:\n    No sinks configured\n\n\
+                      Stack backtrace:\n   0: anyhow::error::<impl anyhow::Error>::msg\n";
         assert_eq!(
             summarize_stderr(report.as_bytes()),
-            "Error: | 0: No sinks configured"
+            "Error: Failed to load config | Caused by: | No sinks configured"
         );
     }
 

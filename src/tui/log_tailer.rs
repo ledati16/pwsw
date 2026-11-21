@@ -22,7 +22,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use color_eyre::eyre::{Context, ContextCompat, Result};
+use anyhow::{Context, Result};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 /// How much of the end of the log is read to find the initial lines.

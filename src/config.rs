@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::{fmt, fs};
 
-use color_eyre::eyre::{self, Context, ContextCompat, Result};
+use anyhow::{Context, Result};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
@@ -39,7 +39,7 @@ static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 /// Make a user-supplied config path absolute (relative to the current directory).
 fn absolute_config_path(path: &Path) -> Result<PathBuf> {
     if path.as_os_str().is_empty() {
-        eyre::bail!("Config path must not be empty");
+        anyhow::bail!("Config path must not be empty");
     }
     std::path::absolute(path)
         .with_context(|| format!("Failed to resolve config path: {}", path.display()))
@@ -106,7 +106,7 @@ pub fn compile_rule_regex(pattern: &str) -> std::result::Result<Regex, regex::Er
 
 /// The config file does not exist.
 ///
-/// Returned (inside the `eyre` report) by [`Config::load`] and [`Config::load_from_path`];
+/// Returned (inside the `anyhow` error) by [`Config::load`] and [`Config::load_from_path`];
 /// detect it with `report.downcast_ref::<ConfigNotFound>()`.
 #[derive(Debug, Clone)]
 pub struct ConfigNotFound {
@@ -504,8 +504,8 @@ struct RuleConfigFile {
 }
 
 /// A rule (1-based `number`) without `app_id` and `output`, or with an empty `app_id`
-fn missing_app_id(number: usize) -> eyre::Report {
-    eyre::eyre!(
+fn missing_app_id(number: usize) -> anyhow::Error {
+    anyhow::anyhow!(
         "Rule {number} needs `app_id` or `output` (an empty app_id pattern is not allowed: use \
          '.*' to match all windows)"
     )
@@ -856,7 +856,7 @@ impl Config {
         let contents = match fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(eyre::Report::new(ConfigNotFound {
+                return Err(anyhow::Error::new(ConfigNotFound {
                     path: path.to_path_buf(),
                 }));
             }
@@ -884,7 +884,7 @@ impl Config {
     /// Parse and validate config text. `path` is only used in error messages.
     fn parse_str(contents: &str, path: &Path) -> Result<Self> {
         let parse_error = |e: &dyn fmt::Display| {
-            eyre::eyre!(
+            anyhow::anyhow!(
                 "Failed to parse config: {path_display}\n{e}",
                 path_display = path.display()
             )
@@ -898,7 +898,7 @@ impl Config {
         let doc: DocumentMut = parsed.into_mut();
 
         let mut config = Self::from_config_file(config_file)
-            .wrap_err_with(|| format!("Invalid config: {}", path.display()))?;
+            .with_context(|| format!("Invalid config: {}", path.display()))?;
         config.origin.sink_slots = (0..config.sinks.len()).map(Some).collect();
         config.origin.source_slots = (0..config.sources.len()).map(Some).collect();
         config.origin.rule_slots = (0..config.rules.len()).map(Some).collect();
@@ -943,28 +943,28 @@ impl Config {
             }
             let app_id = r.app_id.unwrap_or_default();
             let app_id_regex = compile_rule_regex(&app_id)
-                .map_err(|e| eyre::eyre!("Rule {}: invalid app_id regex: {e}", i + 1))?;
+                .map_err(|e| anyhow::anyhow!("Rule {}: invalid app_id regex: {e}", i + 1))?;
             let title_regex = r
                 .title
                 .as_deref()
                 .map(compile_rule_regex)
                 .transpose()
-                .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+                .map_err(|e| anyhow::anyhow!("Rule {}: invalid title regex: {e}", i + 1))?;
             let output_regex = r
                 .output
                 .as_deref()
                 .map(compile_rule_regex)
                 .transpose()
-                .map_err(|e| eyre::eyre!("Rule {}: invalid output regex: {e}", i + 1))?;
+                .map_err(|e| anyhow::anyhow!("Rule {}: invalid output regex: {e}", i + 1))?;
             let mut refs = r.sink.into_iter();
             let sink_ref = refs.next().ok_or_else(|| {
-                eyre::eyre!(
+                anyhow::anyhow!(
                     "Rule {}: `sink` is an empty list; name at least one sink",
                     i + 1
                 )
             })?;
             let source_refs = match r.source {
-                Some(refs) if refs.is_empty() => eyre::bail!(
+                Some(refs) if refs.is_empty() => anyhow::bail!(
                     "Rule {}: `source` is an empty list; name at least one source or remove the \
                      key",
                     i + 1
@@ -1067,7 +1067,7 @@ impl Config {
     /// written.
     pub fn init_at(path: &Path, force: bool) -> Result<()> {
         if !force && fs::symlink_metadata(path).is_ok() {
-            eyre::bail!(
+            anyhow::bail!(
                 "Config already exists: {}\nUse `pwsw init --force` to replace it (the old file \
                  is kept as {}).",
                 path.display(),
@@ -1142,9 +1142,9 @@ impl Config {
 
         // Defensive: never write text that would not load back to this exact config.
         let reparsed = Self::parse_str(&contents, path)
-            .wrap_err("Internal error: generated config does not load; refusing to save")?;
+            .context("Internal error: generated config does not load; refusing to save")?;
         if reparsed != *self {
-            eyre::bail!("Internal error: generated config does not round-trip; refusing to save");
+            anyhow::bail!("Internal error: generated config does not round-trip; refusing to save");
         }
 
         let target = resolve_write_target(path)?;
@@ -1160,7 +1160,7 @@ impl Config {
         {
             match fs::read(&target) {
                 Ok(current) if current != snapshot.contents => {
-                    return Err(eyre::Report::new(ConfigModifiedOnDisk {
+                    return Err(anyhow::Error::new(ConfigModifiedOnDisk {
                         path: path.to_path_buf(),
                     }));
                 }
@@ -1251,7 +1251,7 @@ impl Config {
         }
         let Some(mut tmp) = tmp else {
             return Err(last_err.expect("last_err should be Some if tmp is None"))
-                .wrap_err("Failed to create temporary file for atomic config save");
+                .context("Failed to create temporary file for atomic config save");
         };
         tmp.as_file_mut()
             .write_all(contents.as_bytes())
@@ -1279,7 +1279,7 @@ impl Config {
             && meta.is_file()
             && meta.len() > 0
         {
-            eyre::bail!("Refusing to overwrite non-empty config with empty data");
+            anyhow::bail!("Refusing to overwrite non-empty config with empty data");
         }
         Ok(())
     }
@@ -1462,7 +1462,7 @@ impl Config {
                 continue;
             }
             if other.name == entry.name {
-                eyre::bail!(
+                anyhow::bail!(
                     "{title} {} ('{}') already uses node name '{}'",
                     i + 1,
                     other.desc,
@@ -1470,7 +1470,7 @@ impl Config {
                 );
             }
             if other.desc == entry.desc {
-                eyre::bail!(
+                anyhow::bail!(
                     "{title} {} already uses description '{}'",
                     i + 1,
                     entry.desc
@@ -1531,7 +1531,7 @@ impl Config {
         self.transact(|c| {
             let entries = c.endpoints_mut(kind);
             if index >= entries.len() {
-                eyre::bail!("No {} at position {}", kind.noun(), index + 1);
+                anyhow::bail!("No {} at position {}", kind.noun(), index + 1);
             }
             for (i, s) in entries.iter_mut().enumerate() {
                 s.default = i == index;
@@ -1559,7 +1559,7 @@ impl Config {
                 .map(|(i, r)| format!("{} ({})", i + 1, r.label()))
                 .collect();
             if !users.is_empty() {
-                eyre::bail!(
+                anyhow::bail!(
                     "Cannot remove {} '{}': used by rule {}. Retarget or delete those rules \
                      first.",
                     kind.noun(),
@@ -1585,7 +1585,7 @@ impl Config {
         self.transact(|c| {
             let len = c.endpoints(kind).len();
             if from >= len || to >= len {
-                eyre::bail!("{} position out of range", kind.title());
+                anyhow::bail!("{} position out of range", kind.title());
             }
             c.keeping_positional_targets(kind, |c| {
                 let (entries, slots) = c.endpoints_and_slots_mut(kind);
@@ -1749,7 +1749,7 @@ impl Config {
     pub fn update_rule(&mut self, index: usize, mut rule: Rule) -> Result<()> {
         self.transact(|c| {
             if index >= c.rules.len() {
-                eyre::bail!("No rule at position {}", index + 1);
+                anyhow::bail!("No rule at position {}", index + 1);
             }
             c.canonicalize_rule_refs(&mut rule)?;
             c.rules[index] = rule;
@@ -1764,7 +1764,7 @@ impl Config {
     pub fn remove_rule(&mut self, index: usize) -> Result<()> {
         self.transact(|c| {
             if index >= c.rules.len() {
-                eyre::bail!("No rule at position {}", index + 1);
+                anyhow::bail!("No rule at position {}", index + 1);
             }
             c.rules.remove(index);
             c.origin.rule_slots.remove(index);
@@ -1779,7 +1779,7 @@ impl Config {
     pub fn move_rule(&mut self, from: usize, to: usize) -> Result<()> {
         self.transact(|c| {
             if from >= c.rules.len() || to >= c.rules.len() {
-                eyre::bail!("Rule position out of range");
+                anyhow::bail!("Rule position out of range");
             }
             let rule = c.rules.remove(from);
             c.rules.insert(to, rule);
@@ -1797,12 +1797,12 @@ impl Config {
         // Validate log level
         match self.settings.log_level.as_str() {
             "error" | "warn" | "info" | "debug" | "trace" => {}
-            level => eyre::bail!(
+            level => anyhow::bail!(
                 "Invalid log_level '{level}'. Must be: error, warn, info, debug, or trace"
             ),
         }
         if self.settings.switch_delay_ms > MAX_SWITCH_DELAY_MS {
-            eyre::bail!(
+            anyhow::bail!(
                 "Invalid switch_delay_ms {}. Must be between 0 and {MAX_SWITCH_DELAY_MS} \
                  (milliseconds)",
                 self.settings.switch_delay_ms
@@ -1815,7 +1815,7 @@ impl Config {
 
         // Rules require sinks to resolve against
         if self.sinks.is_empty() && !self.rules.is_empty() {
-            eyre::bail!("Rules defined but no sinks configured. Add sinks or remove rules.");
+            anyhow::bail!("Rules defined but no sinks configured. Add sinks or remove rules.");
         }
 
         // All rule sinks must exist and patterns must be non-empty
@@ -1826,7 +1826,7 @@ impl Config {
                 None if !rule.has_app_id() => {
                     return Err(missing_app_id(i + 1));
                 }
-                Some("") => eyre::bail!(
+                Some("") => anyhow::bail!(
                     "Rule {} has an empty output pattern. Use '.*' to match windows on any \
                      monitor.",
                     i + 1
@@ -1834,7 +1834,7 @@ impl Config {
                 _ => {}
             }
             if !rule.source_refs.is_empty() && self.sources.is_empty() {
-                eyre::bail!(
+                anyhow::bail!(
                     "Rule {} sets `source` but no sources are configured. Add [[sources]] \
                      entries or remove the rule's `source`.",
                     i + 1
@@ -1855,14 +1855,14 @@ impl Config {
         let (title, noun, plural) = (kind.title(), kind.noun(), kind.plural());
         for (i, entry) in entries.iter().enumerate() {
             if entry.name.trim().is_empty() {
-                eyre::bail!("{title} {} has an empty name", i + 1);
+                anyhow::bail!("{title} {} has an empty name", i + 1);
             }
             if entry.desc.trim().is_empty() {
-                eyre::bail!("{title} {} has an empty desc", i + 1);
+                anyhow::bail!("{title} {} has an empty desc", i + 1);
             }
             // A numeric desc would be read as a position by rule references
             if entry.desc.trim().parse::<i128>().is_ok() {
-                eyre::bail!(
+                anyhow::bail!(
                     "{title} {} desc '{}' is a number; it would be read as a {noun} position. \
                      Use a descriptive name.",
                     i + 1,
@@ -1878,13 +1878,13 @@ impl Config {
             match default_count {
                 0 => {
                     let capitalised = format!("{title}s");
-                    eyre::bail!(
+                    anyhow::bail!(
                         "{capitalised} configured but none marked as default. Add 'default = \
                          true' to one {noun}."
                     )
                 }
                 1 => {}
-                n => eyre::bail!("{n} default {plural} found. Only one allowed."),
+                n => anyhow::bail!("{n} default {plural} found. Only one allowed."),
             }
         }
 
@@ -1893,10 +1893,10 @@ impl Config {
         let mut seen_names = HashSet::with_capacity(entries.len());
         for entry in entries {
             if !seen_descs.insert(&entry.desc) {
-                eyre::bail!("Duplicate {noun} description: '{}'", entry.desc);
+                anyhow::bail!("Duplicate {noun} description: '{}'", entry.desc);
             }
             if !seen_names.insert(&entry.name) {
-                eyre::bail!("Duplicate {noun} name: '{}'", entry.name);
+                anyhow::bail!("Duplicate {noun} name: '{}'", entry.name);
             }
         }
 
@@ -1907,7 +1907,7 @@ impl Config {
                 .enumerate()
                 .position(|(j, b)| j != i && b.desc == a.name)
             {
-                eyre::bail!(
+                anyhow::bail!(
                     "'{}' is the name of {noun} {} and the desc of {noun} {}; rule references to \
                      it would be ambiguous",
                     a.name,
@@ -1926,7 +1926,7 @@ impl Config {
         let mut targets = Vec::new();
         for r in rule.refs(kind) {
             if r.trim().is_empty() {
-                eyre::bail!("Rule {} has an empty {noun} reference", i + 1);
+                anyhow::bail!("Rule {} has an empty {noun} reference", i + 1);
             }
             let Some(target) = self.resolve_index(kind, r) else {
                 let available: Vec<_> = entries
@@ -1934,7 +1934,7 @@ impl Config {
                     .enumerate()
                     .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
                     .collect();
-                eyre::bail!(
+                anyhow::bail!(
                     "Rule {} references unknown {noun} '{}'. Available: [{}]",
                     i + 1,
                     r,
@@ -1942,7 +1942,7 @@ impl Config {
                 );
             };
             if targets.contains(&target) {
-                eyre::bail!(
+                anyhow::bail!(
                     "Rule {} lists {noun} '{}' more than once",
                     i + 1,
                     entries[target].desc
@@ -1957,14 +1957,14 @@ impl Config {
     fn validate_patterns(&self) -> Result<()> {
         for (i, rule) in self.rules.iter().enumerate() {
             compile_rule_regex(&rule.app_id_pattern)
-                .map_err(|e| eyre::eyre!("Rule {}: invalid app_id regex: {e}", i + 1))?;
+                .map_err(|e| anyhow::anyhow!("Rule {}: invalid app_id regex: {e}", i + 1))?;
             if let Some(title) = &rule.title_pattern {
                 compile_rule_regex(title)
-                    .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+                    .map_err(|e| anyhow::anyhow!("Rule {}: invalid title regex: {e}", i + 1))?;
             }
             if let Some(output) = &rule.output_pattern {
                 compile_rule_regex(output)
-                    .map_err(|e| eyre::eyre!("Rule {}: invalid output regex: {e}", i + 1))?;
+                    .map_err(|e| anyhow::anyhow!("Rule {}: invalid output regex: {e}", i + 1))?;
             }
         }
         Ok(())
@@ -2008,7 +2008,7 @@ impl Config {
     pub fn set_config_path_override(path: &Path) -> Result<()> {
         let path = absolute_config_path(path)?;
         CONFIG_PATH_OVERRIDE.set(path).map_err(|rejected| {
-            eyre::eyre!(
+            anyhow::anyhow!(
                 "Config path override already set; refusing to change it to {}",
                 rejected.display()
             )
@@ -2038,7 +2038,7 @@ impl Config {
         // Sanity check: Ensure the final path is still within the expected directory
         // This validates that the dirs crate didn't return a malicious path
         if !config_path.starts_with(&config_dir) {
-            eyre::bail!(
+            anyhow::bail!(
                 "Config path validation failed: path escapes config directory\n\
                  Config dir: {}\n\
                  Config path: {}",

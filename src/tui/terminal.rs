@@ -16,7 +16,7 @@ use std::panic::PanicHookInfo;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use crossterm::cursor::Show;
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;

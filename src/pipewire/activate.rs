@@ -15,7 +15,7 @@ use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use super::model::Snapshot;
@@ -161,7 +161,7 @@ pub(crate) fn activate(
     let chosen = activate_first(backend, clock, policy, &[target.to_string()], None)?;
     chosen
         .map(|c| c.activation)
-        .ok_or_else(|| eyre::eyre!("Internal error: nothing activated"))
+        .ok_or_else(|| anyhow::anyhow!("Internal error: nothing activated"))
 }
 
 /// Make the first reachable of `candidates` (configured sink node names, in priority
@@ -186,7 +186,7 @@ pub(crate) fn activate_first(
     };
     activate_joint(backend, clock, policy, Some(request), None)
         .sink
-        .unwrap_or_else(|| Err(eyre::eyre!("Internal error: no sink result")))
+        .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no sink result")))
 }
 
 /// Activate a job's sink half and source half against one fresh snapshot.
@@ -218,7 +218,7 @@ pub(crate) fn activate_joint(
     for (kind, half) in Endpoint::ALL.into_iter().zip(&mut halves) {
         if half.is_some_and(|r| r.candidates.is_empty()) {
             *half = None;
-            *outcome.slot(kind) = Some(Err(eyre::eyre!("No {} to activate", kind.noun())));
+            *outcome.slot(kind) = Some(Err(anyhow::anyhow!("No {} to activate", kind.noun())));
         }
     }
     if halves.iter().all(Option::is_none) {
@@ -231,7 +231,7 @@ pub(crate) fn activate_joint(
             let message = format!("{e:#}");
             for (kind, half) in Endpoint::ALL.into_iter().zip(&halves) {
                 if half.is_some() {
-                    *outcome.slot(kind) = Some(Err(eyre::eyre!("{message}")));
+                    *outcome.slot(kind) = Some(Err(anyhow::anyhow!("{message}")));
                 }
             }
             return outcome;
@@ -304,7 +304,7 @@ pub(crate) fn activate_joint(
                         resolve::plan_joint(&now, &[], sources, sink_side.as_ref(), &frozen);
                     (again.source, again.source_skipped)
                 })
-                .map_err(|e| eyre::eyre!("after the sink's activation: {e:#}"))
+                .map_err(|e| anyhow::anyhow!("after the sink's activation: {e:#}"))
         };
         outcome.source = Some(match planned {
             Ok(planned) => run_source(
@@ -347,15 +347,15 @@ fn activated_side(snapshot: &Snapshot, activation: &Activation) -> Option<SinkSi
 }
 
 /// The error for a half none of whose candidates could be activated
-fn none_activated(failures: &[(String, String)]) -> eyre::Report {
+fn none_activated(failures: &[(String, String)]) -> anyhow::Error {
     if let [(_, only)] = failures {
-        return eyre::eyre!("{only}");
+        return anyhow::anyhow!("{only}");
     }
     let mut message = String::from("every candidate failed:");
     for (target, e) in failures {
         let _ = write!(message, "\n  - '{target}': {e}");
     }
-    eyre::eyre!(message)
+    anyhow::anyhow!(message)
 }
 
 /// The first candidate from `start` on that resolves against `snapshot`, recording
@@ -424,7 +424,7 @@ fn run_sink(
                     }
                     Err(e) => {
                         return (
-                            Err(eyre::eyre!("after activating '{target}' failed: {e:#}")),
+                            Err(anyhow::anyhow!("after activating '{target}' failed: {e:#}")),
                             false,
                         );
                     }
@@ -485,7 +485,7 @@ fn run_source(
                 }
                 let snapshot = backend
                     .snapshot()
-                    .map_err(|e| eyre::eyre!("after activating '{target}' failed: {e:#}"))?;
+                    .map_err(|e| anyhow::anyhow!("after activating '{target}' failed: {e:#}"))?;
                 let again =
                     resolve::plan_joint(&snapshot, &[], &candidates[rest..], sink_side, frozen);
                 failures.extend(again.source_skipped);
@@ -578,7 +578,7 @@ fn wait_for_node(
     }
 
     let cause = last_error.map_or_else(String::new, |e| format!("\nLast pw-dump error: {e:#}"));
-    eyre::bail!(
+    anyhow::bail!(
         "Switched {} to profile '{}' but its {} for '{}' did not appear within {} ms.\n\
          The device may need more time (raise PROFILE_SWITCH_DELAY_MS / \
          PROFILE_SWITCH_MAX_RETRIES; total wait is capped at {} ms), or the port may \

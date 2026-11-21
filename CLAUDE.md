@@ -241,7 +241,12 @@ captured child output. `get_app_icon` accepts only plain icon names.
 - **Docs** build with `RUSTDOCFLAGS="-D warnings"` (broken intra-doc links fail).
   Public functions returning `Result` document `# Errors`; anything that can panic
   documents `# Panics`. Technical terms in backticks (`PipeWire`, `app_id`, `pw-dump`).
-- **Errors:** `color_eyre::eyre::Result` with `Context`; no `expect`/`unwrap` on
+- **Errors:** `anyhow::Result` with `Context` (`context`/`with_context`, also on
+  `Option`), `anyhow::bail!`/`anyhow::anyhow!`; typed errors callers must detect
+  (`ConfigNotFound`, `ConfigModifiedOnDisk`) go inside the `anyhow::Error` and are found
+  with `downcast_ref`. Message texts are user-facing: the binary prints `error: {err:#}`
+  (exit 1), or `Error: {err:?}` (chain + backtrace) with `RUST_BACKTRACE`/
+  `RUST_LIB_BACKTRACE` set or for `daemon --foreground`. No `expect`/`unwrap` on
   production paths except documented invariants; always check a child's exit status.
 - **Visibility:** private by default, `pub(crate)` across modules, `pub` only for what the
   binary or integration tests need. New struct fields private with accessors.

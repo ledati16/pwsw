@@ -13,7 +13,7 @@ mod worker;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use color_eyre::eyre::{self, Context, ContextCompat, Result};
+use anyhow::{Context, Result};
 use notify::{Event, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
@@ -181,7 +181,7 @@ async fn spawn_background_daemon() -> Result<()> {
                 } else {
                     format!("\n\nLast log lines:\n  {}", tail.join("\n  "))
                 };
-                eyre::bail!(
+                anyhow::bail!(
                     "Daemon process (PID: {pid}) exited during startup with status: {status}{tail}\n\n\
                      Full log: {}",
                     log_path.display()
@@ -194,7 +194,7 @@ async fn spawn_background_daemon() -> Result<()> {
         }
     }
 
-    eyre::bail!(
+    anyhow::bail!(
         "Daemon failed to start within {} seconds.\n\
          Process may still be initializing. Check with: pwsw status\n\
          Log: {}",
@@ -215,8 +215,8 @@ const NOTIFICATION_STARTED_MSG: &str = "Audio switcher running";
 const COMMAND_CHANNEL_CAPACITY: usize = 32;
 
 /// The "already running" error, naming the check that detected it
-fn already_running(check: &str) -> eyre::Report {
-    eyre::eyre!(
+fn already_running(check: &str) -> anyhow::Error {
+    anyhow::anyhow!(
         "Another PWSW daemon is already running ({check}).\n\
          Socket: {}\n\n\
          To stop the existing daemon, run:\n  \
@@ -260,7 +260,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // Run in spawn_blocking to avoid blocking the tokio runtime during startup
     tokio::task::spawn_blocking(PipeWire::validate_tools)
         .await
-        .map_err(|e| eyre::eyre!("Join error during tool validation: {e:#}"))??;
+        .map_err(|e| anyhow::anyhow!("Join error during tool validation: {e:#}"))??;
 
     // Logging: always to the log file (TUI log view); also stderr in foreground mode
     // (systemd / debugging). Kept alive until `run` returns so no lines are lost.
@@ -284,7 +284,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // Detect how the daemon is being managed (runs an external command)
     let daemon_manager = tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::detect)
         .await
-        .map_err(|e| eyre::eyre!("Join error during manager detection: {e:#}"))?;
+        .map_err(|e| anyhow::anyhow!("Join error during manager detection: {e:#}"))?;
     info!("Daemon manager: {:?}", daemon_manager);
 
     let state = State::new(Arc::clone(&config))?;

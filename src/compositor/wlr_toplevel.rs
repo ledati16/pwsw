@@ -7,7 +7,7 @@
 //! Besides `app_id` and title, this backend reports window placement: the outputs a
 //! toplevel is on (`output_enter` / `output_leave`) and its `minimized` state flag.
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use tracing::error;
 use wayland_client::globals::GlobalList;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};

@@ -326,7 +326,7 @@ fn cli_errors_are_short_without_backtrace_request() {
         );
     }
 
-    // Asking for backtraces brings the full report back (still without locations)
+    // Asking for backtraces brings the full report back: `anyhow`'s `Debug` form
     let output = run(sb
         .cmd()
         .env("RUST_BACKTRACE", "1")
@@ -337,7 +337,7 @@ fn cli_errors_are_short_without_backtrace_request() {
     let err = stderr(&output);
     assert!(err.starts_with("Error:"), "{err}");
     assert!(err.contains("Config file not found"), "{err}");
-    assert!(!err.contains("Location:"), "{err}");
+    assert!(err.contains("Stack backtrace:"), "{err}");
 }
 
 #[test]

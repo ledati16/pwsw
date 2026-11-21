@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use color_eyre::eyre::Result;
+use anyhow::Result;
 use tokio::sync::{mpsc, watch};
 use tracing::debug;
 

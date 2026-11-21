@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use color_eyre::eyre::{self, Result};
+use anyhow::Result;
 use tracing::{debug, info};
 
 use crate::compositor::WindowEvent;
@@ -160,19 +160,19 @@ struct Index {
 /// Check the state invariant and index the config
 fn index_config(config: &Config) -> Result<Index> {
     if config.sinks.is_empty() {
-        eyre::bail!("No sinks configured");
+        anyhow::bail!("No sinks configured");
     }
     let default_sink = config
         .sinks
         .iter()
         .position(|s| s.default)
-        .ok_or_else(|| eyre::eyre!("No default sink configured"))?;
+        .ok_or_else(|| anyhow::anyhow!("No default sink configured"))?;
     let rule_sinks = config
         .rules
         .iter()
         .map(|rule| {
             config.resolve_rule_sinks(rule).ok_or_else(|| {
-                eyre::eyre!(
+                anyhow::anyhow!(
                     "Rule '{}' references an unknown sink ({})",
                     rule.label(),
                     rule.sink_refs().collect::<Vec<_>>().join(", ")
@@ -188,7 +188,7 @@ fn index_config(config: &Config) -> Result<Index> {
                 .sources
                 .iter()
                 .position(|s| s.default)
-                .ok_or_else(|| eyre::eyre!("No default source configured"))?,
+                .ok_or_else(|| anyhow::anyhow!("No default source configured"))?,
         )
     };
     let rule_sources = config
@@ -196,7 +196,7 @@ fn index_config(config: &Config) -> Result<Index> {
         .iter()
         .map(|rule| {
             if !rule.source_refs.is_empty() && default_source.is_none() {
-                eyre::bail!(
+                anyhow::bail!(
                     "Rule '{}' sets a source but no sources are configured",
                     rule.label()
                 );
@@ -204,7 +204,7 @@ fn index_config(config: &Config) -> Result<Index> {
             config
                 .resolve_rule_refs(Endpoint::Source, rule)
                 .ok_or_else(|| {
-                    eyre::eyre!(
+                    anyhow::anyhow!(
                         "Rule '{}' references an unknown source ({})",
                         rule.label(),
                         rule.source_refs.join(", ")

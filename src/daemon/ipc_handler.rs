@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use color_eyre::eyre::Result;
+use anyhow::Result;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};

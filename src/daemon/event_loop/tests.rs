@@ -166,7 +166,7 @@ impl FakeSwitcher {
             && *left > 0
         {
             *left -= 1;
-            eyre::bail!("fake failure for {name}");
+            anyhow::bail!("fake failure for {name}");
         }
         let current = match kind {
             Endpoint::Sink => &self.current,
@@ -203,7 +203,7 @@ impl FakeSwitcher {
                 Err(e) => errors.push(format!("{e:#}")),
             }
         }
-        eyre::bail!("{}", errors.join("; "))
+        anyhow::bail!("{}", errors.join("; "))
     }
 
     /// A source half riding along with a sink half, answered as `keep_answer` says
@@ -219,7 +219,7 @@ impl FakeSwitcher {
             }
             Some(Err(message)) => {
                 *self.current_source.lock().expect("lock") = None;
-                eyre::bail!("{message}")
+                anyhow::bail!("{message}")
             }
         }
     }

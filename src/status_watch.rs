@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use tokio::signal::unix::{SignalKind, signal};
 

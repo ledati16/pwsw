@@ -9,7 +9,7 @@
 //! [`ProtocolPreference::PreferWlr`](super::ProtocolPreference::PreferWlr) where that is
 //! needed and the compositor offers `wlr` too.
 
-use color_eyre::eyre::{Context, Result};
+use anyhow::{Context, Result};
 use tracing::error;
 use wayland_client::globals::GlobalList;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};

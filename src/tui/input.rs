@@ -436,7 +436,7 @@ fn list_keys<E: FormEditor>(
 }
 
 /// Report the result of moving the selected sink or rule `what` to `to`
-fn moved(app: &mut App, result: color_eyre::Result<()>, what: &str, to: usize) {
+fn moved(app: &mut App, result: anyhow::Result<()>, what: &str, to: usize) {
     match result {
         Ok(()) => {
             match app.current_screen {
@@ -452,7 +452,7 @@ fn moved(app: &mut App, result: color_eyre::Result<()>, what: &str, to: usize) {
 
 /// Report the result of a config change made from a form or dialog: `done`
 /// on success, the reason (keeping the form open) on failure
-fn changed(app: &mut App, result: color_eyre::Result<()>, done: &str) -> bool {
+fn changed(app: &mut App, result: anyhow::Result<()>, done: &str) -> bool {
     match result {
         Ok(()) => {
             app.mark_dirty();
@@ -509,7 +509,7 @@ fn type_key<E: FormEditor>(editor: &mut E, key: KeyEvent) {
 /// The config change behind each sink (source) operation of the Sinks screen:
 /// the `Config` method for `kind` (they keep every invariant)
 mod endpoint_ops {
-    use color_eyre::eyre::Result;
+    use anyhow::Result;
 
     use super::{Config, Endpoint, SinkConfig};
 

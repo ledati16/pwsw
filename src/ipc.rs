@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use color_eyre::eyre::{self, Context, Result};
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -386,19 +386,19 @@ fn verify_private_dir(dir: &Path, uid: u32) -> Result<()> {
     let meta = std::fs::symlink_metadata(dir)
         .with_context(|| format!("Failed to stat socket directory {}", dir.display()))?;
     if meta.file_type().is_symlink() {
-        eyre::bail!(
+        anyhow::bail!(
             "Refusing to use socket directory {}: it is a symlink.\n{hint}",
             dir.display()
         );
     }
     if !meta.is_dir() {
-        eyre::bail!(
+        anyhow::bail!(
             "Refusing to use socket directory {}: it is not a directory.\n{hint}",
             dir.display()
         );
     }
     if meta.uid() != uid {
-        eyre::bail!(
+        anyhow::bail!(
             "Refusing to use socket directory {}: it is owned by uid {} (expected {uid}).\n{hint}",
             dir.display(),
             meta.uid()
@@ -406,7 +406,7 @@ fn verify_private_dir(dir: &Path, uid: u32) -> Result<()> {
     }
     let mode = meta.permissions().mode() & 0o7777;
     if mode != 0o700 {
-        eyre::bail!(
+        anyhow::bail!(
             "Refusing to use socket directory {}: it has mode {mode:04o} (expected 0700).\n{hint}",
             dir.display()
         );
@@ -438,7 +438,7 @@ fn verify_peer_uid(stream: &UnixStream, expected_uid: u32) -> Result<()> {
         .peer_cred()
         .context("Failed to read IPC peer credentials")?;
     if cred.uid() != expected_uid {
-        eyre::bail!(
+        anyhow::bail!(
             "IPC peer runs as uid {} (expected uid {expected_uid})",
             cred.uid()
         );
@@ -462,7 +462,7 @@ async fn connect_verified(location: &SocketLocation, timeout: Duration) -> Resul
     if let Ok(meta) = std::fs::symlink_metadata(path)
         && meta.uid() != uid
     {
-        eyre::bail!(
+        anyhow::bail!(
             "Refusing to talk to {}: the socket is owned by uid {} (expected {uid}). \
              Another user may be impersonating the daemon.",
             path.display(),
@@ -537,7 +537,7 @@ pub async fn wait_for_daemon_exit(timeout: Duration) -> Result<()> {
             return Ok(());
         }
         if tokio::time::Instant::now() >= deadline {
-            eyre::bail!(
+            anyhow::bail!(
                 "Daemon still running after {:.1}s (socket {} is still accepting connections)",
                 timeout.as_secs_f64(),
                 path.display()
@@ -716,7 +716,7 @@ async fn read_frame_body(stream: &mut UnixStream, len_buf: [u8; 4]) -> Result<Ve
 
     // Check size before cast to prevent overflow on 32-bit systems
     if msg_len_u32 > u32::try_from(MAX_MESSAGE_SIZE).unwrap_or(u32::MAX) {
-        eyre::bail!("Message too large: {msg_len_u32} bytes (max: {MAX_MESSAGE_SIZE})");
+        anyhow::bail!("Message too large: {msg_len_u32} bytes (max: {MAX_MESSAGE_SIZE})");
     }
 
     let msg_len = msg_len_u32 as usize;
@@ -743,7 +743,7 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
     let json = serde_json::to_vec(message).context("Failed to serialize message")?;
 
     if json.len() > MAX_MESSAGE_SIZE {
-        eyre::bail!(
+        anyhow::bail!(
             "Message too large: {} bytes (max: {})",
             json.len(),
             MAX_MESSAGE_SIZE
@@ -783,7 +783,7 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
 pub async fn send_request(request: Request) -> Result<Response> {
     exchange(request)
         .await
-        .wrap_err_with(|| format!("No valid reply from the pwsw daemon; {RESTART_HINT}"))
+        .with_context(|| format!("No valid reply from the pwsw daemon; {RESTART_HINT}"))
 }
 
 async fn exchange(request: Request) -> Result<Response> {
