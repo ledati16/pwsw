@@ -18,7 +18,6 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::{fmt, fs};
 
 use color_eyre::eyre::{self, Context, ContextCompat, Result};
-use crossterm::style::Stylize;
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
@@ -662,24 +661,32 @@ impl Config {
     pub fn print_init_guidance(path: &Path) {
         eprintln!(
             "{} {}",
-            "✓".success(),
-            format!("Created default config at: {}", path.display()).success()
+            "✓".success().to_stderr(),
+            format!("Created default config at: {}", path.display())
+                .success()
+                .to_stderr()
         );
         eprintln!();
-        eprintln!("{}", "Next steps:".header());
+        eprintln!("{}", "Next steps:".header().to_stderr());
         eprintln!(
             "  Run {} for interactive setup (recommended)",
-            "pwsw tui".technical()
+            "pwsw tui".technical().to_stderr()
         );
         eprintln!();
         eprintln!("  Or configure manually:");
         eprintln!(
             "    {}  - discover audio outputs",
-            "pwsw list-sinks".technical()
+            "pwsw list-sinks".technical().to_stderr()
         );
         eprintln!("    Edit config file - add sinks and rules");
-        eprintln!("    {}    - check config", "pwsw validate".technical());
-        eprintln!("    {}      - start the daemon", "pwsw daemon".technical());
+        eprintln!(
+            "    {}    - check config",
+            "pwsw validate".technical().to_stderr()
+        );
+        eprintln!(
+            "    {}      - start the daemon",
+            "pwsw daemon".technical().to_stderr()
+        );
         eprintln!();
     }
 

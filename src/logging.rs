@@ -58,7 +58,11 @@ pub fn init_daemon_logging(dir: &Path, to_stderr: bool, level: &str) -> Result<D
 
     tracing_subscriber::registry()
         .with(filter_layer)
-        .with(to_stderr.then(fmt::layer))
+        .with(to_stderr.then(|| {
+            fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_ansi(crate::style::color_enabled(crate::style::Stream::Stderr))
+        }))
         .with(fmt::layer().with_writer(writer).with_ansi(false))
         .try_init()
         .context("Failed to install the daemon log subscriber")?;

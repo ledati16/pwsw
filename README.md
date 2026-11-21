@@ -91,7 +91,7 @@ pwsw
 pwsw status
 pwsw list-windows
 ```
-Show current status (default command), supports `--json` output. `list-windows` requires daemon.
+Show current status (default command), supports `--json` output (always valid JSON, with errors reported inside it; schema in `man pwsw`). `list-windows` requires daemon.
 
 **Daemon control:**
 ```bash
@@ -106,7 +106,7 @@ pwsw validate
 pwsw init
 pwsw list-sinks
 ```
-- `test-rule`: Test regex against tracked windows (requires daemon)
+- `test-rule`: Test regex against all open windows' `app_id` and title (requires daemon)
 - `validate`: Check config syntax (no daemon needed; reports a missing config instead of creating one)
 - `init`: Write the commented default config (refuses to overwrite; `--force` replaces it and keeps `config.toml.bak`)
 - `list-sinks`: List audio outputs (no daemon needed, supports `--json`)
@@ -121,7 +121,13 @@ pwsw prev-sink
 - `next-sink`: Cycle to next configured sink (wraps around)
 - `prev-sink`: Cycle to previous configured sink (wraps around)
 
-No daemon needed. Useful for keybindings.
+Go through the daemon when it runs, otherwise switch directly (no daemon needed). Useful for keybindings.
+
+**Shell completions:**
+```bash
+pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw
+```
+Also `zsh`, `fish`, `elvish`, `powershell`. Output is uncoloured when piped or with `NO_COLOR`; `--color always|never` overrides.
 
 ## Configuration
 

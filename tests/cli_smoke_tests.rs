@@ -194,8 +194,161 @@ fn cli_version_works() {
     let output = run(sb.cmd().arg("--version"));
 
     assert_exit(&output, 0);
-    let expected = format!("pwsw {}", env!("CARGO_PKG_VERSION"));
-    assert_eq!(stdout(&output).trim(), expected);
+    assert_eq!(stdout(&output).trim(), format!("pwsw {}", pwsw::VERSION));
+
+    // `<crate version>` or `<crate version>+<short hash>[-dirty]`, same as the daemon
+    let base = env!("CARGO_PKG_VERSION");
+    let rest = pwsw::VERSION
+        .strip_prefix(base)
+        .expect("version starts with the crate version");
+    if let Some(revision) = rest.strip_prefix('+') {
+        let hash = revision.strip_suffix("-dirty").unwrap_or(revision);
+        assert!(
+            hash.len() >= 7 && hash.bytes().all(|b| b.is_ascii_hexdigit()),
+            "bad commit hash in {:?}",
+            pwsw::VERSION
+        );
+    } else {
+        assert!(rest.is_empty(), "unexpected version suffix {rest:?}");
+    }
+    assert_eq!(pwsw::version_string(), format!("v{}", pwsw::VERSION));
+}
+
+/// Whether `bytes` contain an `ESC` (start of any terminal escape sequence)
+fn has_escape(bytes: &[u8]) -> bool {
+    bytes.contains(&0x1b)
+}
+
+#[test]
+fn cli_piped_output_has_no_escape_codes_by_default() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("valid.toml", VALID_CONFIG);
+    let missing = sb.dir("files").join("missing.toml");
+
+    // No `NO_COLOR`: piped output alone must turn styling off
+    let ok = run(sb
+        .cmd()
+        .env_remove("NO_COLOR")
+        .arg("--config")
+        .arg(&config)
+        .arg("validate"));
+    assert_exit(&ok, 0);
+    let failed = run(sb
+        .cmd()
+        .env_remove("NO_COLOR")
+        .arg("--config")
+        .arg(&missing)
+        .arg("validate"));
+    assert_exit(&failed, 1);
+    for output in [&ok, &failed] {
+        assert!(!has_escape(&output.stdout), "stdout: {:?}", stdout(output));
+        assert!(!has_escape(&output.stderr), "stderr: {:?}", stderr(output));
+    }
+}
+
+#[test]
+fn cli_color_always_styles_piped_output() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("valid.toml", VALID_CONFIG);
+    let missing = sb.dir("files").join("missing.toml");
+
+    // `--color always` wins over the sandbox's `NO_COLOR=1`
+    let ok = run(sb
+        .cmd()
+        .args(["--color", "always", "--config"])
+        .arg(&config)
+        .arg("validate"));
+    assert_exit(&ok, 0);
+    assert!(has_escape(&ok.stdout), "stdout: {:?}", stdout(&ok));
+
+    let failed = run(sb
+        .cmd()
+        .args(["validate", "--color", "always", "--config"])
+        .arg(&missing));
+    assert_exit(&failed, 1);
+    assert!(has_escape(&failed.stderr), "stderr: {:?}", stderr(&failed));
+}
+
+#[test]
+fn cli_no_color_beats_clicolor_force() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("valid.toml", VALID_CONFIG);
+
+    let forced = run(sb
+        .cmd()
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .arg("--config")
+        .arg(&config)
+        .arg("validate"));
+    assert_exit(&forced, 0);
+    assert!(has_escape(&forced.stdout), "CLICOLOR_FORCE=1 forces colour");
+
+    let output = run(sb
+        .cmd()
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR_FORCE", "1")
+        .args(["--color", "auto", "--config"])
+        .arg(&config)
+        .arg("validate"));
+    assert_exit(&output, 0);
+    assert!(!has_escape(&output.stdout), "stdout: {:?}", stdout(&output));
+    assert!(!has_escape(&output.stderr), "stderr: {:?}", stderr(&output));
+
+    let never = run(sb
+        .cmd()
+        .env_remove("NO_COLOR")
+        .env("CLICOLOR_FORCE", "1")
+        .args(["--color", "never", "--config"])
+        .arg(&config)
+        .arg("validate"));
+    assert!(!has_escape(&never.stdout), "--color never wins");
+}
+
+#[test]
+fn cli_errors_are_short_without_backtrace_request() {
+    let sb = Sandbox::new();
+    let missing = sb.dir("files").join("missing.toml");
+
+    let output = run(sb.cmd().arg("--config").arg(&missing).arg("validate"));
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.starts_with("error: Config file not found"), "{err}");
+    for noise in ["Location:", "RUST_BACKTRACE", "BACKTRACE", "src/"] {
+        assert!(
+            !err.contains(noise),
+            "stderr should not contain {noise:?}:\n{err}"
+        );
+    }
+
+    // Asking for backtraces brings the full report back (still without locations)
+    let output = run(sb
+        .cmd()
+        .env("RUST_BACKTRACE", "1")
+        .arg("--config")
+        .arg(&missing)
+        .arg("validate"));
+    assert_exit(&output, 1);
+    let err = stderr(&output);
+    assert!(err.starts_with("Error:"), "{err}");
+    assert!(err.contains("Config file not found"), "{err}");
+    assert!(!err.contains("Location:"), "{err}");
+}
+
+#[test]
+fn cli_completions_print_a_script() {
+    let sb = Sandbox::new();
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let output = run(sb.cmd().args(["completions", shell]));
+        assert_exit(&output, 0);
+        let script = stdout(&output);
+        assert!(
+            script.contains("pwsw") && script.contains("list-sinks"),
+            "{shell} completions look wrong:\n{script}"
+        );
+    }
+    let output = run(sb.cmd().args(["completions", "tcsh"]));
+    assert_exit(&output, 2);
 }
 
 #[test]
@@ -455,6 +608,58 @@ fn cli_status_reports_missing_pipewire_tools() {
 
     assert_exit(&output, 1);
     assert_stderr_contains(&output, "Failed to run `pw-dump`");
+    // The rest of the status is still shown
+    let out = stdout(&output);
+    assert!(out.contains("unavailable"), "{out}");
+    assert!(out.contains("Not running"), "{out}");
+    sb.assert_default_locations_untouched();
+}
+
+#[test]
+fn cli_status_json_is_valid_without_pipewire_or_daemon() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("status.toml", VALID_CONFIG);
+    let empty_bin = sb.dir("cache");
+
+    let output = run(sb
+        .cmd()
+        .env("PATH", &empty_bin)
+        .arg("--config")
+        .arg(&config)
+        .args(["status", "--json"]));
+
+    // Errors are reported inside the document, so status bars keep working
+    assert_exit(&output, 0);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status --json must print valid JSON");
+    assert_eq!(json["daemon"]["running"], false);
+    assert!(json["daemon"]["error"].is_null());
+    assert!(json["current_sink"].is_null());
+    assert!(json["pipewire"]["current_sink"].is_null());
+    let pw_error = json["pipewire"]["error"].as_str().expect("pipewire error");
+    assert!(pw_error.contains("pw-dump"), "{pw_error}");
+    assert!(json["config"]["error"].is_null());
+    assert_eq!(
+        json["config"]["path"].as_str(),
+        Some(config.display().to_string().as_str())
+    );
+
+    // A missing config is reported the same way
+    let missing = sb.dir("files").join("missing.toml");
+    let output = run(sb
+        .cmd()
+        .env("PATH", &empty_bin)
+        .arg("--config")
+        .arg(&missing)
+        .args(["status", "--json"]));
+    assert_exit(&output, 0);
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status --json must print valid JSON");
+    let config_error = json["config"]["error"].as_str().expect("config error");
+    assert!(
+        config_error.contains("Config file not found"),
+        "{config_error}"
+    );
     sb.assert_default_locations_untouched();
 }
 

@@ -1,249 +1,201 @@
 //! Terminal styling utilities
 //!
-//! Provides consistent color scheme across all CLI commands and TUI using the "Moderate+" approach:
-//! - Semantic colors for status (green/yellow/red)
-//! - Cyan for headers and technical terms
-//! - Bold for important identifiers
-//! - Dim for secondary information
+//! CLI output goes through [`PwswStyle`], which wraps a value in [`Painted`]: it
+//! carries a style and prints escape sequences only when colour is enabled for the
+//! stream it is written to. Whether colour is enabled is decided once at startup by
+//! [`init`] (`--color`, `NO_COLOR`, `CLICOLOR_FORCE`, and whether the stream is a
+//! terminal); until then nothing is styled.
 //!
-//! This module defines a unified color palette used by both CLI output and the TUI,
-//! ensuring consistent visual language throughout the application.
+//! Colour scheme ("Moderate+"):
+//! - Semantic colours for status (green / yellow / red)
+//! - Cyan for headers and technical terms
+//! - Bold for important identifiers, dim for secondary information
+//!
+//! The TUI uses the [`colors`] palette with `ratatui` instead.
 
-use crossterm::style::Stylize;
+use std::ffi::OsStr;
+use std::fmt;
+use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Extension trait for consistent PWSW styling
+use crossterm::style::{Attribute, Color, ContentStyle, StyledContent};
+
+// ============================================================================
+// Colour decision
+// ============================================================================
+
+/// When to colour output (`--color`)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ColorChoice {
+    /// Colour when the stream is a terminal and `NO_COLOR` is unset or empty
+    /// (`CLICOLOR_FORCE` forces colour on)
+    #[default]
+    Auto,
+    /// Always colour, even when piped or with `NO_COLOR` set
+    Always,
+    /// Never colour
+    Never,
+}
+
+/// Output stream a styled value is written to
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+static STDOUT_COLOR: AtomicBool = AtomicBool::new(false);
+static STDERR_COLOR: AtomicBool = AtomicBool::new(false);
+
+/// Decide once, at startup, whether stdout and stderr get colour
 ///
-/// This trait extends crossterm's `Stylize` with semantic styling methods
-/// that enforce our color scheme. Use these methods instead of direct color
-/// calls to ensure consistency across all CLI output.
+/// With [`ColorChoice::Always`] this also overrides `crossterm`'s own `NO_COLOR`
+/// handling, so the choice holds for everything drawn with `crossterm`.
+pub fn init(choice: ColorChoice) {
+    let no_color = std::env::var_os("NO_COLOR");
+    let force = std::env::var_os("CLICOLOR_FORCE");
+    let decide =
+        |is_terminal| should_color(choice, is_terminal, no_color.as_deref(), force.as_deref());
+    STDOUT_COLOR.store(decide(std::io::stdout().is_terminal()), Ordering::Relaxed);
+    STDERR_COLOR.store(decide(std::io::stderr().is_terminal()), Ordering::Relaxed);
+    if choice == ColorChoice::Always {
+        crossterm::style::force_color_output(true);
+    }
+}
+
+/// Whether styled output to `stream` emits escape sequences (see [`init`])
+#[must_use]
+pub fn color_enabled(stream: Stream) -> bool {
+    match stream {
+        Stream::Stdout => STDOUT_COLOR.load(Ordering::Relaxed),
+        Stream::Stderr => STDERR_COLOR.load(Ordering::Relaxed),
+    }
+}
+
+/// The colour rule: `--color` wins; otherwise a non-empty `NO_COLOR` turns colour
+/// off, `CLICOLOR_FORCE` (set and not `0`) turns it on, and else it follows whether
+/// the stream is a terminal.
+fn should_color(
+    choice: ColorChoice,
+    is_terminal: bool,
+    no_color: Option<&OsStr>,
+    clicolor_force: Option<&OsStr>,
+) -> bool {
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => {
+            if no_color.is_some_and(|v| !v.is_empty()) {
+                false
+            } else if clicolor_force.is_some_and(|v| !v.is_empty() && v != "0") {
+                true
+            } else {
+                is_terminal
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Styled values
+// ============================================================================
+
+/// A value with a style, printed plain when colour is off for its stream
+#[derive(Debug, Clone)]
+#[must_use]
+pub struct Painted<T> {
+    value: T,
+    style: ContentStyle,
+    stream: Stream,
+}
+
+impl<T> Painted<T> {
+    /// Mark this value as written to stderr (styled per stderr's colour decision)
+    pub fn to_stderr(mut self) -> Self {
+        self.stream = Stream::Stderr;
+        self
+    }
+}
+
+impl<T: fmt::Display> fmt::Display for Painted<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if color_enabled(self.stream) {
+            StyledContent::new(self.style, &self.value).fmt(f)
+        } else {
+            self.value.fmt(f)
+        }
+    }
+}
+
+fn paint<T>(value: T, color: Option<Color>, attribute: Option<Attribute>) -> Painted<T> {
+    let mut style = ContentStyle::new();
+    style.foreground_color = color;
+    if let Some(attribute) = attribute {
+        style.attributes.set(attribute);
+    }
+    Painted {
+        value,
+        style,
+        stream: Stream::Stdout,
+    }
+}
+
+/// Semantic styling for CLI output
+///
+/// Styled values go to stdout by default; call [`Painted::to_stderr`] for values
+/// printed to stderr.
 ///
 /// # Examples
 ///
 /// ```
-/// use crossterm::style::Stylize;
 /// use pwsw::style::PwswStyle;
 ///
 /// println!("{}", "Section Header".header());
 /// println!("{}", "Success message".success());
-/// println!("{}", "/path/to/config".technical());
+/// eprintln!("{}", "Something failed".error().to_stderr());
 /// ```
-pub trait PwswStyle: Stylize {
-    /// Style for section headers (cyan bold)
-    ///
-    /// Use for main section titles like "ACTIVE SINKS:", "Daemon", etc.
-    fn header(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.cyan().bold()
+pub trait PwswStyle: Sized + fmt::Display {
+    /// Section headers like "ACTIVE SINKS:" (cyan bold)
+    fn header(self) -> Painted<Self> {
+        paint(self, Some(Color::Cyan), Some(Attribute::Bold))
     }
 
-    /// Style for success/active status (green)
-    ///
-    /// Use for positive states: "Running", "active", success messages, etc.
-    fn success(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.green()
+    /// Positive states: "Running", "active", success messages (green)
+    fn success(self) -> Painted<Self> {
+        paint(self, Some(Color::Green), None)
     }
 
-    /// Style for error/missing status (red)
-    ///
-    /// Use for problems: "not found", "Not running", error messages, etc.
-    fn error(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.red()
+    /// Problems: "not found", "Not running", error messages (red)
+    fn error(self) -> Painted<Self> {
+        paint(self, Some(Color::Red), None)
     }
 
-    /// Style for warning/partial status (yellow)
-    ///
-    /// Use for warnings or partial states: "profile switch", warnings, etc.
-    fn warning(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.yellow()
+    /// Warnings or partial states: "profile switch" (yellow)
+    fn warning(self) -> Painted<Self> {
+        paint(self, Some(Color::Yellow), None)
     }
 
-    /// Style for technical terms and identifiers (cyan)
-    ///
-    /// Use for technical content: regex patterns, counts, paths, etc.
-    fn technical(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.cyan()
+    /// Technical content: regex patterns, counts, paths (cyan)
+    fn technical(self) -> Painted<Self> {
+        paint(self, Some(Color::Cyan), None)
     }
 
-    // ========================================================================
-    // TUI Log Styling
-    // ========================================================================
-
-    /// Style for log timestamps (dark gray, dim)
-    ///
-    /// Use for log line timestamps to keep them subtle and unobtrusive.
-    fn log_timestamp(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.dark_grey()
+    /// Important identifiers: node names, descriptions (bold)
+    fn bold(self) -> Painted<Self> {
+        paint(self, None, Some(Attribute::Bold))
     }
 
-    /// Style for INFO log level (green)
-    ///
-    /// Use for INFO level indicator in log lines.
-    fn log_level_info(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.green()
-    }
-
-    /// Style for DEBUG log level (cyan)
-    ///
-    /// Use for DEBUG level indicator in log lines.
-    fn log_level_debug(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.cyan()
-    }
-
-    /// Style for TRACE log level (magenta)
-    ///
-    /// Use for TRACE level indicator in log lines.
-    fn log_level_trace(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.magenta()
-    }
-
-    /// Style for WARN log level (yellow bold)
-    ///
-    /// Use for WARN level indicator in log lines to draw attention.
-    fn log_level_warn(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.yellow().bold()
-    }
-
-    /// Style for ERROR log level (red bold)
-    ///
-    /// Use for ERROR level indicator in log lines to draw immediate attention.
-    fn log_level_error(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.red().bold()
-    }
-
-    /// Style for log keywords (cyan)
-    ///
-    /// Use for technical markers in logs: `app_id=`, `title=`, `id=`, etc.
-    fn log_keyword(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.cyan()
-    }
-
-    /// Style for log events (green bold)
-    ///
-    /// Use for important event markers: "Rule matched:", "Switching:", etc.
-    fn log_event(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.green().bold()
-    }
-
-    /// Style for log close events (yellow bold)
-    ///
-    /// Use for closing/removal events: "Window closed:", "Tracked window closed:", etc.
-    fn log_event_close(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.yellow().bold()
-    }
-
-    // ========================================================================
-    // TUI UI Element Styling
-    // ========================================================================
-
-    /// Style for active/live UI borders (green)
-    ///
-    /// Use for borders of active elements: live log viewer, running daemon status, etc.
-    fn ui_border_active(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.green()
-    }
-
-    /// Style for inactive/stopped UI borders (gray)
-    ///
-    /// Use for borders of inactive elements: stopped daemon status, disabled features, etc.
-    fn ui_border_inactive(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.grey()
-    }
-
-    /// Style for selected/focused UI elements (cyan bold on dark gray background)
-    ///
-    /// Use for currently selected items in lists, menus, etc.
-    /// Returns a styled value - use with ratatui's `Style::default()` wrapper.
-    fn ui_selected(self) -> <<Self as Stylize>::Styled as Stylize>::Styled
-    where
-        Self: Sized,
-        <Self as Stylize>::Styled: Stylize,
-    {
-        self.cyan().bold()
-    }
-
-    /// Style for UI element highlights (cyan)
-    ///
-    /// Use for highlighted UI elements: sink names, rule descriptions, card borders, etc.
-    fn ui_highlight(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.cyan()
-    }
-
-    /// Style for statistics/counts (yellow)
-    ///
-    /// Use for numeric stats and counts in cards: window count, rule count, etc.
-    fn ui_stat(self) -> <Self as Stylize>::Styled
-    where
-        Self: Sized,
-    {
-        self.yellow()
+    /// Secondary information: labels, markers (dim)
+    fn dim(self) -> Painted<Self> {
+        paint(self, None, Some(Attribute::Dim))
     }
 }
 
-// Implement for all types that implement Stylize (String, &str, etc.)
-impl<T: Stylize> PwswStyle for T {}
+impl<T: fmt::Display> PwswStyle for T {}
 
 // ============================================================================
 // Ratatui TUI Color Helpers
 // ============================================================================
-//
-// These functions provide semantic color values for use with ratatui's Style API.
-// They mirror the semantic intent of the PwswStyle trait methods above but return
-// raw Color values instead of styled strings.
 
 /// Semantic color palette for TUI use with `ratatui`
 #[cfg(feature = "tui")]
@@ -334,4 +286,45 @@ pub mod colors {
 
     /// Background color for modals, overlays, and popups (black for contrast)
     pub const UI_MODAL_BG: Color = Color::Black;
+}
+
+#[cfg(test)]
+mod tests {
+    use test_case::test_case;
+
+    use super::*;
+
+    #[test_case(ColorChoice::Auto, true, None, None, true ; "auto terminal")]
+    #[test_case(ColorChoice::Auto, false, None, None, false ; "auto piped")]
+    #[test_case(ColorChoice::Auto, true, Some("1"), None, false ; "no_color on terminal")]
+    #[test_case(ColorChoice::Auto, true, Some(""), None, true ; "empty no_color ignored")]
+    #[test_case(ColorChoice::Auto, false, None, Some("1"), true ; "clicolor_force piped")]
+    #[test_case(ColorChoice::Auto, false, None, Some("0"), false ; "clicolor_force zero")]
+    #[test_case(ColorChoice::Auto, true, Some("1"), Some("1"), false ; "no_color beats force")]
+    #[test_case(ColorChoice::Always, false, Some("1"), None, true ; "always wins")]
+    #[test_case(ColorChoice::Never, true, None, Some("1"), false ; "never wins")]
+    fn test_should_color(
+        choice: ColorChoice,
+        is_terminal: bool,
+        no_color: Option<&str>,
+        force: Option<&str>,
+        expected: bool,
+    ) {
+        assert_eq!(
+            should_color(
+                choice,
+                is_terminal,
+                no_color.map(OsStr::new),
+                force.map(OsStr::new)
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_painted_is_plain_when_colour_off() {
+        // `init` is never called in unit tests, so both streams are uncoloured
+        assert_eq!("x".header().to_string(), "x");
+        assert_eq!("y".dim().to_stderr().to_string(), "y");
+    }
 }

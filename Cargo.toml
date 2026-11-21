@@ -16,6 +16,7 @@ tui = ["dep:ratatui", "dep:tui-input", "dep:throbber-widgets-tui", "dep:futures-
 [dependencies]
 # CLI argument parsing
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"   # `pwsw completions <shell>`
 
 # Async runtime - minimal features for Unix socket + signals
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time"] }
@@ -76,7 +77,6 @@ strip = true        # Remove debug symbols (smaller binary, no runtime cost)
 panic = "abort"     # Immediate termination on panic (systemd restarts daemon)
 
 [build-dependencies]
-built = { version = "0.9", features = ["git2"] }
 mandown = "1"
 
 [dev-dependencies]
@@ -104,8 +104,4 @@ struct_excessive_bools = "allow"
 # Event loops, TUI screens, input handlers - cohesive logic hard to split
 too_many_lines = "allow"
 
-# === Generated Code (2 instances in src/lib.rs) ===
-# needless_raw_string_hashes, doc_markdown - kept as local #[allow] attributes
-# (defensive: built 0.9 output does not currently trigger them)
-# Total suppressed by this table: 20 (3 + 17). Local allows elsewhere: 2 in
-# src/lib.rs (above).
+# Total suppressed by this table: 20 (3 + 17).

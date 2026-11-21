@@ -28,7 +28,7 @@ The **[settings]** section controls global daemon behavior.
 :   Show desktop notifications for automatic rule-based switches.
 
 **match_by_index** (boolean)
-:   If true, the first matching rule in the list wins (priority by position). If false, the most recently focused window wins (priority by time).
+:   If true, the first matching rule in the list wins (priority by position). If false, the most recently opened (or started matching) window wins (priority by time).
     
     *Tip:* Rules can be reordered in the TUI using `Shift+Up/Down` to adjust priority.
 

@@ -8,7 +8,6 @@ use std::collections::HashSet;
 use std::fmt::Write;
 
 use color_eyre::eyre::{self, Result};
-use crossterm::style::Stylize;
 use tracing::{info, warn};
 
 use crate::config::Config;
@@ -238,7 +237,29 @@ async fn switch_via_daemon(request: Request) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => eyre::bail!("{message}"),
-        _ => eyre::bail!("Unexpected response from daemon"),
+        other => Err(unexpected_response(&other)),
+    }
+}
+
+/// Error for a reply that does not fit the request (likely a version mismatch)
+fn unexpected_response(response: &Response) -> eyre::Report {
+    eyre::eyre!(
+        "Unexpected response from daemon ({}); {}",
+        response_kind(response),
+        ipc::RESTART_HINT
+    )
+}
+
+/// Name of a response variant, for error messages
+fn response_kind(response: &Response) -> &'static str {
+    match response {
+        Response::Status { .. } => "Status",
+        Response::Ok { .. } => "Ok",
+        Response::Error { .. } => "Error",
+        Response::Windows { .. } => "Windows",
+        Response::RuleMatches { .. } => "RuleMatches",
+        Response::ManagerInfo { .. } => "ManagerInfo",
+        Response::SinkSwitched { .. } => "SinkSwitched",
     }
 }
 
@@ -370,106 +391,193 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
 // IPC-based Commands (require daemon)
 // ============================================================================
 
-/// Query system and daemon status (hybrid local+`IPC` command)
-///
-/// # Errors
-/// Returns an error if `PipeWire` query fails or `IPC` communication fails.
-pub async fn status(config: &Config, json_output: bool) -> Result<()> {
-    // Always query `PipeWire` for current sink (works with or without daemon)
-    let current_sink_name = PipeWire::get_default_sink_name()?;
-    let current_sink_desc = config
-        .sinks
-        .iter()
-        .find(|s| s.name == current_sink_name)
-        .map_or(current_sink_name.as_str(), |s| s.desc.as_str());
+/// What the daemon said about itself (see [`status`])
+#[derive(Debug, Default)]
+struct DaemonStatus {
+    running: bool,
+    error: Option<String>,
+    version: Option<String>,
+    protocol: Option<u32>,
+    uptime_secs: Option<u64>,
+    daemon_sink: Option<String>,
+    active_window: Option<String>,
+    tracked_windows: Option<usize>,
+}
 
-    // Try to query daemon status (non-fatal if fails)
-    let daemon_running = ipc::is_daemon_running().await;
-    let daemon_info = if daemon_running {
+impl DaemonStatus {
+    /// Ask the daemon (if one runs) for its status
+    async fn query() -> Self {
+        if !ipc::is_daemon_running().await {
+            return Self::default();
+        }
+        let error = |message: String| Self {
+            running: true,
+            error: Some(message),
+            ..Self::default()
+        };
         match ipc::send_request(Request::Status).await {
             Ok(Response::Status {
                 version,
+                protocol,
                 uptime_secs,
                 current_sink,
                 active_window,
                 tracked_windows,
-            }) => Some((
-                version,
-                uptime_secs,
-                current_sink,
+            }) => Self {
+                running: true,
+                error: (protocol != ipc::PROTOCOL_VERSION).then(|| {
+                    format!(
+                        "Daemon {version} speaks IPC protocol {protocol}, this pwsw speaks \
+                         protocol {}; {}",
+                        ipc::PROTOCOL_VERSION,
+                        ipc::RESTART_HINT
+                    )
+                }),
+                version: Some(version),
+                protocol: Some(protocol),
+                uptime_secs: Some(uptime_secs),
+                daemon_sink: Some(current_sink),
                 active_window,
-                tracked_windows,
-            )),
-            _ => None,
-        }
-    } else {
-        None
-    };
-
-    // Output
-    if json_output {
-        let daemon_json =
-            if let Some((version, uptime_secs, daemon_sink, active_window, tracked_windows)) =
-                daemon_info
-            {
-                serde_json::json!({
-                    "running": true,
-                    "version": version,
-                    "uptime_secs": uptime_secs,
-                    "uptime_human": crate::format_uptime(uptime_secs),
-                    "daemon_sink": daemon_sink,
-                    "active_window": active_window,
-                    "tracked_windows": tracked_windows,
-                })
-            } else {
-                serde_json::json!({
-                    "running": false,
-                })
-            };
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "current_sink": {
-                    "name": current_sink_name,
-                    "description": current_sink_desc,
-                },
-                "daemon": daemon_json,
-            }))?
-        );
-    } else {
-        // Human-readable output
-        println!("{}", "Audio Output".header());
-        println!("{}", "-".repeat(12));
-        println!("{} {}", "Current:".dim(), current_sink_desc.bold());
-        println!();
-        println!("{}", "Daemon".header());
-        println!("{}", "-".repeat(6));
-
-        if let Some((version, uptime_secs, _daemon_sink, active_window, tracked_windows)) =
-            daemon_info
-        {
-            println!(
-                "{} {}",
-                "Status:".dim(),
-                format!("Running (uptime: {})", crate::format_uptime(uptime_secs)).success()
-            );
-            println!("{} {}", "Version:".dim(), version);
-            if let Some(rule) = active_window {
-                println!("{} {}", "Active Rule:".dim(), rule.technical());
-            }
-            println!(
-                "{} {}",
-                "Tracked Windows:".dim(),
-                tracked_windows.to_string().technical()
-            );
-        } else {
-            println!("{} {}", "Status:".dim(), "Not running".error());
-            println!("  Start with: {}", "pwsw daemon".technical());
+                tracked_windows: Some(tracked_windows),
+            },
+            Ok(Response::Error { message }) => error(message),
+            Ok(other) => error(format!("{:#}", unexpected_response(&other))),
+            Err(e) => error(format!("{e:#}")),
         }
     }
 
-    Ok(())
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "running": self.running,
+            "error": self.error,
+            "version": self.version,
+            "protocol": self.protocol,
+            "uptime_secs": self.uptime_secs,
+            "uptime_human": self.uptime_secs.map(crate::format_uptime),
+            "daemon_sink": self.daemon_sink,
+            "active_window": self.active_window,
+            "tracked_windows": self.tracked_windows,
+        })
+    }
+}
+
+/// Show the current audio output and daemon status (works without a daemon)
+///
+/// Never fails as a whole: a part that cannot be determined (config, `PipeWire`,
+/// daemon) is reported as such, and the rest is still shown. With `json_output`
+/// the output is always one valid `JSON` document (schema in pwsw(1)); otherwise
+/// problems are also printed to stderr as `error:` lines.
+///
+/// Returns whether everything could be determined (no part errored; a daemon that
+/// is not running is not an error). Always `true` with `json_output`: errors are part
+/// of the document, and status bars treat a failing command as "hide the module".
+pub async fn status(config: Result<Config>, json_output: bool) -> bool {
+    let config_path = Config::get_config_path().ok();
+    let (config, config_error) = match config {
+        Ok(config) => (Some(config), None),
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+
+    // `PipeWire` is queried directly (works with or without daemon)
+    let current_sink = match tokio::task::spawn_blocking(PipeWire::get_default_sink_name).await {
+        Ok(result) => result,
+        Err(e) => Err(eyre::eyre!("PipeWire query task failed: {e}")),
+    };
+    let (current_sink, pipewire_error) = match current_sink {
+        Ok(name) => {
+            let description = config
+                .as_ref()
+                .and_then(|c| c.sinks.iter().find(|s| s.name == name))
+                .map_or_else(|| name.clone(), |s| s.desc.clone());
+            (Some((name, description)), None)
+        }
+        Err(e) => (None, Some(format!("{e:#}"))),
+    };
+
+    let daemon = DaemonStatus::query().await;
+
+    let healthy = config_error.is_none() && pipewire_error.is_none() && daemon.error.is_none();
+
+    if json_output {
+        let current_sink_json = current_sink.as_ref().map(
+            |(name, description)| serde_json::json!({ "name": name, "description": description }),
+        );
+        let output = serde_json::json!({
+            "current_sink": current_sink_json,
+            "daemon": daemon.to_json(),
+            "pipewire": {
+                "current_sink": current_sink_json,
+                "error": pipewire_error,
+            },
+            "config": {
+                "path": config_path.as_ref().map(|p| p.display().to_string()),
+                "error": config_error,
+            },
+        });
+        // A `Value` always serializes; fall back to compact output just in case
+        let text = serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
+        println!("{text}");
+        return true;
+    }
+
+    for error in [&config_error, &pipewire_error, &daemon.error]
+        .into_iter()
+        .flatten()
+    {
+        eprintln!("{} {error}", "error:".error().to_stderr());
+    }
+
+    println!("{}", "Audio Output".header());
+    println!("{}", "-".repeat(12));
+    match &current_sink {
+        Some((_, description)) => println!("{} {}", "Current:".dim(), description.as_str().bold()),
+        None => println!(
+            "{} {}",
+            "Current:".dim(),
+            "unavailable (PipeWire error)".error()
+        ),
+    }
+    println!();
+    println!("{}", "Daemon".header());
+    println!("{}", "-".repeat(6));
+
+    if !daemon.running {
+        println!("{} {}", "Status:".dim(), "Not running".error());
+        println!("  Start with: {}", "pwsw daemon".technical());
+    } else if let Some(uptime_secs) = daemon.uptime_secs {
+        println!(
+            "{} {}",
+            "Status:".dim(),
+            format!("Running (uptime: {})", crate::format_uptime(uptime_secs)).success()
+        );
+        if let Some(version) = &daemon.version {
+            println!("{} {}", "Version:".dim(), version);
+        }
+        if daemon.error.is_some() {
+            println!(
+                "  {}",
+                "IPC protocol mismatch: restart the daemon".warning()
+            );
+        }
+        if let Some(rule) = &daemon.active_window {
+            println!("{} {}", "Active Rule:".dim(), rule.as_str().technical());
+        }
+        if let Some(tracked) = daemon.tracked_windows {
+            println!(
+                "{} {}",
+                "Tracked Windows:".dim(),
+                tracked.to_string().technical()
+            );
+        }
+    } else {
+        println!(
+            "{} {}",
+            "Status:".dim(),
+            "Running, but its status could not be read (see error)".error()
+        );
+    }
+
+    healthy
 }
 
 /// Gracefully shutdown the daemon
@@ -489,11 +597,9 @@ pub async fn shutdown() -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            eyre::bail!("Error: {message}");
+            eyre::bail!("{message}");
         }
-        _ => {
-            eyre::bail!("Unexpected response from daemon");
-        }
+        other => Err(unexpected_response(&other)),
     }
 }
 
@@ -562,11 +668,9 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            eyre::bail!("Error: {message}");
+            eyre::bail!("{message}");
         }
-        _ => {
-            eyre::bail!("Unexpected response from daemon");
-        }
+        other => Err(unexpected_response(&other)),
     }
 }
 
@@ -635,10 +739,8 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
             Ok(())
         }
         Response::Error { message } => {
-            eyre::bail!("Error: {message}");
+            eyre::bail!("{message}");
         }
-        _ => {
-            eyre::bail!("Unexpected response from daemon");
-        }
+        other => Err(unexpected_response(&other)),
     }
 }

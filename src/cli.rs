@@ -3,14 +3,18 @@
 //! Uses clap for argument parsing with derive macros.
 
 use clap::{Parser, Subcommand};
+use clap_complete::Shell;
+
+use crate::style::ColorChoice;
 
 /// `PWSW` - `PipeWire` Switcher
 ///
 /// Automatically switch audio sinks based on active windows.
 #[derive(Parser)]
 #[command(name = "pwsw")]
-#[command(version)]
+#[command(version = crate::VERSION)]
 #[command(about = "PipeWire Switcher - Automatically switch audio sinks based on active windows")]
+#[command(long_about = None)]
 #[command(after_help = "\
 GETTING STARTED:
   1. pwsw init             Create a commented config (or use: pwsw tui)
@@ -25,38 +29,44 @@ DAEMON CONTROL:
   shutdown             Stop the daemon
 
 QUERYING (requires running daemon):
-  [no subcommand]     Show status, uptime, and current audio output
-  status              Same as above (supports --json)
   list-windows        Show all open windows (tracked vs untracked)
   test-rule PATTERN   Test regex against windows (checks app_id & title)
 
 QUERYING (no daemon needed):
+  [no subcommand]     Show current audio output and daemon status
+  status              Same as above (supports --json)
   list-sinks          List available PipeWire audio outputs
   validate            Check config file syntax
   init [--force]      Write the commented default config
 
-MANUAL SINK CONTROL (no daemon needed):
+MANUAL SINK CONTROL (through the daemon when it runs, otherwise directly):
   set-sink SINK       Switch to specific sink (by desc, name, or position 1/2/3)
   next-sink           Cycle to next configured sink (wraps around)
   prev-sink           Cycle to previous configured sink (wraps around)
 
 HOW IT WORKS:
   The daemon monitors Wayland windows and switches audio outputs based on
-  rules in your config file. Most recently opened matching window wins.
-  When all matching windows close, returns to default output.
+  rules in your config file. The most recently opened matching window wins
+  (or the first matching rule, with match_by_index). When all matching
+  windows close, it returns to the default output.
 
 CONFIG & IPC:
-  Config: ~/.config/pwsw/config.toml
+  Config: $XDG_CONFIG_HOME/pwsw/config.toml (normally ~/.config/pwsw/config.toml)
           (override with --config PATH or the PWSW_CONFIG env var)
   Socket: $XDG_RUNTIME_DIR/pwsw.sock
 
-  After editing config, restart the daemon:
-    pwsw shutdown && pwsw daemon")]
+  The daemon picks up config changes automatically when the file is saved.
+
+  Shell completions: pwsw completions <bash|zsh|fish|elvish|powershell>")]
 pub struct Args {
     /// Use this config file instead of `$XDG_CONFIG_HOME/pwsw/config.toml`
     /// (overrides `PWSW_CONFIG`)
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<std::path::PathBuf>,
+
+    /// When to use colours (`auto` honours `NO_COLOR` and `CLICOLOR_FORCE`)
+    #[arg(long, global = true, value_name = "WHEN", value_enum, default_value_t)]
+    pub color: ColorChoice,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -72,9 +82,9 @@ pub enum Command {
         foreground: bool,
     },
 
-    /// Show daemon status, uptime, and current audio output
+    /// Show the current audio output and daemon status (no daemon needed)
     Status {
-        /// Output in JSON format
+        /// Output in `JSON` format (always valid `JSON`, errors included; see pwsw(1))
         #[arg(long)]
         json: bool,
     },
@@ -82,21 +92,21 @@ pub enum Command {
     /// Stop the daemon gracefully
     Shutdown,
 
-    /// List available `PipeWire` audio outputs
+    /// List available `PipeWire` audio outputs (no daemon needed)
     ListSinks {
-        /// Output in JSON format
+        /// Output in `JSON` format
         #[arg(long)]
         json: bool,
     },
 
-    /// Show all open windows (tracked vs untracked)
+    /// Show all open windows, tracked (matching a rule) or not (requires daemon)
     ListWindows {
         /// Output in `JSON` format
         #[arg(long)]
         json: bool,
     },
 
-    /// Check config file syntax (no daemon needed)
+    /// Check the config file (syntax, sinks, rules, regexes); does not create one
     Validate,
 
     /// Write the commented default config file (refuses to overwrite without `--force`)
@@ -106,7 +116,7 @@ pub enum Command {
         force: bool,
     },
 
-    /// Test regex pattern against all windows (`app_id` & title)
+    /// Test a regex against all open windows' `app_id` and title (requires daemon)
     TestRule {
         /// Regex pattern to test
         pattern: String,
@@ -117,17 +127,27 @@ pub enum Command {
     },
 
     /// Set audio output (by desc, node name, or position like "1", "2")
+    ///
+    /// With `set_smart_toggle`, asking for the sink that is already active switches
+    /// back to the default sink. Goes through the daemon when it runs.
     SetSink {
         /// Sink reference (description, node name, or position)
         sink: String,
     },
 
-    /// Cycle to next configured sink
+    /// Cycle to the next configured sink (wraps around)
     NextSink,
 
-    /// Cycle to previous configured sink
+    /// Cycle to the previous configured sink (wraps around)
     PrevSink,
 
     /// Terminal UI for configuration and monitoring
     Tui,
+
+    /// Print a shell completion script to stdout
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: Shell,
+    },
 }

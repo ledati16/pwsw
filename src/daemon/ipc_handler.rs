@@ -72,7 +72,16 @@ pub(crate) async fn handle_connection(
     commands: &mpsc::Sender<Command>,
     info: &ServerInfo,
 ) -> Result<()> {
-    let request = ipc::read_request(&mut stream).await?;
+    let request = match ipc::read_request(&mut stream).await? {
+        Ok(request) => request,
+        Err(e) => {
+            // Most likely a newer client talking to this (older) daemon: tell it so
+            // instead of dropping the connection
+            info!("Unsupported IPC request: {e}");
+            let reply = ipc::unsupported_request(&info.version, &e);
+            return ipc::write_response(&mut stream, &reply).await;
+        }
+    };
 
     if matches!(request, Request::Shutdown) {
         info!("Shutdown requested via IPC");
@@ -161,6 +170,7 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
         .map_or_else(|| current.to_string(), |s| s.desc.clone());
     Response::Status {
         version: info.version.clone(),
+        protocol: ipc::PROTOCOL_VERSION,
         uptime_secs: info.started.elapsed().as_secs(),
         current_sink,
         active_window: snapshot.active_window.clone(),

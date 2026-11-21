@@ -641,6 +641,86 @@ async fn test_set_sink_over_ipc_stream() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// Send one raw `IPC` frame to `handle_connection` and return the parsed reply
+async fn raw_ipc_exchange(h: &Harness, body: &[u8]) -> Response {
+    let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
+    let commands = h.commands.clone();
+    let server_task = tokio::spawn(async move {
+        let info = ServerInfo {
+            version: "v9.9.9+test".to_string(),
+            started: std::time::Instant::now(),
+            daemon_manager: DaemonManager::Direct,
+        };
+        handle_connection(server, &commands, &info).await
+    });
+
+    let len = u32::try_from(body.len()).expect("small message");
+    within("request to be written", async {
+        client.write_all(&len.to_be_bytes()).await.expect("write");
+        client.write_all(body).await.expect("write");
+    })
+    .await;
+
+    let buf = within("response", async {
+        let mut len = [0_u8; 4];
+        client.read_exact(&mut len).await.expect("read length");
+        let mut buf = vec![0_u8; usize::try_from(u32::from_be_bytes(len)).expect("fits")];
+        client.read_exact(&mut buf).await.expect("read body");
+        buf
+    })
+    .await;
+    within("server task", server_task)
+        .await
+        .expect("server task")
+        .expect("handled");
+    serde_json::from_slice(&buf).expect("response json")
+}
+
+/// A request this daemon cannot parse (e.g. from a newer client) gets an error
+/// naming the daemon's version and protocol, not a dropped connection
+#[tokio::test]
+async fn test_unparseable_request_gets_versioned_error() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    for body in [
+        &br#"{"type":"SomeFutureRequest","arg":1}"#[..],
+        &b"not json at all"[..],
+    ] {
+        let response = raw_ipc_exchange(&h, body).await;
+        let Response::Error { message } = response else {
+            panic!("expected an error reply, got {response:?}");
+        };
+        assert!(message.contains("v9.9.9+test"), "{message}");
+        assert!(
+            message.contains(&format!("protocol {}", crate::ipc::PROTOCOL_VERSION)),
+            "{message}"
+        );
+        assert!(
+            message.contains("systemctl --user restart pwsw"),
+            "{message}"
+        );
+    }
+    // The daemon keeps serving afterwards
+    assert_eq!(h.snapshot().await.applied.as_deref(), Some("speakers"));
+    h.stop().await.expect("clean shutdown");
+}
+
+/// `Status` reports the daemon's version and `IPC` protocol
+#[tokio::test]
+async fn test_status_reports_version_and_protocol() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let body = serde_json::to_vec(&Request::Status).expect("serialize");
+    let response = raw_ipc_exchange(&h, &body).await;
+    let Response::Status {
+        version, protocol, ..
+    } = response
+    else {
+        panic!("expected a status reply, got {response:?}");
+    };
+    assert_eq!(version, "v9.9.9+test");
+    assert_eq!(protocol, crate::ipc::PROTOCOL_VERSION);
+    h.stop().await.expect("clean shutdown");
+}
+
 // ----------------------------------------------------------------------------
 // Reload
 // ----------------------------------------------------------------------------

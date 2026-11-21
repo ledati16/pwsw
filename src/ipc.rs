@@ -32,6 +32,17 @@ const STALE_SOCKET_CHECK_TIMEOUT_MS: u64 = 500;
 /// Timeout for client connections (longer to allow daemon to process request)
 const CLIENT_CONNECT_TIMEOUT_SECS: u64 = 5;
 
+/// Version of the `IPC` protocol (the set of [`Request`] / [`Response`] messages).
+///
+/// Bump it whenever a message is added or changed incompatibly. The daemon reports it
+/// in [`Response::Status`]; daemons from before versioning report nothing, which
+/// reads as `0`.
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// How to get a daemon that speaks the current protocol, appended to `IPC` errors
+pub const RESTART_HINT: &str = "if pwsw was upgraded, restart the daemon: \
+     `systemctl --user restart pwsw` (or `pwsw shutdown && pwsw daemon`)";
+
 // ============================================================================
 // Message Types
 // ============================================================================
@@ -65,7 +76,12 @@ pub enum Request {
 pub enum Response {
     /// Status information
     Status {
+        /// Daemon version (see [`crate::version_string`])
         version: String,
+        /// `IPC` protocol the daemon speaks ([`PROTOCOL_VERSION`]; `0` from daemons
+        /// that predate versioning)
+        #[serde(default)]
+        protocol: u32,
         uptime_secs: u64,
         current_sink: String,
         active_window: Option<String>,
@@ -559,6 +575,12 @@ const READ_TIMEOUT: Duration = Duration::from_secs(10);
 /// Example:
 /// [ 0x00, 0x00, 0x00, 0x0D ] [ {"type":"Status"} ]
 async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T> {
+    let frame = read_frame(stream).await?;
+    serde_json::from_slice(&frame).context("Failed to deserialize message")
+}
+
+/// Read one length-prefixed frame (the raw `JSON` payload), see [`read_message`]
+async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
     // Read 4-byte big-endian length prefix
     let mut len_buf = [0u8; 4];
     tokio::time::timeout(READ_TIMEOUT, stream.read_exact(&mut len_buf))
@@ -582,8 +604,7 @@ async fn read_message<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> 
         .context("Timeout reading message payload")?
         .context("Failed to read message payload")?;
 
-    // Deserialize JSON
-    serde_json::from_slice(&msg_buf).context("Failed to deserialize message")
+    Ok(msg_buf)
 }
 
 /// Write a length-prefixed JSON message to a stream
@@ -636,6 +657,12 @@ async fn write_message<T: Serialize>(stream: &mut UnixStream, message: &T) -> Re
 /// Returns an error if connection fails, the socket is not served by the current
 /// user, or IPC communication fails.
 pub async fn send_request(request: Request) -> Result<Response> {
+    exchange(request)
+        .await
+        .wrap_err_with(|| format!("No valid reply from the pwsw daemon; {RESTART_HINT}"))
+}
+
+async fn exchange(request: Request) -> Result<Response> {
     let location = socket_location();
 
     // Connect to daemon (longer timeout for actual client requests)
@@ -843,10 +870,29 @@ impl Drop for IpcServer {
 
 /// Read a request from a client connection
 ///
+/// The inner `Err` is a well-framed message this daemon does not understand (most
+/// likely from a newer client); answer it with [`unsupported_request`] instead of
+/// dropping the connection.
+///
 /// # Errors
-/// Returns an error if reading fails or the message cannot be deserialized.
-pub async fn read_request(stream: &mut UnixStream) -> Result<Request> {
-    read_message(stream).await
+/// Returns an error if reading the frame fails.
+pub async fn read_request(
+    stream: &mut UnixStream,
+) -> Result<std::result::Result<Request, serde_json::Error>> {
+    let frame = read_frame(stream).await?;
+    Ok(serde_json::from_slice(&frame))
+}
+
+/// The reply to a request this daemon (`daemon_version`) cannot parse
+#[must_use]
+pub fn unsupported_request(daemon_version: &str, error: &serde_json::Error) -> Response {
+    Response::Error {
+        message: format!(
+            "Request not understood ({error}): daemon is pwsw {daemon_version} \
+             (protocol {PROTOCOL_VERSION}); restart it with `systemctl --user restart pwsw` \
+             (or `pwsw shutdown && pwsw daemon`)"
+        ),
+    }
 }
 
 /// Write a response to a client connection
@@ -1058,7 +1104,7 @@ mod tests {
         let mut accepted = accepted.expect("server accepts a peer with our uid");
 
         write_message(&mut client, &Request::Status).await.unwrap();
-        let req: Request = read_request(&mut accepted).await.unwrap();
+        let req: Request = read_request(&mut accepted).await.unwrap().unwrap();
         assert!(matches!(req, Request::Status));
     }
 
@@ -1267,6 +1313,7 @@ mod tests {
     fn test_response_status_roundtrip() {
         let response = Response::Status {
             version: "0.3.1".to_string(),
+            protocol: PROTOCOL_VERSION,
             uptime_secs: 3600,
             current_sink: "test_sink".to_string(),
             active_window: Some("firefox".to_string()),
@@ -1276,6 +1323,7 @@ mod tests {
         let deserialized: Response = serde_json::from_str(&json).unwrap();
         if let Response::Status {
             version,
+            protocol,
             uptime_secs,
             current_sink,
             active_window,
@@ -1283,6 +1331,7 @@ mod tests {
         } = deserialized
         {
             assert_eq!(version, "0.3.1");
+            assert_eq!(protocol, PROTOCOL_VERSION);
             assert_eq!(uptime_secs, 3600);
             assert_eq!(current_sink, "test_sink");
             assert_eq!(active_window, Some("firefox".to_string()));
@@ -1290,6 +1339,14 @@ mod tests {
         } else {
             panic!("Expected Status variant");
         }
+    }
+
+    /// A `Status` from a daemon that predates protocol versioning still parses
+    #[test]
+    fn test_response_status_without_protocol_is_protocol_zero() {
+        let json = r#"{"type":"Status","version":"v0.5.0","uptime_secs":1,"current_sink":"s","active_window":null,"tracked_windows":0}"#;
+        let response: Response = serde_json::from_str(json).unwrap();
+        assert!(matches!(response, Response::Status { protocol: 0, .. }));
     }
 
     #[test]
