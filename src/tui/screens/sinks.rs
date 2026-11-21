@@ -76,8 +76,6 @@ pub struct SinksScreen {
     pub selected: usize,
     pub editor: SinkEditor,
     pub editing_index: Option<usize>, // None = adding, Some(i) = editing
-    /// Cached padded descriptions for aligned display (updated when sinks change)
-    pub display_descs: Vec<String>,
     /// Selected index in sink selector (0 = first header, skips headers during selection)
     pub sink_selector_index: usize,
     /// State for sink selector dropdown
@@ -87,30 +85,12 @@ pub struct SinksScreen {
 }
 
 impl SinksScreen {
-    /// Update cached padded descriptions for the list. Call when `sinks` changed.
-    pub(crate) fn update_display_descs(&mut self, sinks: &[SinkConfig]) {
-        // Compute max desc length and produce left-aligned padded strings
-        let max_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
-        self.display_descs = sinks
-            .iter()
-            .map(|s| {
-                if s.desc.len() >= max_len {
-                    s.desc.clone()
-                } else {
-                    let mut st = s.desc.clone();
-                    st.push_str(&" ".repeat(max_len - s.desc.len()));
-                    st
-                }
-            })
-            .collect();
-    }
     pub(crate) fn new() -> Self {
         Self {
             mode: SinksMode::List,
             selected: 0,
             editor: SinkEditor::new(),
             editing_index: None,
-            display_descs: Vec::new(),
             sink_selector_index: 0,
             sink_selector_state: ListState::default(),
             state: TableState::default(),
@@ -640,10 +620,10 @@ fn render_sink_selector(
 
             let line = Line::from(vec![
                 Span::raw("  "),
-                Span::styled(desc_text.clone(), Style::default().fg(colors::UI_TEXT)),
+                Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
                 Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
                 Span::styled(
-                    name_text.clone(),
+                    name_text,
                     Style::default()
                         .fg(colors::UI_SECONDARY)
                         .add_modifier(Modifier::DIM),
@@ -691,7 +671,7 @@ fn render_sink_selector(
     }
 
     // Build and render the list widget (was removed accidentally during refactor)
-    let list = ratatui::widgets::List::new(items.clone())
+    let list = ratatui::widgets::List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)

@@ -3,7 +3,7 @@
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 
-use super::app::{App, DaemonAction, Screen};
+use super::app::{App, BgCommand, DaemonAction, Screen};
 use super::screens::rules::RulesMode;
 use super::screens::sinks::SinksMode;
 use crate::config::{Rule, SinkConfig, compile_rule_regex};
@@ -51,10 +51,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // Ctrl+S: Save config (global)
         (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
             if app.config_dirty {
-                if let Some(tx) = &app.bg_cmd_tx {
-                    let _ = tx.try_send(crate::tui::app::BgCommand::SaveConfig(app.config.clone()));
+                if app.bg_cmd_tx.is_some() {
                     // Don't clear config_dirty - wait for ConfigSaved result
-                    app.set_status("Saving configuration...".to_string());
+                    if app.send_command(BgCommand::SaveConfig(app.config.clone())) {
+                        app.save_pending = true;
+                        app.set_status("Saving configuration...".to_string());
+                    }
                 } else {
                     // Fallback to blocking save if background worker not available
                     if let Err(e) = app.save_config() {
@@ -394,13 +396,11 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 4 => DaemonAction::Disable,
                 _ => return,
             };
-            if let Some(tx) = &app.bg_cmd_tx {
-                let _ = tx.try_send(crate::tui::app::BgCommand::DaemonAction(action));
+            if app.daemon_action_pending {
+                app.set_status("A daemon action is already running".to_string());
+            } else if app.send_command(BgCommand::DaemonAction(action)) {
                 app.daemon_action_pending = true;
                 app.set_status("Daemon action requested".to_string());
-            } else {
-                // No background worker available to handle daemon actions; show feedback
-                app.set_status("Daemon action requested (no background worker)".to_string());
             }
         }
 
@@ -483,7 +483,6 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         match app.config.move_sink(idx, idx - 1) {
                             Ok(()) => {
                                 app.sinks_screen.selected = idx - 1;
-                                app.sinks_screen.update_display_descs(&app.config.sinks);
                                 app.mark_dirty();
                             }
                             Err(e) => app.set_status(format!("Cannot move sink: {e}")),
@@ -497,7 +496,6 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         match app.config.move_sink(idx, idx + 1) {
                             Ok(()) => {
                                 app.sinks_screen.selected = idx + 1;
-                                app.sinks_screen.update_display_descs(&app.config.sinks);
                                 app.mark_dirty();
                             }
                             Err(e) => app.set_status(format!("Cannot move sink: {e}")),
@@ -522,8 +520,6 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                     if idx < app.config.sinks.len() {
                         match app.config.set_default_sink(idx) {
                             Ok(()) => {
-                                // Update caches
-                                app.sinks_screen.update_display_descs(&app.config.sinks);
                                 app.mark_dirty();
                             }
                             Err(e) => app.set_status(format!("Cannot set default: {e}")),
@@ -558,9 +554,6 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                         {
                             app.sinks_screen.selected = app.config.sinks.len() - 1;
                         }
-
-                        // Update cached display descriptions
-                        app.sinks_screen.update_display_descs(&app.config.sinks);
 
                         app.mark_dirty();
                         app.set_status("Sink deleted".to_string());
@@ -716,9 +709,6 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
                     return;
                 }
             }
-
-            // Update cached display descriptions
-            app.sinks_screen.update_display_descs(&app.config.sinks);
 
             app.mark_dirty();
             app.sinks_screen.cancel();
@@ -903,82 +893,18 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                     let event = Event::Key(key);
                     match app.rules_screen.editor.focused_field {
                         0 => {
-                            if app
-                                .rules_screen
+                            app.rules_screen
                                 .editor
                                 .app_id_pattern
                                 .input
-                                .handle_event(&event)
-                                .is_some()
-                            {
-                                app.rules_screen.editor.ensure_compiled();
-                                if let Some(tx) = &app.preview_in_tx {
-                                    let compiled_app =
-                                        app.rules_screen.editor.compiled_app_id.clone();
-                                    let compiled_title =
-                                        app.rules_screen.editor.compiled_title.clone();
-                                    let app_pattern =
-                                        app.rules_screen.editor.app_id_pattern.value().to_string();
-                                    let title_pattern =
-                                        if app.rules_screen.editor.title_pattern.value().is_empty()
-                                        {
-                                            None
-                                        } else {
-                                            Some(
-                                                app.rules_screen
-                                                    .editor
-                                                    .title_pattern
-                                                    .value()
-                                                    .to_string(),
-                                            )
-                                        };
-                                    let _ = tx.send((
-                                        app_pattern,
-                                        title_pattern,
-                                        compiled_app,
-                                        compiled_title,
-                                    ));
-                                }
-                            }
+                                .handle_event(&event);
                         }
                         1 => {
-                            if app
-                                .rules_screen
+                            app.rules_screen
                                 .editor
                                 .title_pattern
                                 .input
-                                .handle_event(&event)
-                                .is_some()
-                            {
-                                app.rules_screen.editor.ensure_compiled();
-                                if let Some(tx) = &app.preview_in_tx {
-                                    let compiled_app =
-                                        app.rules_screen.editor.compiled_app_id.clone();
-                                    let compiled_title =
-                                        app.rules_screen.editor.compiled_title.clone();
-                                    let app_pattern =
-                                        app.rules_screen.editor.app_id_pattern.value().to_string();
-                                    let title_pattern =
-                                        if app.rules_screen.editor.title_pattern.value().is_empty()
-                                        {
-                                            None
-                                        } else {
-                                            Some(
-                                                app.rules_screen
-                                                    .editor
-                                                    .title_pattern
-                                                    .value()
-                                                    .to_string(),
-                                            )
-                                        };
-                                    let _ = tx.send((
-                                        app_pattern,
-                                        title_pattern,
-                                        compiled_app,
-                                        compiled_title,
-                                    ));
-                                }
-                            }
+                                .handle_event(&event);
                         }
                         3 => {
                             app.rules_screen.editor.desc.input.handle_event(&event);
@@ -1002,36 +928,18 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
                 return;
             }
 
-            // Validate regexes: prefer the compiled caches (refreshed to match the current
-            // text), compiled with the same builder config loading uses
-            app.rules_screen.editor.ensure_compiled();
-            let app_id_regex = match app
-                .rules_screen
-                .editor
-                .compiled_app_id
-                .as_ref()
-                .map(std::convert::AsRef::as_ref)
-            {
-                Some(r) => r.clone(),
-                None => match compile_rule_regex(app.rules_screen.editor.app_id_pattern.value()) {
+            // Validate regexes with the same builder config loading uses
+            let app_id_regex =
+                match compile_rule_regex(app.rules_screen.editor.app_id_pattern.value()) {
                     Ok(r) => r,
                     Err(e) => {
                         app.set_status(format!("Invalid app_id regex: {e}"));
                         return;
                     }
-                },
-            };
+                };
 
             let title_regex = if app.rules_screen.editor.title_pattern.value().is_empty() {
                 None
-            } else if let Some(r) = app
-                .rules_screen
-                .editor
-                .compiled_title
-                .as_ref()
-                .map(std::convert::AsRef::as_ref)
-            {
-                Some(r.clone())
             } else {
                 match compile_rule_regex(app.rules_screen.editor.title_pattern.value()) {
                     Ok(r) => Some(r),
@@ -1084,64 +992,29 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
             app.rules_screen.cancel();
         }
         // --- Field Specific Input ---
+        // (the live preview follows the pattern text by itself; see `App::refresh_preview`)
         _ => {
-            // Forward other keys to inputs
             let event = Event::Key(key);
-            let mut changed = false;
-
             match app.rules_screen.editor.focused_field {
                 0 => {
-                    // app_id
-                    if app
-                        .rules_screen
+                    app.rules_screen
                         .editor
                         .app_id_pattern
                         .input
-                        .handle_event(&event)
-                        .is_some()
-                    {
-                        changed = true;
-                    }
+                        .handle_event(&event);
                 }
                 1 => {
-                    // title
-                    if app
-                        .rules_screen
+                    app.rules_screen
                         .editor
                         .title_pattern
                         .input
-                        .handle_event(&event)
-                        .is_some()
-                    {
-                        changed = true;
-                    }
+                        .handle_event(&event);
                 }
                 3 => {
-                    // desc
                     app.rules_screen.editor.desc.input.handle_event(&event);
                 }
                 // Fields 2 (sink) and 4 (notify) only respond to Space, handled above
                 _ => {}
-            }
-
-            // Trigger preview if patterns changed
-            if changed {
-                app.rules_screen.editor.ensure_compiled();
-
-                if let Some(tx) = &app.preview_in_tx {
-                    let compiled_app = app.rules_screen.editor.compiled_app_id.clone();
-                    let compiled_title = app.rules_screen.editor.compiled_title.clone();
-
-                    let app_pattern = app.rules_screen.editor.app_id_pattern.value().to_string();
-                    let title_pattern = if app.rules_screen.editor.title_pattern.value().is_empty()
-                    {
-                        None
-                    } else {
-                        Some(app.rules_screen.editor.title_pattern.value().to_string())
-                    };
-
-                    let _ = tx.send((app_pattern, title_pattern, compiled_app, compiled_title));
-                }
             }
         }
     }

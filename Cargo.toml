@@ -11,7 +11,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
 default = ["tui"]
-tui = ["dep:ratatui", "dep:tui-input", "dep:throbber-widgets-tui", "dep:tui-logger", "dep:futures-util"]
+tui = ["dep:ratatui", "dep:tui-input", "dep:throbber-widgets-tui", "dep:futures-util"]
 
 [dependencies]
 # CLI argument parsing
@@ -67,7 +67,6 @@ rustix = { version = "1", default-features = false, features = ["fs", "process"]
 ratatui = { version = "0.30", optional = true, default-features = false, features = ["crossterm"] }
 tui-input = { version = "0.15", optional = true }
 throbber-widgets-tui = { version = "0.11", optional = true }
-tui-logger = { version = "0.18", optional = true, features = ["tracing-support"] }
 futures-util = { version = "0.3", optional = true }
 
 [profile.release]
@@ -82,7 +81,7 @@ mandown = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
-tokio = { version = "1", features = ["test-util"] }   # paused clock for daemon loop tests
+tokio = { version = "1", features = ["test-util"] }   # paused clock for daemon loop and TUI worker tests
 rstest = "0.28"
 test-case = "3"
 wayland-server = "0.31"

@@ -22,20 +22,6 @@ fn init_logging() {
         .init();
 }
 
-/// Initialize logging for TUI mode.
-///
-/// Uses `TuiTracingSubscriberLayer` to capture tracing events for the TUI log widget.
-#[cfg(feature = "tui")]
-fn init_logging_tui() {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-    use tui_logger::TuiTracingSubscriberLayer;
-
-    tracing_subscriber::registry()
-        .with(TuiTracingSubscriberLayer)
-        .init();
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Install color-eyre for panic handling
@@ -168,7 +154,8 @@ async fn main() -> Result<()> {
         Some(Command::Tui) => {
             #[cfg(feature = "tui")]
             {
-                init_logging_tui();
+                // No tracing subscriber: the TUI owns the terminal and reports
+                // problems in its status line.
                 pwsw::tui::run().await
             }
             #[cfg(not(feature = "tui"))]

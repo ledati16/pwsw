@@ -2,25 +2,15 @@
 //!
 //! Manages screen navigation, user input, and application state.
 
-use std::sync::Arc;
-
 use color_eyre::eyre::Result;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use throbber_widgets_tui::ThrobberState;
 
+use super::preview::LivePreview;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::Config;
 use crate::style::colors;
-
-// Type aliases to reduce complex type signatures for TUI preview channel
-pub type CompiledRegex = Arc<regex::Regex>;
-pub type PreviewInMsg = (
-    String,
-    Option<String>,
-    Option<CompiledRegex>,
-    Option<CompiledRegex>,
-);
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,11 +81,10 @@ impl Screen {
 pub enum AppUpdate {
     /// Full sink data including active and profile sinks
     ///
-    /// Sent by background poller every 1s with current `PipeWire` state snapshot.
+    /// Sent by the background worker with each `PipeWire` snapshot.
     SinksData {
         active: Vec<crate::pipewire::ActiveSink>,
         profiles: Vec<crate::pipewire::ProfileSink>,
-        names: Vec<String>, // For backwards compat
     },
     /// `PipeWire` is unavailable (pw-dump failed)
     ///
@@ -104,8 +93,8 @@ pub enum AppUpdate {
     PipeWireUnavailable,
     /// Daemon state snapshot including running status, tracked windows, and manager info
     ///
-    /// Sent by background poller every 1s and immediately after daemon control actions
-    /// (start/stop/restart/enable/disable) complete.
+    /// Sent by the background worker every second and immediately after daemon
+    /// control actions (start/stop/restart/enable/disable) complete.
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
@@ -121,25 +110,6 @@ pub enum AppUpdate {
     /// Sent by background worker after `SaveConfig` command completes.
     /// On success, App updates `original_config` to match current config.
     ConfigSaved { success: bool, message: String },
-    /// Live-preview started (pending)
-    ///
-    /// Sent by background preview worker when a new preview request begins execution.
-    /// Used to show loading state in the rules editor.
-    PreviewPending {
-        app_pattern: String,
-        title_pattern: Option<String>,
-    },
-    /// Live-preview results for the rules editor
-    ///
-    /// Sent by background preview worker when matching completes (or times out).
-    /// Contains up to `max_results` matching windows.
-    PreviewMatches {
-        app_pattern: String,
-        title_pattern: Option<String>,
-        matches: Vec<String>,
-        timed_out: bool,
-        regex_error: Option<String>,
-    },
     /// New daemon log lines
     ///
     /// Sent by log tail worker when new lines are appended to daemon log file.
@@ -153,34 +123,12 @@ pub enum BgCommand {
     DaemonAction(DaemonAction),
     /// Request an atomic config save
     SaveConfig(Config),
-    /// Request a live-preview match for given patterns. Optionally include compiled regex caches.
-    PreviewRequest {
-        app_pattern: String,
-        title_pattern: Option<String>,
-        compiled_app: Option<std::sync::Arc<regex::Regex>>,
-        compiled_title: Option<std::sync::Arc<regex::Regex>>,
-    },
-}
-
-/// Preview result stored in app state
-#[derive(Clone)]
-pub struct PreviewResult {
-    pub(crate) app_pattern: String,
-    pub(crate) title_pattern: Option<String>,
-    pub(crate) matches: Vec<String>,
-    pub(crate) timed_out: bool,
-    pub(crate) pending: bool,
-    pub(crate) regex_error: Option<String>,
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
 pub struct App {
     /// Channel sender to send commands to background worker (bounded, non-blocking `try_send`)
     pub(crate) bg_cmd_tx: Option<tokio::sync::mpsc::Sender<BgCommand>>,
-    /// Channel receiver to accept background updates (set by `run()`)
-    pub(crate) bg_update_rx: Option<tokio::sync::mpsc::UnboundedReceiver<AppUpdate>>,
-    /// Unbounded preview input sender. Input handlers push preview requests here.
-    pub(crate) preview_in_tx: Option<tokio::sync::mpsc::UnboundedSender<PreviewInMsg>>,
 
     /// Currently active screen
     pub(crate) current_screen: Screen,
@@ -192,8 +140,8 @@ pub struct App {
     original_config: Config,
     /// Status message to display (errors, confirmations)
     status_message: Option<String>,
-    /// Last preview results from background worker
-    pub(crate) preview: Option<PreviewResult>,
+    /// Live preview of the rule editor's patterns
+    pub(crate) preview: LivePreview,
     /// State for throbber animation
     throbber_state: ThrobberState,
     /// Dashboard screen state
@@ -222,8 +170,12 @@ pub struct App {
     pub(crate) window_count: usize,
     /// Cached window list for live preview (updated by background worker)
     pub(crate) windows: Vec<crate::ipc::WindowInfo>,
+    /// Bumped whenever `windows` changes `app_id`/title content (drives preview recompute)
+    windows_generation: u64,
     /// Whether a daemon action (start/stop/restart) is pending
     pub(crate) daemon_action_pending: bool,
+    /// Whether a config save sent to the background worker has not reported back yet
+    pub(crate) save_pending: bool,
     /// Cached active sinks snapshot (updated by background worker)
     pub(crate) active_sinks: Vec<String>,
     /// Cached full active sinks with descriptions
@@ -256,10 +208,8 @@ impl App {
         // bg_update channels initialized by caller (run()), set to None here
         let dashboard_screen = DashboardScreen::new();
         let settings_screen = SettingsScreen::new(&config.settings);
-        let mut sinks_screen = SinksScreen::new();
+        let sinks_screen = SinksScreen::new();
         let rules_screen = RulesScreen::new();
-        // Initialize sinks display cache from loaded config
-        sinks_screen.update_display_descs(&config.sinks);
         // Clone config for original_config before moving it
         let original_config = config.clone();
         Self {
@@ -268,7 +218,7 @@ impl App {
             config,
             original_config,
             status_message: None,
-            preview: None,
+            preview: LivePreview::default(),
             throbber_state: ThrobberState::default(),
             dashboard_screen,
             settings_screen,
@@ -283,16 +233,16 @@ impl App {
             daemon_running: false,
             window_count: 0,
             windows: Vec::new(),
+            windows_generation: 0,
             active_sinks: Vec::new(),
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
             daemon_action_pending: false,
+            save_pending: false,
             daemon_log_lines: Vec::new(),
 
             bg_cmd_tx: None,
-            bg_update_rx: None,
-            preview_in_tx: None,
             dirty: true,
         }
     }
@@ -377,35 +327,74 @@ impl App {
     }
 
     /// Read-only accessor for status message
-    pub(crate) const fn status_message(&self) -> Option<&String> {
-        self.status_message.as_ref()
+    #[cfg(test)]
+    pub(crate) fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
     }
 
-    /// Mutable accessor for `throbber_state` (keeps field private)
-    ///
-    /// # Panics
-    /// Never panics - returns mutable reference to owned field
-    pub(crate) const fn throbber_state_mut(&mut self) -> &mut ThrobberState {
-        &mut self.throbber_state
+    /// Whether background work the user is waiting for is in flight (drives the
+    /// footer spinner; the UI only animates while this is true).
+    pub(crate) const fn is_busy(&self) -> bool {
+        self.daemon_action_pending || self.save_pending
     }
 
-    /// Borrow mutable references to rules screen and throbber together
-    ///
-    /// This helper avoids borrow-checker conflicts when rendering rules
-    /// that need both mutable state (throbber) and screen state.
-    ///
-    /// # Panics
-    /// Never panics - returns mutable references to owned fields
-    pub(crate) const fn borrow_rules_and_throbber(
-        &mut self,
-    ) -> (&mut RulesScreen, &mut ThrobberState) {
-        (&mut self.rules_screen, &mut self.throbber_state)
-    }
-
-    /// Set preview result
-    pub(crate) fn set_preview(&mut self, pr: PreviewResult) {
-        self.preview = Some(pr);
+    /// Advance the footer spinner by one frame.
+    pub(crate) fn advance_throbber(&mut self) {
+        self.throbber_state.calc_next();
         self.dirty = true;
+    }
+
+    /// Borrow what the footer renders: the status message, whether to spin,
+    /// and the spinner state.
+    pub(crate) fn footer_parts(&mut self) -> (Option<&str>, bool, &mut ThrobberState) {
+        let busy = self.is_busy();
+        (
+            self.status_message.as_deref(),
+            busy,
+            &mut self.throbber_state,
+        )
+    }
+
+    /// Queue a command for the background worker.
+    ///
+    /// Returns `false` (after putting the reason in the status line) if there is
+    /// no worker or its queue is full or closed; callers must then not enter any
+    /// pending state.
+    pub(crate) fn send_command(&mut self, cmd: BgCommand) -> bool {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let Some(tx) = &self.bg_cmd_tx else {
+            self.set_status("Background worker not available".to_string());
+            return false;
+        };
+        match tx.try_send(cmd) {
+            Ok(()) => true,
+            Err(TrySendError::Full(_)) => {
+                self.set_status("Busy: too many pending requests, try again".to_string());
+                false
+            }
+            Err(TrySendError::Closed(_)) => {
+                self.set_status("Background worker stopped; restart the TUI".to_string());
+                false
+            }
+        }
+    }
+
+    /// Recompute the rule editor's live preview if its patterns or the window
+    /// list changed. Cheap when nothing changed; call before drawing.
+    pub(crate) fn refresh_preview(&mut self) {
+        use super::screens::rules::RulesMode;
+
+        if self.current_screen != Screen::Rules || self.rules_screen.mode != RulesMode::AddEdit {
+            return;
+        }
+        let editor = &self.rules_screen.editor;
+        self.preview.refresh(
+            editor.app_id_pattern.value(),
+            editor.title_pattern.value(),
+            &self.windows,
+            self.windows_generation,
+        );
     }
 
     /// Request application quit
@@ -588,8 +577,8 @@ impl App {
                             Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                             Span::raw(" Cancel"),
                         ];
-                        // Show live preview indicator if preview is active
-                        if self.preview.is_some() {
+                        // Show live preview indicator once there is a pattern to match
+                        if !self.rules_screen.editor.app_id_pattern.value().is_empty() {
                             spans.push(Span::raw("  "));
                             spans.push(Span::styled(
                                 "⚡ Live preview",
@@ -658,14 +647,10 @@ impl App {
     /// Process a background update message
     pub(crate) fn handle_update(&mut self, update: AppUpdate) {
         match update {
-            AppUpdate::SinksData {
-                active,
-                profiles,
-                names,
-            } => {
+            AppUpdate::SinksData { active, profiles } => {
+                self.active_sinks = active.iter().map(|s| s.name.clone()).collect();
                 self.active_sink_list = active;
                 self.profile_sink_list = profiles;
-                self.active_sinks = names;
                 self.pipewire_available = true;
                 self.dirty = true;
             }
@@ -681,6 +666,14 @@ impl App {
             } => {
                 self.daemon_running = running;
                 self.window_count = windows.len();
+                let changed = windows.len() != self.windows.len()
+                    || windows
+                        .iter()
+                        .zip(&self.windows)
+                        .any(|(a, b)| a.app_id != b.app_id || a.title != b.title);
+                if changed {
+                    self.windows_generation = self.windows_generation.wrapping_add(1);
+                }
                 self.windows = windows;
                 self.dashboard_screen.service_enabled = service_enabled;
                 // Update max actions if daemon manager changed (e.g., service installed/removed)
@@ -697,55 +690,13 @@ impl App {
                 // set_status sets dirty already
             }
             AppUpdate::ConfigSaved { success, message } => {
+                self.save_pending = false;
                 self.set_status(message);
                 if success {
                     self.original_config.clone_from(&self.config);
                     self.config_dirty = false;
                 }
                 // On failure: dirty flag stays true - user still sees save indicator
-            }
-            AppUpdate::PreviewPending {
-                app_pattern,
-                title_pattern,
-            } => {
-                // Only mark pending if it matches current editor content
-                if self.rules_screen.editor.app_id_pattern.value() == app_pattern
-                    && self.rules_screen.editor.title_pattern.value()
-                        == title_pattern.clone().unwrap_or_default()
-                {
-                    // Store a minimal PreviewResult with no matches but pending flag (timed_out=false)
-                    self.set_preview(PreviewResult {
-                        app_pattern,
-                        title_pattern,
-                        matches: Vec::new(),
-                        timed_out: false,
-                        pending: true,
-                        regex_error: None,
-                    });
-                }
-            }
-            AppUpdate::PreviewMatches {
-                app_pattern,
-                title_pattern,
-                matches,
-                timed_out,
-                regex_error,
-            } => {
-                // Only apply preview if patterns match current editor content (avoid race)
-                if self.rules_screen.editor.app_id_pattern.value() == app_pattern
-                    && self.rules_screen.editor.title_pattern.value()
-                        == title_pattern.clone().unwrap_or_default()
-                {
-                    // Store preview in app.preview as a typed struct
-                    self.set_preview(PreviewResult {
-                        app_pattern,
-                        title_pattern,
-                        matches,
-                        timed_out,
-                        pending: false,
-                        regex_error,
-                    });
-                }
             }
             AppUpdate::DaemonLogs(new_lines) => {
                 // Limit burst size before extending to avoid temporary memory spikes

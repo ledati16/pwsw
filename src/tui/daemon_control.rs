@@ -8,6 +8,7 @@ use color_eyre::eyre::{self, Context, Result};
 
 use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, status_with_timeout};
 use crate::ipc;
+use crate::tui::worker::detached;
 
 /// How long the old daemon may take to release its socket during a restart.
 const RESTART_EXIT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -52,9 +53,7 @@ impl DaemonManager {
     /// else [`DaemonManager::Direct`]. Used for enable/disable, which act on the
     /// unit regardless of how a currently running daemon was started.
     pub async fn for_unit_management() -> Self {
-        let installed = tokio::task::spawn_blocking(Self::unit_installed)
-            .await
-            .unwrap_or(false);
+        let installed = detached(Self::unit_installed).await.unwrap_or(false);
         if installed {
             Self::Systemd
         } else {
@@ -69,13 +68,12 @@ impl DaemonManager {
     pub async fn start(self) -> Result<String> {
         match self {
             Self::Systemd => {
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "start", "pwsw.service"])
                         .output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to execute systemctl start")?;
 
                 if output.status.success() {
@@ -90,23 +88,21 @@ impl DaemonManager {
                 // Run `pwsw daemon`: it spawns the detached daemon, waits until it
                 // answers on the socket and exits non-zero (with the reason on
                 // stderr) if start-up fails. Running it to completion also reaps it.
-                let pwsw_path = tokio::task::spawn_blocking(std::env::current_exe)
-                    .await
-                    .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                let pwsw_path = detached(std::env::current_exe)
+                    .await?
                     .context("Failed to get current executable path")?;
 
                 // Forward an explicit config selection so the daemon uses the same file
                 let config_override = crate::config::Config::config_path_override()?;
 
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     let mut cmd = Command::new(&pwsw_path);
                     if let Some(config_path) = config_override {
                         cmd.arg("--config").arg(config_path);
                     }
                     cmd.arg("daemon").stdin(Stdio::null()).output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to run `pwsw daemon`")?;
 
                 if output.status.success() {
@@ -129,13 +125,12 @@ impl DaemonManager {
     pub async fn stop(self) -> Result<String> {
         match self {
             Self::Systemd => {
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "stop", "pwsw.service"])
                         .output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to execute systemctl stop")?;
 
                 if output.status.success() {
@@ -162,13 +157,12 @@ impl DaemonManager {
     pub async fn restart(self) -> Result<String> {
         match self {
             Self::Systemd => {
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "restart", "pwsw.service"])
                         .output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to execute systemctl restart")?;
 
                 if output.status.success() {
@@ -201,7 +195,7 @@ impl DaemonManager {
         match self {
             Self::Systemd => {
                 // Check systemd service status
-                tokio::task::spawn_blocking(move || {
+                detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "is-active", "pwsw.service"])
                         .stdout(Stdio::null())
@@ -226,13 +220,12 @@ impl DaemonManager {
     pub async fn enable(self) -> Result<String> {
         match self {
             Self::Systemd => {
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "enable", "pwsw.service"])
                         .output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to execute systemctl enable")?;
 
                 if output.status.success() {
@@ -256,13 +249,12 @@ impl DaemonManager {
     pub async fn disable(self) -> Result<String> {
         match self {
             Self::Systemd => {
-                let output = tokio::task::spawn_blocking(move || {
+                let output = detached(move || {
                     Command::new("systemctl")
                         .args(["--user", "disable", "pwsw.service"])
                         .output()
                 })
-                .await
-                .map_err(|e| eyre::eyre!("Join error: {e:#}"))?
+                .await?
                 .context("Failed to execute systemctl disable")?;
 
                 if output.status.success() {
@@ -290,7 +282,7 @@ impl DaemonManager {
                 if let Some(value) = cached_is_enabled() {
                     return value;
                 }
-                let value = tokio::task::spawn_blocking(|| {
+                let value = detached(|| {
                     let mut cmd = Command::new("systemctl");
                     cmd.args(["--user", "is-enabled", SYSTEMD_UNIT]);
                     status_with_timeout(cmd, IS_ENABLED_TIMEOUT).is_some_and(|s| s.success())

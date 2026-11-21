@@ -175,6 +175,10 @@ pub struct DashboardRenderContext<'a> {
     pub window_count: usize,
     pub daemon_logs: &'a [String],
     pub windows: &'a [crate::ipc::WindowInfo],
+    /// Active sinks from the last `PipeWire` snapshot (one has `is_default`)
+    pub active_sinks: &'a [crate::pipewire::ActiveSink],
+    /// Whether the last `PipeWire` snapshot succeeded
+    pub pipewire_available: bool,
 }
 
 /// Render the dashboard screen
@@ -219,7 +223,13 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderCont
         ctx.screen_state.current_view,
     );
 
-    render_sink_card(frame, sink_area, ctx.config);
+    render_sink_card(
+        frame,
+        sink_area,
+        ctx.config,
+        ctx.active_sinks,
+        ctx.pipewire_available,
+    );
     render_statistics_card(
         frame,
         stats_area,
@@ -398,28 +408,28 @@ fn render_window_summary(
     frame.render_widget(paragraph, inner);
 }
 
-/// Render current sink card
-fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
-    let current_sink_name = crate::pipewire::PipeWire::get_default_sink_name().ok();
-
-    let (sink_desc, sink_icon, node_name) = current_sink_name
-        .as_ref()
-        .and_then(|name| {
-            config.sinks.iter().find(|s| &s.name == name).map(|s| {
-                (
-                    s.desc.clone(),
-                    s.icon.clone().unwrap_or_else(|| "🔊".to_string()),
-                    name.clone(),
-                )
-            })
-        })
-        .unwrap_or_else(|| {
-            (
-                "Unknown Sink".to_string(),
-                "?".to_string(),
-                "unknown".to_string(),
-            )
-        });
+/// Render current sink card from the last `PipeWire` snapshot (no I/O here)
+fn render_sink_card(
+    frame: &mut Frame,
+    area: Rect,
+    config: &Config,
+    active_sinks: &[crate::pipewire::ActiveSink],
+    pipewire_available: bool,
+) {
+    let default_sink = active_sinks.iter().find(|s| s.is_default);
+    let (sink_desc, sink_icon, node_name) = match default_sink {
+        Some(active) => match config.sinks.iter().find(|s| s.name == active.name) {
+            Some(configured) => (
+                configured.desc.as_str(),
+                configured.icon.as_deref().unwrap_or("🔊"),
+                active.name.as_str(),
+            ),
+            // Default sink not in the config: show what PipeWire calls it
+            None => (active.description.as_str(), "?", active.name.as_str()),
+        },
+        None if !pipewire_available => ("PipeWire unavailable", "?", "unknown"),
+        None => ("Unknown Sink", "?", "unknown"),
+    };
 
     let text = vec![
         Line::from(vec![
@@ -436,7 +446,7 @@ fn render_sink_card(frame: &mut Frame, area: Rect, config: &Config) {
         Line::from(vec![
             Span::styled("Node: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                truncate_node_name(&node_name, 35),
+                truncate_node_name(node_name, 35),
                 Style::default().fg(colors::UI_TEXT),
             ),
         ]),

@@ -10,12 +10,11 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row,
     Table, TableState,
 };
-use regex::Regex;
-use throbber_widgets_tui::{Throbber, ThrobberState};
 
-use crate::config::{Rule, SinkConfig, compile_rule_regex};
+use crate::config::{Rule, SinkConfig};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
+use crate::tui::preview::{MAX_SHOWN, PreviewView, build_preview_lines};
 use crate::tui::widgets::{
     ValidationState, centered_modal, modal_size, render_input, render_validated_input,
 };
@@ -43,12 +42,6 @@ pub struct RuleEditor {
     pub sink_dropdown_index: usize,
     /// State for sink selector dropdown
     pub sink_selector_state: ListState,
-    // Cached compiled regexes to avoid recompiling on every render
-    pub compiled_app_id: Option<std::sync::Arc<Regex>>,
-    pub compiled_title: Option<std::sync::Arc<Regex>>,
-    // Track which pattern strings the compiled regex corresponds to
-    pub compiled_app_id_for: Option<String>,
-    pub compiled_title_for: Option<String>,
 }
 
 impl RuleEditor {
@@ -62,22 +55,10 @@ impl RuleEditor {
             focused_field: 0,
             sink_dropdown_index: 0,
             sink_selector_state: ListState::default(),
-            compiled_app_id: None,
-            compiled_title: None,
-            compiled_app_id_for: None,
-            compiled_title_for: None,
         }
     }
 
     pub(crate) fn from_rule(rule: &Rule) -> Self {
-        let compiled_app_id = compile_rule_regex(&rule.app_id_pattern)
-            .ok()
-            .map(std::sync::Arc::new);
-        let compiled_title = match &rule.title_pattern {
-            Some(t) if !t.is_empty() => compile_rule_regex(t).ok().map(std::sync::Arc::new),
-            _ => None,
-        };
-
         Self {
             app_id_pattern: EditorState::from_string(rule.app_id_pattern.clone()),
             title_pattern: EditorState::from_string(rule.title_pattern.clone().unwrap_or_default()),
@@ -87,10 +68,6 @@ impl RuleEditor {
             focused_field: 0,
             sink_dropdown_index: 0,
             sink_selector_state: ListState::default(),
-            compiled_app_id,
-            compiled_title,
-            compiled_app_id_for: Some(rule.app_id_pattern.clone()),
-            compiled_title_for: rule.title_pattern.clone(),
         }
     }
 
@@ -103,43 +80,6 @@ impl RuleEditor {
     pub(crate) const fn prev_field(&mut self) {
         if self.focused_field > 0 {
             self.focused_field -= 1;
-        }
-    }
-
-    /// Ensure compiled regex caches are up-to-date for current editor patterns
-    pub(crate) fn ensure_compiled(&mut self) {
-        // Compile app id pattern if non-empty and store which string it corresponds to
-        if self.app_id_pattern.value().is_empty() {
-            self.compiled_app_id = None;
-            self.compiled_app_id_for = None;
-        } else if self.compiled_app_id_for.as_deref() != Some(self.app_id_pattern.value()) {
-            self.compiled_app_id = compile_rule_regex(self.app_id_pattern.value())
-                .ok()
-                .map(std::sync::Arc::new);
-            // Only cache the pattern string if compilation succeeded
-            if self.compiled_app_id.is_some() {
-                self.compiled_app_id_for = Some(self.app_id_pattern.value().to_string());
-            } else {
-                // Don't cache invalid patterns
-                self.compiled_app_id_for = None;
-            }
-        }
-
-        // Compile title pattern if non-empty
-        if self.title_pattern.value().is_empty() {
-            self.compiled_title = None;
-            self.compiled_title_for = None;
-        } else if self.compiled_title_for.as_deref() != Some(self.title_pattern.value()) {
-            self.compiled_title = compile_rule_regex(self.title_pattern.value())
-                .ok()
-                .map(std::sync::Arc::new);
-            // Only cache the pattern string if compilation succeeded
-            if self.compiled_title.is_some() {
-                self.compiled_title_for = Some(self.title_pattern.value().to_string());
-            } else {
-                // Don't cache invalid patterns
-                self.compiled_title_for = None;
-            }
         }
     }
 }
@@ -213,9 +153,9 @@ pub struct RulesRenderContext<'a> {
     pub rules: &'a [Rule],
     pub sinks: &'a [SinkConfig],
     pub screen_state: &'a mut RulesScreen,
-    pub windows: &'a [crate::ipc::WindowInfo],
-    pub preview: Option<&'a crate::tui::app::PreviewResult>,
-    pub throbber_state: &'a mut ThrobberState,
+    /// Live preview of the editor's patterns (kept current by `App::refresh_preview`)
+    pub preview: &'a PreviewView,
+    pub daemon_running: bool,
 }
 
 /// Render the rules screen
@@ -231,9 +171,8 @@ pub fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext)
             area,
             ctx.sinks,
             ctx.screen_state,
-            ctx.windows,
             ctx.preview,
-            ctx.throbber_state,
+            ctx.daemon_running,
         ),
         RulesMode::Delete => render_delete_confirmation(frame, area, ctx.rules, ctx.screen_state),
         RulesMode::SelectSink => {
@@ -252,32 +191,17 @@ fn render_list(
     sinks: &[SinkConfig],
     screen_state: &mut RulesScreen,
 ) {
-    // Build a lookup from sink name/desc -> padded display string once per render to avoid per-row formatting.
-    let max_desc_len = sinks.iter().map(|s| s.desc.len()).max().unwrap_or(0);
-    let mut sink_display_map: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
-    for s in sinks {
-        let display = if s.desc.len() >= max_desc_len {
-            s.desc.clone()
-        } else {
-            let mut st = s.desc.clone();
-            st.push_str(&" ".repeat(max_desc_len - s.desc.len()));
-            st
-        };
-        sink_display_map.insert(s.name.clone(), display.clone());
-        sink_display_map.insert(s.desc.clone(), display);
-    }
-
     let rows: Vec<Row> = rules
         .iter()
         .enumerate()
         .map(|(i, rule)| {
             let is_selected = i == screen_state.selected;
 
-            // Resolve sink display name
-            let sink_display = sink_display_map
-                .get(&rule.sink_ref)
-                .map_or(rule.sink_ref.as_str(), String::as_str);
+            // Resolve sink display name (rules may reference a sink by name or description)
+            let sink_display = sinks
+                .iter()
+                .find(|s| s.name == rule.sink_ref || s.desc == rule.sink_ref)
+                .map_or(rule.sink_ref.as_str(), |s| s.desc.as_str());
 
             // Prepare cells
             // Add selection indicator to index
@@ -478,9 +402,8 @@ fn render_editor(
     area: Rect,
     sinks: &[SinkConfig],
     screen_state: &RulesScreen,
-    windows: &[crate::ipc::WindowInfo],
-    preview: Option<&crate::tui::app::PreviewResult>,
-    throbber_state: &mut ThrobberState,
+    preview: &PreviewView,
+    daemon_running: bool,
 ) {
     let title = if screen_state.editing_index.is_some() {
         "Edit Rule"
@@ -520,10 +443,10 @@ fn render_editor(
     // App ID pattern field with real-time validation
     let app_id_validation = if screen_state.editor.app_id_pattern.value().is_empty() {
         ValidationState::Neutral
-    } else if screen_state.editor.compiled_app_id.is_some() {
-        ValidationState::Valid
-    } else {
+    } else if preview.app_error.is_some() {
         ValidationState::Invalid
+    } else {
+        ValidationState::Valid
     };
 
     render_validated_input(
@@ -538,10 +461,10 @@ fn render_editor(
     // Title pattern field with real-time validation
     let title_validation = if screen_state.editor.title_pattern.value().is_empty() {
         ValidationState::Neutral // Empty is OK for title (optional)
-    } else if screen_state.editor.compiled_title.is_some() {
-        ValidationState::Valid
-    } else {
+    } else if preview.title_error.is_some() {
         ValidationState::Invalid
+    } else {
+        ValidationState::Valid
     };
 
     render_validated_input(
@@ -617,191 +540,64 @@ fn render_editor(
     render_live_preview(
         frame,
         preview_area,
-        screen_state,
-        windows,
+        screen_state.editor.app_id_pattern.value().is_empty(),
         preview,
-        throbber_state,
+        daemon_running,
     );
 }
 
 /// Render live regex preview showing matching windows
-// Live preview rendering - complex async state display with multiple modes
 fn render_live_preview(
     frame: &mut Frame,
     area: Rect,
-    screen_state: &RulesScreen,
-    windows: &[crate::ipc::WindowInfo],
-    preview: Option<&crate::tui::app::PreviewResult>,
-    throbber_state: &mut ThrobberState,
+    app_pattern_empty: bool,
+    preview: &PreviewView,
+    daemon_running: bool,
 ) {
-    // Empty pattern means "nothing entered yet" - always show prompt regardless of cached preview.
-    // Users who want to match all windows should use `.*` explicitly.
-    if screen_state.editor.app_id_pattern.value().is_empty() {
-        let preview_widget = Paragraph::new(vec![Line::from(vec![Span::styled(
-            "  Enter app_id pattern to see preview",
-            Style::default().fg(colors::UI_SECONDARY),
-        )])])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Matching Windows"),
-        );
-        frame.render_widget(preview_widget, area);
-        return;
-    }
+    let line = |text: String, color| Line::from(Span::styled(text, Style::default().fg(color)));
 
-    if let Some(res) = preview {
-        // Ensure preview corresponds to current editor content
-        if res.app_pattern == screen_state.editor.app_id_pattern.value()
-            && res.title_pattern.as_deref().unwrap_or("")
-                == screen_state.editor.title_pattern.value()
-        {
-            // If background worker marked this preview as pending, show spinner (computing).
-            if res.pending && res.matches.is_empty() && !res.timed_out {
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title("Matching Windows");
-                let inner = block.inner(area);
-                frame.render_widget(block, area);
-
-                let throbber = Throbber::default()
-                    .label("Computing matches...")
-                    .style(Style::default().fg(colors::UI_WARNING))
-                    .throbber_style(
-                        Style::default()
-                            .fg(colors::UI_WARNING)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                frame.render_stateful_widget(throbber, inner, throbber_state);
-                return;
-            }
-
-            // Normal results display
-            let mut preview_lines = vec![];
-
-            if let Some(ref error) = res.regex_error {
-                // Invalid regex error (distinct from timeout)
-                preview_lines.push(Line::from(vec![Span::styled(
-                    format!("  Invalid regex: {error}"),
-                    Style::default().fg(colors::UI_ERROR),
-                )]));
-            } else if res.timed_out {
-                // Timeout (no regex error)
-                preview_lines.push(Line::from(vec![Span::styled(
-                    "  Preview timed out (200ms)",
-                    Style::default().fg(colors::UI_WARNING),
-                )]));
-            } else if res.matches.is_empty() {
-                preview_lines.push(Line::from(vec![Span::styled(
-                    "  No matching windows",
-                    Style::default().fg(colors::UI_SECONDARY),
-                )]));
-            } else {
-                // Use helper to convert strings -> Lines, preserving the limit of 5 shown items.
-                let lines = crate::tui::preview::build_preview_lines_from_strings(
-                    &res.matches[..res.matches.len().min(5)],
-                );
-                preview_lines.extend(lines);
-
-                if res.matches.len() > 5 {
-                    let remaining = res.matches.len() - 5;
-                    let mut text = String::with_capacity(12);
-                    let _ = write!(text, "  ...and {remaining} more");
-                    preview_lines.push(Line::from(vec![Span::styled(
-                        text,
-                        Style::default().fg(colors::UI_SECONDARY),
-                    )]));
-                }
-            }
-
-            let preview_widget = Paragraph::new(preview_lines).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .title("Matching Windows"),
-            );
-            frame.render_widget(preview_widget, area);
-            return;
-        }
-    }
-
-    // Fallback: use local compiled regex matching (fast for small window lists).
-    // Ensure compiled regexes correspond to current editor text; compile if needed.
-    // Attempt to use cached compiled regex references, or compile temporary ones for this render.
-    let app_id_regex: Option<std::sync::Arc<Regex>> =
-        if screen_state.editor.app_id_pattern.value().is_empty() {
-            None
-        } else if screen_state.editor.compiled_app_id_for.as_deref()
-            == Some(screen_state.editor.app_id_pattern.value())
-        {
-            screen_state.editor.compiled_app_id.clone()
-        } else {
-            None
-        };
-
-    let title_regex: Option<std::sync::Arc<Regex>> =
-        if screen_state.editor.title_pattern.value().is_empty() {
-            None
-        } else if screen_state.editor.compiled_title_for.as_deref()
-            == Some(screen_state.editor.title_pattern.value())
-        {
-            screen_state.editor.compiled_title.clone()
-        } else {
-            None
-        };
-
-    // Convert to Option<&Regex> for the matching code below
-    let app_id_regex_ref: Option<&Regex> = app_id_regex.as_ref().map(std::convert::AsRef::as_ref);
-    let title_regex_ref: Option<&Regex> = title_regex.as_ref().map(std::convert::AsRef::as_ref);
-
-    let mut preview_lines = vec![];
-
-    if let Some(_app_regex) = app_id_regex_ref
-        && windows.is_empty()
-    {
-        preview_lines.push(Line::from(vec![Span::styled(
-            "  (daemon not running)",
-            Style::default().fg(colors::UI_SECONDARY),
-        )]));
-    } else if let Some(app_regex) = app_id_regex_ref {
-        // Use helper to perform matching with compiled regex refs and get both the preview strings and total count.
-        let (matches_vec, total) = crate::tui::preview::match_windows_with_compiled_count(
-            Some(app_regex),
-            title_regex_ref,
-            windows,
-            5,
-        );
-
-        if matches_vec.is_empty() {
-            preview_lines.push(Line::from(vec![Span::styled(
-                "  No matching windows",
-                Style::default().fg(colors::UI_WARNING),
-            )]));
-        } else {
-            preview_lines.extend(crate::tui::preview::build_preview_lines_from_strings(
-                &matches_vec,
+    let mut lines = Vec::new();
+    if app_pattern_empty {
+        // Users who want to match all windows should use `.*` explicitly.
+        lines.push(line(
+            "  Enter app_id pattern to see preview".to_string(),
+            colors::UI_SECONDARY,
+        ));
+    } else if preview.app_error.is_some() || preview.title_error.is_some() {
+        if let Some(e) = &preview.app_error {
+            lines.push(line(
+                format!("  Invalid app_id regex: {e}"),
+                colors::UI_ERROR,
             ));
-            if total > 5 {
-                let remaining = total - 5;
-                let mut text = String::with_capacity(12);
-                let _ = write!(text, "  ...and {remaining} more");
-                preview_lines.push(Line::from(vec![Span::styled(
-                    text,
-                    Style::default().fg(colors::UI_SECONDARY),
-                )]));
-            }
         }
+        if let Some(e) = &preview.title_error {
+            lines.push(line(
+                format!("  Invalid title regex: {e}"),
+                colors::UI_ERROR,
+            ));
+        }
+    } else if !daemon_running {
+        lines.push(line(
+            "  (daemon not running - no window list)".to_string(),
+            colors::UI_SECONDARY,
+        ));
+    } else if preview.total == 0 {
+        lines.push(line(
+            "  No matching windows".to_string(),
+            colors::UI_WARNING,
+        ));
     } else {
-        // Pattern is non-empty (we return early for empty) but no compiled regex exists
-        preview_lines.push(Line::from(vec![Span::styled(
-            "  Invalid regex pattern",
-            Style::default().fg(colors::UI_ERROR),
-        )]));
+        lines.extend(build_preview_lines(&preview.shown));
+        if preview.total > MAX_SHOWN {
+            let remaining = preview.total - preview.shown.len();
+            lines.push(line(
+                format!("  ...and {remaining} more"),
+                colors::UI_SECONDARY,
+            ));
+        }
     }
 
-    let preview_widget = Paragraph::new(preview_lines)
+    let preview_widget = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
