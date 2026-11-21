@@ -1932,3 +1932,93 @@ fn test_settings_about_does_not_repeat_the_summary() {
         assert!(!screen.contains("# "), "{item:?}\n{screen}");
     }
 }
+
+/// Whether `c` must never reach a cell: control characters and the Unicode line
+/// separators and bidirectional controls
+fn is_unsafe_in_cell(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'
+        )
+}
+
+/// The fixture with escapes and bidi overrides in a configured sink, a rule, the
+/// `PipeWire` node descriptions and names, and window titles and `app_id`s
+fn hostile(app: &mut App) {
+    const EVIL: &str = "USB\u{202e}CAD\u{1b}[2J";
+    app.config.sinks[3].desc = EVIL.to_string();
+    app.config.sinks[3].name = "alsa_output.usb-\u{202e}Old\u{1b}]0;x\u{7}.analog-stereo".into();
+    app.config
+        .rules
+        .push(make_rule("ev\u{202e}il", Some("ti\u{202e}tle"), EVIL));
+    let mut active = app.active_sink_list.clone();
+    for sink in &mut active {
+        sink.description = format!("{}\u{202e}\u{1b}[31m", sink.description);
+    }
+    active.push(ActiveSink {
+        name: "bluez_output.\u{202e}\u{1b}[2J.1".to_string(),
+        description: "Phones\u{202e}\n\u{1b}[2J".to_string(),
+        is_default: false,
+    });
+    let profiles = app
+        .profile_sink_list
+        .iter()
+        .map(|p| ProfileSink {
+            predicted_name: p.predicted_name.clone(),
+            description: format!("{}\u{202e}", p.description),
+            device_name: p.device_name.clone(),
+            device_id: p.device_id,
+            profile_name: p.profile_name.clone(),
+            profile_index: p.profile_index,
+        })
+        .collect();
+    app.handle_update(AppUpdate::SinksData {
+        active,
+        profiles,
+        sources: Vec::new(),
+        profile_sources: Vec::new(),
+    });
+    app.handle_update(AppUpdate::DaemonState {
+        monitor_info: Some(false),
+        running: true,
+        windows: vec![
+            window(
+                "firefox",
+                "Evil\u{202e}eltit\u{1b}]0;x\u{7}",
+                Some(SONY_DESC),
+            ),
+            window("ev\u{202e}il", "ti\u{202e}tle\nforged", Some(EVIL)),
+            window("org.\u{202e}kde\u{1b}[2J", "\u{2066}x\u{2069}", None),
+        ],
+        unit_installed: true,
+        service_enabled: Some(true),
+        paused: false,
+    });
+}
+
+#[test]
+fn test_untrusted_text_never_puts_control_or_bidi_characters_into_cells() {
+    let edit_hostile_sink: Setup = |app| {
+        app.current_screen = Screen::Sinks;
+        app.sinks_screen.selected = 3;
+        app.sinks_screen.start_edit(&app.config.sinks);
+    };
+    for (name, setup) in states()
+        .into_iter()
+        .chain([("hostile sink edit", edit_hostile_sink)])
+    {
+        let mut app = fixture();
+        hostile(&mut app);
+        setup(&mut app);
+        let terminal = terminal(&mut app, 140, 40);
+        let screen = rows_of(&terminal).join("\n");
+        for cell in terminal.backend().buffer().content() {
+            assert!(
+                !cell.symbol().chars().any(is_unsafe_in_cell),
+                "{name}: cell {:?} reached the screen:\n{screen}",
+                cell.symbol()
+            );
+        }
+    }
+}

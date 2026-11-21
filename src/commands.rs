@@ -112,9 +112,10 @@ impl Listing {
             config
                 .and_then(|c| c.endpoints(self.kind).iter().find(|s| s.name == name))
                 .map_or_default(|s| {
-                    let mut m = String::with_capacity(3 + s.desc.len());
+                    let desc = term(&s.desc);
+                    let mut m = String::with_capacity(3 + desc.len());
                     m.push_str(" [");
-                    m.push_str(&s.desc);
+                    m.push_str(&desc);
                     m.push(']');
                     m
                 })
@@ -129,10 +130,10 @@ impl Listing {
                 crate::outln!(
                     "  {} {}{}",
                     marker.success(),
-                    node.name.as_str().bold(),
+                    term(&node.name).as_ref().bold(),
                     configured_marker(&node.name)
                 );
-                crate::outln!("      {}", node.description.as_str().dim());
+                crate::outln!("      {}", term(&node.description).as_ref().dim());
             }
             crate::outln!("\n  {} = current default", "*".dim());
         }
@@ -144,13 +145,13 @@ impl Listing {
                 crate::outln!(
                     "  {} {}{}",
                     "~".dim(),
-                    node.predicted_name.as_str().bold(),
+                    term(&node.predicted_name).as_ref().bold(),
                     configured_marker(&node.predicted_name)
                 );
                 crate::outln!(
                     "      {} (profile: {})",
-                    node.description.as_str().dim(),
-                    node.profile_name.as_str().technical()
+                    term(&node.description).as_ref().dim(),
+                    term(&node.profile_name).as_ref().technical()
                 );
             }
         }
@@ -164,6 +165,9 @@ impl Listing {
         }
         crate::outln!("\n{}", configured_title.header());
         crate::outln!("{}", "-".repeat(configured_title.chars().count()));
+        if entries.is_empty() {
+            crate::outln!("  {}", "(none; add one with pwsw tui)".dim());
+        }
         for (i, entry) in entries.iter().enumerate() {
             let default_marker = if entry.default {
                 let mut m = String::with_capacity(3 + "DEFAULT".len());
@@ -181,11 +185,11 @@ impl Listing {
             crate::outln!(
                 "  {}. \"{}\"{} - {}",
                 (i + 1).to_string().dim(),
-                entry.desc,
+                term(&entry.desc),
                 default_marker,
                 status
             );
-            crate::outln!("     {}", entry.name.as_str().bold());
+            crate::outln!("     {}", term(&entry.name).as_ref().bold());
         }
     }
 }
@@ -226,11 +230,32 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         ]);
 
         if let Ok(path) = Config::get_config_path() {
-            crate::outln!("\n{} {}", "Config:".dim(), path.display());
+            crate::outln!(
+                "\n{} {}{}",
+                "Config:".dim(),
+                path.display(),
+                config_path_note(&path)
+            );
         }
     }
 
     Ok(())
+}
+
+/// What to add after a config path that has no file: `" (not created yet: pwsw init)"`
+/// (with `--config` when needed), or the missing target of a dangling symlink; empty
+/// when the file exists
+fn config_path_note(path: &std::path::Path) -> String {
+    if let Some(target) = crate::config::dangling_symlink_target(path) {
+        return format!(" (symlink to missing {})", target.display())
+            .warning()
+            .to_string();
+    }
+    if std::fs::symlink_metadata(path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        let init = crate::config::pwsw_command(path, "init");
+        return format!(" (not created yet: {init})").warning().to_string();
+    }
+    String::new()
 }
 
 /// Direction for sink cycling
@@ -889,8 +914,10 @@ const fn no_monitor_info_hint(protocol: u32, monitor_info: bool) -> Option<&'sta
     )
 }
 
-/// Untrusted window text (title, `app_id`, monitor name) for the terminal: control
-/// characters escaped, so it can neither break the layout nor send escape sequences
+/// Untrusted text (window title, `app_id`, monitor name, `PipeWire` node name or
+/// description, configured string) for the terminal: control and bidirectional
+/// characters escaped, so it can neither break the layout nor send escape sequences.
+/// Display only: matching and the configuration use the raw value.
 fn term(text: &str) -> std::borrow::Cow<'_, str> {
     crate::sanitize::for_log(text)
 }

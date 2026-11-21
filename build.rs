@@ -5,6 +5,9 @@
 //! crates.io package falls back to the commit recorded in `.cargo_vcs_info.json`;
 //! with neither (a plain source tarball, or `git` missing) it is just the version.
 
+#[path = "build/manpage.rs"]
+mod manpage;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
@@ -27,6 +30,9 @@ fn generate_man_pages() {
     fs::create_dir_all(&man_out_dir).unwrap();
 
     let man_sources = [("man/pwsw.1.md", "pwsw", 1), ("man/pwsw.5.md", "pwsw", 5)];
+    println!("cargo:rerun-if-changed=build/manpage.rs");
+    // The package version only: no git hash or date, so the pages build reproducibly
+    let version = env::var("CARGO_PKG_VERSION").unwrap();
 
     for (src_path, title, section) in man_sources {
         println!("cargo:rerun-if-changed={src_path}");
@@ -34,8 +40,15 @@ fn generate_man_pages() {
         let markdown =
             fs::read_to_string(src_path).expect("Failed to read man page markdown source");
 
-        // mandown 1.1.0: convert(markup, title, section) -> String
-        let roff = mandown::convert(&markdown, title, section);
+        let missing = manpage::unicode_without_fallback(&markdown);
+        assert!(
+            missing.is_empty(),
+            "{src_path}: add an ASCII fallback for {missing:?} to build/manpage.rs"
+        );
+
+        // mandown 1.1: convert(markup, title, section) -> String
+        let roff = mandown::convert(&manpage::protect_unicode(&markdown), title, section);
+        let roff = manpage::postprocess(&roff, title, section, &version);
 
         let dst_filename = format!("{title}.{section}");
         fs::write(man_out_dir.join(dst_filename), roff)

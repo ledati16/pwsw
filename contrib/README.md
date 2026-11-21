@@ -37,9 +37,14 @@ Installed files:
 
 **Debug package:** Cargo's release profile strips the binary (`strip = true`, for
 `cargo install` users). The PKGBUILD overrides that for the package build
-(`CARGO_PROFILE_RELEASE_STRIP=false`, `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only`)
-so makepkg does the stripping itself: with `debug` in `OPTIONS` (makepkg.conf) or
-`options=(debug)`, the symbols end up in a separate `pwsw-git-debug` package.
+(`CARGO_PROFILE_RELEASE_STRIP=false`) so makepkg does the stripping itself: with
+`debug` in `OPTIONS` (makepkg.conf) or `options=(debug)`, the symbols end up in a
+separate `pwsw-git-debug` package. makepkg's `DEBUG_RUSTFLAGS` (`-C debuginfo=2` by
+default) decides how much debug info that is.
+
+**Notifications** need a notification server (mako, dunst, swaync, the one your
+desktop ships, ...). The package does not depend on one: without it pwsw works the
+same, only without notifications.
 
 After installing, create the config and add your sinks before enabling the service
 (the daemon refuses to start without configured sinks and never creates the config):

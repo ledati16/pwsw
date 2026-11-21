@@ -1299,3 +1299,195 @@ fn sandbox_environment_is_isolated() {
         );
     }
 }
+
+/// A directory with a fake `pw-dump` that prints `dump` (and no other `PipeWire` tool)
+fn fake_pw_dump(sb: &Sandbox, dump: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = sb.dir("cache").join("bin");
+    std::fs::create_dir_all(&bin).expect("create fake bin dir");
+    let json = sb.write_file("dump.json", dump);
+    let script = bin.join("pw-dump");
+    // Shell builtins only: `PATH` holds nothing but this directory
+    let body = format!(
+        "#!/bin/sh\nwhile IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; \
+         done < '{}'\n",
+        json.display()
+    );
+    std::fs::write(&script, body).expect("write fake pw-dump");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+        .expect("make fake pw-dump executable");
+    bin
+}
+
+#[test]
+fn cli_list_sinks_escapes_pipewire_and_config_text() {
+    let sb = Sandbox::new();
+    let dump = include_str!("fixtures/pwdump-synthetic.json").replace(
+        "\"node.description\": \"Built-in Audio Analog Stereo\"",
+        "\"node.description\": \"\\u001b[31mEVIL\\u001b]0;pwned\\u0007\\u202e\"",
+    );
+    let bin = fake_pw_dump(&sb, &dump);
+    let config = sb.write_file(
+        "evil.toml",
+        "[[sinks]]\nname = \"alsa_output.pci-0000_00_1f.3.analog-stereo\"\n\
+         desc = \"\\u001b[2JRED\"\ndefault = true\n",
+    );
+
+    let output = run(sb
+        .cmd()
+        .env("PATH", &bin)
+        .arg("--config")
+        .arg(&config)
+        .arg("list-sinks"));
+    assert_exit(&output, 0);
+    assert!(!output.stdout.contains(&0x1b), "{:?}", stdout(&output));
+    let out = stdout(&output);
+    assert!(!out.contains('\u{202e}'), "{out:?}");
+    assert!(
+        out.contains("\\u{1b}[31mEVIL\\u{1b}]0;pwned\\u{7}\\u{202e}"),
+        "{out}"
+    );
+    assert!(out.contains("[\\u{1b}[2JRED]"), "configured marker: {out}");
+
+    // `validate` prints configured strings the same way
+    let output = run(sb.cmd().arg("--config").arg(&config).arg("validate"));
+    assert_exit(&output, 0);
+    assert!(
+        stdout(&output).contains("\\u{1b}[2JRED"),
+        "{}",
+        stdout(&output)
+    );
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn cli_list_sinks_says_when_there_is_no_config_or_no_sink() {
+    let sb = Sandbox::new();
+    let bin = fake_pw_dump(&sb, include_str!("fixtures/pwdump-synthetic.json"));
+
+    let output = run(sb.cmd().env("PATH", &bin).arg("list-sinks"));
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    let path = sb.default_config_path().display().to_string();
+    assert!(
+        out.contains(&format!("Config: {path} (not created yet: pwsw init)")),
+        "{out}"
+    );
+
+    let config = sb.write_file("empty.toml", NO_SINKS_CONFIG);
+    let output = run(sb
+        .cmd()
+        .env("PATH", &bin)
+        .arg("--config")
+        .arg(&config)
+        .arg("list-sinks"));
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    assert!(
+        out.contains("CONFIGURED SINKS:\n-----------------\n  (none; add one with pwsw tui)"),
+        "{out}"
+    );
+    assert!(
+        out.ends_with(&format!("Config: {}\n", config.display())),
+        "{out}"
+    );
+}
+
+#[test]
+fn cli_init_writes_through_a_dangling_symlink() {
+    let sb = Sandbox::new();
+    let target = sb.dir("files").join("dotfiles").join("pwsw.toml");
+    std::fs::create_dir(target.parent().expect("parent")).expect("create target dir");
+    let link = sb.dir("files").join("config.toml");
+    std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+    let output = run(sb.cmd().arg("--config").arg(&link).arg("validate"));
+    assert_exit(&output, 1);
+    assert_stderr_contains(
+        &output,
+        &format!(
+            "Config file not found: {} is a symlink to missing {}",
+            link.display(),
+            target.display()
+        ),
+    );
+    assert_stderr_contains(&output, "init");
+
+    let output = run(sb.cmd().arg("--config").arg(&link).arg("init"));
+    assert_exit(&output, 0);
+    assert!(
+        target.is_file(),
+        "the template is written to the link's target"
+    );
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("stat link")
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+    let output = run(sb.cmd().arg("--config").arg(&link).arg("validate"));
+    assert_exit(&output, 0);
+}
+
+#[test]
+fn cli_init_explains_a_dangling_symlink_into_a_missing_directory() {
+    let sb = Sandbox::new();
+    let target = sb.dir("files").join("gone").join("pwsw.toml");
+    let link = sb.dir("files").join("config.toml");
+    std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+    let output = run(sb.cmd().arg("--config").arg(&link).arg("validate"));
+    assert_exit(&output, 1);
+    assert_stderr_contains(
+        &output,
+        &format!(
+            "Create the directory {} (then",
+            target.parent().expect("parent").display()
+        ),
+    );
+
+    for args in [&["init"][..], &["init", "--force"][..]] {
+        let output = run(sb.cmd().arg("--config").arg(&link).args(args));
+        assert_exit(&output, 1);
+        assert_stderr_contains(
+            &output,
+            &format!(
+                "{} is a symlink to missing {}, whose directory",
+                link.display(),
+                target.display()
+            ),
+        );
+        assert!(
+            !target.parent().expect("parent").exists(),
+            "nothing created"
+        );
+    }
+}
+
+#[test]
+fn cli_init_into_an_unwritable_directory_names_the_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    // Root writes anywhere: nothing to test
+    if rustix::process::geteuid().is_root() {
+        return;
+    }
+    let sb = Sandbox::new();
+    let dir = sb.dir("files").join("readonly");
+    std::fs::create_dir(&dir).expect("create dir");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).expect("chmod");
+
+    let output = run(sb
+        .cmd()
+        .arg("--config")
+        .arg(dir.join("config.toml"))
+        .arg("init"));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).expect("chmod back");
+    assert_exit(&output, 1);
+    assert_stderr_contains(
+        &output,
+        &format!("Cannot write to {}: Permission denied", dir.display()),
+    );
+    // Not `tempfile`'s "... at path .../.tmpXXXXXX"
+    assert!(!stderr(&output).contains("at path"), "{}", stderr(&output));
+}

@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+# Read-only token: the jobs only check out and build
+permissions:
+  contents: read
+
+# A newer push to the same branch or PR cancels the run it replaces
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 

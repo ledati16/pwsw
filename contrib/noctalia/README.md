@@ -42,6 +42,9 @@ Not confirmed by the documentation:
 
 - glyph names other than `volume-high` (edit `GLYPHS` in `widget.luau` if one is blank);
 - whether `runStream` strips the trailing newline (the JSON decoder should not care);
+- that `runStream` runs its string through `/bin/sh -c` like `runAsync` (the docs call
+  it a "shell command"): the service relies on that to print a *pwsw not found* status
+  when `pwsw` is not on `PATH`, since `runStream` reports no exit;
 - whether `state.watch` also fires for the value already set (the widget reads
   `state.get` once at load to be safe).
 

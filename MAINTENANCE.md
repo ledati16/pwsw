@@ -67,7 +67,7 @@ pwsw status
 
 Open and close a window that a rule matches and check that the sink follows.
 The PKGBUILD clones the GitHub repo's default branch, so it tests what is already
-merged and pushed; before that, test a local tree with `cargo install --path .`.
+merged and pushed; before that, test a local tree with `cargo install --locked --path .`.
 
 ## 6. Release
 

@@ -22,6 +22,7 @@ use crate::config::{Config, Endpoint, PositionalRef};
 use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, StartHint, output_with_timeout};
 use crate::ipc::{self, Request, Response};
 use crate::pipewire::{GraphInfo, PipeWire, Reachability, Snapshot};
+use crate::sanitize::sanitize_line;
 use crate::style::PwswStyle;
 
 /// How long the compositor may take to answer the registry roundtrip
@@ -140,13 +141,16 @@ impl Report {
                     Level::Warn => check.level.mark().warning(),
                     Level::Fail => check.level.mark().error(),
                 };
+                // Messages quote PipeWire node names and descriptions, config strings
+                // and log lines: escape control characters line by line
+                let clean = |line: &str| sanitize_line(line, usize::MAX).into_owned();
                 let mut lines = check.message.lines();
-                let _ = writeln!(out, "  {mark} {}", lines.next().unwrap_or_default());
+                let _ = writeln!(out, "  {mark} {}", clean(lines.next().unwrap_or_default()));
                 for line in lines {
-                    let _ = writeln!(out, "    {line}");
+                    let _ = writeln!(out, "    {}", clean(line));
                 }
                 if let Some(hint) = &check.hint {
-                    let _ = writeln!(out, "    {} {hint}", "→".dim());
+                    let _ = writeln!(out, "    {} {}", "→".dim(), clean(hint));
                 }
             }
             out.push('\n');
@@ -544,9 +548,34 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
             "Set XDG_CONFIG_HOME or HOME, or pass --config PATH",
         )),
     }
+    let dangling = path.and_then(crate::config::dangling_symlink_target);
     match config {
+        None if let Some(target) = &dangling
+            && let Some(dir) = target.parent()
+            && !dir.as_os_str().is_empty()
+            && !dir.is_dir() =>
+        {
+            checks.push(Check::fail(
+                format!(
+                    "The config file is a symlink to missing {}",
+                    target.display()
+                ),
+                format!(
+                    "Create the directory {}, or point the symlink at an existing file",
+                    dir.display()
+                ),
+            ));
+        }
         None if let Some(path) = path => checks.push(Check::fail(
-            "The config file does not exist",
+            dangling.as_ref().map_or_else(
+                || "The config file does not exist".to_string(),
+                |target| {
+                    format!(
+                        "The config file is a symlink to missing {}",
+                        target.display()
+                    )
+                },
+            ),
             format!(
                 "Create it: {} (or {}, which also helps you add sinks)",
                 crate::config::pwsw_command(path, "init"),
@@ -1031,6 +1060,21 @@ mod tests {
     }
 
     #[test]
+    fn test_render_escapes_control_characters_from_pipewire_and_config() {
+        let report = Report {
+            sections: vec![section("Sinks", vec![
+                Check::ok("\u{1b}[31mRED\u{1b}]0;x\u{7}: present as bluez\u{202e}x\nnext"),
+                Check::warn("odd", "hint \u{1b}[2J"),
+            ])],
+        };
+        assert_eq!(
+            report.render(),
+            "Sinks\n  ✓ \\u{1b}[31mRED\\u{1b}]0;x\\u{7}: present as bluez\\u{202e}x\n    \
+             next\n  ⚠ odd\n    → hint \\u{1b}[2J\n\nNo problems, 1 warning.\n"
+        );
+    }
+
+    #[test]
     fn test_exit_status_ignores_warnings() {
         let mut report = Report {
             sections: vec![section("A", vec![Check::ok("fine"), Check::info("fact")])],
@@ -1224,6 +1268,42 @@ mod tests {
             checks
                 .iter()
                 .all(|c| c.level == Level::Ok || c.hint.is_some())
+        );
+    }
+
+    #[test]
+    fn test_config_checks_name_a_dangling_symlink() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let link = dir.path().join("config.toml");
+        let target = dir.path().join("dotfiles").join("pwsw.toml");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let missing_dir = config_checks(Some(&link), "--config", None);
+        let check = &missing_dir.checks[1];
+        assert_eq!(
+            check.message,
+            format!(
+                "The config file is a symlink to missing {}",
+                target.display()
+            )
+        );
+        assert!(
+            check
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.starts_with("Create the directory")),
+            "{check:?}"
+        );
+
+        std::fs::create_dir(dir.path().join("dotfiles")).expect("create dir");
+        let creatable = config_checks(Some(&link), "--config", None);
+        assert!(
+            creatable.checks[1]
+                .hint
+                .as_deref()
+                .is_some_and(|h| h.contains(" init")),
+            "{:?}",
+            creatable.checks[1]
         );
     }
 

@@ -1,12 +1,10 @@
-# pwsw(1)
-
-## NAME
+# NAME
 pwsw - PipeWire Switcher daemon and client
 
-## SYNOPSIS
+# SYNOPSIS
 **pwsw** [*OPTIONS*] [*COMMAND*]
 
-## DESCRIPTION
+# DESCRIPTION
 **pwsw** is a daemon that automatically switches PipeWire audio sinks based on active windows in Wayland compositors. It monitors window events using standard protocols and uses PipeWire native tools for audio control.
 
 It can also be used as a command-line client to query the daemon status, list windows, and manually switch sinks.
@@ -15,7 +13,7 @@ Optionally it also switches the default *source* (microphone): with **[[sources]
 
 The daemon switches when the sink its rules want *changes* (a matching window opens, closes, changes title or moves to another monitor, or a reload changes the rules). At start-up it waits (at most 2 s) for the compositor to list the windows already open and takes the rules' answer for them as its baseline; it switches to it only with *default_on_startup* (see **pwsw**(5)). It does not fight other programs: a default sink changed elsewhere (e.g. with **pavucontrol**, or by WirePlumber) stays until the rules' answer changes again. A manual switch holds the same way. A failed rule-driven switch is retried after 2 s and 5 s, then once more on the next window event or reload. Under systemd the daemon reports the current sink as its status line (**systemctl --user status pwsw**), as *Sink: X · Mic: Y* when sources are configured. Sources follow the same rules (switch on a change of their answer, retries, fallbacks, manual choice, pause, settle delay), each dimension on its own.
 
-## COMMANDS
+# COMMANDS
 **daemon** [*OPTIONS*]
 :   Start the PWSW daemon.
 
@@ -51,7 +49,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
     Read-only: it never changes the audio state, the configuration or any service, and creates no files. Exits with status 0 when no check is **✗**, 1 otherwise (warnings do not count).
 
 **init** [*--force*]
-:   Write the commented default configuration file (at the path **--config** or **PWSW_CONFIG** selects, else the default location). Refuses if a file already exists; with **--force** it is replaced and the old file kept next to it as *<name>.bak* (*config.toml.bak*). **pwsw tui** also creates this file on first run; no other command does.
+:   Write the commented default configuration file (at the path **--config** or **PWSW_CONFIG** selects, else the default location). Refuses if a file already exists; with **--force** it is replaced and the old file kept next to it as *\<name\>.bak* (*config.toml.bak*). **pwsw tui** also creates this file on first run; no other command does.
 
 **set-sink** *SINK*
 :   Set audio output by description or node name (a 1-indexed position such as "2" also works, but is deprecated like positional references in the configuration). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink; "already active" means the current PipeWire default. The sink is always attempted, and its error reported, even if it cannot be activated right now. A failed switch leaves the audio where it was. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
@@ -78,12 +76,17 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 :   Gracefully stop the running daemon. Requires a running daemon. Under systemd, **systemctl --user stop pwsw** does the same (a clean exit is not restarted).
 
 **completions** *SHELL*
-:   Print a completion script for *SHELL* (**bash**, **zsh**, **fish**, **elvish** or **powershell**) to stdout, e.g. **pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw**. Packages install them for bash, zsh and fish.
+:   Print a completion script for *SHELL* (**bash**, **zsh**, **fish**, **elvish** or **powershell**) to stdout. Packages install them for bash, zsh and fish; by hand, e.g. for bash:
 
-## CONFIGURATION CHANGES
+    ```
+    dir=~/.local/share/bash-completion/completions
+    mkdir -p "$dir" && pwsw completions bash > "$dir/pwsw"
+    ```
+
+# CONFIGURATION CHANGES
 The daemon watches its configuration file and applies changes automatically when the file is saved (also on **SIGHUP**). If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. An invalid file is rejected and the previous configuration stays in effect; the error is logged and, with *notify_manual* enabled, shown as a notification. Restarting the daemon is only needed after upgrading **pwsw**: **pwsw status** reports a daemon that speaks a different IPC protocol, and a daemon that does not understand a newer client's request answers with its version and a hint to restart it.
 
-## STATUS JSON
+# STATUS JSON
 **pwsw status --json** prints one object. Fields that cannot be determined are *null*, never missing:
 
 ```
@@ -119,7 +122,7 @@ The daemon watches its configuration file and applies changes automatically when
 
 *current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*). *daemon.active_window* names what decides that sink (the rule's *desc*, else the matching window's title) and the sink's description (*trigger: Sink*), ending in *(fallback)* when *daemon_sink_fallback* is true; it is *null* when no window decides it: no rule matches, a manual choice holds, or the sink is not what the rules want (for example while paused). *daemon.paused* is true while rule-driven switching is paused (**pwsw pause**), *null* when no daemon status could be read. *current_source* (also *pipewire.current_source*) is the PipeWire default source the same way, *null* when there is none; *sources_configured* says whether the configuration has **[[sources]]**. *daemon.daemon_source* is the source the daemon last applied (configured description), *null* without sources configured or while unknown, and *daemon.daemon_source_fallback* is true when it is a fallback of the deciding rule. *daemon.backend* is the compositor protocol the daemon uses (*ext* for **ext-foreign-toplevel-list**, *wlr* for **wlr-foreign-toplevel-management**) and *daemon.monitor_info* whether it reports which monitors windows are on, so rules with **output** can match; both are *null* when no daemon status could be read or the daemon predates them. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
 
-## STATUS STREAM
+# STATUS STREAM
 **pwsw status --watch** asks the daemon to report its status and every change of it (nothing is polled), and prints one line per update to stdout, flushed at once. Without **--json** the line reads *Headphones · Mic: Headset Mic · paused* (the microphone only with sources configured and known, *(fallback)* after a fallback, *paused* while paused, *unknown output* while the daemon does not know the default sink), *pwsw stopped*, or *pwsw error:* and the reason when a daemon refuses the stream.
 
 The command never exits because the daemon is gone: when it cannot connect, or the connection drops (the daemon stopped or is restarting), it prints one *stopped* line, retries with a backoff from 250 ms up to 5 s, and prints the fresh state once the daemon answers again. Identical lines are never printed twice in a row. It exits with status 0 on **SIGINT** or **SIGTERM**, or when nobody reads its output any more (a closed pipe, noticed within a second even while nothing changes). The daemon serves at most 16 followers at once and drops one that stops reading.
@@ -128,27 +131,34 @@ With **--json** every line is one JSON object. This schema is stable: fields are
 
 ```
 {"text":"Headphones",
- "tooltip":"Output: Headphones (alsa_output.usb-...)\nMic: Headset Mic\nRule: Voice chat (discord)",
+ "tooltip":"Output: Headphones (alsa_output.usb-...)\n
+            Mic: Headset Mic\nRule: Voice chat (discord)",
  "class":"active", "alt":"active",
- "sink":{"desc":"Headphones","node":"alsa_output.usb-...","fallback":false,
-         "window":{"app_id":"discord","rule":"Voice chat","rule_index":4}},
- "source":{"desc":"Headset Mic","node":"alsa_input.usb-...","fallback":false,"window":{...}} | null,
+ "sink":{"desc":"Headphones","node":"alsa_output.usb-...",
+         "fallback":false,
+         "window":{"app_id":"discord","rule":"Voice chat",
+                   "rule_index":4}},
+ "source":{"desc":"Headset Mic","node":"alsa_input.usb-...",
+           "fallback":false,"window":{...}} | null,
  "paused":false, "daemon":"running",
- "version":"v0.7.0+abc1234", "protocol":2, "managed_by":"systemd" | "direct"}
+ "version":"v0.7.0+abc1234", "protocol":2,
+ "managed_by":"systemd" | "direct"}
 ```
 
-(shown wrapped; each object is printed on a single line). *text*, *tooltip*, *class* and *alt* are the conventional status-bar fields. *class* and *alt* are *active*, *fallback* (the sink or the source is a fallback a rule settled for), *paused* (wins over *fallback*) or *stopped*. *text* is the description of the sink the daemon applied (*unknown* while it does not know the default sink). *tooltip* has an *Output:* line, a *Mic:* line with sources configured, *Rule:* (and *Mic rule:* when another window decides the microphone) naming the deciding rule (its *desc*, else *#N*, its position in the configuration) and, in parentheses, the deciding window's *app_id*, and *Paused: rules do not switch* while paused. *sink* and *source* are what the daemon last applied: *desc* (configured description, else the node name), *node*, *fallback*, and *window*, the window whose rule chose it (*null* for the default, a manual choice, or a default found at startup): its *app_id*, *rule* (the rule's *desc*, else *#N*) and *rule_index* (*N*, the rule's 1-based position in the configuration). Window titles are never included: they change with every browser tab and would put page titles into the bar. Text is sanitised (control characters escaped, at most 200 characters). *sink* is *null* while the default sink is unknown; *source* is *null* without **[[sources]]** or while unknown.
+(shown wrapped, the *tooltip* string too; each object is printed on a single line). *text*, *tooltip*, *class* and *alt* are the conventional status-bar fields. *class* and *alt* are *active*, *fallback* (the sink or the source is a fallback a rule settled for), *paused* (wins over *fallback*) or *stopped*. *text* is the description of the sink the daemon applied (*unknown* while it does not know the default sink). *tooltip* has an *Output:* line, a *Mic:* line with sources configured, *Rule:* (and *Mic rule:* when another window decides the microphone) naming the deciding rule (its *desc*, else *#N*, its position in the configuration) and, in parentheses, the deciding window's *app_id*, and *Paused: rules do not switch* while paused. *sink* and *source* are what the daemon last applied: *desc* (configured description, else the node name), *node*, *fallback*, and *window*, the window whose rule chose it (*null* for the default, a manual choice, or a default found at startup): its *app_id*, *rule* (the rule's *desc*, else *#N*) and *rule_index* (*N*, the rule's 1-based position in the configuration). Window titles are never included: they change with every browser tab and would put page titles into the bar. Text is sanitised (control characters escaped, at most 200 characters). *sink* is *null* while the default sink is unknown; *source* is *null* without **[[sources]]** or while unknown.
 
-When no daemon answers, the line is:
+When no daemon answers, the line is (shown wrapped):
 
 ```
-{"text":"pwsw stopped","tooltip":"pwsw daemon is not running","class":"stopped",
- "alt":"stopped","daemon":"stopped","sink":null,"source":null,"paused":false}
+{"text":"pwsw stopped",
+ "tooltip":"pwsw daemon is not running",
+ "class":"stopped", "alt":"stopped", "daemon":"stopped",
+ "sink":null, "source":null, "paused":false}
 ```
 
 When a daemon answers but refuses the stream (too many followers, or an older daemon that does not know it: restart it), the line has the same fields as the *stopped* line, but *daemon* is *error*, *text* is *pwsw error* and *tooltip* says why (*pwsw daemon: ...*); *class* is *stopped*, and the command keeps retrying.
 
-## COMPATIBILITY
+# COMPATIBILITY
 **pwsw** relies on standard Wayland protocols to monitor windows.
 
 **Supported:**
@@ -161,7 +171,7 @@ When the compositor offers both, the daemon uses **ext**, unless the configurati
 *   **GNOME / Mutter**: Does not expose window management protocols.
 *   **KDE Plasma 6**: Removed protocol support (pending standard implementation).
 
-## TUI KEYS
+# TUI KEYS
 The most important keys are listed below. Press `?` or `F1` within the TUI for the complete, context-sensitive list (it is generated from the same table the key handling uses).
 
 **Global**
@@ -213,7 +223,7 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 
 If the configuration file changed on disk since the TUI loaded it, saving asks whether to overwrite it or reload it from disk.
 
-## OPTIONS
+# OPTIONS
 **--config** *PATH*
 :   Use *PATH* as the configuration file instead of the default location. Takes precedence over **PWSW_CONFIG**. Accepted before or after the command; when **pwsw** starts the daemon itself (background mode or the TUI), the same path is passed on. Use **pwsw --config** *PATH* **init** to create a configuration there.
 
@@ -226,7 +236,7 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 **-V**, **--version**
 :   Print the version: the release, plus the git commit (and *-dirty* for uncommitted changes) when built from a git checkout, e.g. *pwsw 0.7.0+abc1234*.
 
-## ENVIRONMENT
+# ENVIRONMENT
 **PWSW_CONFIG**
 :   Path to the configuration file to use when **--config** is not given. Ignored when empty.
 
@@ -252,7 +262,7 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 :   Base directory for the daemon log (*$XDG_DATA_HOME/pwsw/daemon.log*, normally *~/.local/share/pwsw/daemon.log*).
 
 **XDG_RUNTIME_DIR**
-:   Directory for the IPC socket (`pwsw.sock`) and the single-instance lock file (`pwsw.lock`). If unset, empty or not an absolute path, both are placed in */tmp/pwsw-<uid>/* instead (see **FILES**).
+:   Directory for the IPC socket (`pwsw.sock`) and the single-instance lock file (`pwsw.lock`). If unset, empty or not an absolute path, both are placed in */tmp/pwsw-\<uid\>/* instead (see **FILES**).
 
 **PROFILE_SWITCH_DELAY_MS**
 :   Interval in milliseconds between checks for the new sink after a profile switch (default: 150, clamped to 10-1000).
@@ -260,7 +270,7 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 **PROFILE_SWITCH_MAX_RETRIES**
 :   Number of checks for the new sink after a profile switch (default: 10). The total sleep (interval × checks) is capped at 5 seconds; each check's **pw-dump** can add its own timeout.
 
-## FILES
+# FILES
 *$XDG_CONFIG_HOME/pwsw/config.toml*
 :   The default configuration file (normally *~/.config/pwsw/config.toml*; override with **--config** or **PWSW_CONFIG**). See **pwsw**(5) for details.
 
@@ -268,15 +278,15 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 :   Daemon log file (normally *~/.local/share/pwsw/daemon.log*; rotated at 1 MB to *daemon.log.old*). A panic of the daemon is recorded here too. Written in every mode; the background daemon started by **pwsw daemon** also appends its start-up errors here. Under systemd the same lines also go to the journal (**journalctl --user -u pwsw.service**).
 
 *$XDG_RUNTIME_DIR/pwsw.sock*
-:   IPC socket (mode 0600). Fallback: */tmp/pwsw-<uid>/pwsw.sock*, in a directory created with mode 0700; pwsw refuses to use that directory if it is a symlink, owned by another user, or has a different mode. Both sides check that the peer runs as the same user.
+:   IPC socket (mode 0600). Fallback: */tmp/pwsw-\<uid\>/pwsw.sock*, in a directory created with mode 0700; pwsw refuses to use that directory if it is a symlink, owned by another user, or has a different mode. Both sides check that the peer runs as the same user.
 
 *$XDG_RUNTIME_DIR/pwsw.lock*
-:   Single-instance lock (mode 0600), held with **flock**(2) while the daemon runs and released by the kernel when it exits, so a crashed daemon never blocks the next start. Lives next to the socket (fallback: */tmp/pwsw-<uid>/pwsw.lock*).
+:   Single-instance lock (mode 0600), held with **flock**(2) while the daemon runs and released by the kernel when it exits, so a crashed daemon never blocks the next start. Lives next to the socket (fallback: */tmp/pwsw-\<uid\>/pwsw.lock*).
 
 *contrib/pwsw.service*
-:   systemd user unit (install to *~/.config/systemd/user/*). Part of *graphical-session.target*, restarts on failure, sandboxed.
+:   systemd user unit, installed by packages to */usr/lib/systemd/user/* (or copied by hand to *~/.config/systemd/user/*). Part of *graphical-session.target*, restarts on failure, sandboxed.
 
-## EXIT STATUS
+# EXIT STATUS
 **0**
 :   Success.
 
@@ -286,8 +296,8 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 **2**
 :   Invalid command-line usage.
 
-## BUGS
+# BUGS
 See <https://github.com/ledati16/pwsw/issues>
 
-## SEE ALSO
+# SEE ALSO
 **pwsw**(5), **pw-dump**(1), **pw-metadata**(1), **pw-cli**(1)

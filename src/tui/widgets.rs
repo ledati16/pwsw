@@ -189,7 +189,8 @@ pub fn render_pick_list(
 }
 
 /// "Label  value" rows for detail and confirmation dialogs, labels aligned;
-/// a `placeholder` value is dimmed.
+/// a `placeholder` value is dimmed. Values are cleaned for display
+/// ([`crate::sanitize::for_display`]).
 #[must_use]
 pub fn detail_lines<'a>(rows: &[(&'a str, &'a str, bool)]) -> Vec<Line<'a>> {
     let label_width = rows.iter().map(|(l, ..)| text_width(l)).max().unwrap_or(0);
@@ -200,7 +201,7 @@ pub fn detail_lines<'a>(rows: &[(&'a str, &'a str, bool)]) -> Vec<Line<'a>> {
                 Span::styled(label, theme::dim()),
                 Span::raw(" ".repeat(pad)),
                 Span::styled(
-                    value,
+                    crate::sanitize::for_display(value),
                     if placeholder {
                         theme::dim().add_modifier(Modifier::ITALIC)
                     } else {
@@ -361,7 +362,9 @@ fn render_input_text(frame: &mut Frame, area: Rect, input: &Input, focused: bool
     // Leave the last column for the cursor at the end of the text
     let scroll = input.visual_scroll(width.saturating_sub(1).max(1));
     let scroll_u16 = u16::try_from(scroll).unwrap_or(u16::MAX);
-    frame.render_widget(Paragraph::new(input.value()).scroll((0, scroll_u16)), area);
+    // Cleaned for display only (the zero-width controls it drops do not move the cursor)
+    let text = crate::sanitize::for_display(input.value());
+    frame.render_widget(Paragraph::new(text).scroll((0, scroll_u16)), area);
     if focused {
         let offset = input.visual_cursor().saturating_sub(scroll);
         let offset = u16::try_from(offset).unwrap_or(u16::MAX);
@@ -442,9 +445,19 @@ pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
     rows
 }
 
-/// `text` cut to at most `max` columns, ending in `…` when it was cut.
+/// `text` cut to at most `max` columns, ending in `…` when it was cut. Control
+/// and bidirectional characters are removed first ([`crate::sanitize::for_display`]):
+/// this is what puts untrusted text (titles, node names) into cells.
 #[must_use]
 pub fn ellipsize(text: &str, max: usize) -> Cow<'_, str> {
+    match crate::sanitize::for_display(text) {
+        Cow::Borrowed(clean) => ellipsize_clean(clean, max),
+        Cow::Owned(clean) => Cow::Owned(ellipsize_clean(&clean, max).into_owned()),
+    }
+}
+
+/// [`ellipsize`] for text without unsafe characters
+fn ellipsize_clean(text: &str, max: usize) -> Cow<'_, str> {
     if text_width(text) <= max {
         return Cow::Borrowed(text);
     }
@@ -524,8 +537,18 @@ pub fn picker_lines(entries: &[(&str, &str)], width: usize) -> Vec<Line<'static>
 /// - Bluetooth (`bluez_output.40_ED_98_1C_1D_08.1`): prefix, last two address
 ///   octets and device number, `bluez_output…1D_08.1`
 /// - anything else, or when those still do not fit: cut with [`ellipsize`]
+///
+/// Unsafe characters are removed like in [`ellipsize`].
 #[must_use]
 pub fn truncate_node_name(text: &str, max: usize) -> Cow<'_, str> {
+    match crate::sanitize::for_display(text) {
+        Cow::Borrowed(clean) => truncate_clean_node_name(clean, max),
+        Cow::Owned(clean) => Cow::Owned(truncate_clean_node_name(&clean, max).into_owned()),
+    }
+}
+
+/// [`truncate_node_name`] for text without unsafe characters
+fn truncate_clean_node_name(text: &str, max: usize) -> Cow<'_, str> {
     if text_width(text) <= max {
         return Cow::Borrowed(text);
     }
@@ -560,6 +583,21 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    #[test]
+    fn test_ellipsize_and_node_names_drop_control_and_bidi_characters() {
+        assert_eq!(ellipsize("Sony\u{202e}MX4", 10), "SonyMX4");
+        assert_eq!(ellipsize("Sony\u{202e}\u{1b}[2J WH-1000XM4", 8), "Sony[2J…");
+        assert_eq!(
+            truncate_node_name("bluez\u{202e}_output.x", 40),
+            "bluez_output.x"
+        );
+        assert_eq!(
+            truncate_node_name("alsa_output.pci-\u{202e}0000.analog-stereo", 25),
+            "alsa_output…analog-stereo"
+        );
+        assert!(matches!(ellipsize("clean", 10), Cow::Borrowed("clean")));
+    }
 
     #[test]
     fn test_ellipsize_by_display_width() {

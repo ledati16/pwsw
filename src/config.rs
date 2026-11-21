@@ -24,6 +24,7 @@ use serde::de::{self, Deserializer, Visitor};
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use tracing::{info, warn};
 
+use crate::sanitize::for_log as term;
 use crate::style::PwswStyle;
 
 // ============================================================================
@@ -76,9 +77,9 @@ pub const RULE_REGEX_SIZE_LIMIT: usize = 1 << 20;
 pub const RULE_REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
 
 /// What `pwsw validate` notes about rules with `output`
-pub const OUTPUT_RULES_NOTE: &str = "rules with `output` need a compositor offering \
-     wlr-foreign-toplevel-management (e.g. Sway, Hyprland): only it reports which \
-     monitor a window is on. Check with `pwsw doctor`.";
+pub const OUTPUT_RULES_NOTE: &str = "rules with an output condition need a compositor \
+     offering wlr-foreign-toplevel-management (e.g. Sway, Hyprland): only it reports \
+     which monitor a window is on. Check with pwsw doctor.";
 
 /// Largest accepted `switch_delay_ms` (5 s): a longer settle delay would make the
 /// daemon look unresponsive
@@ -112,15 +113,29 @@ pub fn compile_rule_regex(pattern: &str) -> std::result::Result<Regex, regex::Er
 pub struct ConfigNotFound {
     /// The path that was looked up.
     pub path: PathBuf,
+    /// The missing file `path` points to when it is a dangling symlink
+    pub symlink_target: Option<PathBuf>,
 }
 
 impl fmt::Display for ConfigNotFound {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Config file not found: {}", self.path.display())?;
+        if let Some(target) = &self.symlink_target {
+            write!(f, " is a symlink to missing {}", target.display())?;
+            let dir = parent_dir(target);
+            if !dir.is_dir() {
+                return write!(
+                    f,
+                    "\n\nCreate the directory {} (then {} writes the template there), or \
+                     point the symlink at an existing file.",
+                    dir.display(),
+                    pwsw_command(&self.path, "init")
+                );
+            }
+        }
         write!(
             f,
-            "Config file not found: {}\n\nCreate one with:\n  {}  (commented template)\n  \
-             {}  (interactive setup)",
-            self.path.display(),
+            "\n\nCreate one with:\n  {}  (commented template)\n  {}  (interactive setup)",
             pwsw_command(&self.path, "init"),
             pwsw_command(&self.path, "tui")
         )
@@ -953,6 +968,7 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return Err(anyhow::Error::new(ConfigNotFound {
                     path: path.to_path_buf(),
+                    symlink_target: dangling_symlink_target(path),
                 }));
             }
             Err(e) => {
@@ -1165,13 +1181,14 @@ impl Config {
     /// Write the commented default template to `path` (atomically, mode `0600`).
     ///
     /// With `force`, an existing file is replaced and its old contents kept as
-    /// `<name>.bak`.
+    /// `<name>.bak`. A symlink stays a symlink: its target is written, also when it
+    /// is missing (a dangling symlink) but its directory exists.
     ///
     /// # Errors
     /// Returns an error if `path` exists and `force` is false, or if the file cannot be
     /// written.
     pub fn init_at(path: &Path, force: bool) -> Result<()> {
-        if !force && fs::symlink_metadata(path).is_ok() {
+        if !force && fs::symlink_metadata(path).is_ok() && dangling_symlink_target(path).is_none() {
             anyhow::bail!(
                 "Config already exists: {}\nUse `{}` to replace it (the old file is kept as \
                  {}).",
@@ -1362,8 +1379,10 @@ impl Config {
             }
         }
         let Some(mut tmp) = tmp else {
-            return Err(last_err.expect("last_err should be Some if tmp is None"))
-                .context("Failed to create temporary file for atomic config save");
+            let err = last_err.expect("last_err should be Some if tmp is None");
+            // `tempfile` names its random file in the message; the directory is what
+            // the user can fix
+            anyhow::bail!("Cannot write to {}: {}", dir.display(), io_cause(&err));
         };
         tmp.as_file_mut()
             .write_all(contents.as_bytes())
@@ -1951,6 +1970,14 @@ impl Config {
                 ),
                 _ => {}
             }
+            // Like `app_id` and `output`: an empty pattern would match every title
+            if rule.title_pattern.as_deref() == Some("") {
+                anyhow::bail!(
+                    "Rule {} has an empty title pattern. Leave `title` out to match any \
+                     title.",
+                    i + 1
+                );
+            }
             if !rule.source_refs.is_empty() && self.sources.is_empty() {
                 anyhow::bail!(
                     "Rule {} sets `source` but no sources are configured. Add [[sources]] \
@@ -2167,7 +2194,8 @@ impl Config {
     // Queries
     // ------------------------------------------------------------------------
 
-    /// Print a human-readable summary of the configuration
+    /// Print a human-readable summary of the configuration (strings with control
+    /// characters escaped, see [`crate::sanitize::for_log`])
     pub fn print_summary(&self) {
         crate::outln!("{} {}\n", "✓".success(), "Configuration valid".success());
 
@@ -2233,12 +2261,12 @@ impl Config {
                 crate::outln!(
                     "  {}. {}{}",
                     (i + 1).to_string().dim(),
-                    entry.desc.as_str().bold(),
+                    term(&entry.desc).as_ref().bold(),
                     marker
                 );
-                crate::outln!("     {}: {}", "name".dim(), entry.name);
+                crate::outln!("     {}: {}", "name".dim(), term(&entry.name));
                 if let Some(ref icon) = entry.icon {
-                    crate::outln!("     {}: {}", "icon".dim(), icon.as_str().technical());
+                    crate::outln!("     {}: {}", "icon".dim(), term(icon).as_ref().technical());
                 }
             }
         }
@@ -2268,10 +2296,10 @@ impl Config {
                             "  {}. {}: {}",
                             (i + 1).to_string().dim(),
                             key.dim(),
-                            pattern.technical()
+                            term(pattern).as_ref().technical()
                         );
                     } else {
-                        crate::outln!("     {}: {}", key.dim(), pattern.technical());
+                        crate::outln!("     {}: {}", key.dim(), term(pattern).as_ref().technical());
                     }
                 }
                 let effective_notify = rule.notify.unwrap_or(self.settings.notify_rules);
@@ -2283,7 +2311,7 @@ impl Config {
                 crate::outln!(
                     "     {}: {} ({}: {} - {})",
                     "sink".dim(),
-                    rule.sink_ref.as_str().bold(),
+                    term(&rule.sink_ref).as_ref().bold(),
                     "notify".dim(),
                     effective_notify,
                     source.dim()
@@ -2292,18 +2320,18 @@ impl Config {
                     crate::outln!(
                         "     {}: {}",
                         "fallback".dim(),
-                        rule.fallback_refs.join(", ").as_str().bold()
+                        term(&rule.fallback_refs.join(", ")).as_ref().bold()
                     );
                 }
                 if !rule.source_refs.is_empty() {
                     crate::outln!(
                         "     {}: {}",
                         "source".dim(),
-                        rule.source_refs.join(", ").as_str().bold()
+                        term(&rule.source_refs.join(", ")).as_ref().bold()
                     );
                 }
                 if let Some(desc) = &rule.desc {
-                    crate::outln!("     {}: {}", "desc".dim(), desc);
+                    crate::outln!("     {}: {}", "desc".dim(), term(desc));
                 }
             }
         }
@@ -2431,18 +2459,75 @@ fn backup_path(path: &Path) -> PathBuf {
 }
 
 /// The file a save to `path` must replace: the symlink-resolved path when it exists
-/// (so a symlinked config stays a symlink), else `path` itself.
+/// (so a symlinked config stays a symlink), the missing target of a dangling symlink
+/// whose directory exists, else `path` itself.
 fn resolve_write_target(path: &Path) -> Result<PathBuf> {
     match fs::symlink_metadata(path) {
-        Ok(_) => fs::canonicalize(path).with_context(|| {
-            format!(
-                "Cannot resolve config path {} (dangling symlink?)",
-                path.display()
-            )
-        }),
+        Ok(_) => match fs::canonicalize(path) {
+            Ok(target) => Ok(target),
+            Err(e) => match dangling_symlink_target(path) {
+                Some(target) if parent_dir(&target).is_dir() => Ok(target),
+                Some(target) => anyhow::bail!(
+                    "Cannot write the config: {} is a symlink to missing {}, whose directory \
+                     {} does not exist. Create the directory, or point the symlink at an \
+                     existing file.",
+                    path.display(),
+                    target.display(),
+                    parent_dir(&target).display()
+                ),
+                None => {
+                    Err(e).with_context(|| format!("Cannot resolve config path {}", path.display()))
+                }
+            },
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(path.to_path_buf()),
         Err(e) => Err(e).with_context(|| format!("Failed to stat config: {}", path.display())),
     }
+}
+
+/// The missing file a dangling symlink at `path` points to (at the end of a chain of
+/// symlinks); `None` when `path` is not a symlink, its target exists, or the chain
+/// loops or cannot be read
+#[must_use]
+pub fn dangling_symlink_target(path: &Path) -> Option<PathBuf> {
+    if !fs::symlink_metadata(path).ok()?.file_type().is_symlink() || fs::metadata(path).is_ok() {
+        return None;
+    }
+    let mut current = path.to_path_buf();
+    // The kernel's own limit on a chain of symlinks
+    for _ in 0..40 {
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let link = fs::read_link(&current).ok()?;
+                current = parent_dir(&current).join(link);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(current),
+            // Exists after all, or cannot be checked (e.g. a path component that is
+            // not a directory)
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// The directory holding `path` (`.` for a bare file name)
+fn parent_dir(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// `err` without the random file name `tempfile` puts into it: the operating system's
+/// message when the error carries one, else its kind (`Permission denied`)
+fn io_cause(err: &std::io::Error) -> String {
+    if err.raw_os_error().is_some() {
+        return err.to_string();
+    }
+    let kind = std::io::Error::from(err.kind()).to_string();
+    let mut chars = kind.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
 }
 
 // ============================================================================
@@ -3932,6 +4017,48 @@ sink = "HDMI"
     }
 
     #[test]
+    fn test_dangling_symlink_target_follows_chains() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let missing = dir.path().join("missing.toml");
+        let first = dir.path().join("first.toml");
+        // A relative link resolves against the link's own directory
+        std::os::unix::fs::symlink("missing.toml", &first).expect("create symlink");
+        let second = dir.path().join("second.toml");
+        std::os::unix::fs::symlink(&first, &second).expect("create symlink");
+
+        assert_eq!(dangling_symlink_target(&second), Some(missing.clone()));
+        assert_eq!(dangling_symlink_target(&first), Some(missing.clone()));
+        assert_eq!(dangling_symlink_target(&missing), None, "not a symlink");
+
+        std::fs::write(&missing, TWO_SINKS).expect("write file");
+        assert_eq!(dangling_symlink_target(&second), None, "target exists");
+
+        let a = dir.path().join("a.toml");
+        let b = dir.path().join("b.toml");
+        std::os::unix::fs::symlink(&b, &a).expect("create symlink");
+        std::os::unix::fs::symlink(&a, &b).expect("create symlink");
+        assert_eq!(dangling_symlink_target(&a), None, "a loop is not dangling");
+    }
+
+    #[test]
+    fn test_save_through_dangling_symlink_writes_its_target() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cfg = Config::load_from_path(write(&dir, "c.toml", TWO_SINKS)).expect("load config");
+        let target = dir.path().join("target.toml");
+        let link = dir.path().join("link.toml");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        cfg.save_force_to(&link).expect("save config");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("stat file")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(Config::load_from_path(&target).expect("load target"), cfg);
+    }
+
+    #[test]
     fn test_save_through_symlink_updates_target() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let real = write(&dir, "real.toml", TWO_SINKS);
@@ -4729,6 +4856,11 @@ sink = "TV"
         "empty app_id pattern" ; "empty_app_id"
     )]
     #[test_case("[[rules]]\noutput = \"\"\nsink = \"TV\"\n", "empty output pattern" ; "empty_output")]
+    #[test_case(
+        "[[rules]]\napp_id = \"mpv\"\ntitle = \"\"\nsink = \"TV\"\n",
+        "Rule 1 has an empty title pattern. Leave `title` out to match any title." ;
+        "empty_title"
+    )]
     #[test_case(
         "[[rules]]\noutput = \"(HDMI\"\nsink = \"TV\"\n",
         "Rule 1: invalid output regex" ; "bad_output_regex"

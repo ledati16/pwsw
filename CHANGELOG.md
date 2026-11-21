@@ -15,7 +15,8 @@ maintenance mode.
 **Before upgrading**, note the behaviour changes (details under **Changed**):
 
 - Some configs that 0.6.0 accepted are now rejected (unknown keys, empty or numeric
-  descriptions, ambiguous references); run `pwsw validate` after upgrading.
+  descriptions, an empty `title` pattern, ambiguous references); run `pwsw validate`
+  after upgrading.
 - The daemon switches less eagerly: only when the rules' answer changes, and at
   start-up only with `default_on_startup = true`.
 - No command except `pwsw init` and `pwsw tui` creates a config file any more.
@@ -258,3 +259,5 @@ maintenance mode.
 - Dependencies updated, clearing all `cargo audit` advisories; the unmaintained
   `tui-logger` dependency chain was dropped, and `color-eyre` (with its backtrace and
   span-trace crates) was replaced by `anyhow`.
+
+[0.7.0]: https://github.com/ledati16/pwsw/releases/tag/v0.7.0

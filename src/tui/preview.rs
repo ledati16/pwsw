@@ -242,7 +242,7 @@ pub(crate) fn build_preview_lines(matches: &[String]) -> Vec<Line<'_>> {
         .map(|s| {
             Line::from(vec![
                 Span::styled("✓ ", crate::tui::theme::success()),
-                Span::raw(s.as_str()),
+                Span::raw(crate::sanitize::for_display(s)),
             ])
         })
         .collect()

@@ -6,8 +6,10 @@ rust-version = "1.100"
 description = "PipeWire Switcher - Automatically switch audio sinks based on active windows"
 license = "MIT"
 repository = "https://github.com/ledati16/pwsw"
-keywords = ["wayland", "pipewire", "audio", "window-manager", "audio-routing"]
+keywords = ["wayland", "pipewire", "audio", "tui", "audio-routing"]
 categories = ["multimedia::audio", "command-line-utilities"]
+# Repository tooling and docs for contributors; the build needs build.rs, build/ and man/
+exclude = [".github/", ".git-blame-ignore-revs", "CLAUDE.md", "MAINTENANCE.md", "scripts/", "contrib/dashboard.png"]
 
 [features]
 default = ["tui"]
@@ -15,7 +17,7 @@ tui = ["dep:ratatui", "dep:tui-input", "dep:futures-core", "crossterm/event-stre
 
 [dependencies]
 # CLI argument parsing
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }   # wrap_help: --help fits the terminal
 clap_complete = "4"   # `pwsw completions <shell>`
 
 # Async runtime - minimal features for Unix socket + signals

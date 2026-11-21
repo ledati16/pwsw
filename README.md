@@ -83,13 +83,15 @@ window-management protocol and does not implement `ext` yet).
 ## Installation
 
 Requirements: PipeWire with `pw-dump`, `pw-metadata` and `pw-cli` in `PATH` (part of
-PipeWire), usually WirePlumber, and a notification daemon if you want notifications.
+PipeWire), usually WirePlumber, and a notification server (mako, dunst, swaync, ...) if
+you want notifications.
 Building needs Rust 1.100; with `rustup`, the pinned toolchain from `rust-toolchain.toml`
 is installed automatically.
 
 ### Arch Linux (PKGBUILD)
 
 ```bash
+git clone https://github.com/ledati16/pwsw && cd pwsw
 cd contrib
 makepkg -si
 ```
@@ -101,8 +103,19 @@ See [contrib/README.md](contrib/README.md).
 ### Cargo
 
 ```bash
-cargo install --path .        # installs ~/.cargo/bin/pwsw
-pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw   # optional
+git clone https://github.com/ledati16/pwsw && cd pwsw
+cargo install --locked --path .   # installs ~/.cargo/bin/pwsw
+```
+
+Shell completions (optional):
+
+```bash
+mkdir -p ~/.local/share/bash-completion/completions &&
+  pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw
+mkdir -p ~/.local/share/zsh/site-functions &&   # a directory in your $fpath
+  pwsw completions zsh > ~/.local/share/zsh/site-functions/_pwsw
+mkdir -p ~/.config/fish/completions &&
+  pwsw completions fish > ~/.config/fish/completions/pwsw.fish
 ```
 
 Man pages and the systemd unit are not installed this way; see
@@ -295,7 +308,7 @@ auto-detected from the description (HDMI/TV/display → `video-display`;
 headphone/headset/Bluetooth → `audio-headphones`; otherwise `audio-speakers`).
 
 **Rules:** `app_id`, `title` and `output` are regexes; a rule matches when all the ones it
-sets match, and needs `app_id` or `output`. `sink` names a sink by
+sets match, and needs `app_id` or `output` (none of them may be an empty string). `sink` names a sink by
 `desc` (recommended, what the TUI writes) or node `name`. A 1-based position
 (`sink = 2`) still works but is deprecated: it logs a warning and points at a different
 sink if you reorder sinks by hand.
@@ -389,6 +402,8 @@ the log, and says how to fix each problem it finds. It changes nothing.
   the same user.
 - Window titles and `app_id`s are treated as untrusted: control characters are escaped
   and long titles truncated in logs, and notification text cannot inject markup.
+  PipeWire node names and descriptions (a Bluetooth device names itself) are shown the
+  same way in CLI output, and the TUI drops control and bidirectional characters.
 - Config files are written atomically with mode `0600`.
 - The systemd unit is sandboxed (read-only system and home except pwsw's log and runtime
   directories).

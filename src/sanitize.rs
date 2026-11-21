@@ -1,4 +1,5 @@
-//! Sanitising untrusted text before it reaches logs, notifications or the `TUI`
+//! Sanitising untrusted text before it reaches logs, notifications, the terminal or
+//! the `TUI`
 //!
 //! Window titles and `app_id`s are chosen by whatever program owns the window, so
 //! they must be treated as untrusted. A title containing a newline can forge whole
@@ -43,7 +44,7 @@ pub fn sanitize_line(input: &str, max_chars: usize) -> Cow<'_, str> {
         return Cow::Borrowed(input);
     }
 
-    let mut out = String::with_capacity(input.len().min(max_chars * 4) + 8);
+    let mut out = String::with_capacity(input.len().min(max_chars.saturating_mul(4)) + 8);
     for (index, c) in input.chars().enumerate() {
         if index >= max_chars {
             out.push(ELLIPSIS);
@@ -64,6 +65,30 @@ pub fn sanitize_line(input: &str, max_chars: usize) -> Cow<'_, str> {
 #[must_use]
 pub fn for_log(input: &str) -> Cow<'_, str> {
     sanitize_line(input, MAX_LOG_CHARS)
+}
+
+/// Prepare untrusted text (window titles, `PipeWire` node names and descriptions,
+/// configured strings) for a `TUI` cell: unsafe characters (see `is_unsafe_char`)
+/// that are whitespace (newline, tab, line separator) become a space, the others
+/// (escape, bidirectional overrides, ...) are dropped. Display only: never apply it
+/// to a value used for matching or written to the configuration.
+///
+/// Returns the input unchanged (borrowed) when nothing needed doing.
+#[must_use]
+pub fn for_display(input: &str) -> Cow<'_, str> {
+    if !input.chars().any(is_unsafe_char) {
+        return Cow::Borrowed(input);
+    }
+    Cow::Owned(
+        input
+            .chars()
+            .filter_map(|c| match c {
+                c if !is_unsafe_char(c) => Some(c),
+                c if c.is_whitespace() => Some(' '),
+                _ => None,
+            })
+            .collect(),
+    )
 }
 
 /// Prepare untrusted text for a notification body: replace unsafe control
@@ -171,6 +196,11 @@ mod tests {
     }
 
     #[test]
+    fn test_sanitize_line_without_limit() {
+        assert_eq!(sanitize_line("a\nb", usize::MAX), "a\\nb");
+    }
+
+    #[test]
     fn test_for_log_caps_length() {
         let long = "x".repeat(MAX_LOG_CHARS + 50);
         let out = for_log(&long);
@@ -199,6 +229,21 @@ mod tests {
     #[test_case("a\nb\u{1b}c\u{202e}d", "a b c d" ; "controls still become spaces")]
     fn test_for_notification_without_markup(input: &str, expected: &str) {
         assert_eq!(for_notification(input, false), expected);
+    }
+
+    #[test_case("Headphones", "Headphones" ; "plain")]
+    #[test_case("abc\u{202e}fed", "abcfed" ; "bidi override dropped")]
+    #[test_case("\u{2066}x\u{2069}", "x" ; "bidi isolates dropped")]
+    #[test_case("x\u{1b}[2Jy", "x[2Jy" ; "escape dropped")]
+    #[test_case("a\nb\tc\u{2028}d", "a b c d" ; "line breaks and tabs become spaces")]
+    #[test_case("音楽 🎵 ·", "音楽 🎵 ·" ; "unicode kept")]
+    fn test_for_display(input: &str, expected: &str) {
+        assert_eq!(for_display(input), expected);
+    }
+
+    #[test]
+    fn test_for_display_borrows_when_clean() {
+        assert!(matches!(for_display("ok"), Cow::Borrowed("ok")));
     }
 
     #[test_case("plain", "plain" ; "plain")]

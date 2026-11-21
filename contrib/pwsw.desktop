@@ -6,5 +6,5 @@ Exec=pwsw tui
 Icon=pwsw
 Terminal=true
 Type=Application
-Categories=Audio;AudioVideo;Settings;
+Categories=AudioVideo;Audio;Mixer;
 Keywords=pipewire;audio;sink;wayland;sound;switcher;routing;

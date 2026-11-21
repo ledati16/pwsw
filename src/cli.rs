@@ -202,8 +202,10 @@ pub enum Command {
     /// Terminal UI for configuration and monitoring
     Tui,
 
-    /// Check the setup (Wayland, PipeWire, config, sinks, daemon, systemd, log) and say
-    /// what to fix; changes nothing. Exits 1 if anything is broken
+    /// Check the whole setup and say what to fix (read-only; exits 1 if broken)
+    ///
+    /// Checks the Wayland session, PipeWire, the config, the sinks and mics, the
+    /// daemon, the systemd unit and the log, and prints a hint for every problem.
     Doctor,
 
     /// Print a shell completion script to stdout

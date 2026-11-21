@@ -1,16 +1,14 @@
-# pwsw(5)
+# NAME
+pwsw - PWSW configuration file (config.toml)
 
-## NAME
-pwsw.toml - PWSW configuration file format
-
-## DESCRIPTION
+# DESCRIPTION
 PWSW uses a TOML configuration file, by default *$XDG_CONFIG_HOME/pwsw/config.toml* (normally *~/.config/pwsw/config.toml*). **pwsw --config** *PATH* or the **PWSW_CONFIG** environment variable select a different file. The file defines global settings, audio sinks, optionally audio sources (microphones), and window matching rules.
 
 Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Check it with **pwsw validate**. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
 
 When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and if the file was changed on disk since it was loaded, the TUI asks whether to overwrite it or reload it. Saved files have mode 0600.
 
-## SETTINGS
+# SETTINGS
 The **[settings]** section controls global daemon behavior. The section and every key in it are optional.
 
 **default_on_startup** (boolean, default: false)
@@ -38,7 +36,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 **switch_delay_ms** (integer, default: 0)
 :   Settle delay for rule-driven switches, in milliseconds (0 to 5000). With 0 the daemon switches as soon as the sink its rules want changes. With a positive value it waits this long and switches only if the rules still want the same sink then (sources wait the same way, each dimension on its own: a sink change never delays or cancels a source switch, and vice versa): another change restarts the wait, and a change back to the current sink cancels the switch. Use it when a window matches only for a moment, such as a splash screen or a launcher, or when an application's title flickers between values that match different rules. Manual switches, retries of failed switches, the start-up switch (*default_on_startup*) and **pwsw resume** are never delayed.
 
-## SINKS
+# SINKS
 The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
 
 **name** (string, required)
@@ -53,21 +51,21 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty li
 **icon** (string, optional)
 :   The icon name to use in notifications. Without it, the icon is chosen from the description and node name: `video-display` for HDMI/TV/display, `audio-headphones` for headphones, headsets and Bluetooth, otherwise `audio-speakers`.
 
-## SOURCES
+# SOURCES
 The optional **[[sources]]** list defines the audio inputs (microphones) PWSW may switch, with the same keys as **[[sinks]]**: **name** (the `Audio/Source` node name, e.g. `alsa_input.pci-0000_00_1f.3.analog-stereo` or `bluez_input.*`, as shown in the *MICS (SOURCES)* section of **pwsw list-sinks**; monitors of sinks are not sources), **desc**, **default** and **icon** (default icon: `audio-input-microphone`). The same uniqueness rules apply within the list (a source may share a description with a sink). When sources are configured, exactly one must have `default = true`: it is used when no open window's rule asks for a source.
 
 Without any **[[sources]]** (the default), pwsw never touches the default source; existing configurations keep working unchanged.
 
 A source that is not present yet can be reached by switching its ALSA card's profile (see **PROFILE SWITCHING**); such a switch always keeps the card's current output. Renaming, reordering and deleting sources in the TUI keeps rule references pointing at the same source, and a source a rule uses cannot be deleted.
 
-## RULES
+# RULES
 The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. A rule matches a window when every condition it sets matches (**app_id**, **title**, **output**); each rule needs at least one of **app_id** and **output**. Each window is matched by the first rule in the list that matches it.
 
 **app_id** (string, regex, required unless **output** is set)
 :   Regex pattern matching the window's application ID. Must not be empty; use `.*` to match every application. A rule without **app_id** (it then has **output**) matches any application.
 
 **title** (string, regex, optional)
-:   Regex pattern matching the window title. If omitted, any title matches.
+:   Regex pattern matching the window title. If omitted, any title matches. Must not be empty (leave it out instead).
 
 **output** (string, regex, optional)
 :   Regex pattern matching the *connector name* of a monitor (`HDMI-A-1`, `DP-2`, `eDP-1`; see **pwsw list-windows**, or **swaymsg -t get_outputs**, **hyprctl monitors**, **niri msg outputs**): "audio follows the screen". The condition matches when the window is on a monitor whose name matches (a window spanning two monitors matches if either does) and the window is not minimized. Must not be empty; use `.*` for "on any monitor".
@@ -90,7 +88,7 @@ The **[[rules]]** list defines window-to-sink mappings. Rules require at least o
 **notify** (boolean, optional)
 :   Override the global `notify_rules` setting for this rule. It also applies when the sink falls back because this rule's window closed or stopped matching.
 
-## PRIORITY
+# PRIORITY
 The daemon tracks every open window and which rule it matches. The sink it wants is decided as follows:
 
 *   With `match_by_index = false`: the window that most recently opened, or most recently started matching a rule (e.g. after its title changed, or after it was moved onto, or restored on, a monitor an **output** rule names), wins.
@@ -101,7 +99,7 @@ The answer is the winning rule's list of sinks (see **sink** above); which of th
 
 The source is an independent second answer: the same priority applies, but only among windows whose rule has a **source**; when none matches, the default source. So with Discord (sink *Headset*, source *Headset Mic*) open and then Firefox (sink *Speakers*, no source), the output follows Firefox and the microphone stays with Discord. Retries, fallbacks and upgrades, manual choices (**pwsw set-source**), pausing and the settle delay work for the source exactly as for the sink, each on its own.
 
-## PROFILE SWITCHING
+# PROFILE SWITCHING
 A sink or source that is not present right now, but that its ALSA card could provide in another profile, is reached by switching the card's profile (**pwsw list-sinks** lists such nodes with the name they will have). pwsw predicts the default ALSA node names, `alsa_output.<card>.<output>` and `alsa_input.<card>.<input>`, from the card's profiles; after the switch it recognises the new node by its device and profile, so a node WirePlumber renames is still found, but a configured name that WirePlumber rules changed can only be activated while that node exists. Only profiles marked available are used; UCM (`HiFi`) and Pro Audio profiles are never switched to, so their nodes work only while already active.
 
 *   For a sink, pwsw picks a profile providing that output that also keeps the card's current input (or provides one), so a microphone is never dropped silently.
@@ -110,16 +108,16 @@ A sink or source that is not present right now, but that its ALSA card could pro
 
 The profile is set with **pw-cli** and saved (`save: true`), so WirePlumber keeps it. pwsw then waits for the new node (by default up to 1.5 s; see *PROFILE_SWITCH_DELAY_MS* in **pwsw**(1), never more than 5 s) and makes it the default. Defaults are written to `default.configured.audio.sink` and `default.configured.audio.source`, as **wpctl set-default** does, so WirePlumber keeps them.
 
-## HOT RELOAD
+# HOT RELOAD
 The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is not needed for configuration changes, with one exception: a daemon started without rules with **output** uses the **ext** protocol when the compositor offers it, which reports no monitors. Adding the first **output** rules then logs a warning and they do not match until the daemon is restarted (**systemctl --user restart pwsw**); removing them later needs no restart.
 
-## REGEX SYNTAX
+# REGEX SYNTAX
 PWSW uses the Rust **regex** crate, which prioritizes safety and performance.
 
-### Flavor
+## Flavor
 The syntax is mostly compatible with Perl-style regular expressions but does **not** support features like lookaround or backreferences to ensure linear-time matching. Because matching is always linear-time, any valid pattern is allowed (including nested repetition such as `^(.+)+-beta$`); the only limit is on the compiled size of a pattern (1 MiB), which rejects things like `\w{100000}`. Config loading, the TUI rule editor, and **pwsw test-rule** apply the same limit.
 
-### Common Patterns
+## Common Patterns
 **Substring match** (default)
 :   `firefox` - matches any `app_id` (or title) containing "firefox".
 
@@ -135,7 +133,7 @@ The syntax is mostly compatible with Perl-style regular expressions but does **n
 **Catch-all**
 :   `.*` - matches any string.
 
-## EXAMPLES
+# EXAMPLES
 ```toml
 [settings]
 log_level = "info"
@@ -169,7 +167,8 @@ default = true          # when no rule asks for a source
 
 [[rules]]
 app_id = "discord"
-sink = ["BT Headphones", "Headset"]  # Bluetooth when connected, else the headset
+# Bluetooth when connected, else the headset
+sink = ["BT Headphones", "Headset"]
 source = "Headset Mic"
 
 [[rules]]
@@ -190,12 +189,12 @@ output = "^HDMI-"
 sink = "TV"
 ```
 
-## FILES
+# FILES
 *$XDG_CONFIG_HOME/pwsw/config.toml*
 :   The default configuration file.
 
 *config.toml.bak*
-:   The previous version (*<name>.bak* for a file given with **--config**), written next to the file by **pwsw tui** saves and **pwsw init --force**.
+:   The previous version (*\<name\>.bak* for a file given with **--config**), written next to the file by **pwsw tui** saves and **pwsw init --force**.
 
-## SEE ALSO
+# SEE ALSO
 **pwsw**(1)

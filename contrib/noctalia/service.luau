@@ -5,6 +5,16 @@
 
 local COMMAND = "pwsw status --watch --json"
 
+-- `runStream` has no exit callback: if pwsw is missing, the shell prints one line in
+-- the stopped line's shape instead (the widget then says so) rather than nothing
+local NOT_FOUND = '{"text":"pwsw not found","tooltip":"pwsw is not on PATH",'
+  .. '"class":"stopped","alt":"stopped","daemon":"stopped","paused":false,'
+  .. '"sink":null,"source":null}'
+local SHELL_COMMAND = "command -v pwsw >/dev/null 2>&1 || { printf '%s\\n' '"
+  .. NOT_FOUND
+  .. "'; exit 0; }; exec "
+  .. COMMAND
+
 -- Only plain values cross into the widget's VM (JSON null decodes to nothing useful)
 local function plain(status: any)
   local function str(v: any): string
@@ -27,7 +37,8 @@ noctalia.state.set("pwsw", {
   paused = false,
 })
 
-local started = noctalia.runStream(COMMAND, function(line: string)
+-- `runStream` runs its command through the shell
+local started = noctalia.runStream(SHELL_COMMAND, function(line: string)
   local status = noctalia.json.decode(line)
   if type(status) == "table" then
     noctalia.state.set("pwsw", plain(status))
