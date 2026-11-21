@@ -19,8 +19,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 
     Without **--foreground**, starts the daemon as a detached background process (in its own process group, so it survives the terminal closing) and waits until it answers; on failure the error and the last log lines are printed.
 
-    **--foreground**
-    :   Run in the foreground (useful for systemd or debugging).
+    With **-f**/**--foreground** it runs in the foreground instead (useful for systemd or debugging); logs then also go to stderr.
 
 **status** [*--json*]
 :   Show the current audio output (queried from PipeWire directly) and the daemon's status: uptime, version, active rule and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
@@ -28,7 +27,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
     With **--json**, a single JSON document is always printed (exit status 0), even when PipeWire or the daemon cannot be reached; see **STATUS JSON**.
 
 **tui**
-:   Launch the interactive Terminal User Interface for configuration and monitoring.
+:   Launch the interactive Terminal User Interface for configuration and monitoring. On first run it creates the commented default configuration file (like **pwsw init**).
 
 **list-sinks** [*--json*]
 :   List all active and profile-switchable PipeWire sinks.
@@ -46,7 +45,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 :   Write the commented default configuration file. Refuses if a file already exists; with **--force** it is replaced and the old file kept as *config.toml.bak*. **pwsw tui** also creates this file on first run; no other command does.
 
 **set-sink** *SINK*
-:   Set audio output by description, node name, or 1-indexed position (e.g., "1", "2"). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink; "already active" means the current PipeWire default. The sink is always attempted, and its error reported, even if it cannot be activated right now. A failed switch leaves the audio where it was. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
+:   Set audio output by description or node name (a 1-indexed position such as "2" also works, but is deprecated like positional references in the configuration). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink; "already active" means the current PipeWire default. The sink is always attempted, and its error reported, even if it cannot be activated right now. A failed switch leaves the audio where it was. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
 
 **next-sink**
 :   Cycle to the next configured sink after the current PipeWire default (wraps around), skipping sinks that cannot be activated right now (e.g. an HDMI output whose display is off). If no other sink can be activated, says why and changes nothing. Through the daemon when it runs, like **set-sink**.
@@ -72,7 +71,7 @@ The daemon watches its configuration file and applies changes automatically when
   "daemon": {
     "running": true | false,
     "error": null | "...",
-    "version": "v0.6.0+abc1234" | null,
+    "version": "v0.7.0+abc1234" | null,
     "protocol": 1 | null,
     "uptime_secs": 3600 | null,
     "uptime_human": "1h" | null,
@@ -102,34 +101,46 @@ The daemon watches its configuration file and applies changes automatically when
 *   **KDE Plasma 6**: Removed protocol support (pending standard implementation).
 
 ## TUI KEYS
-The TUI supports the following keybindings. Press `?` or `F1` within the TUI for comprehensive context-sensitive help.
+The most important keys are listed below. Press `?` or `F1` within the TUI for the complete, context-sensitive list (it is generated from the same table the key handling uses).
 
 **Global**
-:   `Tab` / `Shift+Tab`: Next / Previous screen
+:   `Tab` / `Shift+Tab`: Next / previous screen
 :   `1-4`: Jump to screen (Dashboard, Sinks, Rules, Settings)
-:   `?` or `F1`: Toggle context-aware help overlay
-:   `Ctrl+S`: Save configuration
-:   `Esc`: Clear status message / Cancel action
-:   `q` or `Ctrl+C`: Quit
-
-**Lists (Sinks/Rules)**
-:   `↑/↓`: Navigate items
-:   `Shift+↑/↓`: Reorder items
-:   `a` / `e` / `x`: Add / Edit / Delete
-:   `Enter`: Inspect selected item
-:   `Space`: Set default (Sinks) / Quick actions
-
-**Editors**
-:   `Tab` / `Shift+Tab`: Switch between fields
-:   `Space`: Open selector dropdown / Select from dropdown
-:   `Enter`: Save changes
-:   `Esc`: Cancel editing / Close dropdown
+:   `Ctrl+S`: Save the configuration file
+:   `q` or `Ctrl+C`: Quit (with unsaved changes: press again to confirm)
+:   `Esc`: Clear status message
+:   `?` or `F1`: Toggle the help overlay
 
 **Dashboard**
-:   `←/→`: Navigate daemon actions (Start/Stop/Restart/Enable/Disable)
-:   `Enter`: Execute selected action
+:   `←/→`: Select daemon action (Start/Stop/Restart; Enable/Disable when the systemd unit is installed)
+:   `Enter`: Run the selected action
 :   `w`: Toggle between Logs and Windows view
-:   `↑/↓` / `PageUp/PageDown`: Scroll logs
+:   `↑/↓`, `PgUp/PgDn`, `Home/End`: Scroll (`End` returns the log to live view)
+
+**Sinks and Rules lists**
+:   `↑/↓`: Navigate
+:   `Shift+↑/↓`: Move the selected item (rule order is the priority with *match_by_index*)
+:   `a` / `e` / `x`: Add / edit / delete
+:   `Enter`: Show details
+:   `Space` (Sinks): Make the selected sink the default
+
+**Editors**
+:   `↑/↓`, `Tab` / `Shift+Tab`: Switch field
+:   `Space`: Open the node list (sink *Node Name*) or the sink list (rule *Target Sink*); toggle or cycle on/off fields
+:   `Enter`: Apply the edit (written to the file with `Ctrl+S`)
+:   `Esc`: Cancel editing / close a list
+
+**Settings**
+:   `↑/↓`: Navigate
+:   `Enter` / `Space`: Toggle the setting, or open the log level list
+:   `PgUp/PgDn`: Scroll the description
+
+**Text fields**
+:   `←/→`, `Ctrl+←/→`, `Home/End`: Move the cursor
+:   `Ctrl+W` / `Ctrl+Delete`: Delete the previous / next word
+:   `Ctrl+U`: Clear the field; `Ctrl+K`: delete to the end
+
+If the configuration file changed on disk since the TUI loaded it, saving asks whether to overwrite it or reload it from disk.
 
 ## OPTIONS
 **--config** *PATH*
@@ -142,7 +153,7 @@ The TUI supports the following keybindings. Press `?` or `F1` within the TUI for
 :   Print help information.
 
 **-V**, **--version**
-:   Print the version: the release, plus the git commit (and *-dirty* for uncommitted changes) when built from a git checkout, e.g. *pwsw 0.6.0+abc1234*.
+:   Print the version: the release, plus the git commit (and *-dirty* for uncommitted changes) when built from a git checkout, e.g. *pwsw 0.7.0+abc1234*.
 
 ## ENVIRONMENT
 **PWSW_CONFIG**
@@ -159,6 +170,9 @@ The TUI supports the following keybindings. Press `?` or `F1` within the TUI for
 
 **CLICOLOR_FORCE**
 :   When set and not *0*, colour output even when it is not a terminal (unless **NO_COLOR** is set, or **--color never**).
+
+**RUST_LOG**
+:   When set, a **tracing** filter (e.g. *pwsw=debug*) that overrides *log_level* from the configuration, also across reloads.
 
 **RUST_BACKTRACE**, **RUST_LIB_BACKTRACE**
 :   When set (and not *0*), errors are printed as full reports with a backtrace instead of a one-line *error:* message.

@@ -40,7 +40,7 @@ QUERYING (no daemon needed):
   init [--force]      Write the commented default config
 
 MANUAL SINK CONTROL (through the daemon when it runs, otherwise directly):
-  set-sink SINK       Switch to specific sink (by desc, name, or position 1/2/3)
+  set-sink SINK       Switch to specific sink (by desc or node name)
   next-sink           Cycle to next configured sink (wraps around)
   prev-sink           Cycle to previous configured sink (wraps around)
 
@@ -126,12 +126,12 @@ pub enum Command {
         json: bool,
     },
 
-    /// Set audio output (by desc, node name, or position like "1", "2")
+    /// Set audio output (by desc or node name; positions like "2" are deprecated)
     ///
     /// With `set_smart_toggle`, asking for the sink that is already active switches
     /// back to the default sink. Goes through the daemon when it runs.
     SetSink {
-        /// Sink reference (description, node name, or position)
+        /// Sink reference (description or node name; a position still works but is deprecated)
         sink: String,
     },
 

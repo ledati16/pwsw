@@ -11,7 +11,8 @@
 //! - Multi-compositor support via Wayland protocols (`ext-foreign-toplevel-list-v1`, `wlr-foreign-toplevel`)
 //!
 //! # Supported Compositors
-//! - Sway, Hyprland, Niri, River, Wayfire, labwc, dwl, hikari (via `wlr-foreign-toplevel`)
+//! - Any compositor implementing `ext-foreign-toplevel-list-v1` (preferred) or
+//!   `wlr-foreign-toplevel-management`, e.g. Sway, Hyprland, niri, river, Wayfire, labwc
 //!
 //! # Unsupported Compositors
 //! - GNOME/Mutter, KDE Plasma 6 (no supported window management protocols exposed)
@@ -39,12 +40,12 @@ pub mod tui;
 pub mod test_utils;
 
 /// Full version: crate version, plus `+<short commit>` and `-dirty` when built from a
-/// git checkout (e.g. `0.6.0+abc1234-dirty`; just `0.6.0` without git information).
+/// git checkout (e.g. `0.7.0+abc1234-dirty`; just `0.7.0` without git information).
 /// Set by `build.rs`; printed by `pwsw --version`.
 pub const VERSION: &str = env!("PWSW_VERSION");
 
 /// The version as the daemon and TUI report it: [`VERSION`] with a `v` prefix
-/// (e.g. `v0.6.0+abc1234`)
+/// (e.g. `v0.7.0+abc1234`)
 #[must_use]
 pub fn version_string() -> String {
     format!("v{VERSION}")

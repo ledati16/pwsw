@@ -100,12 +100,10 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(test)'] }
 # Enforce pedantic lints in plain `cargo clippy -D warnings` (CI); allows below override.
 pedantic = { level = "warn", priority = -1 }
 
-# === Structural Patterns (justified by domain) ===
-# Config structs: Independent boolean flags, not state machines (3 instances)
+# The only pedantic lints allowed project-wide (no other `#[allow]`s outside tests):
+
+# Settings structs and the TUI `App`: independent boolean flags, not state machines
 struct_excessive_bools = "allow"
 
-# === Cohesion Over Line Limits (17 instances) ===
-# Event loops, TUI screens, input handlers - cohesive logic hard to split
+# Event loops, TUI screens, input handlers, command dispatch: cohesive logic hard to split
 too_many_lines = "allow"
-
-# Total suppressed by this table: 20 (3 + 17).

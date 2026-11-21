@@ -288,7 +288,7 @@ impl Daemon {
         self.last_desired = Some(name.clone());
         if self.state.config().settings.default_on_startup && self.applied.as_deref() != Some(&name)
         {
-            info!("Switching to default sink: {desc}");
+            info!("Startup: switching to {desc} (what the rules want now)");
             self.submit(name, None);
         }
         self.publish_status();

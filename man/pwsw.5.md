@@ -4,69 +4,81 @@
 pwsw.toml - PWSW configuration file format
 
 ## DESCRIPTION
-PWSW uses a TOML configuration file located at *~/.config/pwsw/config.toml*. The file defines global settings, audio sinks, and window matching rules.
+PWSW uses a TOML configuration file, by default *$XDG_CONFIG_HOME/pwsw/config.toml* (normally *~/.config/pwsw/config.toml*). **pwsw --config** *PATH* or the **PWSW_CONFIG** environment variable select a different file. The file defines global settings, audio sinks, and window matching rules.
 
-Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
+Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Check it with **pwsw validate**. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
 
-When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and the save is refused if the file was changed on disk since it was loaded.
+When the TUI saves the file, comments and formatting are preserved (comments above or beside an entry move with it, and are removed with it), the previous version is copied to *config.toml.bak* next to the file, a symlinked file stays a symlink (its target is replaced), and the save is refused if the file was changed on disk since it was loaded. Saved files have mode 0600.
 
 ## SETTINGS
-The **[settings]** section controls global daemon behavior.
+The **[settings]** section controls global daemon behavior. The section and every key in it are optional.
 
 **default_on_startup** (boolean, default: false)
-:   Whether to switch to the default sink when the daemon starts. If false, the current sink stays until the rules want a different sink (e.g. a matching window opens; windows already open when the daemon starts count as opening).
+:   Whether to switch when the daemon starts to the sink the rules want (the default sink if no open window matches). If false, the current sink stays until the rules want a different sink (e.g. a matching window opens; windows already open when the daemon starts count as opening).
 
-**set_smart_toggle** (boolean)
+**set_smart_toggle** (boolean, default: true)
 :   If true, calling `set-sink` on a sink that is already the PipeWire default will toggle back to the default sink.
-    
+
     *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers").
 
-**notify_manual** (boolean)
-:   Show desktop notifications for manual sink switches and daemon events.
+**notify_manual** (boolean, default: true)
+:   Show desktop notifications for manual sink switches and daemon events (start, configuration reloaded or rejected).
 
-**notify_rules** (boolean)
-:   Show desktop notifications for automatic rule-based switches.
+**notify_rules** (boolean, default: true)
+:   Show desktop notifications for automatic rule-based switches. A rule's own *notify* key overrides it.
 
-**match_by_index** (boolean)
-:   If true, the first matching rule in the list wins (priority by position). If false, the most recently opened (or started matching) window wins (priority by time).
-    
+**match_by_index** (boolean, default: false)
+:   Which window decides the sink when several match (see **PRIORITY**). If false, the most recently opened (or most recently matching) window wins. If true, the window matching the earliest rule in the list wins.
+
     *Tip:* Rules can be reordered in the TUI using `Shift+Up/Down` to adjust priority.
 
-**log_level** (string)
-:   Verbosity of logging. Options: `error`, `warn`, `info`, `debug`, `trace`.
+**log_level** (string, default: "info")
+:   Verbosity of the daemon log. One of `error`, `warn`, `info`, `debug`, `trace`. Applied on reload without a restart; the **RUST_LOG** environment variable overrides it.
 
 ## SINKS
-The **[[sinks]]** list defines the audio outputs PWSW should manage.
+The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
 
-**name** (string)
-:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`). Must be non-empty and unique.
+**name** (string, required)
+:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`), as shown by **pwsw list-sinks**. Must be non-empty and unique. A sink that is not active yet but can be reached by switching its card's profile is listed there too, with the node name it will have.
 
-**desc** (string)
+**desc** (string, required)
 :   A friendly description for the sink used in rules and notifications. Must be non-empty, unique, not a number, and not equal to another sink's `name`.
 
-**default** (boolean)
-:   Whether this is the fallback sink. When sinks are configured, exactly one must be marked as default. The first sink added via TUI is automatically set as default.
+**default** (boolean, default: false)
+:   Whether this is the fallback sink, used when no window matches a rule. The first sink added in the TUI becomes the default automatically.
 
 **icon** (string, optional)
-:   The name of the icon to use in notifications.
+:   The icon name to use in notifications. Without it, the icon is chosen from the description and node name: `video-display` for HDMI/TV/display, `audio-headphones` for headphones, headsets and Bluetooth, otherwise `audio-speakers`.
 
 ## RULES
-The **[[rules]]** list defines window-to-sink mappings.
+The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. Each window is matched by the first rule in the list that matches it.
 
-**app_id** (string, regex)
-:   Regex pattern matching the window's application ID.
+**app_id** (string, regex, required)
+:   Regex pattern matching the window's application ID. Must not be empty; use `.*` to match every application.
 
 **title** (string, regex, optional)
-:   Regex pattern matching the window title.
+:   Regex pattern matching the window title. If omitted, any title matches.
 
-**sink** (string or integer)
-:   Reference to a sink by its `desc` (recommended; the TUI always writes this) or its `name`. A 1-indexed position in the sinks list (`sink = 2` or `sink = "2"`) is still accepted but deprecated: it logs a warning on load and points at a different sink if the list is reordered by hand. Renaming, reordering, or deleting sinks in the TUI keeps every rule pointing at the same sink, and a sink that rules still use cannot be deleted.
+**sink** (string or integer, required)
+:   Reference to a sink by its `desc` (recommended; the TUI always writes this) or its `name`. A 1-indexed position in the sinks list (`sink = 2` or `sink = "2"`) is still accepted but deprecated: it logs a warning on load and points at a different sink if the list is reordered by hand. A reference that names no sink is an error. Renaming, reordering, or deleting sinks in the TUI keeps every rule pointing at the same sink, and a sink that rules still use cannot be deleted.
 
 **desc** (string, optional)
 :   A custom label for this rule used in notifications.
 
 **notify** (boolean, optional)
-:   Override the global `notify_rules` setting for this specific rule.
+:   Override the global `notify_rules` setting for this rule. It also applies when the sink falls back because this rule's window closed or stopped matching.
+
+## PRIORITY
+The daemon tracks every open window and which rule it matches. The sink it wants is decided as follows:
+
+*   With `match_by_index = false`: the window that most recently opened, or most recently started matching a rule (e.g. after its title changed), wins.
+*   With `match_by_index = true`: the window whose rule comes first in the list wins; among windows of the same rule, the most recent one.
+*   When no window matches any rule: the default sink.
+
+The daemon switches only when this answer *changes*. A sink selected elsewhere (e.g. with **pavucontrol**) or with **pwsw set-sink** stays until then.
+
+## HOT RELOAD
+The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is never needed for configuration changes.
 
 ## REGEX SYNTAX
 PWSW uses the Rust **regex** crate, which prioritizes safety and performance.
@@ -76,7 +88,7 @@ The syntax is mostly compatible with Perl-style regular expressions but does **n
 
 ### Common Patterns
 **Substring match** (default)
-:   `firefox` - matches any window containing "firefox" in its `app_id` or title.
+:   `firefox` - matches any `app_id` (or title) containing "firefox".
 
 **Anchored match**
 :   `^steam$` - matches only if the string is exactly "steam".
@@ -113,7 +125,15 @@ sink = "Headset"
 app_id = "firefox"
 title = "YouTube"
 sink = "Speakers"
+notify = false
 ```
+
+## FILES
+*$XDG_CONFIG_HOME/pwsw/config.toml*
+:   The default configuration file.
+
+*config.toml.bak*
+:   The previous version, written next to the file by **pwsw tui** saves and **pwsw init --force**.
 
 ## SEE ALSO
 **pwsw**(1)
