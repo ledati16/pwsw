@@ -341,6 +341,7 @@ fn response_kind(response: &Response) -> &'static str {
         Response::ManagerInfo { .. } => "ManagerInfo",
         Response::SinkSwitched { .. } => "SinkSwitched",
         Response::PauseState { .. } => "PauseState",
+        Response::StatusUpdate(_) => "StatusUpdate",
     }
 }
 

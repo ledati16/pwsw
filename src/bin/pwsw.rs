@@ -149,7 +149,11 @@ async fn run(args: Args) -> Result<ExitCode> {
         }
 
         // Hybrid commands (work with or without daemon)
-        Some(Command::Status { json }) => {
+        Some(Command::Status { json, watch: true }) => {
+            init_logging();
+            success(pwsw::status_watch::run(json).await)
+        }
+        Some(Command::Status { json, watch: false }) => {
             init_logging();
             Ok(status_exit(commands::status(Config::load(), json).await))
         }

@@ -79,6 +79,12 @@ pub enum Request {
     Resume,
     /// Pause when running, resume when paused
     TogglePause,
+    /// Follow the daemon's status: the connection stays open and the daemon writes a
+    /// [`Response::StatusUpdate`] at once and then on every change (identical states
+    /// are not repeated), or one [`Response::Error`] when too many clients follow it
+    /// already. The client sends nothing more; hanging up ends the subscription.
+    /// Protocol 2.
+    Subscribe,
 }
 
 /// Responses sent from daemon to CLI
@@ -157,6 +163,54 @@ pub enum Response {
         /// Whether the request changed the state (`false`: it already was so)
         changed: bool,
     },
+    /// One message of a [`Request::Subscribe`] stream
+    StatusUpdate(StatusUpdate),
+}
+
+/// The daemon's status as a [`Request::Subscribe`] stream reports it: everything a
+/// status bar shows
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusUpdate {
+    /// Daemon version (see [`crate::version_string`])
+    pub version: String,
+    /// `IPC` protocol the daemon speaks ([`PROTOCOL_VERSION`])
+    pub protocol: u32,
+    /// How the daemon is run
+    pub daemon_manager: crate::daemon_manager::DaemonManager,
+    /// Rule-driven switching is paused
+    pub paused: bool,
+    /// The default sink pwsw last applied (or found at startup); `None` while unknown
+    pub sink: Option<EndpointStatus>,
+    /// The default source pwsw last applied; `None` while unknown or when no sources
+    /// are configured
+    pub source: Option<EndpointStatus>,
+    /// Whether `[[sources]]` are configured (pwsw manages the default source)
+    pub sources_configured: bool,
+}
+
+/// The sink (or source) a [`StatusUpdate`] reports
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointStatus {
+    /// Configured description (the node name when it is not in the config)
+    pub desc: String,
+    /// `PipeWire` node name
+    pub node: String,
+    /// It is a fallback: a rule-driven switch found the rule's earlier choices
+    /// unreachable
+    pub fallback: bool,
+    /// The window whose rule chose it; `None` when no rule decides it (the default,
+    /// a manual choice, or a default found at startup)
+    pub window: Option<RuleWindow>,
+}
+
+/// The window behind a rule's choice; all text is sanitised (control characters
+/// escaped, length capped), since window titles and `app_id`s are untrusted
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleWindow {
+    pub app_id: String,
+    pub title: String,
+    /// The rule's `desc`, else the window title when the rule matched
+    pub rule: String,
 }
 
 /// Window information for IPC responses
@@ -648,7 +702,11 @@ async fn read_frame(stream: &mut UnixStream) -> Result<Vec<u8>> {
         .await
         .context("Timeout reading message length")?
         .context("Failed to read message length")?;
+    read_frame_body(stream, len_buf).await
+}
 
+/// The rest of a frame whose length prefix `len_buf` was read
+async fn read_frame_body(stream: &mut UnixStream, len_buf: [u8; 4]) -> Result<Vec<u8>> {
     let msg_len_u32 = u32::from_be_bytes(len_buf);
 
     // Check size before cast to prevent overflow on 32-bit systems
@@ -739,6 +797,46 @@ async fn exchange(request: Request) -> Result<Response> {
     let response: Response = read_message(&mut stream).await?;
 
     Ok(response)
+}
+
+/// A [`Request::Subscribe`] connection: the daemon's status updates as they come
+#[derive(Debug)]
+pub struct StatusStream {
+    stream: UnixStream,
+}
+
+impl StatusStream {
+    /// Connect to the daemon and subscribe to its status
+    ///
+    /// # Errors
+    /// Returns an error if the connection fails, the socket is not served by the
+    /// current user, or the request cannot be sent.
+    pub async fn connect() -> Result<Self> {
+        let location = socket_location();
+        let mut stream =
+            connect_verified(&location, Duration::from_secs(CLIENT_CONNECT_TIMEOUT_SECS)).await?;
+        write_message(&mut stream, &Request::Subscribe).await?;
+        Ok(Self { stream })
+    }
+
+    /// Wait for the next message: a [`Response::StatusUpdate`], or a
+    /// [`Response::Error`] after which the daemon hangs up
+    ///
+    /// There is no time limit for the next update to begin (the status may not change
+    /// for hours); once it has, the rest must arrive within the usual read timeout.
+    ///
+    /// # Errors
+    /// Returns an error when the daemon hung up (it stopped) or sent something
+    /// unreadable.
+    pub async fn next(&mut self) -> Result<Response> {
+        let mut len_buf = [0u8; 4];
+        self.stream
+            .read_exact(&mut len_buf)
+            .await
+            .context("The daemon closed the status stream")?;
+        let frame = read_frame_body(&mut self.stream, len_buf).await?;
+        serde_json::from_slice(&frame).context("Failed to deserialize status update")
+    }
 }
 
 // ============================================================================
@@ -1494,6 +1592,42 @@ mod tests {
             assert_eq!(message, "Success");
         } else {
             panic!("Expected Ok variant");
+        }
+    }
+
+    /// `Subscribe` and its `StatusUpdate` messages survive the wire format
+    #[test]
+    fn test_subscribe_and_status_update_roundtrip() {
+        let json = serde_json::to_string(&Request::Subscribe).expect("serialize");
+        assert_eq!(json, r#"{"type":"Subscribe"}"#);
+        assert!(matches!(
+            serde_json::from_str::<Request>(&json),
+            Ok(Request::Subscribe)
+        ));
+
+        let update = StatusUpdate {
+            version: "v0.7.0".to_string(),
+            protocol: PROTOCOL_VERSION,
+            daemon_manager: crate::daemon_manager::DaemonManager::Direct,
+            paused: true,
+            sink: Some(EndpointStatus {
+                desc: "Headphones".to_string(),
+                node: "alsa_output.usb".to_string(),
+                fallback: true,
+                window: Some(RuleWindow {
+                    app_id: "discord".to_string(),
+                    title: "Voice".to_string(),
+                    rule: "Discord".to_string(),
+                }),
+            }),
+            source: None,
+            sources_configured: false,
+        };
+        let json = serde_json::to_string(&Response::StatusUpdate(update.clone())).expect("ser");
+        assert!(json.starts_with(r#"{"type":"StatusUpdate","#), "{json}");
+        match serde_json::from_str::<Response>(&json) {
+            Ok(Response::StatusUpdate(parsed)) => assert_eq!(parsed, update),
+            other => panic!("expected a status update, got {other:?}"),
         }
     }
 

@@ -139,6 +139,7 @@ creates the config file for you.
 | Command | What it does | Daemon |
 |---------|--------------|--------|
 | `pwsw` / `pwsw status [--json]` | Current audio output and daemon status | optional |
+| `pwsw status --watch [--json]` | Follow the daemon's status, one line per change (for bars) | optional |
 | `pwsw daemon [-f/--foreground]` | Start the daemon (background by default) | - |
 | `pwsw shutdown` | Stop the daemon | required |
 | `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then input devices (sources) | not needed |
@@ -168,6 +169,30 @@ at once if the rules want another sink. The pause is not kept across daemon rest
 
 `status --json` always prints one JSON document and exits 0, with errors reported inside
 it (schema in `man pwsw`). That makes it safe for status bars.
+
+### Status bars / shells
+
+`pwsw status --watch --json` is a live feed for any bar or shell: it prints one JSON line
+at once and another whenever the output, the microphone, the deciding rule or the pause
+state changes (pushed by the daemon, nothing is polled). It never exits because the
+daemon is gone: it prints a `stopped` line, reconnects with backoff and carries on when
+the daemon is back. Each line has the conventional `text`/`tooltip`/`class`/`alt` fields
+plus structured ones (stable schema: STATUS STREAM in `man pwsw`):
+
+```json
+{"text":"Headphones","tooltip":"Output: Headphones (alsa_output.usb-…)\nMic: Headset Mic\nRule: discord","class":"active","alt":"active","sink":{"desc":"Headphones","node":"alsa_output.usb-…","fallback":false,"window":{"app_id":"discord","title":"…","rule":"discord"}},"source":{"desc":"Headset Mic","node":"alsa_input.usb-…","fallback":false,"window":null},"paused":false,"daemon":"running","version":"v0.7.0+abc1234","protocol":2,"managed_by":"systemd"}
+```
+
+`class` is `active`, `fallback`, `paused` or `stopped`. Hooking it up:
+
+- **Waybar**: a `custom` module with `"exec": "pwsw status --watch --json"`,
+  `"return-type": "json"` and `"escape": true` (sink names are not Pango markup); for
+  example `"on-click": "pwsw next-sink"`, `"on-click-right": "pwsw toggle-pause"`, and
+  style `#custom-pwsw.paused` / `.fallback` / `.stopped`.
+- **Quickshell / DankMaterialShell**: a `Process` running the command with a
+  `SplitParser` on stdout, `JSON.parse` per line.
+- **eww**: `(deflisten pwsw :initial "{}" "pwsw status --watch --json")`, then
+  `{pwsw.text}`, `{pwsw.class}`, ...
 
 ## Configuration
 

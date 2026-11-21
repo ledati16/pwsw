@@ -70,6 +70,17 @@ the daemon switches less eagerly than before.
 
 ### Added
 
+- **Live status stream for status bars and shells**: `pwsw status --watch --json`
+  prints one JSON line now and on every change of the output, microphone, deciding rule
+  or pause state (pushed by the daemon over a new `Subscribe` IPC request, no polling),
+  with the conventional `text`/`tooltip`/`class`/`alt` fields (`class`: `active`,
+  `fallback`, `paused`, `stopped`) plus structured `sink`, `source`, `paused`, `daemon`
+  and `version` fields; the schema is documented as stable in `man pwsw` (STATUS
+  STREAM). It keeps running while the daemon is down (one `stopped` line, then
+  reconnects with backoff) and exits quietly on `SIGINT`/`SIGTERM` or a closed pipe.
+  Without `--json` it prints `Headphones · Mic: Headset Mic · paused`. The daemon serves
+  up to 16 followers and drops one that stops reading. The README shows Waybar,
+  Quickshell and eww setups.
 - **Fallback sinks per rule**: `sink = ["BT Headphones", "Headphones"]` uses the first
   sink that can be activated right now, and the next one if activating it fails. When a
   fallback was used, the next window event or reload switches up once an earlier sink

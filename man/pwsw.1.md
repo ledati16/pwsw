@@ -23,10 +23,12 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 
     With **-f**/**--foreground** it runs in the foreground instead (useful for systemd or debugging); logs then also go to stderr.
 
-**status** [*--json*]
-:   Show the current audio output (queried from PipeWire directly; with sources configured also the current input) and the daemon's status: uptime, version, the compositor protocol it uses (and whether that reports monitors), whether rule-driven switching is paused, active rule, the microphone it applied (with sources configured) and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
+**status** [*--json*] [*--watch*]
+:   Show the current audio output (queried from PipeWire directly; with sources configured also the current input) and the daemon's status: uptime, version, whether rule-driven switching is paused, active rule, the microphone it applied (with sources configured) and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
 
     With **--json**, a single JSON document is always printed (exit status 0), even when PipeWire or the daemon cannot be reached; see **STATUS JSON**.
+
+    With **--watch**, follow the daemon's status instead: one line now and one on every change, for status bars and shells; with **--json** each line is a JSON object. It keeps running while the daemon is stopped; see **STATUS STREAM**.
 
 **tui**
 :   Launch the interactive Terminal User Interface for configuration and monitoring. On first run it creates the commented default configuration file (like **pwsw init**).
@@ -116,6 +118,35 @@ The daemon watches its configuration file and applies changes automatically when
 ```
 
 *current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *daemon.paused* is true while rule-driven switching is paused (**pwsw pause**), *null* when no daemon status could be read. *current_source* (also *pipewire.current_source*) is the PipeWire default source the same way, *null* when there is none; *sources_configured* says whether the configuration has **[[sources]]**. *daemon.daemon_source* is the source the daemon last applied (configured description), *null* without sources configured or while unknown, and *daemon.daemon_source_fallback* is true when it is a fallback of the deciding rule. *daemon.backend* is the compositor protocol the daemon uses (**ext-foreign-toplevel-list** or **wlr-foreign-toplevel-management**) and *daemon.monitor_info* whether it reports which monitors windows are on, so rules with **output** can match; both are *null* when no daemon status could be read or the daemon predates them. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
+
+## STATUS STREAM
+**pwsw status --watch** asks the daemon to report its status and every change of it (nothing is polled), and prints one line per update to stdout, flushed at once. Without **--json** the line reads *Headphones · Mic: Headset Mic · paused* (the microphone only with sources configured, *(fallback)* after a fallback, *paused* while paused) or *pwsw stopped*.
+
+The command never exits because the daemon is gone: when it cannot connect, or the connection drops (the daemon stopped or is restarting), it prints one *stopped* line, retries with a backoff from 250 ms up to 5 s, and prints the fresh state once the daemon answers again. Identical lines are never printed twice in a row. It exits with status 0 on **SIGINT** or **SIGTERM**, or when nobody reads its output any more (a closed pipe, noticed within a second even while nothing changes). The daemon serves at most 16 followers at once and drops one that stops reading.
+
+With **--json** every line is one JSON object. This schema is stable: fields are only ever added.
+
+```
+{"text":"Headphones",
+ "tooltip":"Output: Headphones (alsa_output.usb-...)\nMic: Headset Mic\nRule: discord",
+ "class":"active", "alt":"active",
+ "sink":{"desc":"Headphones","node":"alsa_output.usb-...","fallback":false,
+         "window":{"app_id":"discord","title":"...","rule":"discord"}},
+ "source":{"desc":"Headset Mic","node":"alsa_input.usb-...","fallback":false,"window":{...}} | null,
+ "paused":false, "daemon":"running",
+ "version":"v0.7.0+abc1234", "protocol":2, "managed_by":"systemd" | "direct"}
+```
+
+(shown wrapped; each object is printed on a single line). *text*, *tooltip*, *class* and *alt* are the conventional status-bar fields. *class* and *alt* are *active*, *fallback* (the sink or the source is a fallback a rule settled for), *paused* (wins over *fallback*) or *stopped*. *text* is the description of the sink the daemon applied (*unknown* while it does not know the default sink). *tooltip* has an *Output:* line, a *Mic:* line with sources configured, *Rule:* (and *Mic rule:* when another window decides the microphone) naming the deciding rule (its *desc*, else the window title it matched), and *Paused: rules do not switch* while paused. *sink* and *source* are what the daemon last applied: *desc* (configured description, else the node name), *node*, *fallback*, and *window*, the window whose rule chose it (*null* for the default, a manual choice, or a default found at startup); window text is sanitised (control characters escaped, at most 200 characters). *sink* is *null* while the default sink is unknown; *source* is *null* without **[[sources]]** or while unknown.
+
+When no daemon answers, the line is:
+
+```
+{"text":"pwsw stopped","tooltip":"pwsw daemon is not running","class":"stopped",
+ "alt":"stopped","daemon":"stopped","sink":null,"source":null,"paused":false}
+```
+
+When a daemon answers but refuses the stream (too many followers, or an older daemon that does not know it: restart it), *daemon* is *error*, *text* is *pwsw error* and *tooltip* says why; *class* is *stopped*, and the command keeps retrying.
 
 ## COMPATIBILITY
 **pwsw** relies on standard Wayland protocols to monitor windows.

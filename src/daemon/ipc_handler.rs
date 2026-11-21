@@ -8,21 +8,27 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use color_eyre::eyre::Result;
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
-use super::event_loop::{Command, ManualSwitch, PauseRequest, Snapshot};
+use super::event_loop::{
+    Command, LiveStatus, MAX_STATUS_SUBSCRIBERS, ManualSwitch, PauseRequest, Snapshot,
+};
 use crate::compositor::Capabilities;
 use crate::daemon_manager::DaemonManager;
-use crate::ipc::{self, IpcServer, Request, Response, WindowInfo};
+use crate::ipc::{self, IpcServer, Request, Response, StatusUpdate, WindowInfo};
 
 /// How long a switch request waits for the activation before replying "in progress".
 /// Below the client's 10 s read timeout.
 pub(crate) const SWITCH_REPLY_TIMEOUT: Duration = Duration::from_secs(8);
 /// Pause after a failed `accept` (e.g. out of file descriptors) to avoid spinning
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+/// A status subscriber that does not take an update within this time is dropped
+/// (it stopped reading; its socket buffer is full)
+pub(crate) const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Facts about the daemon that never change while it runs
 #[derive(Debug, Clone)]
@@ -96,8 +102,91 @@ pub(crate) async fn handle_connection(
         return Ok(());
     }
 
+    if matches!(request, Request::Subscribe) {
+        return stream_status(stream, commands, info).await;
+    }
+
     let response = respond(request, commands, info).await;
     ipc::write_response(&mut stream, &response).await
+}
+
+/// Serve a [`Request::Subscribe`] connection: the status now, then every change,
+/// until the client hangs up, stops reading, or the daemon shuts down
+///
+/// The loop only replaces the value in its `watch` channel, so a slow client never
+/// holds it up: changes it has not taken yet collapse into the latest one.
+async fn stream_status(
+    mut stream: UnixStream,
+    commands: &mpsc::Sender<Command>,
+    info: &ServerInfo,
+) -> Result<()> {
+    let (tx, rx) = oneshot::channel();
+    if commands.send(Command::Subscribe(tx)).await.is_err() {
+        return ipc::write_response(&mut stream, &shutting_down()).await;
+    }
+    let Ok(subscription) = rx.await else {
+        return ipc::write_response(&mut stream, &shutting_down()).await;
+    };
+    let Some(mut live) = subscription else {
+        info!("Refused a status subscriber: {MAX_STATUS_SUBSCRIBERS} already connected");
+        return ipc::write_response(&mut stream, &Response::Error {
+            message: format!(
+                "Too many clients follow the status already (at most {MAX_STATUS_SUBSCRIBERS})"
+            ),
+        })
+        .await;
+    };
+    debug!("Status subscriber connected");
+    let mut sent: Option<LiveStatus> = None;
+    loop {
+        let current = live.borrow_and_update().clone();
+        // A change and its reversal between two looks are no change
+        if sent.as_ref() != Some(&current) {
+            let update = Response::StatusUpdate(status_update(&current, info));
+            match tokio::time::timeout(
+                SUBSCRIBER_WRITE_TIMEOUT,
+                ipc::write_response(&mut stream, &update),
+            )
+            .await
+            {
+                Ok(Ok(())) => sent = Some(current),
+                Ok(Err(e)) => {
+                    debug!("Status subscriber went away: {e:#}");
+                    return Ok(());
+                }
+                Err(_) => {
+                    info!("Dropped a status subscriber that stopped reading");
+                    return Ok(());
+                }
+            }
+        }
+        let mut probe = [0_u8; 1];
+        tokio::select! {
+            changed = live.changed() => if changed.is_err() {
+                // The loop ended: hanging up tells the client the daemon stopped
+                return Ok(());
+            },
+            // The client sends nothing after subscribing: end of stream (or anything
+            // else) means it is done
+            _ = stream.read(&mut probe) => {
+                debug!("Status subscriber disconnected");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// One stream message: the loop's [`LiveStatus`] plus the facts that never change
+fn status_update(live: &LiveStatus, info: &ServerInfo) -> StatusUpdate {
+    StatusUpdate {
+        version: info.version.clone(),
+        protocol: ipc::PROTOCOL_VERSION,
+        daemon_manager: info.daemon_manager,
+        paused: live.paused,
+        sink: live.sink.clone(),
+        source: live.source.clone(),
+        sources_configured: live.sources_configured,
+    }
 }
 
 fn shutting_down() -> Response {
@@ -161,6 +250,10 @@ async fn respond(
         // Answered (before shutting down) by `handle_connection`
         Request::Shutdown => Response::Ok {
             message: "Daemon shutting down...".to_string(),
+        },
+        // Served by `handle_connection` (`stream_status`)
+        Request::Subscribe => Response::Error {
+            message: "Subscribe keeps the connection open".to_string(),
         },
         Request::Status => match query(commands).await {
             Some(snapshot) => status_response(&snapshot, info),

@@ -2400,3 +2400,5 @@ async fn test_status_reports_backend_and_monitor_info() {
     }
     h.stop().await.expect("clean shutdown");
 }
+
+mod status_stream;

@@ -61,7 +61,7 @@ use super::notifier::{Notice, NoticeKind, Notifier};
 use super::worker::{self, Job, JobResult, Outcome, Pending, SinkSwitcher, Target};
 use crate::compositor::{Capabilities, ProtocolPreference, WindowEvent};
 use crate::config::{Config, ConfigNotFound, Endpoint, SinkConfig};
-use crate::ipc::{FallbackSink, Response, TrackedInfo, WindowInfo};
+use crate::ipc::{EndpointStatus, FallbackSink, Response, RuleWindow, TrackedInfo, WindowInfo};
 pub(crate) use crate::manual::ManualSwitch;
 use crate::notification::{get_app_icon, get_sink_icon, get_source_icon};
 use crate::state::{Departure, State};
@@ -75,6 +75,9 @@ pub(crate) const RETRY_BACKOFF: [Duration; 2] = [Duration::from_secs(2), Duratio
 /// fallback sink is applied (each check takes a `pw-dump`; title changes can be
 /// frequent)
 pub(crate) const UPGRADE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Most clients following the status stream at once ([`Command::Subscribe`])
+pub(crate) const MAX_STATUS_SUBSCRIBERS: usize = 16;
 
 /// Notification title for sink switches
 const SWITCH_TITLE: &str = "Audio Output";
@@ -110,6 +113,21 @@ pub(crate) enum Command {
         request: PauseRequest,
         reply: oneshot::Sender<Response>,
     },
+    /// Follow the status ([`LiveStatus`]); `None` when [`MAX_STATUS_SUBSCRIBERS`]
+    /// clients follow it already
+    Subscribe(oneshot::Sender<Option<watch::Receiver<LiveStatus>>>),
+}
+
+/// What the status stream reports, published with the status line (see
+/// `publish_status`); compared as a whole, so subscribers only hear of changes
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct LiveStatus {
+    pub paused: bool,
+    /// The applied sink; `None` while unknown
+    pub sink: Option<EndpointStatus>,
+    /// The applied source; `None` while unknown or without `[[sources]]`
+    pub source: Option<EndpointStatus>,
+    pub sources_configured: bool,
 }
 
 /// What a pause request asks for
@@ -345,6 +363,8 @@ pub(crate) struct Daemon {
     outbox: Pending,
     /// Last status line published
     status: Option<String>,
+    /// The status stream (no receiver of its own: subscribers hold them all)
+    live: watch::Sender<LiveStatus>,
     /// Rule-driven switching is paused (in memory only)
     paused: bool,
     next_generation: u64,
@@ -379,6 +399,7 @@ impl Daemon {
             lanes,
             outbox: [None, None],
             status: None,
+            live: watch::Sender::new(LiveStatus::default()),
             paused: false,
             next_generation: 0,
             replies: Vec::new(),
@@ -455,6 +476,10 @@ impl Daemon {
                     Command::Switch { request, reply } => self.on_manual(request, reply),
                     Command::Pause { request, reply } => {
                         let _ = reply.send(self.on_pause(request));
+                    }
+                    Command::Subscribe(reply) => {
+                        let full = self.live.receiver_count() >= MAX_STATUS_SUBSCRIBERS;
+                        let _ = reply.send((!full).then(|| self.live.subscribe()));
                     }
                     Command::Shutdown => {
                         info!("Shutting down (IPC request)");
@@ -1315,8 +1340,53 @@ impl Daemon {
         text
     }
 
-    /// Publish the status line (`STATUS=` for systemd) if it changed
+    /// What the status stream reports for `kind` (`None` while its default is unknown)
+    fn live_endpoint(&self, kind: Endpoint) -> Option<EndpointStatus> {
+        let lane = self.lane(kind);
+        let node = lane.applied.clone()?;
+        // The deciding window, when the applied value is what its rule wants (not a
+        // manual choice or a default found at startup that the rules differ from)
+        let window = self
+            .state
+            .desired_for(kind)
+            .filter(|d| !lane.manual_override && d.candidates.iter().any(|c| c.name == node))
+            .and_then(|d| d.window)
+            .map(|w| RuleWindow {
+                app_id: crate::sanitize::for_log(w.app_id).into_owned(),
+                title: crate::sanitize::for_log(w.title).into_owned(),
+                rule: crate::sanitize::for_log(w.trigger).into_owned(),
+            });
+        Some(EndpointStatus {
+            desc: self.endpoint_desc(kind, &node),
+            fallback: lane.applied_fallback,
+            node,
+            window,
+        })
+    }
+
+    fn live_status(&self) -> LiveStatus {
+        let sources_configured = !self.state.config().sources.is_empty();
+        LiveStatus {
+            paused: self.paused,
+            sink: self.live_endpoint(Endpoint::Sink),
+            source: self
+                .live_endpoint(Endpoint::Source)
+                .filter(|_| sources_configured),
+            sources_configured,
+        }
+    }
+
+    /// Publish the status line (`STATUS=` for systemd) and the status stream, each
+    /// only if it changed
     fn publish_status(&mut self) {
+        let live = self.live_status();
+        self.live.send_if_modified(|current| {
+            let changed = *current != live;
+            if changed {
+                *current = live;
+            }
+            changed
+        });
         let text = self.status_text();
         if self.status.as_deref() == Some(text.as_str()) {
             return;

@@ -19,6 +19,7 @@ that binary.
 | `src/bin/pwsw.rs` | Entry point: dispatch, error printing, exit codes (0 ok / 1 error / 2 usage) |
 | `src/cli.rs` | `clap` definitions (`--config`, `--color`, subcommands, help text) |
 | `src/commands.rs` | CLI commands (`status` incl. `--json`, `list-*`, `test-rule`, `validate`, manual switches) |
+| `src/status_watch.rs` | `status --watch [--json]`: follows the daemon's `Subscribe` stream, bar `JSON` lines, reconnect with backoff |
 | `src/config.rs` | Schema, path selection, validation, all mutations, comment-preserving atomic saves, `init` |
 | `src/state.rs` | Pure reducer: window events → tracked windows and rule matches; `desired()`, `desired_for(Endpoint)` |
 | `src/manual.rs` | Pure decision for `set-sink`/`next-sink`/`prev-sink`/`set-source` against a PipeWire probe (daemon and CLI fallback) |
@@ -186,6 +187,10 @@ swapped.
 - Length-prefixed JSON, 1 MiB message cap. Bump `PROTOCOL_VERSION` whenever a
   `Request`/`Response` changes incompatibly; a request the daemon cannot parse gets an
   error naming its version and `RESTART_HINT`.
+- `Subscribe` keeps its connection open: the loop publishes a `LiveStatus` into a
+  `watch` channel from `publish_status` (never blocks; at most `MAX_STATUS_SUBSCRIBERS`
+  receivers), and `ipc_handler` writes a `StatusUpdate` per change (deduplicated),
+  dropping a client that hangs up or does not take a write within 5 s.
 - The single-instance lock is an `flock` on `pwsw.lock` beside the socket (`O_NOFOLLOW`,
   must be our regular file, never deleted). There is no PID file.
 

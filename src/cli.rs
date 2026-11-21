@@ -40,6 +40,8 @@ QUERYING (requires running daemon):
 QUERYING (no daemon needed):
   [no subcommand]     Show current audio output and daemon status
   status              Same as above (supports --json)
+  status --watch      Follow the daemon's status, one line per change (--json
+                      for status bars; keeps running while the daemon is down)
   list-sinks          List available PipeWire audio outputs
   validate            Check config file syntax
   init [--force]      Write the commented default config
@@ -92,6 +94,11 @@ pub enum Command {
         /// Output in `JSON` format (always valid `JSON`, errors included; see pwsw(1))
         #[arg(long)]
         json: bool,
+        /// Follow the daemon's status: print a line now and on every change (with
+        /// `--json`, one `JSON` object per line for status bars; see STATUS STREAM in
+        /// pwsw(1)). Keeps running while the daemon is stopped.
+        #[arg(long)]
+        watch: bool,
     },
 
     /// Stop the daemon gracefully

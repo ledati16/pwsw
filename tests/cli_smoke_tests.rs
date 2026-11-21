@@ -814,6 +814,109 @@ fn cli_status_json_is_valid_without_pipewire_or_daemon() {
     sb.assert_default_locations_untouched();
 }
 
+/// Start `pwsw status --watch` with `args`, wait (bounded) for its first line, and
+/// return the still-running child with that line
+fn watch_first_line(sb: &Sandbox, args: &[&str]) -> (std::process::Child, String) {
+    let mut child = sb
+        .cmd()
+        .args(["status", "--watch"])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to run pwsw");
+    let out = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(out);
+        let _ = tx.send(std::io::BufRead::read_line(&mut reader, &mut line).map(|_| line));
+        // Keep reading (and the pipe open) until the child is gone
+        let _ = std::io::copy(&mut reader, &mut std::io::sink());
+    });
+    let Ok(line) = rx.recv_timeout(RUN_TIMEOUT) else {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("status --watch printed nothing within {RUN_TIMEOUT:?}");
+    };
+    (child, line.expect("read first line"))
+}
+
+/// Without a daemon, `status --watch --json` prints one `stopped` line and keeps
+/// running (it waits for the daemon to come back)
+#[test]
+fn cli_status_watch_without_daemon_prints_stopped_and_keeps_running() {
+    let sb = Sandbox::new();
+    let (mut child, line) = watch_first_line(&sb, &["--json"]);
+    let still_running = child.try_wait().expect("try_wait").is_none();
+    // Only the child spawned above, by its handle
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(line.ends_with('\n'), "a whole line: {line:?}");
+    let json: serde_json::Value = serde_json::from_str(&line).expect("valid JSON line");
+    assert_eq!(json["class"], "stopped");
+    assert_eq!(json["alt"], "stopped");
+    assert_eq!(json["daemon"], "stopped");
+    assert_eq!(json["text"], "pwsw stopped");
+    assert!(json["sink"].is_null() && json["source"].is_null());
+    assert!(still_running, "status --watch exited without a daemon");
+
+    let (mut child, line) = watch_first_line(&sb, &[]);
+    let _ = child.kill();
+    let _ = child.wait();
+    assert_eq!(line, "pwsw stopped\n");
+    sb.assert_default_locations_untouched();
+}
+
+/// `status --watch` ends quietly (status 0) when nobody reads its output any more,
+/// even while it has nothing new to print
+#[test]
+fn cli_status_watch_exits_cleanly_on_broken_pipe() {
+    let sb = Sandbox::new();
+    let status = wait_status(
+        sb.cmd()
+            .args(["status", "--watch", "--json"])
+            .stdout(broken_pipe())
+            .stderr(Stdio::null()),
+    );
+    assert_clean_exit(status, 0, "status --watch into a closed pipe");
+
+    // The reader goes away after the first line (no daemon: nothing more is printed)
+    let mut child = sb
+        .cmd()
+        .args(["status", "--watch", "--json"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to run pwsw");
+    let out = child.stdout.take().expect("stdout");
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(out);
+        let _ = std::io::BufRead::read_line(&mut reader, &mut line);
+        let _ = tx.send(line);
+        // `reader` (the only read end) is dropped here
+    });
+    let first = rx.recv_timeout(RUN_TIMEOUT).unwrap_or_default();
+    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for pwsw") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("status --watch did not exit after its reader closed");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert!(first.contains("\"stopped\""), "{first:?}");
+    assert_clean_exit(status, 0, "status --watch | head -n 1");
+}
+
 #[test]
 fn cli_list_sinks_warns_when_config_fails_to_load() {
     let sb = Sandbox::new();

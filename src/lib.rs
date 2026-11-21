@@ -31,6 +31,7 @@ pub mod notification;
 pub mod pipewire;
 pub mod sanitize;
 pub mod state;
+pub mod status_watch;
 pub mod style;
 
 #[cfg(feature = "tui")]
