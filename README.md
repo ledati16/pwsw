@@ -6,470 +6,235 @@
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-1.100-orange.svg" alt="Rust: 1.100"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/Clippy-pedantic-green?logo=rust&logoColor=white" alt="Clippy: pedantic"></a>
   <a href="https://ratatui.rs/"><img src="https://img.shields.io/badge/Ratatui-0.30-000?logo=ratatui&logoColor=fff" alt="Ratatui 0.30"></a>
-  <a href="#appendix-llm-generated-code"><img src="https://img.shields.io/badge/Vibe-Coded-blueviolet" alt="Vibe Coded"></a>
+  <a href="#about-the-code"><img src="https://img.shields.io/badge/Vibe-Coded-blueviolet" alt="Vibe Coded"></a>
 </p>
 
-<p align="center"><img width="700" alt="PWSW Dashboard" src="contrib/dashboard.png" /></p>
+> **PWSW is feature complete.** It may get maintenance and updates in the future as
+> needed (dependency and security updates, bug fixes), but otherwise it is considered
+> finished. See [CHANGELOG.md](CHANGELOG.md) for what changed.
 
-## What is PWSW?
+PWSW switches your PipeWire audio output automatically, based on the windows you have
+open on Wayland. Launch a game and the sound goes to the speakers; open Discord and it
+moves to the headset; close it and it comes back. It can switch the microphone too,
+follow a window to the screen it is on, and fall back to a second device when the first
+one isn't there.
 
-PWSW automatically switches your PipeWire audio output based on the windows you have
-open. Launch a game? Audio goes to the speakers. Open Discord? It switches to the
-headset. Close the window? It switches back.
+<p align="center"><img width="720" alt="PWSW dashboard" src="contrib/screenshots/dashboard.png" /></p>
 
-It watches windows through standard Wayland protocols and controls audio with
-PipeWire's own command-line tools.
-
-## Project status
-
-PWSW is feature-complete and in **maintenance mode**. It does one job: switching the
-default audio output (and input) based on which windows are open and which screen they
-are on. It keeps receiving dependency and security updates and bug fixes; new features
-are unlikely unless they fit that job. Changes are listed in
-[CHANGELOG.md](CHANGELOG.md).
-
-Found a bug? Open a [GitHub issue](https://github.com/ledati16/pwsw/issues) and include
-the output of `pwsw doctor` and `pwsw --version`. Security problems go through private
-reporting instead, see [SECURITY.md](SECURITY.md).
+<p align="center">
+  <img width="356" alt="Editing a rule" src="contrib/screenshots/rules.png" />
+  <img width="356" alt="Settings" src="contrib/screenshots/settings.png" />
+</p>
 
 ## Features
 
-- **Automatic sink switching** from rules that match a window's `app_id` and title (regex)
-- **Microphone switching** (optional): with `[[sources]]` configured, a rule can also
-  pick the default input; the mic is decided on its own, so a rule without one never
-  moves it
-- **Fallback sinks and mics**: a rule can list several; the first one available right
-  now wins (e.g. Bluetooth headphones when connected, wired ones otherwise)
-- **Audio follows the screen**: a rule can match the monitor a window is on
-  (`output = "HDMI-A-1"`), so whatever you move to the TV plays on the TV (needs a
-  compositor with `wlr-foreign-toplevel-management`)
-- **Respects your choices**: pwsw switches only when the rules' answer changes, so a sink
-  you pick in pavucontrol (or a manual `pwsw set-sink`) stays until a rule wants
-  something else
-- **Pause / resume** rule-driven switching (`pwsw pause`, `p` in the TUI), and an
-  optional settle delay (`switch_delay_ms`) for windows that match only for a moment
-- **Status bars and shells**: `pwsw status --watch --json` pushes one JSON line per
-  change (Waybar, eww, Quickshell; a Noctalia plugin is included)
-- **`pwsw doctor`** checks the whole setup and says what to fix
-- **Interactive TUI**:
-  - Dashboard with daemon status and controls, daemon log and window list (make a rule
-    from a window with `n`)
-  - Rule editor with a live preview of matching windows
-  - Sink and mic editors that pick from the nodes PipeWire offers
-  - Context-aware help generated from the actual key bindings
-- **Priority modes**: most recently opened window wins, or the first matching rule wins
-- **Profile switching**: reaches outputs that need a card profile change (e.g. analog ↔
-  digital), keeping the card's microphone when possible
-- **Desktop notifications** for manual and rule-driven switches (optional)
-- **Hot reload**: config changes apply as soon as the file is saved (symlinks included)
-- **Scripting**: `--json` output, an always-parseable `status --json`, shell completions
-- **systemd integration**: notify-type user unit, current sink in `systemctl --user status`
+**Switching**
+- Rules match a window's `app_id`, title and/or the monitor it is on (regex)
+- **Microphones too** (optional): a rule can also pick the default input, decided
+  independently of the output, so a rule without a mic never moves it
+- **Fallbacks**: a rule can list several outputs (or mics); the first one available
+  right now wins, and pwsw moves up when a better one comes back
+- **Audio follows the screen**: `output = "^HDMI-A-1$"` sends whatever is on the TV to
+  the TV
+- **Respects your choices**: pwsw only switches when its rules' answer changes, so
+  something you pick in pavucontrol (or with `pwsw set-sink`) stays put
+- **Profile switching**: reaches outputs that need a card profile change (analog ↔
+  digital, HDMI), keeping the card's microphone, and switching the card back if the new
+  output doesn't show up
+- Priority: most recently opened window wins, or the first matching rule
+- Pause/resume, and an optional settle delay for windows that only match for a moment
 
-## Supported Compositors
+**Using it**
+- **Terminal UI**: dashboard with daemon controls, live log and window list; rule editor
+  with a live preview of matching windows (or press `n` on a window to start a rule from
+  it); sink and mic editors that pick from what PipeWire offers; built-in help
+- **`pwsw doctor`** checks the whole setup and tells you what to fix
+- **Live status for bars and shells**: `pwsw status --watch --json` (Waybar, eww,
+  Quickshell, DankMaterialShell; a [Noctalia plugin](contrib/noctalia/) is included)
+- Desktop notifications, hot reload on save, `--json` output, shell completions, man
+  pages, and a systemd user unit that shows the current output in `systemctl status`
 
-PWSW works with any compositor that implements one of:
+## Requirements
 
-- **`ext-foreign-toplevel-list-v1`**: the official Wayland standard (preferred when both
-  are offered, unless the config has `output` rules)
-- **`wlr-foreign-toplevel-management`**: wlroots-style compositors; the only one that
-  reports which monitor a window is on, so `output` rules need it
+- A Wayland compositor with **`ext-foreign-toplevel-list-v1`** or
+  **`wlr-foreign-toplevel-management`**, for example Sway, Hyprland, niri, river,
+  Wayfire, labwc or COSMIC. Matching by monitor needs the `wlr` one. GNOME and KDE
+  Plasma 6 don't offer either. Not sure? `pwsw doctor` tells you.
+- PipeWire with its command-line tools (`pw-dump`, `pw-cli`, `pw-metadata`), normally
+  with WirePlumber.
+- Optional: a notification server (mako, dunst, swaync, ...).
+- To build: Rust 1.100 (`rustup` picks it up from `rust-toolchain.toml`).
 
-Compositors that implement one of them include Sway, Hyprland, Niri, River, Wayfire,
-labwc, dwl and COSMIC.
+## Install
 
-**Not supported:** GNOME/Mutter (exposes neither protocol) and KDE Plasma 6 (removed its
-window-management protocol and does not implement `ext` yet).
-
-## Installation
-
-Requirements: PipeWire with `pw-dump`, `pw-metadata` and `pw-cli` in `PATH` (part of
-PipeWire), usually WirePlumber, and a notification server (mako, dunst, swaync, ...) if
-you want notifications.
-Building needs Rust 1.100; with `rustup`, the pinned toolchain from `rust-toolchain.toml`
-is installed automatically.
-
-### Arch Linux (PKGBUILD)
+**Arch Linux** (PKGBUILD in `contrib/`):
 
 ```bash
-git clone https://github.com/ledati16/pwsw && cd pwsw
-cd contrib
+git clone https://github.com/ledati16/pwsw && cd pwsw/contrib
 makepkg -si
 ```
 
-Builds `pwsw-git` from the latest commit and installs the binary, the systemd user unit,
-man pages (`pwsw(1)`, `pwsw(5)`), bash/zsh/fish completions, a desktop entry and icons.
-See [contrib/README.md](contrib/README.md).
+This installs the binary, the systemd user unit, man pages, shell completions, a desktop
+entry and icons ([details](contrib/README.md)).
 
-### Cargo
+**Cargo:**
 
 ```bash
 git clone https://github.com/ledati16/pwsw && cd pwsw
-cargo install --locked --path .   # installs ~/.cargo/bin/pwsw
+cargo install --locked --path .
 ```
 
-Shell completions (optional):
+Completions come from `pwsw completions bash|zsh|fish`; the systemd unit and man pages
+are not installed this way ([manual steps](contrib/README.md#manual-installation-cargo-users)).
+
+## Quick start
 
 ```bash
-mkdir -p ~/.local/share/bash-completion/completions &&
-  pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw
-mkdir -p ~/.local/share/zsh/site-functions &&   # a directory in your $fpath
-  pwsw completions zsh > ~/.local/share/zsh/site-functions/_pwsw
-mkdir -p ~/.config/fish/completions &&
-  pwsw completions fish > ~/.config/fish/completions/pwsw.fish
+pwsw tui                                   # creates the config and walks you through it
+systemctl --user enable --now pwsw         # start the daemon (or just: pwsw daemon)
 ```
 
-Man pages and the systemd unit are not installed this way; see
-[contrib/README.md](contrib/README.md#manual-installation-cargo-users) for the unit.
-
-### First run
-
-```bash
-pwsw list-sinks      # see your audio outputs and their node names
-pwsw init            # write a commented config to ~/.config/pwsw/config.toml
-$EDITOR ~/.config/pwsw/config.toml   # or: pwsw tui
-pwsw validate        # check it
-```
-
-Then start the daemon, either with systemd (recommended):
-
-```bash
-systemctl --user enable --now pwsw.service
-```
-
-or directly with `pwsw daemon` (detaches and keeps running after the terminal closes).
-The daemon refuses to start until at least one sink is configured.
-
-## Usage
-
-### Interactive TUI
-
-```bash
-pwsw tui
-```
-
-Use `Tab` or `1`-`4` to switch screens:
-1. **Dashboard**: daemon status and Start/Stop/Restart (Enable/Disable with the systemd
-   unit), the daemon log and the window list (`w` toggles)
-2. **Sinks**: add, edit, reorder and delete outputs, pick the default; `i` switches to
-   the microphones (`[[sources]]`)
-3. **Rules**: create and edit rules (sinks with fallbacks, optional mics and monitor)
-   with live preview
-4. **Settings**: global behaviour, including the switch delay
-
-`Enter` in a form applies the edit and `Ctrl+S` writes the file; `p` pauses or resumes
-rule-driven switching. Press `?` or `F1` for help on the current screen. On first run
-the TUI creates the config file for you and opens on the Sinks screen.
-
-### Commands
-
-| Command | What it does | Daemon |
-|---------|--------------|--------|
-| `pwsw` / `pwsw status [--json]` | Current audio output and daemon status | optional |
-| `pwsw status --watch [--json]` | Follow the daemon's status, one line per change (for bars) | optional |
-| `pwsw daemon [-f/--foreground]` | Start the daemon (background by default) | - |
-| `pwsw shutdown` | Stop the daemon | required |
-| `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then mics (sources) | not needed |
-| `pwsw list-windows [--json]` | Open windows, tracked (matching a rule) or not | required |
-| `pwsw test-rule [PATTERN] [--output REGEX] [--json]` | Which windows a regex matches (`app_id` or title, and/or monitor) | required |
-| `pwsw validate` | Check the config file (never creates one) | not needed |
-| `pwsw doctor` | Check the whole setup and say what to fix (read-only) | optional |
-| `pwsw init [--force]` | Write the commented default config (`--force` keeps `config.toml.bak`) | not needed |
-| `pwsw set-sink SINK` | Switch to a sink by description or node name | optional |
-| `pwsw next-sink` / `prev-sink` | Cycle through configured sinks, skipping unavailable ones | optional |
-| `pwsw set-source SOURCE` | Switch the microphone to a configured source (needs `[[sources]]`) | optional |
-| `pwsw pause` / `resume` / `toggle-pause` | Stop or restart rule-driven switching (manual switches keep working) | required |
-| `pwsw tui` | Terminal UI | optional |
-| `pwsw completions SHELL` | Completion script for bash, zsh, fish, elvish, powershell | - |
-
-Global options: `--config PATH` (or `PWSW_CONFIG`) selects another config file;
-`--color auto|always|never` (output is uncoloured when piped or with `NO_COLOR`).
-
-Manual switches go through the daemon when it runs (its rules then respect the choice),
-otherwise they switch PipeWire directly, so they work well as compositor key bindings.
-With `set_smart_toggle`, `set-sink` on the sink that is already active switches back to
-the default sink.
-
-`pwsw pause` stops the rules from switching (say, for a call on a sink of your choice)
-until `pwsw resume`; the daemon keeps tracking windows meanwhile, and resuming switches
-at once if the rules want another sink. The pause is not kept across daemon restarts.
-
-`status --json` always prints one JSON document and exits 0, with errors reported inside
-it (schema in `man pwsw`). That makes it safe for status bars.
-
-### Status bars / shells
-
-`pwsw status --watch --json` is a live feed for any bar or shell: it prints one JSON line
-at once and another whenever the output, the microphone, the deciding rule or the pause
-state changes (pushed by the daemon, nothing is polled). It never exits because the
-daemon is gone: it prints a `stopped` line, reconnects with backoff and carries on when
-the daemon is back. Each line has the conventional `text`/`tooltip`/`class`/`alt` fields
-plus structured ones (stable schema: STATUS STREAM in `man pwsw`):
-
-```json
-{"text":"Headphones","tooltip":"Output: Headphones (alsa_output.usb-…)\nMic: Headset Mic\nRule: Voice chat (discord)","class":"active","alt":"active","sink":{"desc":"Headphones","node":"alsa_output.usb-…","fallback":false,"window":{"app_id":"discord","rule":"Voice chat","rule_index":4}},"source":{"desc":"Headset Mic","node":"alsa_input.usb-…","fallback":false,"window":null},"paused":false,"daemon":"running","version":"v0.7.0+abc1234","protocol":2,"managed_by":"systemd"}
-```
-
-`class` is `active`, `fallback`, `paused` or `stopped`. Hooking it up:
-
-- **Noctalia**: a ready-made plugin is in [`contrib/noctalia/`](contrib/noctalia/).
-- **Waybar**: a `custom` module with `"exec": "pwsw status --watch --json"`,
-  `"return-type": "json"` and `"escape": true` (sink names are not Pango markup); for
-  example `"on-click": "pwsw next-sink"`, `"on-click-right": "pwsw toggle-pause"`, and
-  style `#custom-pwsw.paused` / `.fallback` / `.stopped`.
-- **Quickshell / DankMaterialShell**: a `Process` running the command with a
-  `SplitParser` on stdout, `JSON.parse` per line.
-- **eww**: `(deflisten pwsw :initial "{}" "pwsw status --watch --json")`, then
-  `{pwsw.text}`, `{pwsw.class}`, ...
+Or by hand: `pwsw list-sinks` shows your outputs, `pwsw init` writes a commented config
+to `~/.config/pwsw/config.toml`, `pwsw validate` checks it. Changes apply as soon as the
+file is saved.
 
 ## Configuration
 
-**Location:** `~/.config/pwsw/config.toml` (`$XDG_CONFIG_HOME/pwsw/config.toml`;
-override with `--config PATH` or `PWSW_CONFIG`). Full reference: `man 5 pwsw`.
-
-Only `pwsw init` and `pwsw tui` create the file. Unknown keys (typos such as
-`defualt = true`) are errors naming the key and the file. Changes are picked up
-automatically when the file is saved; an invalid file is rejected and the previous
-configuration stays in effect. When the TUI saves, your comments and formatting are
-kept, the previous version is copied to `config.toml.bak`, a symlinked config stays a
-symlink, and if the file was changed on disk in the meantime the TUI asks whether to
-overwrite or reload it.
-
-### Example
+A small example (full reference: `man 5 pwsw`):
 
 ```toml
-[settings]
-default_on_startup = false # switch to the rules' sink when the daemon starts (silently)
-set_smart_toggle = true    # set-sink on the active sink toggles back to the default
-notify_manual = true       # notifications for manual switches and daemon events
-notify_rules = true        # notifications for rule-driven switches
-match_by_index = false     # false: most recent window wins; true: first rule wins
-log_level = "info"         # error, warn, info, debug, trace
-switch_delay_ms = 0        # switch only once the rules' answer held this long (0-5000 ms)
+[[sinks]]
+name = "alsa_output.pci-0000_0c_00.4.analog-stereo"   # node name from `pwsw list-sinks`
+desc = "Speakers"
+default = true                                        # used when no rule matches
 
 [[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"   # node name from `pwsw list-sinks`
-desc = "Optical Out"
-default = true
+name = "alsa_output.usb-Headset-00.analog-stereo"
+desc = "Headset"
 
 [[sinks]]
-name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
-desc = "Headphones"
-icon = "audio-headphones"   # optional; otherwise picked from the description
-
-[[sinks]]
-name = "bluez_output.40_ED_98_1C_1D_08.1"
+name = "bluez_output.00_11_22_33_44_55.1"
 desc = "BT Headphones"
 
 [[sinks]]
 name = "alsa_output.pci-0000_0a_00.1.hdmi-stereo"
 desc = "TV"
 
-# Optional: microphones. Without [[sources]] pwsw never touches the default input.
-[[sources]]
-name = "alsa_input.usb-SteelSeries_Arctis-00.mono-fallback"  # MICS in `pwsw list-sinks`
-desc = "Headset Mic"
-
-[[sources]]
-name = "alsa_input.pci-0000_0c_00.4.analog-stereo"
-desc = "Desk Mic"
-default = true          # when no rule asks for a source
-
 [[rules]]
 app_id = "^steam$"
-title = "^Steam Big Picture Mode$"   # optional
-sink = "Optical Out"                 # the sink's desc (or its node name)
-desc = "Steam Big Picture"           # optional label for notifications
-notify = false                       # optional per-rule override of notify_rules
-
-[[rules]]
-app_id = "^mpv$"
-sink = "Headphones"
+title = "^Steam Big Picture Mode$"
+sink = "TV"
 
 [[rules]]
 app_id = "^discord$"
-sink = ["BT Headphones", "Headphones"]  # fallbacks: the first one available now wins
-source = "Headset Mic"                  # optional: also switch the microphone
+sink = ["BT Headphones", "Headset"]   # first one available wins
 
 [[rules]]
-app_id = ".*"        # any app...
-title = "YouTube"    # ...whose title contains "YouTube"
-sink = "Headphones"
-
-[[rules]]
-output = "^HDMI-A-1$" # audio follows the screen: any window on this monitor
-sink = "TV"           # (app_id optional; needs wlr-foreign-toplevel-management)
+output = "^HDMI-A-1$"                 # anything on this monitor plays on the TV
+sink = "TV"
 ```
 
-All `[settings]` keys are optional; the values above are the defaults.
+- **Mics** are optional: add `[[sources]]` (same keys as `[[sinks]]`) and a rule can say
+  `source = "Headset Mic"`. Without `[[sources]]` pwsw never touches your input.
+- **Settings** (`[settings]`, all optional): start-up behaviour, notifications, priority
+  mode, settle delay, smart toggle, log level. `pwsw init` writes them all with comments,
+  and the TUI's Settings screen explains each one.
+- **Finding `app_id`s and titles:** the TUI's window list, `pwsw list-windows`, or
+  `pwsw test-rule '<regex>'` while the daemon runs.
+- Unknown keys and typos are reported with the line and file; an invalid file is
+  rejected and the previous configuration stays active. The TUI keeps your comments
+  when it saves.
 
-**Sinks:** `name` is the PipeWire node name, `desc` a unique label (not a number), and
-exactly one sink has `default = true`: the default, used when no rule matches. Icons are
-auto-detected from the description (HDMI/TV/display → `video-display`;
-headphone/headset/Bluetooth → `audio-headphones`; otherwise `audio-speakers`).
+## Commands
 
-**Rules:** `app_id`, `title` and `output` are regexes; a rule matches when all the ones it
-sets match, and needs `app_id` or `output` (none of them may be an empty string). `sink` names a sink by
-`desc` (recommended, what the TUI writes) or node `name`. A 1-based position
-(`sink = 2`) still works but is deprecated: it logs a warning and points at a different
-sink if you reorder sinks by hand.
+| Command | What it does |
+|---|---|
+| `pwsw` / `pwsw status [--json]` | Current output and mic, daemon state |
+| `pwsw status --watch [--json]` | One line per change, for status bars |
+| `pwsw tui` | Terminal UI |
+| `pwsw daemon [--foreground]` / `pwsw shutdown` | Start / stop the daemon |
+| `pwsw set-sink NAME`, `next-sink`, `prev-sink`, `set-source NAME` | Manual switching (good for key bindings) |
+| `pwsw pause` / `resume` / `toggle-pause` | Stop / restart rule-driven switching |
+| `pwsw list-sinks`, `list-windows`, `test-rule` | Inspect outputs, windows and patterns |
+| `pwsw doctor`, `validate`, `init` | Check the setup, check or create the config |
+| `pwsw completions SHELL` | bash, zsh, fish, elvish, powershell |
 
-**Audio follows the screen:** `output` matches the connector name of a monitor the window
-is on (`HDMI-A-1`, `DP-2`: shown by `pwsw list-windows`) while the window is not
-minimized; combine it with `app_id` to move only some apps (`app_id = "^mpv$"` and
-`output = "^HDMI-"`). Only `wlr-foreign-toplevel-management` reports monitors, so with
-`output` rules the daemon prefers it over `ext`; on a compositor that offers only `ext`
-these rules never match (`pwsw doctor` tells you). Adding the first `output` rule while
-the daemon runs on `ext` needs a daemon restart.
+`--config PATH` (or `PWSW_CONFIG`) uses another config file. Full details: `man pwsw`.
 
-**Sources (optional):** `[[sources]]` has the same keys as `[[sinks]]` (exactly one
-`default`), and a rule's `source` names one (or a fallback list) like `sink` does. The
-microphone is decided independently: by the highest-priority matching window whose rule
-has a `source`, else the default source. So Discord (headset + headset mic) followed by
-Firefox (speakers, no source) plays through the speakers and keeps the headset mic.
-When a switch needs a sink and a source on the same card, the card gets one profile
-providing both (the sink wins if none exists). `pwsw set-source <ref>` switches the
-microphone by hand.
+## Status bars
 
-**Priority:** with `match_by_index = false` the most recently opened window that matches
-a rule (or most recently started matching, e.g. after a title change or a move onto a
-monitor an `output` rule names) decides the sink. With `true` the window matching the
-earliest rule wins (reorder rules in the TUI with `Shift+↑/↓`). When no window matches,
-the default sink is used. The microphone follows the same priority among windows whose
-rule has a `source`.
+`pwsw status --watch --json` prints a JSON line whenever the output, mic, deciding rule
+or pause state changes (pushed by the daemon, nothing polled), and keeps running across
+daemon restarts. Lines carry the usual `text` / `tooltip` / `class` / `alt` fields;
+`class` is `active`, `fallback`, `paused` or `stopped`.
 
-**Regex:** Rust `regex` syntax, matched anywhere unless anchored:
+- **Noctalia**: ready-made plugin in [`contrib/noctalia/`](contrib/noctalia/)
+- **Waybar**: a `custom` module with `"exec": "pwsw status --watch --json"`,
+  `"return-type": "json"` and `"escape": true`; e.g. `"on-click": "pwsw next-sink"`,
+  `"on-click-right": "pwsw toggle-pause"`
+- **eww**: `(deflisten pwsw :initial "{}" "pwsw status --watch --json")`
+- **Quickshell / DankMaterialShell**: a `Process` with a `SplitParser`, one
+  `JSON.parse` per line
 
-```toml
-app_id = "firefox"        # substring
-app_id = "^firefox$"      # exact
-app_id = "^(mpv|vlc)$"    # alternatives
-app_id = "(?i)discord"    # case-insensitive
-```
+The schema is stable and documented under STATUS STREAM in `man pwsw`.
 
-**Finding `app_id` and title:** `pwsw list-windows` or `pwsw test-rule ".*"` (daemon
-running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
-`hyprctl clients`, `niri msg windows`).
+## How it behaves
 
-## How switching works
-
-- The daemon switches when the sink its rules want **changes**: a matching window opens,
-  closes, changes title or moves to another monitor, or a config change alters the
-  rules. A sink chosen elsewhere (pavucontrol, WirePlumber) stays until then.
-- At startup it waits (up to 2 s) for the compositor to list the open windows, then
-  switches to what the rules want only with `default_on_startup = true` (without a
-  notification: it would come with every login).
-- With `switch_delay_ms` it switches only once the rules' answer has held that long;
-  `pwsw pause` stops rule-driven switching until `pwsw resume`.
-- With `[[sources]]` the microphone is decided the same way, independently of the sink.
-- The default is set the way `wpctl set-default` does it
-  (`default.configured.audio.sink` / `.source`), so WirePlumber keeps it.
-- If the target needs a profile switch, pwsw picks an available profile that provides the
-  output (keeping the card's microphone when possible; a mic switch always keeps the
-  card's output, and a sink plus a mic on one card get one profile providing both),
-  switches with `pw-cli` (saved in WirePlumber), waits for the new node (3 s by
-  default), then makes it the default. UCM (`HiFi`) and Pro Audio profiles are not
-  switched to automatically.
-- If the new node does not appear in time, the card is switched back to its previous
-  profile, so a failed switch leaves the audio where it was.
-- A failed rule-driven switch is retried after 2 s and 5 s, and the retries wait longer
-  for the node (5 s); if those fail too, the next window event or reload starts over.
+- It switches when the rules' answer **changes**: a matching window opens, closes,
+  changes title or moves to another monitor, or the config changes. In between it leaves
+  your audio alone.
+- At start-up it only switches if `default_on_startup = true`.
+- It sets defaults the way `wpctl set-default` does, so WirePlumber remembers them.
+- A failed switch is retried after 2 s and 5 s. A profile switch whose new output
+  doesn't appear in time (3 s, 5 s on retries) is undone, so a failed switch leaves the
+  audio where it was.
 
 ## Troubleshooting
 
-Run **`pwsw doctor` first.** It checks the Wayland session and the compositor's window
-protocols, the PipeWire tools and WirePlumber, the config, whether each configured sink
-and mic can be activated right now, the daemon, the systemd unit and the last warning in
-the log, and says how to fix each problem it finds. It changes nothing.
+Run **`pwsw doctor`**. It checks the compositor, the PipeWire tools, the config, every
+configured output and mic, the daemon and the systemd unit, and says what to fix. It
+changes nothing.
 
-- **Logs:** `~/.local/share/pwsw/daemon.log` (rotated at 1 MB to `daemon.log.old`), also
-  shown on the TUI dashboard. Under systemd the same lines go to
-  `journalctl --user -u pwsw.service -f`. Set `log_level = "debug"` for more detail
-  (applied on save, no restart needed).
-- **Is it running, and on which sink?** `systemctl --user status pwsw` shows the current
-  sink in its `Status:` line; `pwsw status` (or `pwsw status --json`) shows the real
-  PipeWire default, the daemon's state and any errors.
-- **Daemon won't start:** `pwsw validate` checks the config; `pwsw daemon --foreground`
-  shows errors directly. The background `pwsw daemon` prints the error and the last log
-  lines if start-up fails.
-- **A rule doesn't fire:** check the window's real `app_id` with `pwsw list-windows` and
-  test the pattern with `pwsw test-rule`.
-- **"sink did not appear" after a profile switch:** some devices are slow. pwsw waits
-  3 s by default, then switches the card back to its previous profile so the audio stays
-  where it was. A rule-driven switch is retried after 2 s and 5 s, waiting up to 5 s
-  for the node, which is usually enough. For a device that needs more than 3 s, raise
-  `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` so first attempts and manual
-  switches wait longer too (their total sleep is capped at 5 s; no switch waits longer).
-- **After upgrading pwsw**, restart the daemon (`systemctl --user restart pwsw`);
-  `pwsw status` tells you if the running daemon speaks a different protocol version.
-
-## Security
-
-- The IPC socket is `$XDG_RUNTIME_DIR/pwsw.sock` (fallback `/tmp/pwsw-<uid>/pwsw.sock`
-  in a verified `0700` directory), mode `0600`; both sides check that the peer runs as
-  the same user.
-- Window titles and `app_id`s are treated as untrusted: control characters are escaped
-  and long titles truncated in logs, and notification text cannot inject markup.
-  PipeWire node names and descriptions (a Bluetooth device names itself) are shown the
-  same way in CLI output, and the TUI drops control and bidirectional characters.
-- Config files are written atomically with mode `0600`.
-- The systemd unit is sandboxed (read-only system and home except pwsw's log and runtime
-  directories).
-
-## Building
-
-```bash
-cargo build --release          # target/release/pwsw
-cargo test
-```
-
-Contributor setup (formatting with the pinned nightly rustfmt, clippy pedantic, the
-sandboxed test runner, git hooks) is described in [CLAUDE.md](CLAUDE.md). Changes are
-listed in [CHANGELOG.md](CHANGELOG.md).
+- Logs: `~/.local/share/pwsw/daemon.log` (also on the TUI dashboard), or
+  `journalctl --user -u pwsw -f` under systemd. Set `log_level = "debug"` for more.
+- A rule doesn't fire: check the window's real `app_id` with `pwsw list-windows` and try
+  the pattern with `pwsw test-rule`.
+- Slow devices after a profile switch: see `PROFILE_SWITCH_DELAY_MS` in `man pwsw`.
+- After upgrading pwsw, restart the daemon (`systemctl --user restart pwsw`).
 
 ## FAQ
 
-### Per-app audio routing?
+**Can it route a single app to a device?** Not on purpose: pwsw switches the *default*
+device. To pin one app to an output, move it there once in pavucontrol (or
+`pactl move-sink-input`); WirePlumber remembers that per app. pwsw covers what nothing
+else does: changing the default based on which windows are open and where.
 
-PWSW deliberately switches only the *default* device. To always send one application to
-a specific output, move it there once in pavucontrol (or your desktop shell's mixer, or
-`pactl move-sink-input`): WirePlumber remembers that choice per application and restores
-it every time the app plays audio. Such an app then stays on its output and no longer
-follows the default, which is usually what you want. PWSW handles the part nothing else
-does: switching the default based on which windows are open and which screen they are
-on.
+**Is it safe?** The IPC socket is private to your user, window titles and device names
+are treated as untrusted (escaped in logs, terminals and notifications), config saves
+are atomic with mode `0600`, and the systemd unit is sandboxed. Report security problems
+privately as described in [SECURITY.md](SECURITY.md).
 
-## Appendix: LLM-Generated Code
+## About the code
 
-> ⚠️ **Important Disclosure**
+> ⚠️ This project was written **entirely by LLMs** (mainly Claude models) for someone
+> without Rust experience. **No human Rust expert has reviewed it.**
 
-This project was **entirely generated by LLMs** (mainly Claude models) for someone
-without Rust experience.
+Version 0.7.0 is a full overhaul planned, built and cross-reviewed by a team of LLM
+agents: repeated independent audits, a sandboxed end-to-end test of the real daemon, and
+testing on the owner's own hardware. The code is held to clippy pedantic with
+`-D warnings`, talks to PipeWire only through its CLI tools with hard timeouts (no FFI),
+and its test suite (about 800 tests) runs fully sandboxed and is checked never to touch
+your real config. Conventions are in [CLAUDE.md](CLAUDE.md).
 
-**Key facts:**
-- **100% LLM-generated.** Version 0.7.0 is the result of a full overhaul that was
-  planned, implemented and cross-reviewed by an orchestrated team of LLM agents
-  (independent audits, re-audits and testing on real hardware by the owner)
-- **Still no review by a human Rust expert**
-- Works as intended with no malicious code, but use with caution
-- Personal tool, not production-grade software
-- **Do not package for distributions** without peer review
+It works well and contains nothing malicious, but treat it as a personal tool: please
+don't package it for distributions without a proper review. Questions, bug reports and
+reviews are welcome in [Discussions](https://github.com/ledati16/pwsw/discussions)
+(for a bug, include `pwsw --version` and `pwsw doctor` output); if you want to take it
+further, fork and rename it (a link back is appreciated).
 
-**Code quality:**
-- Clippy pedantic enforced with `-D warnings`; the only allowed lints are listed in
-  `Cargo.toml`
-- PipeWire is controlled through its CLI tools with hard timeouts (process isolation,
-  no FFI); config saves are validated and atomic
-- Test suite runs fully sandboxed and is checked to never touch your real config
-- See [CLAUDE.md](CLAUDE.md) for the standards
-
-[Discussions](https://github.com/ledati16/pwsw/discussions) are open for community review.
-
-**Fork and rename** if you want to maintain or improve this project (a link back is
-appreciated).
-
-Similar to [Belphemur/SoundSwitch](https://github.com/Belphemur/SoundSwitch), but for
-Wayland + PipeWire.
+Similar in spirit to [SoundSwitch](https://github.com/Belphemur/SoundSwitch), but for
+Wayland and PipeWire.
 
 ---
 
-**License:** [LICENSE](LICENSE) • **Discussions:** [GitHub](https://github.com/ledati16/pwsw/discussions)
+**License:** [MIT](LICENSE)

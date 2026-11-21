@@ -368,7 +368,7 @@ pub struct SinkConfig {
     /// `PipeWire` node name
     /// - ALSA: `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`
     ///   (sources: `"alsa_input.pci-0000_0c_00.4.analog-stereo"`)
-    /// - Bluetooth: `"bluez_output.40_ED_98_1C_1D_08.1"` (sources: `bluez_input.…`)
+    /// - Bluetooth: `"bluez_output.00_11_22_33_44_55.1"` (sources: `bluez_input.…`)
     pub name: String,
     /// Human-readable description
     pub desc: String,

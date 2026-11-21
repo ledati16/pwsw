@@ -7,7 +7,7 @@
 | `pwsw.desktop` | Desktop entry that opens the TUI in a terminal |
 | `icons/` | Application icon (SVG source plus PNG sizes, see `icons/README.md`) |
 | `noctalia/` | Noctalia v5 bar plugin following `pwsw status --watch --json` (see `noctalia/README.md`; untested by CI) |
-| `dashboard.png` | Screenshot used by the top-level README |
+| `screenshots/` | TUI screenshots used by the top-level README |
 
 ## Arch Linux package
 

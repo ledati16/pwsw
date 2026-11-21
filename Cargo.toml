@@ -9,7 +9,7 @@ repository = "https://github.com/ledati16/pwsw"
 keywords = ["wayland", "pipewire", "audio", "tui", "audio-routing"]
 categories = ["multimedia::audio", "command-line-utilities"]
 # Repository tooling and docs for contributors; the build needs build.rs, build/ and man/
-exclude = [".github/", ".git-blame-ignore-revs", "CLAUDE.md", "MAINTENANCE.md", "scripts/", "contrib/dashboard.png"]
+exclude = [".github/", ".git-blame-ignore-revs", "CLAUDE.md", "MAINTENANCE.md", "scripts/", "contrib/screenshots/"]
 
 [features]
 default = ["tui"]

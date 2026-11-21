@@ -28,10 +28,10 @@ use crate::tui::{render_ui, theme};
 const SIZES: [(u16, u16); 3] = [(80, 24), (120, 40), (50, 15)];
 
 const BUILTIN: &str = "alsa_output.pci-0000_00_1f.3.analog-stereo";
-const SONY: &str = "bluez_output.40_ED_98_1C_1D_08.1";
+const BT_HEADPHONES: &str = "bluez_output.00_11_22_33_44_55.1";
 const HDMI: &str = "alsa_output.pci-0000_01_00.1.hdmi-stereo";
 const USB: &str = "alsa_output.usb-Old_DAC-00.analog-stereo";
-const SONY_DESC: &str = "Sony WH-1000XM4 (Bluetooth A2DP Sink)";
+const BT_DESC: &str = "Sony WH-1000XM4 (Bluetooth A2DP Sink)";
 
 /// Draw `app` into a `width`×`height` terminal like the event loop does.
 fn terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
@@ -95,12 +95,12 @@ fn fixture() -> App {
                 true,
                 "audio-speakers",
             ),
-            make_sink(SONY, SONY_DESC, false),
+            make_sink(BT_HEADPHONES, BT_DESC, false),
             make_sink_with_icon(HDMI, "HDMI / DisplayPort", false, "video-display"),
             make_sink(USB, "USB DAC", false),
         ],
         vec![
-            make_rule("firefox", None, SONY_DESC),
+            make_rule("firefox", None, BT_DESC),
             make_rule("^mpv$", None, "HDMI / DisplayPort"),
             make_rule("discord", Some("(?i)call"), "Built-in Audio Analog Stereo"),
         ],
@@ -113,7 +113,7 @@ fn fixture() -> App {
                 is_default: false,
             },
             ActiveSink {
-                name: SONY.to_string(),
+                name: BT_HEADPHONES.to_string(),
                 description: "Sony WH-1000XM4".to_string(),
                 is_default: true,
             },
@@ -133,7 +133,7 @@ fn fixture() -> App {
         monitor_info: Some(false),
         running: true,
         windows: vec![
-            window("firefox", "Rust Book — Mozilla Firefox", Some(SONY_DESC)),
+            window("firefox", "Rust Book — Mozilla Firefox", Some(BT_DESC)),
             window("mpv", "big_buck_bunny.mkv", Some("HDMI / DisplayPort")),
             window("kitty", "~/src/pwsw", None),
             window("org.gnome.Nautilus", "Downloads", None),
@@ -146,9 +146,7 @@ fn fixture() -> App {
         "2026-11-20T10:03:10.120Z  INFO pwsw::daemon: Starting PWSW daemon v0.7.0".to_string(),
         "2026-11-20T10:03:11.400Z  WARN pwsw::daemon: Could not query default sink: timeout"
             .to_string(),
-        format!(
-            "2026-11-20T10:03:12.004Z  INFO pwsw::state: Rule matched: 'firefox' → {SONY_DESC}"
-        ),
+        format!("2026-11-20T10:03:12.004Z  INFO pwsw::state: Rule matched: 'firefox' → {BT_DESC}"),
         "2026-11-20T10:03:13.900Z DEBUG pwsw::state: Window opened: app_id='kitty' title='~'"
             .to_string(),
     ]));
@@ -213,7 +211,7 @@ fn with_mics_and_monitors(app: &mut App) {
         running: true,
         windows: vec![
             placed(
-                window("firefox", "Rust Book — Mozilla Firefox", Some(SONY_DESC)),
+                window("firefox", "Rust Book — Mozilla Firefox", Some(BT_DESC)),
                 &["DP-2"],
                 false,
             ),
@@ -608,13 +606,10 @@ fn test_sink_form_shows_every_field_at_80x24() {
             .unwrap_or_else(|| panic!("{label} row:\n{screen}"))
     };
     let node = row_with("Node");
-    assert!(rows[node].contains(SONY), "{screen}");
+    assert!(rows[node].contains(BT_HEADPHONES), "{screen}");
     assert!(rows[node].contains("▌Node"), "focused marker: {screen}");
     assert!(rows[node].contains("␣ pick"), "{screen}");
-    assert!(
-        rows[row_with("Description")].contains(SONY_DESC),
-        "{screen}"
-    );
+    assert!(rows[row_with("Description")].contains(BT_DESC), "{screen}");
     assert!(
         rows[row_with("Icon")].contains("(auto: audio-headphones)"),
         "{screen}"
@@ -629,7 +624,7 @@ fn test_sink_form_shows_every_field_at_80x24() {
     let cursor = terminal.backend().cursor_position();
     assert!(terminal.backend().cursor_visible(), "cursor shown");
     assert_eq!(usize::from(cursor.y), node, "{cursor:?}");
-    let name_end = rows[node].find(SONY).expect("name") + SONY.len();
+    let name_end = rows[node].find(BT_HEADPHONES).expect("name") + BT_HEADPHONES.len();
     let cursor_x = rows[node][..name_end].chars().count();
     assert_eq!(usize::from(cursor.x), cursor_x, "{cursor:?}\n{screen}");
 }
@@ -661,7 +656,7 @@ fn test_rule_form_shows_every_field_at_80x24() {
     for (label, value) in [
         ("App ID", "firefox"),
         ("Title", "any title"),
-        ("Sinks", SONY_DESC),
+        ("Sinks", BT_DESC),
         ("Description", "optional · shown in notifications"),
         ("Notify", "default (from Settings)"),
     ] {
@@ -1234,7 +1229,7 @@ fn test_esc_with_edits_asks_before_discarding() {
     simulate_key_event(&mut app, esc);
     simulate_key_event(&mut app, key('y'));
     assert_eq!(app.sinks_screen.mode, ListMode::List);
-    assert_eq!(app.config.sinks[1].desc, SONY_DESC);
+    assert_eq!(app.config.sinks[1].desc, BT_DESC);
 
     let mut app = state("rule add");
     simulate_key_event(&mut app, key('f'));
@@ -1984,11 +1979,7 @@ fn hostile(app: &mut App) {
         monitor_info: Some(false),
         running: true,
         windows: vec![
-            window(
-                "firefox",
-                "Evil\u{202e}eltit\u{1b}]0;x\u{7}",
-                Some(SONY_DESC),
-            ),
+            window("firefox", "Evil\u{202e}eltit\u{1b}]0;x\u{7}", Some(BT_DESC)),
             window("ev\u{202e}il", "ti\u{202e}tle\nforged", Some(EVIL)),
             window("org.\u{202e}kde\u{1b}[2J", "\u{2066}x\u{2069}", None),
         ],

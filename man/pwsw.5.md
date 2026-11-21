@@ -149,7 +149,7 @@ name = "alsa_output.usb-Logitech_G_Pro-00.analog-stereo"
 desc = "Headset"
 
 [[sinks]]
-name = "bluez_output.40_ED_98_1C_1D_08.1"
+name = "bluez_output.00_11_22_33_44_55.1"
 desc = "BT Headphones"
 
 [[sinks]]

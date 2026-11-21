@@ -7,10 +7,10 @@ Only the latest release (and the current `main` branch) receives security fixes.
 ## Reporting a vulnerability
 
 Please report privately through GitHub: on the repository's **Security** tab choose
-**Report a vulnerability** (private vulnerability reporting). Do not open a public issue
-for a security problem. Include the pwsw version (`pwsw --version`), what an attacker
-needs (another local user? a malicious window title? a crafted config?), and steps to
-reproduce if you have them.
+**Report a vulnerability** (private vulnerability reporting). Do not post a security
+problem publicly (for example in Discussions). Include the pwsw version
+(`pwsw --version`), what an attacker needs (another local user? a malicious window
+title? a crafted config?), and steps to reproduce if you have them.
 
 This is a hobby project with a single maintainer; expect a reply within a few weeks.
 Fixes are released as a new version and noted under "Security" in the CHANGELOG.

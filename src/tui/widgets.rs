@@ -534,8 +534,8 @@ pub fn picker_lines(entries: &[(&str, &str)], width: usize) -> Vec<Line<'static>
 ///
 /// - ALSA (`alsa_output.pci-0000_00_1f.3.analog-stereo`): prefix and profile,
 ///   `alsa_output…analog-stereo`
-/// - Bluetooth (`bluez_output.40_ED_98_1C_1D_08.1`): prefix, last two address
-///   octets and device number, `bluez_output…1D_08.1`
+/// - Bluetooth (`bluez_output.00_11_22_33_44_55.1`): prefix, last two address
+///   octets and device number, `bluez_output…44_55.1`
 /// - anything else, or when those still do not fit: cut with [`ellipsize`]
 ///
 /// Unsafe characters are removed like in [`ellipsize`].
@@ -561,7 +561,7 @@ fn truncate_clean_node_name(text: &str, max: usize) -> Cow<'_, str> {
         && parts.len() >= 3
     {
         let mac = parts[1];
-        // Last two octets ("1D_08"), on a character boundary
+        // Last two octets ("44_55"), on a character boundary
         let mac_suffix = mac
             .char_indices()
             .rev()
@@ -664,8 +664,8 @@ mod tests {
             "alsa_input…analog-stereo"
         );
         assert_eq!(
-            truncate_node_name("bluez_output.40_ED_98_1C_1D_08.1", 30),
-            "bluez_output…1D_08.1"
+            truncate_node_name("bluez_output.00_11_22_33_44_55.1", 30),
+            "bluez_output…44_55.1"
         );
         assert_eq!(
             truncate_node_name("bluez_input.A0_B1_C2_D3_E4_F5.2", 30),
@@ -682,7 +682,7 @@ mod tests {
         // Never wider than asked, whatever the shape
         for name in [
             "alsa_output.pci-0000_0c_00.4.iec958-ac3-surround-51-analog-stereo",
-            "bluez_output.40_ED_98_1C_1D_08.1",
+            "bluez_output.00_11_22_33_44_55.1",
             "alsa_output.device.test✓profile✳suffix",
             "device✳with✓special★chars",
         ] {

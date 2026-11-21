@@ -9,7 +9,8 @@ fixes. Work on `dev`, merge to `main` when the checks pass.
   the last runs of **Scheduled checks** (weekly `cargo audit` + build/test) in the
   Actions tab. If the schedule shows as disabled (GitHub turns it off after 60 days of
   inactivity), re-enable it there.
-- Open issues and private vulnerability reports (Security tab).
+- New Discussions posts (bug reports go there; Issues are disabled) and private
+  vulnerability reports (Security tab).
 
 ## 2. Update dependencies
 
