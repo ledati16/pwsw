@@ -261,6 +261,7 @@ fn response_kind(response: &Response) -> &'static str {
         Response::RuleMatches { .. } => "RuleMatches",
         Response::ManagerInfo { .. } => "ManagerInfo",
         Response::SinkSwitched { .. } => "SinkSwitched",
+        Response::PauseState { .. } => "PauseState",
     }
 }
 
@@ -343,6 +344,7 @@ struct DaemonStatus {
     daemon_sink_fallback: Option<bool>,
     active_window: Option<String>,
     tracked_windows: Option<usize>,
+    paused: Option<bool>,
 }
 
 impl DaemonStatus {
@@ -365,6 +367,7 @@ impl DaemonStatus {
                 current_sink_fallback,
                 active_window,
                 tracked_windows,
+                paused,
             }) => Self {
                 running: true,
                 error: (protocol != ipc::PROTOCOL_VERSION).then(|| {
@@ -382,6 +385,7 @@ impl DaemonStatus {
                 daemon_sink: current_sink,
                 active_window,
                 tracked_windows: Some(tracked_windows),
+                paused: Some(paused),
             },
             Ok(Response::Error { message }) => error(message),
             Ok(other) => error(format!("{:#}", unexpected_response(&other))),
@@ -401,6 +405,7 @@ impl DaemonStatus {
             "daemon_sink_fallback": self.daemon_sink_fallback,
             "active_window": self.active_window,
             "tracked_windows": self.tracked_windows,
+            "paused": self.paused,
         })
     }
 }
@@ -499,6 +504,13 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
         if let Some(version) = &daemon.version {
             crate::outln!("{} {}", "Version:".dim(), version);
         }
+        if daemon.paused == Some(true) {
+            crate::outln!(
+                "{} {}",
+                "Switching:".dim(),
+                "Paused (rules do not switch; resume with: pwsw resume)".warning()
+            );
+        }
         if daemon.error.is_some() {
             crate::outln!(
                 "  {}",
@@ -546,6 +558,50 @@ pub async fn shutdown() -> Result<()> {
             eyre::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
+    }
+}
+
+/// What [`pause`] asks the daemon for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseAction {
+    Pause,
+    Resume,
+    Toggle,
+}
+
+/// Pause, resume or toggle the daemon's rule-driven switching
+///
+/// # Errors
+/// Returns an error if no daemon is running, `IPC` communication fails, or the daemon
+/// does not support pausing (an older version: restart it).
+pub async fn pause(action: PauseAction) -> Result<()> {
+    if !ipc::is_daemon_running().await {
+        eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
+    }
+    let request = match action {
+        PauseAction::Pause => Request::Pause,
+        PauseAction::Resume => Request::Resume,
+        PauseAction::Toggle => Request::TogglePause,
+    };
+    match ipc::send_request(request).await? {
+        Response::PauseState { paused, changed } => {
+            crate::outln!("{}", pause_message(paused, changed));
+            Ok(())
+        }
+        Response::Error { message } => eyre::bail!("{message}"),
+        other => Err(unexpected_response(&other)),
+    }
+}
+
+/// The line `pause`/`resume`/`toggle-pause` print for the daemon's answer
+fn pause_message(paused: bool, changed: bool) -> crate::style::Painted<&'static str> {
+    match (paused, changed) {
+        (true, true) => {
+            "Paused: rules will not switch the audio output (resume with: pwsw resume)".warning()
+        }
+        (true, false) => "Already paused (resume with: pwsw resume)".warning(),
+        (false, true) => "Resumed: rules switch the audio output again".success(),
+        (false, false) => "Not paused: rules are switching the audio output".success(),
     }
 }
 

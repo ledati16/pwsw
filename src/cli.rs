@@ -28,6 +28,11 @@ DAEMON CONTROL:
   daemon --foreground  Start with logs visible (for debugging)
   shutdown             Stop the daemon
 
+PAUSING (requires running daemon):
+  pause               Stop rule-driven switching (manual switches still work)
+  resume              Resume it, switching at once if the rules want another sink
+  toggle-pause        Pause or resume
+
 QUERYING (requires running daemon):
   list-windows        Show all open windows (tracked vs untracked)
   test-rule PATTERN   Test regex against windows (checks app_id & title)
@@ -141,6 +146,22 @@ pub enum Command {
     /// Cycle to the previous configured sink (wraps around)
     PrevSink,
 
+    // --- Pause / resume (requires daemon) ---
+    /// Stop rule-driven switching until `resume` (requires daemon)
+    ///
+    /// Windows are still tracked and manual switches still work. The pause lasts until
+    /// `resume` or a daemon restart.
+    Pause,
+
+    /// Resume rule-driven switching (requires daemon)
+    ///
+    /// Switches at once if the rules want a different sink than the current one, also
+    /// over a manual choice.
+    Resume,
+
+    /// Pause when running, resume when paused (requires daemon)
+    TogglePause,
+    // --- end pause / resume ---
     /// Terminal UI for configuration and monitoring
     Tui,
 

@@ -77,6 +77,17 @@ the daemon switches less eagerly than before.
   fallback as such; `list-windows` and `test-rule` show a rule's fallbacks; `status
   --json` has `daemon.daemon_sink_fallback`. A plain string still works and is what
   single-sink rules are saved as.
+- **Pause / resume**: `pwsw pause`, `pwsw resume` and `pwsw toggle-pause` stop and
+  restart rule-driven switching. While paused the daemon keeps tracking windows and
+  reloading the config, and manual switches still work; resuming switches at once if the
+  rules want another sink than the current one. The pause is not kept across daemon
+  restarts. `pwsw status` shows it, `status --json` has `daemon.paused`, the systemd
+  status line ends in `(paused)`, and with `notify_manual` pausing and resuming are
+  notified.
+- **`switch_delay_ms` setting** (default 0, up to 5000): a rule-driven switch happens only
+  if the rules still want the same sink after this delay, so a splash screen or a
+  flickering window title no longer switches back and forth. Manual switches, retries
+  and the start-up switch are not delayed.
 - `pwsw init [--force]`: write the commented default config (`--force` keeps the old
   file as `config.toml.bak`).
 - `--config PATH` and the `PWSW_CONFIG` environment variable to use another config file.

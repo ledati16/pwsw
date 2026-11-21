@@ -26,6 +26,7 @@ pub(crate) mod fixtures {
                 notify_rules: true,
                 match_by_index: false,
                 log_level: "info".to_string(),
+                switch_delay_ms: 0,
             },
             sinks,
             rules,

@@ -724,6 +724,18 @@ fn cli_ipc_commands_report_missing_daemon() {
             &["test-rule", "^firefox$"][..],
             "Daemon is not running. Start it with: pwsw daemon",
         ),
+        (
+            &["pause"][..],
+            "Daemon is not running. Start it with: pwsw daemon",
+        ),
+        (
+            &["resume"][..],
+            "Daemon is not running. Start it with: pwsw daemon",
+        ),
+        (
+            &["toggle-pause"][..],
+            "Daemon is not running. Start it with: pwsw daemon",
+        ),
     ] {
         let output = run(sb.cmd().args(args));
         assert_exit(&output, 1);

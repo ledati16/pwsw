@@ -75,6 +75,10 @@ pub const RULE_REGEX_SIZE_LIMIT: usize = 1 << 20;
 /// Cache budget of the lazy DFA used when matching one rule regex.
 pub const RULE_REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
 
+/// Largest accepted `switch_delay_ms` (5 s): a longer settle delay would make the
+/// daemon look unresponsive
+pub const MAX_SWITCH_DELAY_MS: u32 = 5000;
+
 /// Compile a window rule pattern (`app_id`, title, or a `test-rule` pattern).
 ///
 /// This is the single place rule regexes are built: config loading, the TUI rule
@@ -177,6 +181,9 @@ pub struct Settings {
     pub notify_rules: bool,
     pub match_by_index: bool,
     pub log_level: String,
+    /// Settle delay for rule-driven switches in milliseconds (`0` = switch at once):
+    /// a change of the rules' answer is acted on only if it still holds this long
+    pub switch_delay_ms: u32,
 }
 
 impl Default for Settings {
@@ -189,6 +196,7 @@ impl Default for Settings {
             notify_rules: true,
             match_by_index: false,
             log_level: "info".to_string(),
+            switch_delay_ms: 0,
         }
     }
 }
@@ -308,6 +316,8 @@ struct SettingsFile {
     match_by_index: bool,
     #[serde(default = "default_log_level")]
     log_level: String,
+    #[serde(default)]
+    switch_delay_ms: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -353,6 +363,7 @@ impl Default for SettingsFile {
             notify_rules: s.notify_rules,
             match_by_index: s.match_by_index,
             log_level: s.log_level,
+            switch_delay_ms: s.switch_delay_ms,
         }
     }
 }
@@ -465,6 +476,7 @@ notify_manual = true       # Desktop notifications for manual switches
 notify_rules = true        # Desktop notifications for rule-triggered switches
 match_by_index = false     # Priority: false = recent window, true = rule order
 log_level = "info"         # error, warn, info, debug, trace
+switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle before switching
 
 # Audio sinks - add at least one with default = true before starting daemon
 # Find available sinks with: pwsw list-sinks
@@ -637,6 +649,7 @@ impl Config {
             notify_rules: config_file.settings.notify_rules,
             match_by_index: config_file.settings.match_by_index,
             log_level: config_file.settings.log_level,
+            switch_delay_ms: config_file.settings.switch_delay_ms,
         };
 
         let sinks: Vec<SinkConfig> = config_file
@@ -1350,6 +1363,13 @@ impl Config {
                 "Invalid log_level '{level}'. Must be: error, warn, info, debug, or trace"
             ),
         }
+        if self.settings.switch_delay_ms > MAX_SWITCH_DELAY_MS {
+            eyre::bail!(
+                "Invalid switch_delay_ms {}. Must be between 0 and {MAX_SWITCH_DELAY_MS} \
+                 (milliseconds)",
+                self.settings.switch_delay_ms
+            );
+        }
 
         for (i, sink) in self.sinks.iter().enumerate() {
             if sink.name.trim().is_empty() {
@@ -1588,6 +1608,11 @@ impl Config {
             "  {}: {}",
             "log_level".dim(),
             self.settings.log_level.as_str().technical()
+        );
+        crate::outln!(
+            "  {}: {}",
+            "switch_delay_ms".dim(),
+            self.settings.switch_delay_ms
         );
 
         crate::outln!(
@@ -1863,6 +1888,13 @@ fn apply_settings(doc: &mut DocumentMut, s: &Settings, write_all: bool) {
         s.log_level == d.log_level,
         w,
     );
+    sync_setting(
+        table,
+        "switch_delay_ms",
+        i64::from(s.switch_delay_ms),
+        s.switch_delay_ms == d.switch_delay_ms,
+        w,
+    );
 }
 
 /// Start the table at document `position` with a blank line (unless it already does),
@@ -2134,6 +2166,52 @@ mod tests {
                 "Log level '{level}' should be valid"
             );
         }
+    }
+
+    #[rstest]
+    #[case(0, true)]
+    #[case(300, true)]
+    #[case(MAX_SWITCH_DELAY_MS, true)]
+    #[case(MAX_SWITCH_DELAY_MS + 1, false)]
+    fn test_validate_switch_delay_range(#[case] delay: u32, #[case] valid: bool) {
+        let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
+        config.settings.switch_delay_ms = delay;
+        let result = config.validate();
+        assert_eq!(
+            result.is_ok(),
+            valid,
+            "switch_delay_ms = {delay}: {result:?}"
+        );
+        if let Err(e) = result {
+            assert!(e.to_string().contains("switch_delay_ms"), "{e}");
+        }
+    }
+
+    #[test]
+    fn test_switch_delay_loads_and_rejects_out_of_range() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "ok.toml",
+            &format!("[settings]\nswitch_delay_ms = 300\n{TWO_SINKS}"),
+        );
+        let config = Config::load_from_path(&path).expect("valid delay");
+        assert_eq!(config.settings.switch_delay_ms, 300);
+
+        let path = write(
+            &dir,
+            "big.toml",
+            &format!("[settings]\nswitch_delay_ms = 5001\n{TWO_SINKS}"),
+        );
+        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        assert!(err.contains("switch_delay_ms"), "{err}");
+
+        let path = write(
+            &dir,
+            "negative.toml",
+            &format!("[settings]\nswitch_delay_ms = -1\n{TWO_SINKS}"),
+        );
+        assert!(Config::load_from_path(&path).is_err());
     }
 
     #[test]

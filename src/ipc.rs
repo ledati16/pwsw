@@ -68,6 +68,13 @@ pub enum Request {
     GetManagerInfo,
     /// Gracefully shutdown the daemon
     Shutdown,
+    // --- Pause / resume (answered with [`Response::PauseState`]) ---
+    /// Stop rule-driven switching (windows are still tracked; manual switches work)
+    Pause,
+    /// Resume rule-driven switching, switching at once if the rules want another sink
+    Resume,
+    /// Pause when running, resume when paused
+    TogglePause,
 }
 
 /// Responses sent from daemon to CLI
@@ -93,6 +100,9 @@ pub enum Response {
         current_sink_fallback: bool,
         active_window: Option<String>,
         tracked_windows: usize,
+        /// Rule-driven switching is paused (`false` from daemons without pause support)
+        #[serde(default)]
+        paused: bool,
     },
     /// Generic success response
     Ok { message: String },
@@ -115,6 +125,13 @@ pub enum Response {
         desc: String,
         /// `PipeWire` node name that was made the default
         node_name: String,
+    },
+    /// Answer to [`Request::Pause`], [`Request::Resume`] and [`Request::TogglePause`]
+    PauseState {
+        /// Whether rule-driven switching is paused now
+        paused: bool,
+        /// Whether the request changed the state (`false`: it already was so)
+        changed: bool,
     },
 }
 
@@ -1328,6 +1345,7 @@ mod tests {
             current_sink_fallback: true,
             active_window: Some("firefox".to_string()),
             tracked_windows: 2,
+            paused: true,
         };
         let json = serde_json::to_string(&response).unwrap();
         let deserialized: Response = serde_json::from_str(&json).unwrap();
@@ -1339,9 +1357,11 @@ mod tests {
             current_sink_fallback,
             active_window,
             tracked_windows,
+            paused,
         } = deserialized
         {
             assert!(current_sink_fallback);
+            assert!(paused);
             assert_eq!(version, "0.3.1");
             assert_eq!(protocol, PROTOCOL_VERSION);
             assert_eq!(uptime_secs, 3600);
@@ -1361,7 +1381,31 @@ mod tests {
         assert!(matches!(response, Response::Status {
             protocol: 0,
             current_sink_fallback: false,
+            paused: false,
             ..
+        }));
+    }
+
+    #[test]
+    fn test_pause_requests_and_state_roundtrip() {
+        for request in [Request::Pause, Request::Resume, Request::TogglePause] {
+            let json = serde_json::to_string(&request).unwrap();
+            let back: Request = serde_json::from_str(&json).unwrap();
+            assert_eq!(format!("{back:?}"), format!("{request:?}"), "{json}");
+        }
+        let json = serde_json::to_string(&Response::PauseState {
+            paused: true,
+            changed: false,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"type":"PauseState","paused":true,"changed":false}"#
+        );
+        let back: Response = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Response::PauseState {
+            paused: true,
+            changed: false
         }));
     }
 

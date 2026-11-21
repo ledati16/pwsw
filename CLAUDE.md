@@ -61,6 +61,15 @@ that activation fails; when it settled for a fallback, the next window event or 
 (at most every `UPGRADE_CHECK_INTERVAL`, 2 s, never polled, never over a manual choice)
 submits an *upgrade* job that switches only if an earlier candidate is reachable.
 
+**Pause and settle delay.** `Pause`/`Resume`/`TogglePause` set an in-memory `paused`
+flag (a restart starts unpaused): windows, reloads and manual requests keep working, but
+no rule-driven job, retry or upgrade is submitted, and pausing drops pending retries and
+settle waits. Resume adopts the rules' current answer like a change (switches unless it
+is already served, ends a manual choice). With `switch_delay_ms` > 0 a change of the
+answer arms a `Settle` timer instead of submitting; it fires only if `last_desired` is
+still that list, another change re-arms it, a change back to what is served cancels it.
+Manual requests, retries, upgrades, startup and resume are never delayed.
+
 **Never await PipeWire in the `select!`.** The loop submits to the worker
 (`daemon/worker.rs`), which runs activations one at a time in `spawn_blocking`; results
 come back as another input. IPC, signals and window events must keep flowing during a

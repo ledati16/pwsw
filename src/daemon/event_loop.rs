@@ -25,6 +25,20 @@
 //! a higher-priority candidate is reachable by then, and otherwise touches nothing.
 //! There is no polling: a sink that comes back without any window event is picked up
 //! on the next one.
+//!
+//! With `switch_delay_ms` (the *settle delay*), a change of the rules' answer is not
+//! acted on at once: the switch is submitted only if the answer still holds when the
+//! delay has passed. Another change restarts the wait for the new answer, and a change
+//! back to the sink that is applied cancels it, so a splash screen or a title that
+//! flickers for a moment switches nothing. Manual requests, retries, upgrades and the
+//! startup activation are never delayed.
+//!
+//! *Pausing* (`pwsw pause`) stops rule-driven switching: windows are still tracked,
+//! reloads still apply, manual requests still work, but no rule-driven job is
+//! submitted (pending retries and settle waits are dropped). Resuming hands control
+//! back to the rules as if their answer had just changed: if it is not what is applied,
+//! pwsw switches at once (no settle delay), also over a manual choice. The pause state
+//! is kept in memory only; a restarted daemon starts unpaused.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,6 +94,19 @@ pub(crate) enum Command {
     },
     /// Shut down gracefully
     Shutdown,
+    /// Pause or resume rule-driven switching; answered with [`Response::PauseState`]
+    Pause {
+        request: PauseRequest,
+        reply: oneshot::Sender<Response>,
+    },
+}
+
+/// What a pause request asks for
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PauseRequest {
+    Pause,
+    Resume,
+    Toggle,
 }
 
 /// Read-only view of the daemon's state for `IPC` queries
@@ -102,6 +129,11 @@ pub(crate) struct Snapshot {
     /// Whether a manual choice currently holds
     #[cfg(test)]
     pub manual_override: bool,
+    /// Rule-driven switching is paused
+    pub paused: bool,
+    /// The candidates of a switch waiting for the settle delay
+    #[cfg(test)]
+    pub settling: Option<Vec<String>>,
 }
 
 /// Everything the loop listens to
@@ -174,6 +206,15 @@ struct Retry {
     notice: Option<RuleNotice>,
 }
 
+/// A rule-driven switch waiting for the settle delay (`switch_delay_ms`): submitted
+/// at `at` if the rules' answer is still `candidates` then
+#[derive(Debug)]
+struct Settle {
+    candidates: Vec<String>,
+    at: Instant,
+    notice: Option<RuleNotice>,
+}
+
 /// A rule-driven job replaced by a manual request before its result came in
 #[derive(Debug)]
 struct Superseded {
@@ -208,6 +249,10 @@ pub(crate) struct Daemon {
     superseded: Option<Superseded>,
     /// Last status line published
     status: Option<String>,
+    /// Rule-driven switching is paused (in memory only)
+    paused: bool,
+    /// A changed answer of the rules waiting for the settle delay
+    settle: Option<Settle>,
     next_generation: u64,
     submitted: Option<Submitted>,
     retry: Option<Retry>,
@@ -245,6 +290,8 @@ impl Daemon {
             stalled: false,
             superseded: None,
             status: None,
+            paused: false,
+            settle: None,
             next_generation: 0,
             submitted: None,
             retry: None,
@@ -264,6 +311,7 @@ impl Daemon {
 
         let result = loop {
             let retry_at = self.retry.as_ref().map(|r| r.at);
+            let settle_at = self.settle.as_ref().map(|s| s.at);
             tokio::select! {
                 event = inputs.windows.recv() => {
                     let Some(event) = event else {
@@ -281,6 +329,9 @@ impl Daemon {
                         let _ = reply.send(self.snapshot());
                     }
                     Command::Switch { request, reply } => self.on_manual(request, reply),
+                    Command::Pause { request, reply } => {
+                        let _ = reply.send(self.on_pause(request));
+                    }
                     Command::Shutdown => {
                         info!("Shutting down (IPC request)");
                         break Ok(());
@@ -295,6 +346,7 @@ impl Daemon {
                     self.reload().await;
                 }
                 () = sleep_until(retry_at), if retry_at.is_some() => self.on_retry_due(),
+                () = sleep_until(settle_at), if settle_at.is_some() => self.on_settle_due(),
                 Some(signal) = inputs.signals.recv() => match signal {
                     Signal::Hangup => {
                         info!("SIGHUP received, reloading config");
@@ -402,6 +454,13 @@ impl Daemon {
     /// Switch when the rules changed their mind (or a stalled target gets another try,
     /// or an applied fallback may be upgraded)
     fn reconcile(&mut self, departure: Option<&Departure>) {
+        if self.paused {
+            // Windows and config stay current; `resume` compares with them
+            if self.submitted.is_none() && self.applied.is_some() {
+                self.publish_status();
+            }
+            return;
+        }
         let names = self.state.desired().names();
         if self.last_desired.as_deref() != Some(names.as_slice()) {
             debug!(
@@ -411,20 +470,9 @@ impl Daemon {
                     .map_or_else(|| "(none)".to_string(), |d| d.join(", ")),
                 names.join(", ")
             );
-            self.last_desired = Some(names.clone());
-            self.manual_override = false;
-            self.retry = None;
-            self.stalled = false;
-            self.superseded = None;
-            self.retries = 0;
-            if !self.serves(&names) {
-                let notice = self.rule_notice(departure);
-                self.submit(names, notice);
+            let delay = self.switch_delay();
+            if self.adopt(names, departure, delay) {
                 return;
-            }
-            if self.submitted.is_none() {
-                // The applied sink is the new list's first choice
-                self.applied_fallback = false;
             }
         } else if self.stalled
             && !self.manual_override
@@ -458,10 +506,135 @@ impl Daemon {
         }
     }
 
+    /// The configured settle delay, `None` when rule-driven switches are immediate
+    fn switch_delay(&self) -> Option<Duration> {
+        match self.state.config().settings.switch_delay_ms {
+            0 => None,
+            ms => Some(Duration::from_millis(u64::from(ms))),
+        }
+    }
+
+    /// Take `names` as the rules' new answer (it changed, or `resume` hands control
+    /// back to the rules): what held for the old answer (manual choice, retries, a
+    /// settle wait) is dropped, and unless the default sink already is (or is about to
+    /// be) `names`' first choice, a switch is submitted, after `delay` if given
+    ///
+    /// Returns whether a job was submitted now.
+    fn adopt(
+        &mut self,
+        names: Vec<String>,
+        departure: Option<&Departure>,
+        delay: Option<Duration>,
+    ) -> bool {
+        self.last_desired = Some(names.clone());
+        self.manual_override = false;
+        self.retry = None;
+        self.stalled = false;
+        self.superseded = None;
+        self.retries = 0;
+        let settling = self.settle.take();
+        if self.serves(&names) {
+            if let Some(settle) = settling {
+                debug!(
+                    "Rules want the current sink again; not switching to {}",
+                    self.candidates_desc(&settle.candidates)
+                );
+            }
+            if self.submitted.is_none() {
+                // The applied sink is the new list's first choice
+                self.applied_fallback = false;
+            }
+            return false;
+        }
+        let notice = self.rule_notice(departure);
+        if let Some(delay) = delay {
+            debug!(
+                "Switching to {} in {} ms if the rules still want it then",
+                self.candidates_desc(&names),
+                delay.as_millis()
+            );
+            self.settle = Some(Settle {
+                candidates: names,
+                at: Instant::now() + delay,
+                notice,
+            });
+            return false;
+        }
+        self.submit(names, notice);
+        true
+    }
+
+    /// The settle delay passed: switch if the rules' answer is still the one that
+    /// started it (any change since replaced or cancelled the wait)
+    fn on_settle_due(&mut self) {
+        let Some(settle) = self.settle.take() else {
+            return;
+        };
+        if self.paused
+            || self.manual_override
+            || self.last_desired.as_ref() != Some(&settle.candidates)
+            || self.serves(&settle.candidates)
+        {
+            return;
+        }
+        self.submit(settle.candidates, settle.notice);
+    }
+
+    /// Pause or resume rule-driven switching
+    fn on_pause(&mut self, request: PauseRequest) -> Response {
+        let paused = match request {
+            PauseRequest::Pause => true,
+            PauseRequest::Resume => false,
+            PauseRequest::Toggle => !self.paused,
+        };
+        let changed = paused != self.paused;
+        if changed {
+            self.paused = paused;
+            if paused {
+                self.pause();
+            } else {
+                self.resume();
+            }
+        }
+        Response::PauseState {
+            paused: self.paused,
+            changed,
+        }
+    }
+
+    /// Stop rule-driven switching: pending retries and settle waits are dropped (a
+    /// job already handed to the worker still completes)
+    fn pause(&mut self) {
+        info!("Paused: no rule-driven switches until resumed (windows are still tracked)");
+        self.settle = None;
+        self.retry = None;
+        self.stalled = false;
+        self.superseded = None;
+        if self.state.config().settings.notify_manual {
+            self.notify_daemon("Switching Paused", "Rules will not switch the audio output");
+        }
+        self.publish_status();
+    }
+
+    /// Hand control back to the rules: switch at once if their current answer is not
+    /// what is applied (counted as a change of the rules' answer, so it also ends a
+    /// manual choice)
+    fn resume(&mut self) {
+        info!("Resumed: rule-driven switching is on again");
+        if self.state.config().settings.notify_manual {
+            self.notify_daemon("Switching Resumed", "Rules switch the audio output again");
+        }
+        let names = self.state.desired().names();
+        self.adopt(names, None, None);
+        self.publish_status();
+    }
+
     /// The applied fallback's rank, when it is time to look for a better candidate:
     /// nothing pending or held, and the last check is [`UPGRADE_CHECK_INTERVAL`] ago
     fn upgrade_due(&self) -> Option<usize> {
         if self.manual_override
+            || self.paused
+            || self.settle.is_some()
             || self.stalled
             || self.submitted.is_some()
             || self.retry.is_some()
@@ -723,6 +896,7 @@ impl Daemon {
             return;
         };
         if !self.manual_override
+            && !self.paused
             && self.submitted.is_none()
             && self.last_desired.as_ref() == Some(&superseded.candidates)
             && self.applied.as_deref() != superseded.candidates.first().map(String::as_str)
@@ -736,7 +910,8 @@ impl Daemon {
     }
 
     fn schedule_retry(&mut self, candidates: Vec<String>, notice: Option<RuleNotice>) {
-        if self.manual_override || self.last_desired.as_ref() != Some(&candidates) {
+        // Paused: `resume` switches again if the rules still want it
+        if self.manual_override || self.paused || self.last_desired.as_ref() != Some(&candidates) {
             return;
         }
         let what = self.candidates_desc(&candidates);
@@ -764,6 +939,7 @@ impl Daemon {
             return;
         };
         if self.manual_override
+            || self.paused
             || self.last_desired.as_ref() != Some(&retry.candidates)
             || self.serves(&retry.candidates)
         {
@@ -815,8 +991,14 @@ impl Daemon {
         };
         self.manual_override = true;
         // A rule job not yet settled is replaced (if queued) or may still fail (if
-        // running): remember it, so a manual request that switches nothing resumes it
-        if let Some(Submitted {
+        // running), and a switch waiting for the settle delay is newer still: remember
+        // it, so a manual request that switches nothing resumes it
+        if let Some(settle) = self.settle.take() {
+            self.superseded = Some(Superseded {
+                candidates: settle.candidates,
+                notice: settle.notice,
+            });
+        } else if let Some(Submitted {
             origin: Origin::Rule | Origin::Upgrade,
             candidates: Some(candidates),
             notice,
@@ -844,14 +1026,18 @@ impl Daemon {
 
     /// The status line for the sink pwsw believes is the default
     fn status_text(&self) -> String {
-        match self.applied.as_deref() {
+        let mut text = match self.applied.as_deref() {
             Some(name) => match self.state.config().sinks.iter().find(|s| s.name == name) {
                 Some(sink) if self.applied_fallback => format!("Sink: {} (fallback)", sink.desc),
                 Some(sink) => format!("Sink: {}", sink.desc),
                 None => format!("Sink: {name} (not in config)"),
             },
             None => "Sink: unknown".to_string(),
+        };
+        if self.paused {
+            text.push_str(" (paused)");
         }
+        text
     }
 
     /// Publish the status line (`STATUS=` for systemd) if it changed
@@ -908,6 +1094,9 @@ impl Daemon {
                 .collect(),
             #[cfg(test)]
             manual_override: self.manual_override,
+            paused: self.paused,
+            #[cfg(test)]
+            settling: self.settle.as_ref().map(|s| s.candidates.clone()),
         }
     }
 

@@ -1463,3 +1463,343 @@ async fn test_shutdown_command_and_signals_exit_cleanly() {
         .expect("loop task")
         .expect("clean exit");
 }
+
+// ----------------------------------------------------------------------------
+// Pause / resume
+// ----------------------------------------------------------------------------
+
+impl Harness {
+    async fn set_paused(&self, request: PauseRequest) -> Response {
+        let (reply, rx) = oneshot::channel();
+        self.command(Command::Pause { request, reply }).await;
+        within("pause reply", rx).await.expect("pause reply")
+    }
+
+    /// Pause and check the reply says so
+    async fn pause(&self) {
+        let response = self.set_paused(PauseRequest::Pause).await;
+        assert!(
+            matches!(response, Response::PauseState { paused: true, .. }),
+            "got {response:?}"
+        );
+    }
+
+    /// Resume and check the reply says so
+    async fn resume(&self) {
+        let response = self.set_paused(PauseRequest::Resume).await;
+        assert!(
+            matches!(response, Response::PauseState { paused: false, .. }),
+            "got {response:?}"
+        );
+    }
+}
+
+/// Paused: a window that changes the rules' answer switches nothing; resuming
+/// switches to the rules' answer at once
+#[tokio::test(start_paused = true)]
+async fn test_paused_rules_switch_nothing_until_resume() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.pause().await;
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_windows(1).await;
+    assert!(snapshot.paused);
+    assert_eq!(snapshot.desired, "headphones");
+    assert_eq!(snapshot.tracked_windows, 1, "windows are still tracked");
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(h.calls(), Vec::<String>::new());
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers (paused)")
+    );
+
+    h.resume().await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.paused);
+    assert_eq!(h.calls(), vec!["headphones"]);
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Headphones")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Manual switches still work while paused; resuming hands control back to the rules
+#[tokio::test(start_paused = true)]
+async fn test_manual_switch_works_while_paused() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.pause().await;
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "HDMI"),
+        "got {response:?}"
+    );
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: HDMI (paused)")
+    );
+
+    h.resume().await;
+    h.wait_applied("headphones").await;
+    assert_eq!(h.calls(), vec!["hdmi", "headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Resuming when the applied sink already is the rules' answer switches nothing,
+/// even when the answer changed (and changed back) during the pause
+#[tokio::test(start_paused = true)]
+async fn test_resume_when_already_correct_switches_nothing() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.pause().await;
+    h.open(1, "firefox").await;
+    h.close(1).await;
+    h.open(2, "zsh").await;
+    h.wait_windows(1).await;
+    h.resume().await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+    assert_eq!(h.calls(), Vec::<String>::new());
+
+    // Rules work as before afterwards
+    h.open(3, "steam").await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_pause_resume_and_toggle_replies() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let state = |paused, changed| format!("{:?}", Response::PauseState { paused, changed });
+    for (request, expected) in [
+        (PauseRequest::Resume, state(false, false)),
+        (PauseRequest::Toggle, state(true, true)),
+        (PauseRequest::Pause, state(true, false)),
+        (PauseRequest::Toggle, state(false, true)),
+        (PauseRequest::Pause, state(true, true)),
+        (PauseRequest::Resume, state(false, true)),
+    ] {
+        let response = h.set_paused(request).await;
+        assert_eq!(format!("{response:?}"), expected, "{request:?}");
+        let paused = matches!(response, Response::PauseState { paused: true, .. });
+        assert_eq!(h.snapshot().await.paused, paused);
+    }
+    // Pause and resume were notified (notify_manual is on); repeats were not
+    let summaries: Vec<String> = h.notices().into_iter().map(|n| n.summary).collect();
+    assert_eq!(summaries, vec![
+        "Switching Paused",
+        "Switching Resumed",
+        "Switching Paused",
+        "Switching Resumed"
+    ]);
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_pause_is_not_notified_without_notify_manual() {
+    let mut config = base_config();
+    config.settings.notify_manual = false;
+    let h = start(config, FakeSwitcher::default(), Some("speakers"));
+    h.pause().await;
+    h.resume().await;
+    let _ = h.snapshot().await;
+    assert_eq!(h.notices(), Vec::<Notice>::new());
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A pending retry is dropped by pausing; resuming tries again at once
+#[tokio::test(start_paused = true)]
+async fn test_pause_drops_pending_retry() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::failing("headphones", 1),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    h.wait_for("first attempt", |_, calls| calls.len() == 1)
+        .await;
+    h.pause().await;
+    tokio::time::sleep(RETRY_BACKOFF[0] + RETRY_BACKOFF[1] + Duration::from_secs(1)).await;
+    assert_eq!(h.calls(), vec!["headphones"], "no retry while paused");
+
+    h.resume().await;
+    h.wait_applied("headphones").await;
+    assert_eq!(h.calls(), vec!["headphones"; 2]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Over `IPC`: the pause requests answer with the new state, and `Status` reports it
+#[tokio::test]
+async fn test_pause_over_ipc_and_status_field() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let status = serde_json::to_vec(&Request::Status).expect("serialize");
+    let paused_in_status = |response: Response| match response {
+        Response::Status { paused, .. } => paused,
+        other => panic!("expected a status reply, got {other:?}"),
+    };
+    assert!(!paused_in_status(raw_ipc_exchange(&h, &status).await));
+
+    for (request, paused) in [
+        (Request::Pause, true),
+        (Request::TogglePause, false),
+        (Request::TogglePause, true),
+    ] {
+        let body = serde_json::to_vec(&request).expect("serialize");
+        let response = raw_ipc_exchange(&h, &body).await;
+        assert!(
+            matches!(response, Response::PauseState { paused: p, changed: true } if p == paused),
+            "{request:?}: got {response:?}"
+        );
+        assert_eq!(
+            paused_in_status(raw_ipc_exchange(&h, &status).await),
+            paused
+        );
+    }
+    let body = serde_json::to_vec(&Request::Resume).expect("serialize");
+    let response = raw_ipc_exchange(&h, &body).await;
+    assert!(
+        matches!(response, Response::PauseState {
+            paused: false,
+            changed: true
+        }),
+        "got {response:?}"
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+// ----------------------------------------------------------------------------
+// Settle delay (`switch_delay_ms`)
+// ----------------------------------------------------------------------------
+
+const SETTLE: Duration = Duration::from_millis(300);
+
+/// `base_config` with a 300 ms settle delay
+fn settle_config() -> Config {
+    let mut config = base_config();
+    config.settings.switch_delay_ms = 300;
+    config
+}
+
+/// A → B → A within the delay: no switch at all
+#[tokio::test(start_paused = true)]
+async fn test_settle_flicker_switches_nothing() {
+    let h = start(settle_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.settling, Some(names(&["headphones"])));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.close(1).await;
+    let snapshot = h.wait_windows(0).await;
+    assert_eq!(
+        snapshot.settling, None,
+        "the change back cancelled the switch"
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(h.calls(), Vec::<String>::new());
+    assert_eq!(h.snapshot().await.applied.as_deref(), Some("speakers"));
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A → B held for the delay: switches once the delay has passed
+#[tokio::test(start_paused = true)]
+async fn test_settle_held_change_switches_after_delay() {
+    let h = start(settle_config(), FakeSwitcher::default(), Some("speakers"));
+    let t0 = Instant::now();
+    h.open(1, "firefox").await;
+    h.wait_windows(1).await;
+    tokio::time::sleep(Duration::from_millis(290)).await;
+    assert_eq!(h.calls(), Vec::<String>::new(), "not before the delay");
+    h.wait_applied("headphones").await;
+    assert!(t0.elapsed() >= SETTLE, "waited {:?}", t0.elapsed());
+    assert_eq!(h.calls(), vec!["headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// B → C during the wait: only C switches, a full delay after the last change
+#[tokio::test(start_paused = true)]
+async fn test_settle_restarts_on_further_change() {
+    let h = start(settle_config(), FakeSwitcher::default(), Some("speakers"));
+    let t0 = Instant::now();
+    h.open(1, "firefox").await;
+    h.wait_windows(1).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let changed_at = Instant::now();
+    h.open(2, "steam").await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.settling, Some(names(&["hdmi"])));
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(h.calls(), Vec::<String>::new(), "B never switched");
+    h.wait_applied("hdmi").await;
+    assert!(
+        changed_at.elapsed() >= SETTLE,
+        "switched {:?} after the last change",
+        changed_at.elapsed()
+    );
+    assert!(t0.elapsed() >= Duration::from_millis(500));
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Delay 0 (the default): rule-driven switches are submitted at once
+#[tokio::test(start_paused = true)]
+async fn test_no_settle_delay_switches_immediately() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let t0 = Instant::now();
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.settling, None);
+    h.wait_applied("headphones").await;
+    assert!(t0.elapsed() < SETTLE, "took {:?}", t0.elapsed());
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Manual requests are not delayed, and one made during the wait holds
+#[tokio::test(start_paused = true)]
+async fn test_settle_manual_switch_is_immediate_and_holds() {
+    let h = start(settle_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_windows(1).await;
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "HDMI"),
+        "got {response:?}"
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert_eq!(snapshot.settling, None);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Startup activation and resume are not delayed; pausing cancels a pending wait
+#[tokio::test(start_paused = true)]
+async fn test_settle_not_applied_to_startup_and_resume() {
+    let mut config = settle_config();
+    config.settings.default_on_startup = true;
+    let h = start(config, FakeSwitcher::default(), Some("hdmi"));
+    let t0 = Instant::now();
+    h.wait_applied("speakers").await;
+    assert!(t0.elapsed() < SETTLE, "startup took {:?}", t0.elapsed());
+
+    h.open(1, "firefox").await;
+    h.wait_windows(1).await;
+    h.pause().await;
+    assert_eq!(
+        h.snapshot().await.settling,
+        None,
+        "pausing cancels the wait"
+    );
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(h.calls(), vec!["speakers"]);
+
+    let t1 = Instant::now();
+    h.resume().await;
+    h.wait_applied("headphones").await;
+    assert!(t1.elapsed() < SETTLE, "resume took {:?}", t1.elapsed());
+    h.stop().await.expect("clean shutdown");
+}

@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
-use super::event_loop::{Command, ManualSwitch, Snapshot};
+use super::event_loop::{Command, ManualSwitch, PauseRequest, Snapshot};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::{self, IpcServer, Request, Response, WindowInfo};
 
@@ -127,6 +127,18 @@ async fn switch(commands: &mpsc::Sender<Command>, request: ManualSwitch) -> Resp
     }
 }
 
+async fn set_paused(commands: &mpsc::Sender<Command>, request: PauseRequest) -> Response {
+    let (reply, rx) = oneshot::channel();
+    if commands
+        .send(Command::Pause { request, reply })
+        .await
+        .is_err()
+    {
+        return shutting_down();
+    }
+    rx.await.unwrap_or_else(|_| shutting_down())
+}
+
 async fn respond(
     request: Request,
     commands: &mpsc::Sender<Command>,
@@ -139,6 +151,9 @@ async fn respond(
         Request::SetSink { sink } => switch(commands, ManualSwitch::Set(sink)).await,
         Request::NextSink => switch(commands, ManualSwitch::Next).await,
         Request::PrevSink => switch(commands, ManualSwitch::Prev).await,
+        Request::Pause => set_paused(commands, PauseRequest::Pause).await,
+        Request::Resume => set_paused(commands, PauseRequest::Resume).await,
+        Request::TogglePause => set_paused(commands, PauseRequest::Toggle).await,
         // Answered (before shutting down) by `handle_connection`
         Request::Shutdown => Response::Ok {
             message: "Daemon shutting down...".to_string(),
@@ -178,6 +193,7 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
         current_sink,
         active_window: snapshot.active_window.clone(),
         tracked_windows: snapshot.tracked_windows,
+        paused: snapshot.paused,
     }
 }
 

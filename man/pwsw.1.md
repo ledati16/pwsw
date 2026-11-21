@@ -22,7 +22,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
     With **-f**/**--foreground** it runs in the foreground instead (useful for systemd or debugging); logs then also go to stderr.
 
 **status** [*--json*]
-:   Show the current audio output (queried from PipeWire directly) and the daemon's status: uptime, version, active rule and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
+:   Show the current audio output (queried from PipeWire directly) and the daemon's status: uptime, version, whether rule-driven switching is paused, active rule and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
 
     With **--json**, a single JSON document is always printed (exit status 0), even when PipeWire or the daemon cannot be reached; see **STATUS JSON**.
 
@@ -53,6 +53,15 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 **prev-sink**
 :   Like **next-sink**, in the other direction.
 
+**pause**
+:   Stop rule-driven switching. The daemon keeps tracking windows and applying configuration changes, and manual switches (**set-sink**, **next-sink**, **prev-sink**) still work, but no rule switches the sink until **resume**. Pending retries and settle waits (*switch_delay_ms*) are dropped. The pause is kept in memory only: a restarted daemon starts unpaused. Requires a running daemon; under systemd the status line ends in *(paused)*.
+
+**resume**
+:   Resume rule-driven switching. This counts as a change of the rules' answer: if the sink the rules want now is not the current one, the daemon switches at once (without the settle delay), also over a manual choice. Requires a running daemon.
+
+**toggle-pause**
+:   **pause** when running, **resume** when paused (e.g. for a key binding). Requires a running daemon.
+
 **shutdown**
 :   Gracefully stop the running daemon.
 
@@ -78,7 +87,8 @@ The daemon watches its configuration file and applies changes automatically when
     "daemon_sink": "..." | null,
     "daemon_sink_fallback": true | false | null,
     "active_window": "..." | null,
-    "tracked_windows": 2 | null
+    "tracked_windows": 2 | null,
+    "paused": true | false | null
   },
   "pipewire": {
     "current_sink": { "name": "...", "description": "..." } | null,
@@ -88,7 +98,7 @@ The daemon watches its configuration file and applies changes automatically when
 }
 ```
 
-*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
+*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *daemon.paused* is true while rule-driven switching is paused (**pwsw pause**), *null* when no daemon status could be read. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
 
 ## COMPATIBILITY
 **pwsw** relies on standard Wayland protocols to monitor windows.

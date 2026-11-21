@@ -163,6 +163,11 @@ async fn run(args: Args) -> Result<ExitCode> {
             success(commands::test_rule(&pattern, json).await)
         }
 
+        // Pause / resume (require daemon)
+        Some(Command::Pause) => success(commands::pause(commands::PauseAction::Pause).await),
+        Some(Command::Resume) => success(commands::pause(commands::PauseAction::Resume).await),
+        Some(Command::TogglePause) => success(commands::pause(commands::PauseAction::Toggle).await),
+
         // Local commands (no daemon needed)
         Some(Command::ListSinks { json }) => {
             init_logging();

@@ -133,6 +133,7 @@ creates the config file for you.
 | `pwsw init [--force]` | Write the commented default config (`--force` keeps `config.toml.bak`) | not needed |
 | `pwsw set-sink SINK` | Switch to a sink by description or node name | optional |
 | `pwsw next-sink` / `prev-sink` | Cycle through configured sinks, skipping unavailable ones | optional |
+| `pwsw pause` / `resume` / `toggle-pause` | Stop or restart rule-driven switching (manual switches keep working) | required |
 | `pwsw tui` | Terminal UI | optional |
 | `pwsw completions SHELL` | Completion script for bash, zsh, fish, elvish, powershell | - |
 
@@ -143,6 +144,10 @@ Manual switches go through the daemon when it runs (its rules then respect the c
 otherwise they switch PipeWire directly, so they work well as compositor key bindings.
 With `set_smart_toggle`, `set-sink` on the sink that is already active switches back to
 the default sink.
+
+`pwsw pause` stops the rules from switching (say, for a call on a sink of your choice)
+until `pwsw resume`; the daemon keeps tracking windows meanwhile, and resuming switches
+at once if the rules want another sink. The pause is not kept across daemon restarts.
 
 `status --json` always prints one JSON document and exits 0, with errors reported inside
 it (schema in `man pwsw`). That makes it safe for status bars.
@@ -169,6 +174,7 @@ notify_manual = true       # notifications for manual switches and daemon events
 notify_rules = true        # notifications for rule-driven switches
 match_by_index = false     # false: most recent window wins; true: first rule wins
 log_level = "info"         # error, warn, info, debug, trace
+switch_delay_ms = 0        # switch only once the rules' answer held this long (0-5000 ms)
 
 [[sinks]]
 name = "alsa_output.pci-0000_0c_00.4.iec958-stereo"   # node name from `pwsw list-sinks`

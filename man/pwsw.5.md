@@ -35,6 +35,9 @@ The **[settings]** section controls global daemon behavior. The section and ever
 **log_level** (string, default: "info")
 :   Verbosity of the daemon log. One of `error`, `warn`, `info`, `debug`, `trace`. Applied on reload without a restart; the **RUST_LOG** environment variable overrides it.
 
+**switch_delay_ms** (integer, default: 0)
+:   Settle delay for rule-driven switches, in milliseconds (0 to 5000). With 0 the daemon switches as soon as the sink its rules want changes. With a positive value it waits this long and switches only if the rules still want the same sink then: another change restarts the wait, and a change back to the current sink cancels the switch. Use it when a window matches only for a moment, such as a splash screen or a launcher, or when an application's title flickers between values that match different rules. Manual switches, retries of failed switches, the start-up switch (*default_on_startup*) and **pwsw resume** are never delayed.
+
 ## SINKS
 The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
 
