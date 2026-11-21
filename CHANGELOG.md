@@ -5,7 +5,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 project uses [Semantic Versioning](https://semver.org/) (pre-1.0: minor versions may
 contain breaking changes).
 
-## [0.7.0] - 2026-11-20
+## [0.7.0] - 2026-11-21
 
 A full overhaul focused on correctness, safety and predictable behaviour, plus
 microphone switching, fallback sinks, "audio follows the screen" rules, pause/resume,
