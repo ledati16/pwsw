@@ -144,7 +144,7 @@ creates the config file for you.
 | `pwsw shutdown` | Stop the daemon | required |
 | `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then input devices (sources) | not needed |
 | `pwsw list-windows [--json]` | Open windows, tracked (matching a rule) or not | required |
-| `pwsw test-rule PATTERN [--json]` | Which windows a regex matches (`app_id` or title) | required |
+| `pwsw test-rule [PATTERN] [--output REGEX] [--json]` | Which windows a regex matches (`app_id` or title, and/or monitor) | required |
 | `pwsw validate` | Check the config file (never creates one) | not needed |
 | `pwsw doctor` | Check the whole setup and say what to fix (read-only) | optional |
 | `pwsw init [--force]` | Write the commented default config (`--force` keeps `config.toml.bak`) | not needed |

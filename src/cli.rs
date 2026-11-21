@@ -130,8 +130,13 @@ pub enum Command {
 
     /// Test a regex against all open windows' `app_id` and title (requires daemon)
     TestRule {
-        /// Regex pattern to test
-        pattern: String,
+        /// Regex pattern to test against `app_id` and title
+        #[arg(required_unless_present = "output")]
+        pattern: Option<String>,
+
+        /// Also (or only) require a monitor matching this regex, like a rule's `output`
+        #[arg(long, value_name = "REGEX")]
+        output: Option<String>,
 
         /// Output in `JSON` format
         #[arg(long)]

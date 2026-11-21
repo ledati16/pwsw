@@ -100,8 +100,10 @@ the daemon switches less eagerly than before.
   the first `output` rules to a running daemon that uses `ext` needs a restart (it logs
   a warning). `list-windows` shows each window's monitors (`outputs`/`minimized` in the
   JSON), `status` names the compositor protocol (`daemon.backend`,
-  `daemon.monitor_info` in `status --json`), `validate` notes the `wlr` requirement and
-  `pwsw doctor` reports whether monitor rules are available. The TUI keeps a rule's
+  `daemon.monitor_info` in `status --json`), `validate` notes the `wlr` requirement,
+  `pwsw test-rule --output REGEX` tests an `output` condition against open windows
+  (alone or with an `app_id`/title pattern) and `pwsw doctor` reports whether monitor
+  rules are available. The TUI keeps a rule's
   `output` when the rule is edited (it does not edit it yet).
 - **Microphone (source) switching**: an optional `[[sources]]` list (same keys as
   `[[sinks]]`, exactly one `default`) and a rule key `source = "Headset Mic"` (or a
@@ -150,6 +152,8 @@ the daemon switches less eagerly than before.
   file that changed on disk since it was loaded.
 - Hot reload follows symlinked configs (stow, chezmoi) and `SIGHUP` reloads; `log_level`
   changes apply without a restart.
+- Rule log lines name the window: `Rule matched: window 12 'kitty' "~/src" → Headphones`
+  (title shortened), so lines for several windows of one app can be told apart.
 - `pwsw --version` includes the git commit (`0.7.0+abc1234`, `-dirty` for local changes).
 - IPC protocol version: `pwsw status` reports a daemon that needs a restart after an
   upgrade, and an old daemon answers unknown requests with a restart hint.

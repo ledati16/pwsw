@@ -80,7 +80,6 @@ mandown = "1"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["test-util"] }   # paused clock for daemon loop and TUI worker tests
 rustix = { version = "1", default-features = false, features = ["net"] }   # sockets that never listened (IPC tests)
-rstest = "0.28"
 test-case = "3"
 wayland-server = "0.31"
 wayland-protocols = { version = "0.32", features = ["server", "staging"] }

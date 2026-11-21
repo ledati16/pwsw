@@ -270,8 +270,8 @@ captured child output. `get_app_icon` accepts only plain icon names.
   clock (`test-util`); poll with a deadline when watching the file system. Fakes
   (`AudioBackend`, `SinkSwitcher`) and the mock compositor replace real services: no test
   may depend on a running PipeWire, compositor, D-Bus or daemon.
-- Prefer `rstest`/`test-case` parameterisation, `pretty_assertions`, and
-  `test_utils::fixtures`. Tests needing `pub(crate)` go in `src/<module>/tests/`,
+- Prefer `test-case` parameterisation (`#[test_case(a, b ; "name")]`),
+  `pretty_assertions`, and `test_utils::fixtures`. Tests needing `pub(crate)` go in `src/<module>/tests/`,
   public-API tests in `tests/`.
 
 ## Workflow

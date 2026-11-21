@@ -19,7 +19,7 @@ use pwsw::compositor::{
     Backend, Capabilities, ProtocolPreference, WindowEvent, spawn_compositor_thread_on,
     spawn_compositor_thread_on_with_preference,
 };
-use rstest::rstest;
+use test_case::test_case;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
 use wayland_protocols::ext::foreign_toplevel_list::v1::server::ext_foreign_toplevel_handle_v1::{
@@ -871,10 +871,9 @@ fn expect_channel_closed(rx: &mut Receiver<WindowEvent>) {
 
 // --- Tests ---
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_backend_lifecycle_and_handle_destroy(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_backend_lifecycle_and_handle_destroy(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -920,10 +919,9 @@ fn test_priority_selection_binds_only_ext() {
     mock.stop();
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_concurrent_windows(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_concurrent_windows(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -946,10 +944,9 @@ fn test_concurrent_windows(#[case] mode: ProtocolMode) {
     mock.stop();
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_batched_updates_emit_one_changed(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_batched_updates_emit_one_changed(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -974,10 +971,9 @@ fn test_batched_updates_emit_one_changed(#[case] mode: ProtocolMode) {
     mock.stop();
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_state_only_done_emits_nothing(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_state_only_done_emits_nothing(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -997,10 +993,9 @@ fn test_state_only_done_emits_nothing(#[case] mode: ProtocolMode) {
 
 /// Chosen behaviour: a window closed before its first `done` is never reported (neither
 /// `Opened` nor `Closed`), but its handle is still destroyed.
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_closed_before_first_done_is_silent(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_closed_before_first_done_is_silent(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -1021,10 +1016,9 @@ fn test_closed_before_first_done_is_silent(#[case] mode: ProtocolMode) {
     mock.stop();
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_finished_closes_channel(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_finished_closes_channel(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -1037,10 +1031,9 @@ fn test_finished_closes_channel(#[case] mode: ProtocolMode) {
     mock.stop();
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_compositor_disconnect_closes_channel(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_compositor_disconnect_closes_channel(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -1052,10 +1045,9 @@ fn test_compositor_disconnect_closes_channel(#[case] mode: ProtocolMode) {
     expect_channel_closed(&mut rx);
 }
 
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_ids_unique_when_protocol_ids_are_reused(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_ids_unique_when_protocol_ids_are_reused(mode: ProtocolMode) {
     let mut mock = MockCompositor::new(mode);
     let mut rx = mock.spawn_client(mode);
 
@@ -1096,10 +1088,9 @@ fn test_ids_unique_when_protocol_ids_are_reused(#[case] mode: ProtocolMode) {
 
 /// A burst of updates while the consumer is not reading must not stall the Wayland
 /// thread, and the consumer must still end up with each window's final state.
-#[rstest]
-#[case::wlr(ProtocolMode::Wlr)]
-#[case::ext(ProtocolMode::Ext)]
-fn test_burst_with_slow_consumer(#[case] mode: ProtocolMode) {
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_burst_with_slow_consumer(mode: ProtocolMode) {
     const ROUNDS: u32 = 1000;
     let windows = [1u32, 2, 3];
 

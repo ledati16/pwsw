@@ -880,84 +880,110 @@ fn print_sources(tracked: &ipc::TrackedInfo, indent: &str) {
     );
 }
 
-/// Test a regex pattern against current windows
+/// Test a regex pattern (against `app_id` and title) and/or an `output` regex (against
+/// the monitors a window is on, as a rule's `output` condition) against current windows
 ///
 /// # Errors
-/// Returns an error if the regex is invalid, no daemon is running, or IPC fails.
-pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
+/// Returns an error if a regex is invalid, no daemon is running, or IPC fails.
+pub async fn test_rule(
+    pattern: Option<&str>,
+    output: Option<&str>,
+    json_output: bool,
+) -> Result<()> {
+    let output_regex = output
+        .map(crate::config::compile_rule_regex)
+        .transpose()
+        .map_err(|e| eyre::eyre!("Invalid output regex: {e}"))?;
     if !ipc::is_daemon_running().await {
         eyre::bail!("Daemon is not running. Start it with: pwsw daemon");
     }
 
-    let response = ipc::send_request(Request::TestRule {
-        pattern: pattern.to_string(),
-    })
-    .await?;
+    let request = match pattern {
+        Some(pattern) => Request::TestRule {
+            pattern: pattern.to_string(),
+        },
+        None => Request::ListWindows,
+    };
+    let (pattern, mut matches) = match ipc::send_request(request).await? {
+        Response::RuleMatches { pattern, matches } => (Some(pattern), matches),
+        Response::Windows { windows } => (None, windows),
+        Response::Error { message } => eyre::bail!("{message}"),
+        other => return Err(unexpected_response(&other)),
+    };
+    if let Some(regex) = &output_regex {
+        // Same semantics as `Rule::matches`: never a minimized or unplaced window
+        matches.retain(|w| !w.minimized && w.outputs.iter().any(|o| regex.is_match(o)));
+    }
 
-    match response {
-        Response::RuleMatches { pattern, matches } => {
-            if json_output {
+    if json_output {
+        crate::outln!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "pattern": pattern,
+                "output": output,
+                "matches": matches,
+            }))?
+        );
+    } else {
+        let heading = match (&pattern, output) {
+            (Some(p), Some(o)) => format!("{p} on output {o}"),
+            (Some(p), None) => p.clone(),
+            (None, o) => format!("output {}", o.unwrap_or_default()),
+        };
+        crate::outln!("Testing pattern: {}", heading.as_str().technical());
+        crate::outln!("{}", "=".repeat(16 + heading.chars().count()));
+        if matches.is_empty() {
+            crate::outln!("{}", "No matches found.".dim());
+        } else {
+            crate::outln!(
+                "{} ({}):",
+                "Matches".header(),
+                matches.len().to_string().technical()
+            );
+            for (i, window) in matches.iter().enumerate() {
+                let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
                 crate::outln!(
-                    "{}",
-                    serde_json::to_string_pretty(&serde_json::json!({
-                        "pattern": pattern,
-                        "matches": matches,
-                    }))?
-                );
-            } else {
-                let pattern_len = pattern.len();
-                crate::outln!("Testing pattern: {}", pattern.technical());
-                crate::outln!("{}", "=".repeat(16 + pattern_len));
-                if matches.is_empty() {
-                    crate::outln!("{}", "No matches found.".dim());
-                } else {
-                    crate::outln!(
-                        "{} ({}):",
-                        "Matches".header(),
-                        matches.len().to_string().technical()
-                    );
-                    for (i, window) in matches.iter().enumerate() {
-                        let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
-                        crate::outln!(
-                            "{}. {}: {}{}",
-                            (i + 1).to_string().dim(),
-                            "app_id".dim(),
-                            window.app_id,
-                            if matched_on == "app_id" || matched_on == "both" {
-                                format!(" {}", "✓".success())
-                            } else {
-                                String::new()
-                            }
-                        );
-                        crate::outln!(
-                            "   {}: {}{}",
-                            "title".dim(),
-                            window.title,
-                            if matched_on == "title" || matched_on == "both" {
-                                format!(" {}", "✓".success())
-                            } else {
-                                String::new()
-                            }
-                        );
-                        if let Some(tracked) = &window.tracked {
-                            crate::outln!(
-                                "   {}: {}",
-                                "current rule's sink".dim(),
-                                tracked.sink_desc.as_str().bold()
-                            );
-                            print_fallbacks(tracked, "   ");
-                            print_sources(tracked, "   ");
-                        }
+                    "{}. {}: {}{}",
+                    (i + 1).to_string().dim(),
+                    "app_id".dim(),
+                    window.app_id,
+                    if matched_on == "app_id" || matched_on == "both" {
+                        format!(" {}", "✓".success())
+                    } else {
+                        String::new()
                     }
+                );
+                crate::outln!(
+                    "   {}: {}{}",
+                    "title".dim(),
+                    window.title,
+                    if matched_on == "title" || matched_on == "both" {
+                        format!(" {}", "✓".success())
+                    } else {
+                        String::new()
+                    }
+                );
+                if output.is_some() {
+                    crate::outln!(
+                        "   {}: {} {}",
+                        "monitor".dim(),
+                        window.outputs.join(", "),
+                        "✓".success()
+                    );
+                }
+                if let Some(tracked) = &window.tracked {
+                    crate::outln!(
+                        "   {}: {}",
+                        "current rule's sink".dim(),
+                        tracked.sink_desc.as_str().bold()
+                    );
+                    print_fallbacks(tracked, "   ");
+                    print_sources(tracked, "   ");
                 }
             }
-            Ok(())
         }
-        Response::Error { message } => {
-            eyre::bail!("{message}");
-        }
-        other => Err(unexpected_response(&other)),
     }
+    Ok(())
 }
 
 #[cfg(test)]

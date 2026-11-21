@@ -743,6 +743,25 @@ fn cli_ipc_commands_report_missing_daemon() {
     }
 }
 
+/// `test-rule` needs a pattern or `--output`, and rejects a bad `--output` regex before
+/// asking the daemon
+#[test]
+fn cli_test_rule_checks_its_arguments() {
+    let sb = Sandbox::new();
+    let output = run(sb.cmd().arg("test-rule"));
+    assert_exit(&output, 2);
+    assert_stderr_contains(&output, "<PATTERN>");
+
+    let output = run(sb.cmd().args(["test-rule", "--output", "(HDMI"]));
+    assert_exit(&output, 1);
+    assert_stderr_contains(&output, "Invalid output regex");
+
+    let output = run(sb.cmd().args(["test-rule", "--output", "^HDMI-"]));
+    assert_exit(&output, 1);
+    assert_stderr_contains(&output, "Daemon is not running");
+    sb.assert_default_locations_untouched();
+}
+
 #[test]
 fn cli_status_reports_missing_pipewire_tools() {
     let sb = Sandbox::new();

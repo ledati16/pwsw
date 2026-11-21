@@ -39,8 +39,8 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 **list-windows** [*--json*]
 :   List all open windows the daemon sees, split into tracked (matching a rule, with the sink they selected and its fallback sinks, if any, and the rule's sources) and untracked ones. A *monitor* line shows the connector names of the monitors a window is on (`HDMI-A-1, DP-1`) and *(minimized)*, the names **output** rules match (see **pwsw**(5)); it is missing when the daemon does not know (with the **ext** protocol it never does). In the JSON output each window has *outputs* (an array, empty when unknown) and *minimized*, and a tracked window's *tracked.sources* lists the rule's sources (first choice first), omitted when the rule has none. Requires a running daemon.
 
-**test-rule** *PATTERN* [*--json*]
-:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field; for a window that currently matches a rule, also that rule's sinks (with fallbacks) and sources. Requires a running daemon. See **pwsw**(5) for details on regex syntax.
+**test-rule** [*PATTERN*] [*--output* *REGEX*] [*--json*]
+:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field; for a window that currently matches a rule, also that rule's sinks (with fallbacks) and sources. With *--output*, a window must also be on a monitor whose connector name matches *REGEX* and not be minimized, exactly like a rule's **output** condition (so it never matches with the **ext** protocol, which reports no monitors); *PATTERN* may then be left out to test the output condition alone. Requires a running daemon. See **pwsw**(5) for details on regex syntax.
 
 **validate**
 :   Validate the configuration file syntax and sink references. Reports a missing file (it does not create one). When rules use **output**, it adds a note that they need a compositor with **wlr-foreign-toplevel-management** (it does not check the compositor; **pwsw doctor** does).

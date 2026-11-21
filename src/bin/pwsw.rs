@@ -163,9 +163,11 @@ async fn run(args: Args) -> Result<ExitCode> {
 
         Some(Command::ListWindows { json }) => success(commands::list_windows(json).await),
 
-        Some(Command::TestRule { pattern, json }) => {
-            success(commands::test_rule(&pattern, json).await)
-        }
+        Some(Command::TestRule {
+            pattern,
+            output,
+            json,
+        }) => success(commands::test_rule(pattern.as_deref(), output.as_deref(), json).await),
 
         // Pause / resume (require daemon)
         Some(Command::Pause) => success(commands::pause(commands::PauseAction::Pause).await),

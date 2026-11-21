@@ -580,6 +580,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use pretty_assertions::assert_eq;
+    use test_case::test_case;
 
     use super::*;
     use crate::pipewire::model::Node;
@@ -1112,18 +1113,17 @@ mod tests {
         );
     }
 
-    #[rstest::rstest]
-    #[case::unset(None, None, 150, 1_500)]
-    #[case::custom(Some("200"), Some("10"), 200, 2_000)]
-    #[case::total_capped(Some("1000"), Some("100"), 1_000, 5_000)]
-    #[case::extreme(Some("999999999"), Some("999999999"), 1_000, 5_000)]
-    #[case::invalid(Some("x"), Some("-1"), 150, 1_500)]
-    #[case::tiny(Some("0"), Some("0"), 10, 10)]
+    #[test_case(None, None, 150, 1_500 ; "unset")]
+    #[test_case(Some("200"), Some("10"), 200, 2_000 ; "custom")]
+    #[test_case(Some("1000"), Some("100"), 1_000, 5_000 ; "total_capped")]
+    #[test_case(Some("999999999"), Some("999999999"), 1_000, 5_000 ; "extreme")]
+    #[test_case(Some("x"), Some("-1"), 150, 1_500 ; "invalid")]
+    #[test_case(Some("0"), Some("0"), 10, 10 ; "tiny")]
     fn test_wait_policy_from_values(
-        #[case] delay: Option<&str>,
-        #[case] retries: Option<&str>,
-        #[case] interval_ms: u64,
-        #[case] total_ms: u64,
+        delay: Option<&str>,
+        retries: Option<&str>,
+        interval_ms: u64,
+        total_ms: u64,
     ) {
         assert_eq!(WaitPolicy::from_values(delay, retries), WaitPolicy {
             poll_interval: Duration::from_millis(interval_ms),

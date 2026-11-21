@@ -2596,7 +2596,7 @@ fn rebuild_array<T>(
 
 #[cfg(test)]
 mod tests {
-    use rstest::rstest;
+    use test_case::test_case;
 
     use super::*;
     use crate::test_utils::fixtures::{
@@ -2627,83 +2627,82 @@ mod tests {
     }
 
     /// Parameterized test for validation rejection cases
-    #[rstest]
-    #[case("sinks_but_no_default",
+    #[test_case("sinks_but_no_default",
            vec![make_sink("sink1", "Sink 1", false), make_sink("sink2", "Sink 2", false)],
            vec![],
            None,
-           "none marked as default")]
-    #[case("multiple_defaults",
+           "none marked as default" ; "sinks_but_no_default")]
+    #[test_case("multiple_defaults",
            vec![make_sink("sink1", "Sink 1", true), make_sink("sink2", "Sink 2", true)],
            vec![],
            None,
-           "default sinks found")]
-    #[case("duplicate_names",
+           "default sinks found" ; "multiple_defaults")]
+    #[test_case("duplicate_names",
            vec![make_sink("duplicate", "Sink 1", true), make_sink("duplicate", "Sink 2", false)],
            vec![],
            None,
-           "Duplicate")]
-    #[case("duplicate_descs",
+           "Duplicate" ; "duplicate_names")]
+    #[test_case("duplicate_descs",
            vec![make_sink("sink1", "Duplicate Desc", true), make_sink("sink2", "Duplicate Desc", false)],
            vec![],
            None,
-           "Duplicate")]
-    #[case("unknown_sink_ref",
+           "Duplicate" ; "duplicate_descs")]
+    #[test_case("unknown_sink_ref",
            vec![make_sink("sink1", "Sink 1", true)],
            vec![make_rule("firefox", None, "nonexistent")],
            None,
-           "unknown sink")]
-    #[case("invalid_log_level",
+           "unknown sink" ; "unknown_sink_ref")]
+    #[test_case("invalid_log_level",
            vec![make_sink("sink1", "Sink 1", true)],
            vec![],
            Some("invalid"),
-           "log_level")]
-    #[case("empty_app_id_pattern",
+           "log_level" ; "invalid_log_level")]
+    #[test_case("empty_app_id_pattern",
            vec![make_sink("sink1", "Sink 1", true)],
            vec![make_rule("", None, "sink1")],
            None,
-           "empty app_id pattern")]
-    #[case("rules_without_sinks",
+           "empty app_id pattern" ; "empty_app_id_pattern")]
+    #[test_case("rules_without_sinks",
            vec![],
            vec![make_rule("firefox", None, "nonexistent")],
            None,
-           "no sinks configured")]
-    #[case("empty_sink_name",
+           "no sinks configured" ; "rules_without_sinks")]
+    #[test_case("empty_sink_name",
            vec![make_sink("", "Sink 1", true)],
            vec![],
            None,
-           "empty name")]
-    #[case("empty_sink_desc",
+           "empty name" ; "empty_sink_name")]
+    #[test_case("empty_sink_desc",
            vec![make_sink("sink1", " ", true)],
            vec![],
            None,
-           "empty desc")]
-    #[case("numeric_sink_desc",
+           "empty desc" ; "empty_sink_desc")]
+    #[test_case("numeric_sink_desc",
            vec![make_sink("sink1", "2", true)],
            vec![],
            None,
-           "is a number")]
-    #[case("empty_rule_sink_ref",
+           "is a number" ; "numeric_sink_desc")]
+    #[test_case("empty_rule_sink_ref",
            vec![make_sink("sink1", "Sink 1", true)],
            vec![make_rule("firefox", None, "")],
            None,
-           "empty sink reference")]
-    #[case("name_desc_ambiguity",
+           "empty sink reference" ; "empty_rule_sink_ref")]
+    #[test_case("name_desc_ambiguity",
            vec![make_sink("alpha", "Speakers", true), make_sink("beta", "alpha", false)],
            vec![],
            None,
-           "ambiguous")]
-    #[case("positional_out_of_range",
+           "ambiguous" ; "name_desc_ambiguity")]
+    #[test_case("positional_out_of_range",
            vec![make_sink("sink1", "Sink 1", true)],
            vec![make_rule("firefox", None, "3")],
            None,
-           "unknown sink '3'")]
+           "unknown sink '3'" ; "positional_out_of_range")]
     fn test_validate_rejection_cases(
-        #[case] name: &str,
-        #[case] sinks: Vec<SinkConfig>,
-        #[case] rules: Vec<Rule>,
-        #[case] log_level_override: Option<&str>,
-        #[case] expected_error_substring: &str,
+        name: &str,
+        sinks: Vec<SinkConfig>,
+        rules: Vec<Rule>,
+        log_level_override: Option<&str>,
+        expected_error_substring: &str,
     ) {
         let mut config = make_config(sinks, rules);
         if let Some(level) = log_level_override {
@@ -2734,12 +2733,11 @@ mod tests {
         }
     }
 
-    #[rstest]
-    #[case(0, true)]
-    #[case(300, true)]
-    #[case(MAX_SWITCH_DELAY_MS, true)]
-    #[case(MAX_SWITCH_DELAY_MS + 1, false)]
-    fn test_validate_switch_delay_range(#[case] delay: u32, #[case] valid: bool) {
+    #[test_case(0, true ; "zero")]
+    #[test_case(300, true ; "typical")]
+    #[test_case(MAX_SWITCH_DELAY_MS, true ; "at_max")]
+    #[test_case(MAX_SWITCH_DELAY_MS + 1, false ; "over_max")]
+    fn test_validate_switch_delay_range(delay: u32, valid: bool) {
         let mut config = make_config(vec![make_sink("sink1", "Sink 1", true)], vec![]);
         config.settings.switch_delay_ms = delay;
         let result = config.validate();
@@ -2980,13 +2978,12 @@ mod tests {
     // Regex compilation
     // ------------------------------------------------------------------------
 
-    #[rstest]
-    #[case("^firefox$")]
-    #[case("(mpv|vlc)")]
-    #[case("^(.+)+-beta$")]
-    #[case("(.*)*")]
-    #[case("(?i)discord")]
-    fn test_compile_rule_regex_accepts_valid_patterns(#[case] pattern: &str) {
+    #[test_case("^firefox$" ; "anchored")]
+    #[test_case("(mpv|vlc)" ; "alternation")]
+    #[test_case("^(.+)+-beta$" ; "nested_plus")]
+    #[test_case("(.*)*" ; "nested_star")]
+    #[test_case("(?i)discord" ; "case_insensitive")]
+    fn test_compile_rule_regex_accepts_valid_patterns(pattern: &str) {
         assert!(
             compile_rule_regex(pattern).is_ok(),
             "{pattern} should compile"
@@ -3076,16 +3073,15 @@ desc = "HDMI"
         );
     }
 
-    #[rstest]
-    #[case("[settings]\ncolour = true\n", "colour")]
-    #[case("[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefualt = true\n", "defualt")]
-    #[case(
+    #[test_case("[settings]\ncolour = true\n", "colour" ; "settings_key_typo")]
+    #[test_case("[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefualt = true\n", "defualt" ; "sink_key_typo")]
+    #[test_case(
         "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n[[rules]]\napp_id = \"x\"\nsink = \
          \"A\"\ntitel = \"y\"\n",
-        "titel"
+        "titel" ; "rule_key_typo"
     )]
-    #[case("[setting]\nlog_level = \"info\"\n", "setting")]
-    fn test_unknown_fields_rejected_with_key_and_path(#[case] contents: &str, #[case] key: &str) {
+    #[test_case("[setting]\nlog_level = \"info\"\n", "setting" ; "section_typo")]
+    fn test_unknown_fields_rejected_with_key_and_path(contents: &str, key: &str) {
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir, "typo.toml", contents);
         let err = Config::load_from_path(&path).unwrap_err().to_string();
@@ -3602,22 +3598,21 @@ desc = "BT Headphones"
         assert_eq!(refs(&cfg, 3), ["HDMI"]);
     }
 
-    #[rstest]
-    #[case::empty("sink = []", "empty list")]
-    #[case::unknown("sink = [\"HDMI\", \"Nope\"]", "unknown sink 'Nope'")]
-    #[case::unknown_position("sink = [\"HDMI\", 7]", "unknown sink '7'")]
-    #[case::duplicate(
+    #[test_case("sink = []", "empty list" ; "empty")]
+    #[test_case("sink = [\"HDMI\", \"Nope\"]", "unknown sink 'Nope'" ; "unknown")]
+    #[test_case("sink = [\"HDMI\", 7]", "unknown sink '7'" ; "unknown_position")]
+    #[test_case(
         "sink = [\"HDMI\", \"alsa_output.hdmi\"]",
-        "lists sink 'HDMI' more than once"
+        "lists sink 'HDMI' more than once" ; "duplicate"
     )]
-    #[case::duplicate_position("sink = [2, \"HDMI\"]", "more than once")]
-    #[case::empty_entry("sink = [\"HDMI\", \" \"]", "empty sink reference")]
-    #[case::nested(
+    #[test_case("sink = [2, \"HDMI\"]", "more than once" ; "duplicate_position")]
+    #[test_case("sink = [\"HDMI\", \" \"]", "empty sink reference" ; "empty_entry")]
+    #[test_case(
         "sink = [[\"HDMI\"]]",
-        "sink description, node name, or 1-based position"
+        "sink description, node name, or 1-based position" ; "nested"
     )]
-    #[case::boolean_entry("sink = [\"HDMI\", true]", "1-based position")]
-    fn test_sink_list_rejections(#[case] sink: &str, #[case] expected: &str) {
+    #[test_case("sink = [\"HDMI\", true]", "1-based position" ; "boolean_entry")]
+    fn test_sink_list_rejections(sink: &str, expected: &str) {
         let dir = tempfile::tempdir().unwrap();
         let contents = format!("{THREE_SINKS}\n[[rules]]\napp_id = \"a\"\n{sink}\n");
         let path = write(&dir, "c.toml", &contents);
@@ -3946,54 +3941,53 @@ sink = "Headset"
         assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO_SINKS);
     }
 
-    #[rstest]
-    #[case::source_without_sources(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\n\
          sink = \"S\"\nsource = \"Mic\"\n",
-        "Rule 1 sets `source` but no sources are configured"
+        "Rule 1 sets `source` but no sources are configured" ; "source_without_sources"
     )]
-    #[case::no_default_source(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\n",
-        "Sources configured but none marked as default. Add 'default = true' to one source."
+        "Sources configured but none marked as default. Add 'default = true' to one source." ; "no_default_source"
     )]
-    #[case::two_default_sources(
+    #[test_case(
         "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\n\n[[sources]]\nname = \"n\"\n\
          desc = \"Other\"\ndefault = true\n",
-        "2 default sources found"
+        "2 default sources found" ; "two_default_sources"
     )]
-    #[case::duplicate_source_desc(
+    #[test_case(
         "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\n\n[[sources]]\nname = \"n\"\n\
          desc = \"Mic\"\n",
-        "Duplicate source description: 'Mic'"
+        "Duplicate source description: 'Mic'" ; "duplicate_source_desc"
     )]
-    #[case::unknown_source_ref(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\n\
          source = \"Nope\"\n",
-        "Rule 1 references unknown source 'Nope'. Available: [1. 'Mic']"
+        "Rule 1 references unknown source 'Nope'. Available: [1. 'Mic']" ; "unknown_source_ref"
     )]
-    #[case::source_listed_twice(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\n\
          source = [\"Mic\", \"m\"]\n",
-        "Rule 1 lists source 'Mic' more than once"
+        "Rule 1 lists source 'Mic' more than once" ; "source_listed_twice"
     )]
-    #[case::empty_source_list(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\nsource = []\n",
-        "`source` is an empty list"
+        "`source` is an empty list" ; "empty_source_list"
     )]
-    #[case::source_wrong_type(
+    #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\nsource = true\n",
-        "a source description, node name, or 1-based position"
+        "a source description, node name, or 1-based position" ; "source_wrong_type"
     )]
-    #[case::unknown_source_key(
+    #[test_case(
         "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\nvolume = 3\n",
-        "volume"
+        "volume" ; "unknown_source_key"
     )]
-    fn test_source_validation_errors(#[case] contents: &str, #[case] expected: &str) {
+    fn test_source_validation_errors(contents: &str, expected: &str) {
         let dir = tempfile::tempdir().unwrap();
         let path = write(&dir, "c.toml", contents);
         let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
@@ -4207,22 +4201,21 @@ sink = "TV"
         assert!(!make_config(vec![], vec![plain]).has_output_rules());
     }
 
-    #[rstest]
-    #[case::neither("[[rules]]\nsink = \"TV\"\n", "needs `app_id` or `output`")]
-    #[case::empty_app_id(
+    #[test_case("[[rules]]\nsink = \"TV\"\n", "needs `app_id` or `output`" ; "neither")]
+    #[test_case(
         "[[rules]]\napp_id = \"\"\noutput = \"HDMI\"\nsink = \"TV\"\n",
-        "empty app_id pattern"
+        "empty app_id pattern" ; "empty_app_id"
     )]
-    #[case::empty_output("[[rules]]\noutput = \"\"\nsink = \"TV\"\n", "empty output pattern")]
-    #[case::bad_output_regex(
+    #[test_case("[[rules]]\noutput = \"\"\nsink = \"TV\"\n", "empty output pattern" ; "empty_output")]
+    #[test_case(
         "[[rules]]\noutput = \"(HDMI\"\nsink = \"TV\"\n",
-        "Rule 1: invalid output regex"
+        "Rule 1: invalid output regex" ; "bad_output_regex"
     )]
-    #[case::huge_output_regex(
+    #[test_case(
         "[[rules]]\noutput = '\\w{50000}'\nsink = \"TV\"\n",
-        "Rule 1: invalid output regex"
+        "Rule 1: invalid output regex" ; "huge_output_regex"
     )]
-    fn test_output_rule_errors(#[case] rule: &str, #[case] expected: &str) {
+    fn test_output_rule_errors(rule: &str, expected: &str) {
         let dir = tempfile::tempdir().unwrap();
         let sinks = MONITOR_RULES
             .split("# any window")

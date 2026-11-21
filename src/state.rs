@@ -27,7 +27,12 @@ use tracing::{debug, info};
 
 use crate::compositor::WindowEvent;
 use crate::config::{Config, Endpoint, Rule, SinkConfig, SourceConfig};
-use crate::sanitize::for_log;
+use crate::sanitize::{for_log, sanitize_line};
+
+/// Maximum characters of a window title in rule log lines (they also carry the
+/// `app_id` and the targets, so a full [`crate::sanitize::MAX_LOG_CHARS`] title is too
+/// long)
+const LOG_TITLE_CHARS: usize = 60;
 
 /// Window-tracking state for daemon mode
 ///
@@ -294,23 +299,21 @@ impl State {
             let matched = match_window(&self.config, window);
             match (before.get(&id), &matched) {
                 (None, Some(m)) => info!(
-                    "Rule matched: '{}' → {}",
-                    for_log(&window.app_id),
+                    "Rule matched: {} → {}",
+                    window_label(id, window),
                     self.targets_desc(m.rule_index)
                 ),
                 (Some((trigger, _)), None) => info!(
-                    "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' title='{}')",
-                    id,
-                    for_log(trigger),
-                    for_log(&window.app_id),
-                    for_log(&window.title)
+                    "Rule unmatched: {} no longer matches (was: '{}')",
+                    window_label(id, window),
+                    for_log(trigger)
                 ),
                 (Some((_, old_targets)), Some(m))
                     if self.target_names(m.rule_index) != *old_targets =>
                 {
                     info!(
-                        "Rule matched: '{}' → {}",
-                        for_log(&window.app_id),
+                        "Rule matched: {} → {}",
+                        window_label(id, window),
                         self.targets_desc(m.rule_index)
                     );
                 }
@@ -422,8 +425,8 @@ impl State {
         window.matched = match_window(&self.config, &window);
         if let Some(m) = &window.matched {
             info!(
-                "Rule matched: '{}' → {}",
-                for_log(&window.app_id),
+                "Rule matched: {} → {}",
+                window_label(id, &window),
                 self.targets_desc(m.rule_index)
             );
         }
@@ -464,8 +467,8 @@ impl State {
         let departure = match (&previous, &matched) {
             (None, Some(m)) => {
                 info!(
-                    "Rule matched: '{}' → {}",
-                    for_log(&window.app_id),
+                    "Rule matched: {} → {}",
+                    window_label(id, window),
                     self.targets_desc(m.rule_index)
                 );
                 renew = true;
@@ -473,12 +476,9 @@ impl State {
             }
             (Some(old), None) => {
                 info!(
-                    "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' \
-                     title='{}' outputs=[{}]{})",
-                    id,
+                    "Rule unmatched: {} no longer matches (was: '{}', now: outputs=[{}]{})",
+                    window_label(id, window),
                     for_log(&old.trigger),
-                    for_log(&window.app_id),
-                    for_log(&window.title),
                     for_log(&window.outputs.join(", ")),
                     if window.minimized { " minimized" } else { "" }
                 );
@@ -512,11 +512,11 @@ impl State {
     }
 
     fn close(&mut self, id: u64) -> Option<Departure> {
-        let window = self.windows.remove(&id)?;
-        let matched = window.matched?;
+        let mut window = self.windows.remove(&id)?;
+        let matched = window.matched.take()?;
         info!(
-            "Tracked window closed: {} (was: {})",
-            id,
+            "Tracked window closed: {} (was: '{}')",
+            window_label(id, &window),
             for_log(&matched.trigger)
         );
         Some(Departure {
@@ -665,6 +665,16 @@ fn match_window(config: &Config, window: &Window) -> Option<Match> {
         rule_index,
         trigger: rule.desc.clone().unwrap_or_else(|| window.title.clone()),
     })
+}
+
+/// A window for rule log lines: `window 12 'kitty' "~/src"`, so lines about several
+/// windows of one app can be told apart (untrusted text sanitised, title shortened)
+fn window_label(id: u64, window: &Window) -> String {
+    format!(
+        "window {id} '{}' \"{}\"",
+        for_log(&window.app_id),
+        sanitize_line(&window.title, LOG_TITLE_CHARS)
+    )
 }
 
 #[cfg(test)]
@@ -1011,9 +1021,9 @@ mod tests {
             .filter_map(|l| l.find("Rule ").map(|i| &l[i..]))
             .collect();
         assert_eq!(lines, vec![
-            "Rule unmatched: window 1 no longer matches (was: 'Steam', now: app_id='steam' title='Steam')",
-            "Rule matched: 'mpv' → Headphones",
-            "Rule matched: 'fire\\nfox' → Headphones",
+            "Rule unmatched: window 1 'steam' \"Steam\" no longer matches (was: 'Steam')",
+            "Rule matched: window 2 'mpv' \"video\" → Headphones",
+            "Rule matched: window 3 'fire\\nfox' \"Browser\" → Headphones",
         ]);
 
         // Nothing changed: nothing logged
@@ -1021,6 +1031,32 @@ mod tests {
             s.reconfigure(Arc::new(config)).expect("valid config");
         });
         assert!(!logs.contains("Rule "), "{logs}");
+    }
+
+    /// Rule lines for several windows of one app name each window and its (sanitised,
+    /// shortened) title, so they can be told apart
+    #[test]
+    fn test_rule_log_lines_identify_the_window() {
+        let sinks = vec![make_sink("headphones", "Headphones", true)];
+        let mut s = state(make_config(sinks, vec![make_rule(
+            "^kitty$",
+            None,
+            "headphones",
+        )]));
+        let long_title = format!("~/src\n{}", "x".repeat(100));
+        let logs = capture_info_logs(|| {
+            s.apply(opened(7, "kitty", "~/src"));
+            s.apply(opened(8, "kitty", &long_title));
+        });
+        let shortened = format!("~/src\\n{}…", "x".repeat(LOG_TITLE_CHARS - 6));
+        let lines: Vec<&str> = logs
+            .lines()
+            .filter_map(|l| l.find("Rule ").map(|i| &l[i..]))
+            .collect();
+        assert_eq!(lines, vec![
+            "Rule matched: window 7 'kitty' \"~/src\" → Headphones".to_string(),
+            format!("Rule matched: window 8 'kitty' \"{shortened}\" → Headphones"),
+        ]);
     }
 
     #[test]
@@ -1116,7 +1152,9 @@ mod tests {
                 .expect("valid config");
         });
         assert!(
-            logs.contains("Rule matched: 'firefox' → Headphones (fallback: HDMI)"),
+            logs.contains(
+                "Rule matched: window 1 'firefox' \"Docs\" → Headphones (fallback: HDMI)"
+            ),
             "{logs}"
         );
         assert_eq!(names(&s.desired()), ["headphones", "hdmi"]);
@@ -1245,7 +1283,7 @@ mod tests {
             s.reconfigure(Arc::new(config)).expect("valid config");
         });
         assert!(
-            logs.contains("Rule matched: 'zoom' → Speakers, mic: Desk Mic"),
+            logs.contains("Rule matched: window 1 'zoom' \"Meeting\" → Speakers, mic: Desk Mic"),
             "{logs}"
         );
         assert_eq!(source_names(&s), ["mic.desk"]);
