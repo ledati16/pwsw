@@ -303,13 +303,13 @@ fn test_rule_sink_dropdown_accepts_enter_and_survives_shrunk_list() {
     ));
     app.current_screen = Screen::Rules;
     app.rules_screen.start_add();
-    app.rules_screen.editor.focused_field = RuleField::Sink;
+    app.rules_screen.editor.focused_field = RuleField::Sinks;
     simulate_key_event(&mut app, key(KeyCode::Char(' ')));
     assert_eq!(app.rules_screen.mode, ListMode::SelectSink);
     simulate_key_event(&mut app, key(KeyCode::Down));
     simulate_key_event(&mut app, key(KeyCode::Enter));
     assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
-    assert_eq!(app.rules_screen.editor.sink_ref, "d2");
+    assert_eq!(app.rules_screen.editor.sink_refs, ["d2"]);
 }
 
 /// An app with unsaved edits whose Ctrl+S save is in flight on a (fake) worker.
@@ -479,8 +479,8 @@ fn test_new_rule_from_window_escapes_and_anchors_app_id() {
         assert_eq!(editor.app_id_pattern.value(), expected);
         assert_eq!(editor.title_pattern.value(), "", "any title");
         assert_eq!(editor.desc.value(), "");
-        assert_eq!(editor.sink_ref, "", "the user chooses the sink");
-        assert_eq!(editor.focused_field, RuleField::Sink);
+        assert!(editor.sink_refs.is_empty(), "the user chooses the sink");
+        assert_eq!(editor.focused_field, RuleField::Sinks);
         assert_eq!(editor.window_title.as_deref(), Some("Some Title"));
 
         // The pattern matches exactly this app ID
@@ -527,7 +527,7 @@ fn test_new_rule_from_window_with_one_sink_preselects_it() {
     ]);
     simulate_key_event(&mut app, key(KeyCode::Char('n')));
     assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
-    assert_eq!(app.rules_screen.editor.sink_ref, "Sink One");
+    assert_eq!(app.rules_screen.editor.sink_refs, ["Sink One"]);
     simulate_key_event(&mut app, key(KeyCode::Enter));
     assert_eq!(app.config.rules.len(), 1, "saved as it is");
     assert_eq!(app.config.rules[0].app_id_pattern, "^mpv$");

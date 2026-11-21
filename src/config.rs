@@ -458,6 +458,19 @@ fn positional_ref(sink_ref: &str) -> Option<usize> {
     sink_ref.parse::<usize>().ok()
 }
 
+/// Resolve a sink reference (by position, desc, or name) to its 0-based index in
+/// `sinks`, the way [`Config::resolve_sink`] does.
+pub(crate) fn sink_index_in(sinks: &[SinkConfig], sink_ref: &str) -> Option<usize> {
+    // Try position first (1-indexed)
+    if let Some(pos) = positional_ref(sink_ref) {
+        return (pos > 0 && pos <= sinks.len()).then(|| pos - 1);
+    }
+    // Then try desc or name
+    sinks
+        .iter()
+        .position(|s| s.desc == sink_ref || s.name == sink_ref)
+}
+
 // ============================================================================
 // Default Config Template
 // ============================================================================
@@ -697,17 +710,26 @@ impl Config {
         Ok(config)
     }
 
-    /// Log a single deprecation warning for rules that reference sinks by position.
-    fn warn_positional_refs(&self) {
-        let positional: Vec<String> = self
-            .rules
+    /// The 1-based numbers of the rules that reference a sink by (deprecated) position
+    #[must_use]
+    pub fn rules_with_positional_refs(&self) -> Vec<usize> {
+        self.rules
             .iter()
             .enumerate()
             .filter(|(_, r)| {
                 r.sink_refs()
                     .any(|sink_ref| positional_ref(sink_ref).is_some())
             })
-            .map(|(i, _)| (i + 1).to_string())
+            .map(|(i, _)| i + 1)
+            .collect()
+    }
+
+    /// Log a single deprecation warning for rules that reference sinks by position.
+    fn warn_positional_refs(&self) {
+        let positional: Vec<String> = self
+            .rules_with_positional_refs()
+            .iter()
+            .map(ToString::to_string)
             .collect();
         if !positional.is_empty() {
             warn!(
@@ -1690,14 +1712,7 @@ impl Config {
 
     /// Resolve a sink reference (by position, desc, or name) to its 0-based index.
     pub(crate) fn resolve_sink_index(&self, sink_ref: &str) -> Option<usize> {
-        // Try position first (1-indexed)
-        if let Some(pos) = positional_ref(sink_ref) {
-            return (pos > 0 && pos <= self.sinks.len()).then(|| pos - 1);
-        }
-        // Then try desc or name
-        self.sinks
-            .iter()
-            .position(|s| s.desc == sink_ref || s.name == sink_ref)
+        sink_index_in(&self.sinks, sink_ref)
     }
 
     /// Resolve every sink reference of `rule`, in priority order, to 0-based sink

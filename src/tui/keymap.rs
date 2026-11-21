@@ -429,7 +429,7 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Editor(Screen::Rules),
         "Space",
-        "On Sink: open sink list · on Notify: cycle default/on/off",
+        "On Sinks: choose the sinks and their order · on Notify: cycle default/on/off",
         SPACE,
     )
     .hint("Space", "choose", 3),
@@ -447,18 +447,32 @@ pub(crate) static BINDINGS: &[Binding] = &[
         "Move highlight",
         UP_DOWN,
     )
-    .hint("↑/↓", "move", 3),
+    .hint("↑/↓", "move", 5),
     b(
         Context::Dropdown(Screen::Rules),
-        "Space/Enter",
-        "Use highlighted sink",
-        SPACE_ENTER,
+        "Space",
+        "Add the highlighted sink at the end of the order, or remove it (the next one moves up)",
+        SPACE,
     )
-    .hint("Enter", "use", 1),
+    .hint("Space", "pick", 3),
+    b(
+        Context::Dropdown(Screen::Rules),
+        "Shift+↑/↓",
+        "Move the highlighted chosen sink earlier/later (the first is tried first, the rest are fallbacks)",
+        SHIFT_UP_DOWN,
+    )
+    .hint("Shift+↑/↓", "order", 4),
+    b(
+        Context::Dropdown(Screen::Rules),
+        "Enter",
+        "Use the chosen sinks (none chosen: the highlighted one)",
+        ENTER,
+    )
+    .hint("Enter", "done", 1),
     b(
         Context::Dropdown(Screen::Rules),
         "Esc",
-        "Back to the editor",
+        "Back to the editor without changes",
         ESC,
     )
     .hint("Esc", "back", 2),

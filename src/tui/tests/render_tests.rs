@@ -458,7 +458,7 @@ fn test_rule_form_shows_every_field_at_80x24() {
     for (label, value) in [
         ("App ID", "firefox"),
         ("Title", "any title"),
-        ("Sink", SONY_DESC),
+        ("Sinks", SONY_DESC),
         ("Description", "optional note"),
         ("Notify", "default (from Settings)"),
     ] {
@@ -472,6 +472,92 @@ fn test_rule_form_shows_every_field_at_80x24() {
     assert!(screen.contains("firefox | Rust Book"), "{screen}");
 }
 
+/// The fixture with the first rule (firefox) sending to Sony, then HDMI, then USB
+fn three_sink_rule() -> App {
+    let mut app = fixture();
+    app.config.rules[0].fallback_refs = vec!["HDMI / DisplayPort".to_string(), USB.to_string()];
+    app
+}
+
+#[test]
+fn test_rule_form_shows_three_sinks_in_order_at_80x24() {
+    let mut app = three_sink_rule();
+    app.current_screen = Screen::Rules;
+    app.rules_screen.start_edit(&app.config.rules);
+    app.rules_screen.editor.focused_field = crate::tui::screens::rules::RuleField::Sinks;
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    let row = rows
+        .iter()
+        .find(|r| r.contains("▌Sinks "))
+        .unwrap_or_else(|| panic!("focused Sinks row\n{screen}"));
+    // Cut to the dialog, first choice first
+    assert!(
+        row.contains("Sony WH-1000XM4 (Bluetooth A2DP Sink) → HDMI"),
+        "{row}"
+    );
+    assert!(row.contains("␣ choose"), "{row}");
+    assert!(rows.iter().all(|r| r.chars().count() == 80));
+    assert!(rows[23].contains("Space choose"), "{}", rows[23]);
+
+    // The picker numbers the chosen sinks in order, the others after them
+    simulate_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+    );
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("Choose Sinks (in order)"), "{screen}");
+    // (the rules table behind it names the sinks too: look at picker rows only)
+    let line_of = |text: &str| {
+        rows.iter()
+            .position(|r| r.contains(text) && r.contains("_output"))
+            .unwrap_or_else(|| panic!("{text}\n{screen}"))
+    };
+    let lines = [
+        line_of("1 Sony"),
+        line_of("2 HDMI"),
+        line_of("3 USB DAC"),
+        line_of("    Built-in Audio"),
+    ];
+    assert!(lines.is_sorted(), "{lines:?}\n{screen}");
+    assert!(rows[23].contains("Shift+↑/↓ order"), "{}", rows[23]);
+
+    // Shift+↓ on the first choice swaps it with HDMI; Enter applies
+    simulate_key_event(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT));
+    simulate_key_event(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    let rows = draw_rows(&mut app, 80, 24);
+    assert!(
+        rows.iter()
+            .any(|r| r.contains("Sinks ") && r.contains("HDMI / DisplayPort → Sony")),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+#[test]
+fn test_rules_table_and_details_show_the_sink_order() {
+    let mut app = three_sink_rule();
+    app.current_screen = Screen::Rules;
+    let screen = draw(&mut app);
+    assert!(
+        screen.contains("Sony WH-1000XM4 (Bluetooth A2DP Sink) → HD…"),
+        "{screen}"
+    );
+    app.rules_screen.start_inspect();
+    let screen = draw(&mut app);
+    for line in [
+        "Sinks        Sony WH-1000XM4 (Bluetooth A2DP Sink)",
+        "             → HDMI / DisplayPort",
+        "             → USB DAC",
+    ] {
+        assert!(screen.contains(line), "{line}\n{screen}");
+    }
+    app.rules_screen.start_delete();
+    let screen = draw(&mut app);
+    assert!(screen.contains("→ USB DAC"), "{screen}");
+}
+
 #[test]
 fn test_rule_form_from_window_at_80x24() {
     let mut app = state("rule from window");
@@ -481,7 +567,7 @@ fn test_rule_form_from_window_at_80x24() {
     for (label, value) in [
         ("App ID", r"^org\.gnome\.Nautilus$"),
         ("Title", "any title"),
-        ("Sink", "none chosen"),
+        ("Sinks", "none chosen"),
     ] {
         assert!(
             rows.iter()
@@ -556,7 +642,7 @@ fn test_rule_form_fits_the_smallest_terminal() {
     let mut app = state("rule edit");
     let rows = draw_rows(&mut app, 60, 16);
     let screen = rows.join("\n");
-    for label in ["App ID", "Title", "Sink", "Description", "Notify"] {
+    for label in ["App ID", "Title", "Sinks", "Description", "Notify"] {
         assert!(screen.contains(&format!("{label} ")), "{label}\n{screen}");
     }
 }
@@ -612,9 +698,10 @@ fn test_dialogs_show_their_options_at_80x24() {
             "Sony WH-1000XM4",
         ]),
         ("rule sink picker", &[
-            "Choose a Sink",
+            "Choose Sinks (in order)",
             "USB DAC",
-            "Enter use",
+            "Space pick",
+            "Enter done",
         ]),
     ] {
         let mut app = state(name);

@@ -601,29 +601,29 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
         }
         ListKey::Unhandled => match app.rules_screen.mode {
             ListMode::AddEdit => handle_rule_editor_input(app, key),
-            ListMode::SelectSink => {
-                let editor = &mut app.rules_screen.editor;
-                match key.code {
-                    KeyCode::Up => {
-                        editor.sink_dropdown_index = editor.sink_dropdown_index.saturating_sub(1);
-                    }
-                    KeyCode::Down => {
-                        if editor.sink_dropdown_index + 1 < app.config.sinks.len() {
-                            editor.sink_dropdown_index += 1;
-                        }
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        if let Some(sink) = app.config.sinks.get(editor.sink_dropdown_index) {
-                            editor.sink_ref.clone_from(&sink.desc);
-                        }
-                        app.rules_screen.mode = ListMode::AddEdit;
-                    }
-                    KeyCode::Esc => app.rules_screen.mode = ListMode::AddEdit,
-                    _ => {}
-                }
-            }
+            ListMode::SelectSink => handle_rule_sink_picker_input(app, key),
             _ => {}
         },
+    }
+}
+
+/// Handle the sink picker of the rule editor: Space adds/removes the
+/// highlighted sink, Shift+↑/↓ reorders the chosen ones, Enter applies, Esc
+/// goes back without changes
+fn handle_rule_sink_picker_input(app: &mut App, key: KeyEvent) {
+    let count = app.config.sinks.len();
+    let editor = &mut app.rules_screen.editor;
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    match key.code {
+        KeyCode::Up | KeyCode::Down if shift => editor.picker_reorder(key.code == KeyCode::Down),
+        KeyCode::Up | KeyCode::Down => editor.picker_move(key.code == KeyCode::Down, count),
+        KeyCode::Char(' ') => editor.picker_toggle(count),
+        KeyCode::Enter => match editor.apply_picks(&app.config.sinks) {
+            Ok(()) => app.rules_screen.mode = ListMode::AddEdit,
+            Err(e) => app.set_status(StatusKind::Warning, e),
+        },
+        KeyCode::Esc => app.rules_screen.mode = ListMode::AddEdit,
+        _ => {}
     }
 }
 
@@ -634,7 +634,7 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     }
     let editor = &mut app.rules_screen.editor;
     match (key.code, editor.focused_field) {
-        (KeyCode::Char(' '), RuleField::Sink) => {
+        (KeyCode::Char(' '), RuleField::Sinks) => {
             app.rules_screen.open_sink_selector(&app.config.sinks);
         }
         (KeyCode::Char(' '), RuleField::Notify) => editor.cycle_notify(),

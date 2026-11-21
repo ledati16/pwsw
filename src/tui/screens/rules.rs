@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, ListItem, ListState, Paragraph, Row};
 use tui_input::Input;
 
-use crate::config::{Rule, SinkConfig, compile_rule_regex};
+use crate::config::{Rule, SinkConfig, compile_rule_regex, sink_index_in};
 use crate::ipc::WindowInfo;
 use crate::tui::preview::{MAX_SHOWN, PreviewView, build_preview_lines};
 use crate::tui::screens::list::{
@@ -27,8 +27,8 @@ pub enum RuleField {
     #[default]
     AppId,
     Title,
-    /// Target sink (Space opens the selector)
-    Sink,
+    /// The ordered target sinks (Space opens the sink picker)
+    Sinks,
     Desc,
     /// Notify toggle (Space cycles it)
     Notify,
@@ -38,8 +38,8 @@ impl RuleField {
     pub(crate) const fn next(self) -> Self {
         match self {
             Self::AppId => Self::Title,
-            Self::Title => Self::Sink,
-            Self::Sink => Self::Desc,
+            Self::Title => Self::Sinks,
+            Self::Sinks => Self::Desc,
             Self::Desc | Self::Notify => Self::Notify,
         }
     }
@@ -47,8 +47,8 @@ impl RuleField {
     pub(crate) const fn prev(self) -> Self {
         match self {
             Self::AppId | Self::Title => Self::AppId,
-            Self::Sink => Self::Title,
-            Self::Desc => Self::Sink,
+            Self::Sinks => Self::Title,
+            Self::Desc => Self::Sinks,
             Self::Notify => Self::Desc,
         }
     }
@@ -59,32 +59,45 @@ impl RuleField {
 pub struct RuleEditor {
     pub app_id_pattern: Input,
     pub title_pattern: Input,
-    pub sink_ref: String,
-    /// Fallback sinks of the rule being edited, kept as they are (the form edits
-    /// only the first choice); empty for a new rule
-    pub fallback_refs: Vec<String>,
+    /// The rule's sinks in priority order: the first choice, then the fallbacks
+    /// (sink references as in the config; empty for a new rule)
+    pub sink_refs: Vec<String>,
     pub desc: Input,
     pub notify: Option<bool>,
     pub focused_field: RuleField,
-    /// Sink highlighted in the target sink selector
+    /// The sinks chosen in the open sink picker, in priority order (indices into
+    /// the configured sinks); Enter in the picker applies them to `sink_refs`
+    pub picked: Vec<usize>,
+    /// Row highlighted in the sink picker (see [`picker_rows`])
     pub sink_dropdown_index: usize,
-    /// Scroll state of the target sink selector
+    /// Scroll state of the sink picker
     pub sink_selector_state: ListState,
     /// Title of the window the form was opened from (shown as a hint to copy from)
     pub window_title: Option<String>,
-    /// App ID, title, sink, description and notify when the editor opened
+    /// App ID, title, sinks, description and notify when the editor opened
     initial: RuleValues,
 }
 
 /// The editable values of a rule, to tell whether the editor changed any
-type RuleValues = (String, String, String, String, Option<bool>);
+type RuleValues = (String, String, Vec<String>, String, Option<bool>);
+
+/// The rows of the sink picker, as indices into the `sink_count` configured
+/// sinks: the picked sinks in priority order, then the others in config order
+#[must_use]
+pub(crate) fn picker_rows(picked: &[usize], sink_count: usize) -> Vec<usize> {
+    picked
+        .iter()
+        .copied()
+        .chain((0..sink_count).filter(|i| !picked.contains(i)))
+        .collect()
+}
 
 impl RuleEditor {
     fn values(&self) -> RuleValues {
         (
             self.app_id_pattern.value().to_string(),
             self.title_pattern.value().to_string(),
-            self.sink_ref.clone(),
+            self.sink_refs.clone(),
             self.desc.value().to_string(),
             self.notify,
         )
@@ -94,16 +107,16 @@ impl RuleEditor {
     /// loading compiles them
     ///
     /// # Errors
-    /// When the app ID pattern or the target sink is missing, or a pattern is
+    /// When the app ID pattern or the target sinks are missing, or a pattern is
     /// not a valid regex
     pub(crate) fn to_rule(&self) -> Result<Rule, String> {
         let app_id = self.app_id_pattern.value();
         if app_id.is_empty() {
             return Err("App ID pattern is required".to_string());
         }
-        if self.sink_ref.is_empty() {
-            return Err("Target sink is required".to_string());
-        }
+        let Some((first, fallbacks)) = self.sink_refs.split_first() else {
+            return Err("Choose at least one sink (Space on Sinks)".to_string());
+        };
         let app_id_regex =
             compile_rule_regex(app_id).map_err(|e| format!("Invalid app_id regex: {e}"))?;
         let title_pattern = optional(&self.title_pattern);
@@ -115,8 +128,8 @@ impl RuleEditor {
         Ok(Rule {
             app_id_regex,
             title_regex,
-            sink_ref: self.sink_ref.clone(),
-            fallback_refs: self.fallback_refs.clone(),
+            sink_ref: first.clone(),
+            fallback_refs: fallbacks.to_vec(),
             desc: optional(&self.desc),
             notify: self.notify,
             app_id_pattern: app_id.to_string(),
@@ -132,6 +145,100 @@ impl RuleEditor {
             Some(false) => None,
         };
     }
+
+    /// The configured sinks `sink_refs` names, in order (unknown references left out)
+    fn resolved_refs(&self, sinks: &[SinkConfig]) -> Vec<usize> {
+        let mut out = Vec::with_capacity(self.sink_refs.len());
+        for index in self
+            .sink_refs
+            .iter()
+            .filter_map(|r| sink_index_in(sinks, r))
+        {
+            if !out.contains(&index) {
+                out.push(index);
+            }
+        }
+        out
+    }
+
+    /// Fill the picker from the form's sinks, highlighting the first row
+    fn open_picker(&mut self, sinks: &[SinkConfig]) {
+        self.picked = self.resolved_refs(sinks);
+        self.sink_dropdown_index = 0;
+    }
+
+    /// ↑/↓ in the picker of `sink_count` sinks
+    pub(crate) const fn picker_move(&mut self, down: bool, sink_count: usize) {
+        if down {
+            if self.sink_dropdown_index + 1 < sink_count {
+                self.sink_dropdown_index += 1;
+            }
+        } else {
+            self.sink_dropdown_index = self.sink_dropdown_index.saturating_sub(1);
+        }
+    }
+
+    /// Space in the picker: add the highlighted sink at the end of the order, or
+    /// remove it (the later ones move up: removing the first choice promotes the
+    /// second). The highlight follows the sink to its new row.
+    pub(crate) fn picker_toggle(&mut self, sink_count: usize) {
+        let rows = picker_rows(&self.picked, sink_count);
+        let Some(&sink) = rows.get(self.sink_dropdown_index) else {
+            return;
+        };
+        if let Some(pos) = self.picked.iter().position(|&p| p == sink) {
+            self.picked.remove(pos);
+        } else {
+            self.picked.push(sink);
+        }
+        self.sink_dropdown_index = picker_rows(&self.picked, sink_count)
+            .iter()
+            .position(|&r| r == sink)
+            .unwrap_or(0);
+    }
+
+    /// Shift+↑/↓ in the picker: move the highlighted chosen sink one place
+    /// earlier or later in the order (does nothing on a sink not chosen)
+    pub(crate) fn picker_reorder(&mut self, later: bool) {
+        let row = self.sink_dropdown_index;
+        if row >= self.picked.len() {
+            return;
+        }
+        let target = if later {
+            Some(row + 1)
+        } else {
+            row.checked_sub(1)
+        };
+        if let Some(target) = target.filter(|&t| t < self.picked.len()) {
+            self.picked.swap(row, target);
+            self.sink_dropdown_index = target;
+        }
+    }
+
+    /// Enter in the picker: make the chosen sinks the form's (stored by
+    /// description). With none chosen, the highlighted sink is used.
+    ///
+    /// # Errors
+    /// When there is no sink to choose
+    pub(crate) fn apply_picks(&mut self, sinks: &[SinkConfig]) -> Result<(), &'static str> {
+        if self.picked.is_empty() {
+            let rows = picker_rows(&self.picked, sinks.len());
+            let Some(&sink) = rows.get(self.sink_dropdown_index) else {
+                return Err("No sink to choose: add one on the Sinks screen");
+            };
+            self.picked.push(sink);
+        }
+        // The same sinks in the same order: keep the references as they are written
+        if self.picked != self.resolved_refs(sinks) {
+            self.sink_refs = self
+                .picked
+                .iter()
+                .filter_map(|&i| sinks.get(i))
+                .map(|s| s.desc.clone())
+                .collect();
+        }
+        Ok(())
+    }
 }
 
 impl FormEditor for RuleEditor {
@@ -145,8 +252,7 @@ impl FormEditor for RuleEditor {
         let mut editor = Self {
             app_id_pattern: Input::new(rule.app_id_pattern.clone()),
             title_pattern: Input::new(rule.title_pattern.clone().unwrap_or_default()),
-            sink_ref: rule.sink_ref.clone(),
-            fallback_refs: rule.fallback_refs.clone(),
+            sink_refs: rule.sink_refs().map(str::to_string).collect(),
             desc: Input::new(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             ..Self::default()
@@ -179,7 +285,7 @@ impl FormEditor for RuleEditor {
             RuleField::AppId => Some(&mut self.app_id_pattern),
             RuleField::Title => Some(&mut self.title_pattern),
             RuleField::Desc => Some(&mut self.desc),
-            RuleField::Sink | RuleField::Notify => None,
+            RuleField::Sinks | RuleField::Notify => None,
         }
     }
 }
@@ -189,16 +295,16 @@ pub type RulesScreen = ListScreen<RuleEditor>;
 
 impl RulesScreen {
     /// Open the add form pre-filled for `window`: its app ID escaped and anchored,
-    /// any title (its current title shown as a hint), the Sink field focused and
+    /// any title (its current title shown as a hint), the Sinks field focused and
     /// the sink chosen only when there is exactly one.
     pub(crate) fn start_add_for_window(&mut self, window: &WindowInfo, sinks: &[SinkConfig]) {
         self.start_add();
         let editor = &mut self.editor;
         editor.app_id_pattern = Input::new(format!("^{}$", regex::escape(&window.app_id)));
         if let [only] = sinks {
-            editor.sink_ref.clone_from(&only.desc);
+            editor.sink_refs = vec![only.desc.clone()];
         }
-        editor.focused_field = RuleField::Sink;
+        editor.focused_field = RuleField::Sinks;
         editor.window_title = Some(window.title.clone());
         // Nothing typed yet: Esc closes without asking
         editor.initial = editor.values();
@@ -216,13 +322,9 @@ impl RulesScreen {
         self.editor.window_title = Some(window.title.clone());
     }
 
-    /// Open the target sink selector on the sink the rule currently targets.
+    /// Open the sink picker with the form's sinks chosen.
     pub(crate) fn open_sink_selector(&mut self, sinks: &[SinkConfig]) {
-        let current = &self.editor.sink_ref;
-        self.editor.sink_dropdown_index = sinks
-            .iter()
-            .position(|s| s.desc == *current || s.name == *current)
-            .unwrap_or(0);
+        self.editor.open_picker(sinks);
         self.mode = ListMode::SelectSink;
     }
 }
@@ -264,11 +366,13 @@ pub fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext)
         ListMode::Delete => {
             if let Some(rule) = ctx.rules.get(ctx.screen_state.selected) {
                 let (title, any_title) = title_text(rule);
-                render_delete_dialog(frame, area, "Rule", &[
-                    ("App ID", &rule.app_id_pattern, false),
+                let targets = sink_detail_values(ctx.sinks, rule);
+                let mut rows = vec![
+                    ("App ID", rule.app_id_pattern.as_str(), false),
                     ("Title", title, any_title),
-                    ("Sink", &rule.sink_ref, false),
-                ]);
+                ];
+                rows.extend(sink_detail_rows(rule, &targets));
+                render_delete_dialog(frame, area, "Rule", &rows);
             }
         }
         ListMode::SelectSink => {
@@ -287,12 +391,57 @@ fn title_text(rule: &Rule) -> (&str, bool) {
         .map_or(("any title", true), |t| (t, false))
 }
 
-/// The description of the sink a rule's `sink_ref` names (or the reference itself)
+/// The description of the sink a rule's sink reference names (or the reference itself)
 fn sink_display<'a>(sinks: &'a [SinkConfig], sink_ref: &'a str) -> &'a str {
-    sinks
+    sink_index_in(sinks, sink_ref).map_or(sink_ref, |i| sinks[i].desc.as_str())
+}
+
+/// Separator between a rule's sinks, first choice first
+const SINK_ARROW: &str = " → ";
+
+/// A rule's sinks in priority order: `BT Headphones → Headphones`
+fn sinks_text<'a>(sinks: &[SinkConfig], refs: impl IntoIterator<Item = &'a str>) -> String {
+    refs.into_iter()
+        .map(|r| sink_display(sinks, r))
+        .collect::<Vec<_>>()
+        .join(SINK_ARROW)
+}
+
+/// A rule's sinks for a details dialog, one per row so none is cut: the first
+/// choice, then `→ fallback` rows
+fn sink_detail_values(sinks: &[SinkConfig], rule: &Rule) -> Vec<String> {
+    rule.sink_refs()
+        .enumerate()
+        .map(|(i, r)| {
+            let desc = sink_display(sinks, r);
+            if i == 0 {
+                desc.to_string()
+            } else {
+                format!("→ {desc}")
+            }
+        })
+        .collect()
+}
+
+/// The detail rows of `values` (from [`sink_detail_values`]), labelled once
+fn sink_detail_rows<'a>(
+    rule: &Rule,
+    values: &'a [String],
+) -> impl Iterator<Item = (&'static str, &'a str, bool)> {
+    let label = sinks_label(rule);
+    values
         .iter()
-        .find(|s| s.name == sink_ref || s.desc == sink_ref)
-        .map_or(sink_ref, |s| s.desc.as_str())
+        .enumerate()
+        .map(move |(i, v)| (if i == 0 { label } else { "" }, v.as_str(), false))
+}
+
+/// "Sink" for a rule with one sink, "Sinks" for one with fallbacks
+const fn sinks_label(rule: &Rule) -> &'static str {
+    if rule.fallback_refs.is_empty() {
+        "Sink"
+    } else {
+        "Sinks"
+    }
 }
 
 /// Render the rules table (or the empty-state guidance)
@@ -376,7 +525,7 @@ fn render_list(
                 Cell::from(cut(&rule.app_id_pattern, 1)),
                 title,
                 Cell::from(Span::styled(
-                    cut(sink_display(sinks, &rule.sink_ref), 3),
+                    cut(&sinks_text(sinks, rule.sink_refs()), 3),
                     theme::accent(),
                 )),
                 Cell::from(Span::styled(
@@ -391,7 +540,7 @@ fn render_list(
         frame,
         area,
         block,
-        vec!["#", "App ID", "Title", "Sink", "Description"],
+        vec!["#", "App ID", "Title", "Sinks", "Description"],
         rows,
         &widths,
         screen_state,
@@ -420,13 +569,17 @@ fn render_inspect_popup(
     };
     let (title, any_title) = title_text(rule);
     let (desc, no_desc) = rule.desc.as_deref().map_or(("none", true), |d| (d, false));
-    let lines = detail_lines(&[
-        ("App ID", &rule.app_id_pattern, false),
+    let targets = sink_detail_values(sinks, rule);
+    let mut rows = vec![
+        ("App ID", rule.app_id_pattern.as_str(), false),
         ("Title", title, any_title),
-        ("Sink", sink_display(sinks, &rule.sink_ref), false),
+    ];
+    rows.extend(sink_detail_rows(rule, &targets));
+    rows.extend([
         ("Description", desc, no_desc),
         ("Notify", notify_text(rule.notify), rule.notify.is_none()),
     ]);
+    let lines = detail_lines(&rows);
     render_text_dialog(frame, area, "Rule Details", lines, &[("Enter", "close")]);
 }
 
@@ -454,14 +607,14 @@ fn render_editor(
     let focused = |field| editor.focused_field == field && !screen_state.confirm_discard;
     let hint = |field, text| focused(field).then(|| Span::styled(text, theme::dim()));
 
-    let sink_value = if editor.sink_ref.is_empty() {
+    let sink_value = if editor.sink_refs.is_empty() {
         Line::from(Span::styled(
             "none chosen",
             theme::dim().add_modifier(ratatui::style::Modifier::ITALIC),
         ))
     } else {
         Line::from(Span::styled(
-            sink_display(sinks, &editor.sink_ref),
+            sinks_text(sinks, editor.sink_refs.iter().map(String::as_str)),
             theme::accent(),
         ))
     };
@@ -494,10 +647,10 @@ fn render_editor(
             focused: focused(RuleField::Title),
         },
         FormField {
-            label: "Sink",
+            label: "Sinks",
             value: FieldValue::Fixed(sink_value),
-            trailing: hint(RuleField::Sink, "␣ choose"),
-            focused: focused(RuleField::Sink),
+            trailing: hint(RuleField::Sinks, "␣ choose"),
+            focused: focused(RuleField::Sinks),
         },
         FormField {
             label: "Description",
@@ -634,40 +787,56 @@ fn live_preview_lines(
     lines
 }
 
-/// Render the target sink selector opened from the editor's Sink field
+/// Render the sink picker opened from the editor's Sinks field: the chosen
+/// sinks numbered in priority order, then the others
 fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,
     sinks: &[SinkConfig],
     editor: &mut RuleEditor,
 ) {
-    let entries: Vec<(&str, &str)> = sinks
+    // Sync state (the sink list may have shrunk since the picker opened)
+    editor.picked.retain(|&i| i < sinks.len());
+    editor.sink_dropdown_index = editor
+        .sink_dropdown_index
+        .min(sinks.len().saturating_sub(1));
+
+    let rows = picker_rows(&editor.picked, sinks.len());
+    let entries: Vec<(&str, &str)> = rows
         .iter()
-        .map(|s| (s.desc.as_str(), s.name.as_str()))
+        .map(|&i| (sinks[i].desc.as_str(), sinks[i].name.as_str()))
         .collect();
+    // "1 " before the chosen sinks, as wide as the largest number
+    let number_width = editor.picked.len().to_string().len() + 1;
     let widest = entries
         .iter()
         .map(|(d, n)| text_width(d) + 2 + text_width(n))
         .max()
-        .unwrap_or(0);
-    let (rect, content_width) = pick_list_rect(area, widest, sinks.len().max(1), 30);
-    let items: Vec<ListItem> = picker_lines(&entries, content_width)
+        .unwrap_or(0)
+        + number_width;
+    let (rect, content_width) = pick_list_rect(area, widest, rows.len().max(1), 46);
+    let items: Vec<ListItem> = picker_lines(&entries, content_width.saturating_sub(number_width))
         .into_iter()
-        .map(ListItem::new)
+        .enumerate()
+        .map(|(row, mut line)| {
+            let mark = if row < editor.picked.len() {
+                Span::styled(format!("{:<number_width$}", row + 1), theme::accent())
+            } else {
+                Span::raw(" ".repeat(number_width))
+            };
+            line.spans.insert(0, mark);
+            ListItem::new(line)
+        })
         .collect();
 
-    // Sync state (the sink list may have shrunk since the index was chosen)
-    editor.sink_dropdown_index = editor
-        .sink_dropdown_index
-        .min(sinks.len().saturating_sub(1));
     editor
         .sink_selector_state
         .select((!sinks.is_empty()).then_some(editor.sink_dropdown_index));
     render_pick_list(
         frame,
         rect,
-        "Choose a Sink",
-        &[("Enter", "use"), ("Esc", "back")],
+        "Choose Sinks (in order)",
+        &[("Space", "pick"), ("Shift+↑/↓", "order"), ("Enter", "done")],
         items,
         &mut editor.sink_selector_state,
     );
@@ -675,26 +844,137 @@ fn render_sink_selector(
 
 #[cfg(test)]
 mod editor_tests {
+    use pretty_assertions::assert_eq;
+
     use super::*;
-    use crate::test_utils::fixtures::make_rule_with_fallbacks;
+    use crate::test_utils::fixtures::{make_rule, make_rule_with_fallbacks, make_sink};
+
+    fn sinks() -> Vec<SinkConfig> {
+        vec![
+            make_sink("spk", "Speakers", true),
+            make_sink("hp", "Headphones", false),
+            make_sink("bt", "BT Headphones", false),
+        ]
+    }
+
+    /// An editor on `rule` with its picker open
+    fn picker_on(rule: &Rule) -> RuleEditor {
+        let mut editor = RuleEditor::from_item(rule);
+        editor.open_picker(&sinks());
+        editor
+    }
 
     #[test]
-    fn test_editing_a_rule_keeps_its_fallback_sinks() {
-        let rule = make_rule_with_fallbacks("^discord$", None, &["BT Headphones", "Headphones"]);
-        let mut editor = RuleEditor::from_item(&rule);
+    fn test_round_trip_with_one_sink() {
+        let rule = make_rule("^mpv$", None, "Speakers");
+        let editor = RuleEditor::from_item(&rule);
+        assert_eq!(editor.sink_refs, ["Speakers"]);
+        let back = editor.to_rule().expect("valid rule");
+        assert_eq!(back, rule);
+        assert!(!editor.is_modified());
+    }
+
+    #[test]
+    fn test_round_trip_with_three_sinks() {
+        let rule =
+            make_rule_with_fallbacks("^discord$", None, &["BT Headphones", "Headphones", "spk"]);
+        let mut editor = picker_on(&rule);
+        assert_eq!(editor.picked, [2, 1, 0]);
+        // Applying the unchanged picks keeps the references as written
+        editor.apply_picks(&sinks()).expect("picks");
+        assert!(!editor.is_modified());
         editor.desc = Input::new("Voice chat".to_string());
 
         let edited = editor.to_rule().expect("valid rule");
         assert_eq!(edited.sink_ref, "BT Headphones");
-        assert_eq!(edited.fallback_refs, vec!["Headphones".to_string()]);
+        assert_eq!(edited.fallback_refs, ["Headphones", "spk"]);
     }
 
     #[test]
-    fn test_new_rule_has_no_fallback_sinks() {
+    fn test_reorder_moves_the_highlighted_sink() {
+        let rule = make_rule_with_fallbacks("x", None, &["BT Headphones", "Headphones"]);
+        let mut editor = picker_on(&rule);
+        // Row 1 is Headphones: move it first
+        editor.picker_move(true, 3);
+        editor.picker_reorder(false);
+        assert_eq!(editor.picked, [1, 2]);
+        assert_eq!(
+            editor.sink_dropdown_index, 0,
+            "the highlight follows the sink"
+        );
+        // Already first: nothing happens; an unchosen sink cannot be reordered
+        editor.picker_reorder(false);
+        editor.sink_dropdown_index = 2;
+        editor.picker_reorder(false);
+        assert_eq!(editor.picked, [1, 2]);
+
+        editor.apply_picks(&sinks()).expect("picks");
+        assert_eq!(editor.sink_refs, ["Headphones", "BT Headphones"]);
+        assert!(editor.is_modified());
+    }
+
+    #[test]
+    fn test_removing_the_first_choice_promotes_the_next() {
+        let rule =
+            make_rule_with_fallbacks("x", None, &["BT Headphones", "Headphones", "Speakers"]);
+        let mut editor = picker_on(&rule);
+        editor.picker_toggle(3); // row 0: BT Headphones
+        assert_eq!(editor.picked, [1, 0]);
+        assert_eq!(
+            picker_rows(&editor.picked, 3)[editor.sink_dropdown_index],
+            2,
+            "the highlight follows the removed sink"
+        );
+        editor.apply_picks(&sinks()).expect("picks");
+        let rule = editor.to_rule().expect("valid rule");
+        assert_eq!(rule.sink_ref, "Headphones");
+        assert_eq!(rule.fallback_refs, ["Speakers"]);
+    }
+
+    #[test]
+    fn test_picking_appends_in_order_of_selection() {
         let mut editor = RuleEditor::blank();
         editor.app_id_pattern = Input::new("^mpv$".to_string());
-        editor.sink_ref = "Speakers".to_string();
+        editor.open_picker(&sinks());
+        editor.sink_dropdown_index = 2;
+        editor.picker_toggle(3); // BT Headphones, now row 0
+        assert_eq!(editor.sink_dropdown_index, 0);
+        editor.sink_dropdown_index = 1; // Speakers
+        editor.picker_toggle(3);
+        assert_eq!(editor.picked, [2, 0]);
+        assert_eq!(picker_rows(&editor.picked, 3), [2, 0, 1]);
+        editor.apply_picks(&sinks()).expect("picks");
+        assert_eq!(editor.sink_refs, ["BT Headphones", "Speakers"]);
+    }
+
+    #[test]
+    fn test_enter_with_nothing_chosen_uses_the_highlighted_sink() {
+        let mut editor = RuleEditor::blank();
+        editor.open_picker(&sinks());
+        editor.picker_move(true, 3);
+        editor.apply_picks(&sinks()).expect("picks");
+        assert_eq!(editor.sink_refs, ["Headphones"]);
+        assert!(editor.apply_picks(&[]).is_ok(), "keeps the chosen sink");
+        let mut empty = RuleEditor::blank();
+        assert!(empty.apply_picks(&[]).is_err(), "no sink to choose");
+    }
+
+    #[test]
+    fn test_a_rule_needs_a_sink() {
+        let mut editor = RuleEditor::blank();
+        editor.app_id_pattern = Input::new("^mpv$".to_string());
+        assert!(editor.to_rule().is_err());
+        editor.sink_refs = vec!["Speakers".to_string()];
         let rule = editor.to_rule().expect("valid rule");
         assert_eq!(rule.fallback_refs, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_sinks_text_joins_in_priority_order() {
+        let rule = make_rule_with_fallbacks("x", None, &["bt", "Headphones", "1"]);
+        assert_eq!(
+            sinks_text(&sinks(), rule.sink_refs()),
+            "BT Headphones → Headphones → Speakers"
+        );
     }
 }

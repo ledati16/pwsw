@@ -164,7 +164,7 @@ fn setups(context: Context) -> Vec<Setup> {
             for field in [
                 RuleField::AppId,
                 RuleField::Title,
-                RuleField::Sink,
+                RuleField::Sinks,
                 RuleField::Desc,
                 RuleField::Notify,
             ] {
@@ -190,13 +190,19 @@ fn setups(context: Context) -> Vec<Setup> {
             }
         }
         Context::Dropdown(Screen::Rules) => {
-            for index in [0, 1] {
-                out.push(Box::new(move |app: &mut App| {
-                    app.current_screen = Screen::Rules;
-                    app.rules_screen.start_add();
-                    app.rules_screen.open_sink_selector(&app.config.sinks);
-                    app.rules_screen.editor.sink_dropdown_index = index;
-                }));
+            // Nothing chosen yet, and two sinks chosen
+            for chosen in [false, true] {
+                for index in [0, 1] {
+                    out.push(Box::new(move |app: &mut App| {
+                        app.current_screen = Screen::Rules;
+                        app.rules_screen.start_add();
+                        app.rules_screen.open_sink_selector(&app.config.sinks);
+                        if chosen {
+                            app.rules_screen.editor.picked = vec![2, 0];
+                        }
+                        app.rules_screen.editor.sink_dropdown_index = index;
+                    }));
+                }
             }
         }
         Context::Dropdown(_) => {
