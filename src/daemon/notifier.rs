@@ -214,48 +214,61 @@ mod tests {
         assert_eq!(shown, vec!["c".to_string(), "d".to_string()]);
     }
 
+    /// Upper bound for the notification thread to react (real time)
+    const WAIT: Duration = Duration::from_secs(30);
+
     #[test]
     fn test_rate_limits_per_kind_and_keeps_latest() {
-        let shown = Arc::new(Mutex::new(Vec::<(String, Instant)>::new()));
+        let shown = Arc::new(Mutex::new(Vec::<String>::new()));
         let sink = Arc::clone(&shown);
-        // A long interval: "second"/"third" can only be shown by the final flush
-        let notifier = Notifier::spawn_with(Duration::from_secs(10), move |n| {
-            sink.lock()
-                .expect("lock")
-                .push((n.body.clone(), Instant::now()));
+        let (first_shown, first) = mpsc::channel();
+        // An interval no test run comes near: "second"/"third" can only be shown by
+        // the final flush, however slowly this test runs
+        let notifier = Notifier::spawn_with(Duration::from_hours(24), move |n| {
+            sink.lock().expect("lock").push(n.body.clone());
+            let _ = first_shown.send(());
         });
 
         notifier.send(notice(NoticeKind::Switch, "first"));
-        // Wait until the first is shown so the next ones hit the rate limit
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while shown.lock().expect("lock").is_empty() {
-            assert!(Instant::now() < deadline, "first notice never shown");
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        // Once the first is shown, the next ones hit the rate limit
+        first.recv_timeout(WAIT).expect("first notice shown");
         notifier.send(notice(NoticeKind::Switch, "second"));
         notifier.send(notice(NoticeKind::Switch, "third"));
+        // Another kind is not held up by the switch notices' limit
+        notifier.send(notice(NoticeKind::Daemon, "daemon"));
+        first.recv_timeout(WAIT).expect("other kind shown");
+        assert_eq!(shown.lock().expect("lock").clone(), vec!["first", "daemon"]);
 
         // Dropping flushes the latest pending notice
         let done = notifier.done;
         drop(notifier.tx);
         done.expect("done channel")
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(WAIT)
             .expect("thread finished");
 
         let shown = shown.lock().expect("lock");
-        let bodies: Vec<&str> = shown.iter().map(|(b, _)| b.as_str()).collect();
-        assert_eq!(bodies, vec!["first", "third"]);
+        assert_eq!(*shown, vec!["first", "daemon", "third"]);
     }
 
+    /// A full queue drops the notice; `send` returns at once (bounded here, so a
+    /// regression fails instead of hanging the test run)
     #[test]
     fn test_send_never_blocks_when_full() {
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let notifier = Notifier {
-            tx: Some(tx),
-            done: None,
-        };
-        for i in 0..10 {
-            notifier.send(notice(NoticeKind::Switch, &i.to_string()));
-        }
+        let (tx, rx) = mpsc::sync_channel(1);
+        let (finished, done) = mpsc::channel();
+        std::thread::spawn(move || {
+            let notifier = Notifier {
+                tx: Some(tx),
+                done: None,
+            };
+            for i in 0..10 {
+                notifier.send(notice(NoticeKind::Switch, &i.to_string()));
+            }
+            let _ = finished.send(());
+        });
+        done.recv_timeout(WAIT)
+            .expect("send returned although the queue was full");
+        let queued: Vec<String> = rx.try_iter().map(|n| n.body).collect();
+        assert_eq!(queued, vec!["0"], "the rest was dropped");
     }
 }

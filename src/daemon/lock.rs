@@ -89,7 +89,7 @@ mod tests {
         let path = dir.path().join(LOCK_FILE_NAME);
 
         let first = InstanceLock::try_acquire(&path).expect("lock io");
-        assert!(first.is_some());
+        assert!(first.is_some(), "the first instance gets the lock");
         // flock locks belong to the open file description, so a second open in the
         // same process conflicts just like another process would
         let second = InstanceLock::try_acquire(&path).expect("lock io");
@@ -125,19 +125,34 @@ mod tests {
         std::fs::write(&target, b"").expect("write");
         let path = dir.path().join(LOCK_FILE_NAME);
         std::os::unix::fs::symlink(&target, &path).expect("symlink");
-        assert!(InstanceLock::try_acquire(&path).is_err());
+        let err = InstanceLock::try_acquire(&path).expect_err("a symlink is refused");
+        assert!(
+            format!("{err:#}").contains("symlinks are refused"),
+            "{err:#}"
+        );
 
         // A dangling symlink must not create its target either
         let dangling = dir.path().join("dangling.lock");
         let missing = dir.path().join("missing");
         std::os::unix::fs::symlink(&missing, &dangling).expect("symlink");
-        assert!(InstanceLock::try_acquire(&dangling).is_err());
+        let err = InstanceLock::try_acquire(&dangling).expect_err("a symlink is refused");
+        assert!(
+            format!("{err:#}").contains("symlinks are refused"),
+            "{err:#}"
+        );
         assert!(!missing.exists());
     }
 
     #[test]
     fn test_non_regular_lock_path_is_refused() {
         let dir = tempfile::tempdir().expect("tempdir");
-        assert!(InstanceLock::try_acquire(dir.path()).is_err());
+        let err = InstanceLock::try_acquire(dir.path()).expect_err("a directory is refused");
+        assert!(
+            format!("{err:#}").starts_with(&format!(
+                "Failed to open lock file {}",
+                dir.path().display()
+            )),
+            "{err:#}"
+        );
     }
 }

@@ -6,6 +6,10 @@
 //! Every wait is bounded by [`WAIT`] so a bug fails the test instead of hanging it.
 //! On a paused clock that bound is virtual time, which auto-advances as soon as the
 //! runtime is idle: a reply that will never come fails at once.
+//!
+//! Waiting never moves the clock itself: the helpers park on the loop's step counter
+//! ([`Daemon::steps`]) between looks, so virtual time only passes when the test sleeps
+//! or the loop waits on a timer of its own (a retry, a settle delay, the debounce).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -307,6 +311,8 @@ struct Harness {
     switcher: Arc<FakeSwitcher>,
     reloads: Arc<AtomicUsize>,
     statuses: Arc<Mutex<Vec<String>>>,
+    /// The loop's step counter (see [`Daemon::steps`])
+    steps: watch::Receiver<u64>,
     config_path: PathBuf,
     task: JoinHandle<Result<()>>,
     _dir: tempfile::TempDir,
@@ -388,6 +394,7 @@ fn start_full(
         Some(timeout) => daemon.with_initial_sync(timeout),
         None => daemon,
     };
+    let steps = daemon.steps();
     let task = tokio::spawn(daemon.run(Inputs {
         windows: windows_rx,
         commands: commands_rx,
@@ -403,6 +410,7 @@ fn start_full(
         switcher,
         reloads,
         statuses,
+        steps,
         config_path,
         task,
         _dir: dir,
@@ -498,36 +506,57 @@ impl Harness {
         self.notices.try_iter().collect()
     }
 
+    /// Wait for the loop's next step after the one `steps` last saw (bounded by
+    /// `deadline`); panics with `what` and `context` if none comes
+    async fn next_step(
+        steps: &mut watch::Receiver<u64>,
+        deadline: Instant,
+        what: &str,
+        context: impl FnOnce() -> String,
+    ) {
+        let Ok(changed) = tokio::time::timeout_at(deadline, steps.changed()).await else {
+            panic!("timed out after {WAIT:?} waiting for {what}: {}", context());
+        };
+        assert!(
+            changed.is_ok(),
+            "the loop ended while waiting for {what}: {}",
+            context()
+        );
+    }
+
     /// Wait for the next notification
+    ///
+    /// Notices are queued by the loop within a step: look, and if there is none, wait
+    /// for the next step (one that ran in between is not missed: `steps` was marked
+    /// seen before looking).
     async fn next_notice(&self) -> Notice {
-        let deadline = std::time::Instant::now() + WAIT;
+        let mut steps = self.steps.clone();
+        let deadline = Instant::now() + WAIT;
         loop {
+            steps.borrow_and_update();
             if let Ok(notice) = self.notices.try_recv() {
                 return notice;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for a notification"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            Self::next_step(&mut steps, deadline, "a notification", String::new).await;
         }
     }
 
-    /// Poll snapshots (letting the paused clock advance) until `cond` holds
+    /// Look at snapshots until `cond` holds, waiting for a step of the loop between
+    /// two looks (the clock only moves if the loop waits on a timer of its own)
     async fn wait_for(&self, what: &str, cond: impl Fn(&Snapshot, &[String]) -> bool) -> Snapshot {
-        let deadline = std::time::Instant::now() + WAIT;
+        let mut steps = self.steps.clone();
+        let deadline = Instant::now() + WAIT;
         loop {
+            // Marked seen before looking: a step after this look wakes the wait below
+            steps.borrow_and_update();
             let snapshot = self.snapshot().await;
             if cond(&snapshot, &self.calls()) {
                 return snapshot;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "timed out waiting for {what}: applied={:?} calls={:?}",
-                snapshot.applied,
-                self.calls()
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            Self::next_step(&mut steps, deadline, what, || {
+                format!("applied={:?} calls={:?}", snapshot.applied, self.calls())
+            })
+            .await;
         }
     }
 
@@ -542,6 +571,16 @@ impl Harness {
     async fn wait_windows(&self, count: usize) -> Snapshot {
         self.wait_for(&format!("{count} windows"), |s, _| s.windows.len() == count)
             .await
+    }
+
+    /// Follow the status stream directly (the loop's `watch` channel)
+    async fn live(&self) -> watch::Receiver<LiveStatus> {
+        let (tx, rx) = oneshot::channel();
+        self.command(Command::Subscribe(tx)).await;
+        within("subscription", rx)
+            .await
+            .expect("reply")
+            .expect("a free slot")
     }
 
     async fn stop(self) -> Result<()> {
@@ -706,10 +745,11 @@ async fn test_failure_retries_with_backoff_then_succeeds() {
     h.open(1, "firefox").await;
     h.wait_applied("headphones").await;
     assert_eq!(h.calls(), vec!["headphones"; 3]);
-    let waited = t0.elapsed();
-    assert!(
-        waited >= RETRY_BACKOFF[0] + RETRY_BACKOFF[1],
-        "retries follow the backoff (waited {waited:?})"
+    // Waiting moves the clock only to the loop's own retry timers
+    assert_eq!(
+        t0.elapsed(),
+        RETRY_BACKOFF[0] + RETRY_BACKOFF[1],
+        "retries follow the backoff"
     );
     h.stop().await.expect("clean shutdown");
 }
@@ -727,7 +767,12 @@ async fn test_gives_up_after_backoff_until_next_event() {
 
     tokio::time::sleep(Duration::from_secs(60)).await;
     let snapshot = h.snapshot().await;
-    assert_eq!(h.calls().len(), 3, "no more attempts without a new event");
+    assert_eq!(
+        snapshot.jobs_submitted, 3,
+        "no more attempts without a new event"
+    );
+    assert!(!snapshot.sink_in_flight);
+    assert_eq!(h.calls().len(), 3);
     assert_eq!(
         snapshot.applied.as_deref(),
         Some("speakers"),
@@ -817,7 +862,10 @@ async fn test_failed_activation_of_first_choice_tries_the_next() {
     let snapshot = h.wait_applied("hdmi").await;
     assert!(snapshot.fallback);
     assert_eq!(h.calls(), vec!["headphones", "hdmi"]);
-    assert_eq!(h.requests().len(), 1, "one job, no retry");
+    tokio::time::sleep(RETRY_BACKOFF[0] + RETRY_BACKOFF[1] + Duration::from_secs(1)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.jobs_submitted, 1, "one job, no retry");
+    assert_eq!(h.requests().len(), 1);
     h.stop().await.expect("clean shutdown");
 }
 
@@ -839,7 +887,12 @@ async fn test_no_reachable_candidate_retries_then_stalls_until_next_event() {
 
     tokio::time::sleep(Duration::from_secs(60)).await;
     let snapshot = h.snapshot().await;
-    assert_eq!(h.calls().len(), 3, "no more attempts without a new event");
+    assert_eq!(
+        snapshot.jobs_submitted, 3,
+        "no more attempts without a new event"
+    );
+    assert!(!snapshot.sink_in_flight);
+    assert_eq!(h.calls().len(), 3);
     assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
     assert!(!snapshot.fallback);
 
@@ -866,25 +919,39 @@ async fn test_applied_fallback_upgrades_on_a_later_event() {
     // Still unreachable: an event checks, and changes nothing
     tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
     h.open(2, "zsh").await;
-    h.wait_for("an upgrade check", |_, _| h.requests().len() == 2)
+    let snapshot = h
+        .wait_for("the upgrade check's result", |s, _| {
+            s.windows.len() == 2 && !s.sink_in_flight
+        })
         .await;
+    assert_eq!(snapshot.jobs_submitted, 2, "the switch and one check");
     assert_eq!(h.requests()[1], (names(&["headphones", "hdmi"]), Some(1)));
-    let snapshot = h.wait_windows(2).await;
     assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
     assert!(snapshot.fallback);
     assert_eq!(h.calls(), vec!["hdmi"]);
+    let checked = snapshot.last_upgrade_check.expect("an upgrade check");
 
-    // Checks are rate-limited: an event right after does not check again
+    // Checks are rate-limited: events within the interval do not check again, also
+    // with nothing in flight, up to the last moment before it ends
     h.open(3, "zsh").await;
-    h.wait_windows(3).await;
-    assert_eq!(h.requests().len(), 2);
+    let snapshot = h.wait_windows(3).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "no check right after one");
+    tokio::time::sleep_until(
+        checked + UPGRADE_CHECK_INTERVAL.saturating_sub(Duration::from_millis(1)),
+    )
+    .await;
+    h.open(4, "zsh").await;
+    let snapshot = h.wait_windows(4).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "no check within the interval");
+    assert_eq!(snapshot.last_upgrade_check, Some(checked));
 
     // The headphones come back: the next event after the interval upgrades
     h.switcher.set_absent(&[]);
-    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
-    h.close(3).await;
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    h.close(4).await;
     let snapshot = h.wait_applied("headphones").await;
     assert!(!snapshot.fallback);
+    assert_eq!(snapshot.jobs_submitted, 3);
     assert_eq!(h.calls(), vec!["hdmi", "headphones"]);
     assert_eq!(h.next_notice().await.body, "Headphones → firefox window");
     assert_eq!(
@@ -894,9 +961,55 @@ async fn test_applied_fallback_upgrades_on_a_later_event() {
 
     // On the first choice: no more checks
     tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
-    h.close(2).await;
-    h.wait_windows(1).await;
+    h.close(3).await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.jobs_submitted, 3);
     assert_eq!(h.requests().len(), 3);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// An upgrade check that finds the first choice reachable but failing ends on the
+/// fallback already applied: nothing audible changed, so nothing is announced - no
+/// notification, no new status line, no status stream update
+#[tokio::test(start_paused = true)]
+async fn test_noop_upgrade_is_silent() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(
+        h.next_notice().await.body,
+        "HDMI (fallback) → firefox window"
+    );
+    let statuses = h.statuses();
+    let mut live = h.live().await;
+    live.borrow_and_update();
+
+    // The headphones are back, but fail to activate: the check falls back to HDMI
+    h.switcher.set_absent(&[]);
+    h.switcher
+        .failures
+        .lock()
+        .expect("lock")
+        .insert("headphones".to_string(), 1);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h
+        .wait_for("the upgrade check's result", |s, _| {
+            s.jobs_submitted == 2 && !s.sink_in_flight
+        })
+        .await;
+    assert_eq!(h.requests()[1], (names(&["headphones", "hdmi"]), Some(1)));
+    assert_eq!(h.calls(), vec!["hdmi", "headphones", "hdmi"]);
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert!(snapshot.fallback);
+    assert_eq!(h.notices(), vec![], "no notification");
+    assert_eq!(h.statuses(), statuses, "no new status line");
+    assert!(
+        !live.has_changed().expect("loop running"),
+        "no status stream update"
+    );
     h.stop().await.expect("clean shutdown");
 }
 
@@ -924,7 +1037,8 @@ async fn test_manual_choice_is_not_upgraded_away() {
         Some("usb"),
         "the manual choice holds"
     );
-    assert_eq!(h.requests().len(), 2, "no upgrade check");
+    assert_eq!(snapshot.jobs_submitted, 2, "no upgrade check");
+    assert_eq!(snapshot.last_upgrade_check, None);
     h.stop().await.expect("clean shutdown");
 }
 
@@ -1269,8 +1383,11 @@ async fn test_noop_manual_switch_resumes_the_rule_switch_it_replaced() {
 /// The rule switch itself is running when a manual request queues behind it; it
 /// fails (not the latest job, so no retry is scheduled) and the manual request finds
 /// nothing to do: the rules' sink gets another try at once
-// Real clock: activations are held on purpose
-#[tokio::test]
+///
+/// On a paused clock (the activation is held, but nothing here waits on a timer while
+/// it is): "at once" is checked against the virtual time, which a retry with backoff
+/// would have moved by [`RETRY_BACKOFF`]
+#[tokio::test(start_paused = true)]
 async fn test_rule_failure_behind_noop_manual_switch_is_retried() {
     let (fake, gate, mut started) = FakeSwitcher::gated();
     fake.failures
@@ -1286,10 +1403,19 @@ async fn test_rule_failure_behind_noop_manual_switch_is_retried() {
     );
     let reply = queue_switch(&h, ManualSwitch::Set("Speakers".to_string())).await;
 
+    let t0 = Instant::now();
     drop(gate);
     let response = within("switch reply", reply).await.expect("reply");
-    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    assert!(
+        matches!(&response, Response::Ok { message } if message == "Already on: Speakers"),
+        "{response:?}"
+    );
     h.wait_applied("headphones").await;
+    assert!(
+        t0.elapsed() < RETRY_BACKOFF[0],
+        "retried at once, not after a backoff ({:?})",
+        t0.elapsed()
+    );
     assert_eq!(h.calls(), vec!["headphones", "headphones"]);
     h.stop().await.expect("clean shutdown");
 }
@@ -1384,8 +1510,17 @@ async fn raw_ipc_exchange_with(
     body: &[u8],
     compositor: Option<Capabilities>,
 ) -> Response {
+    ipc_exchange(&h.commands, body, compositor).await
+}
+
+/// One raw `IPC` frame to `handle_connection` serving `commands`, and its reply
+async fn ipc_exchange(
+    commands: &mpsc::Sender<Command>,
+    body: &[u8],
+    compositor: Option<Capabilities>,
+) -> Response {
     let (mut client, server) = tokio::net::UnixStream::pair().expect("socket pair");
-    let commands = h.commands.clone();
+    let commands = commands.clone();
     let server_task = tokio::spawn(async move {
         let info = ServerInfo {
             version: "v9.9.9+test".to_string(),
@@ -1527,6 +1662,53 @@ async fn test_status_follows_switches_and_reloads() {
         "Sink: Studio Headphones".to_string(),
     ]);
     assert_eq!(h.calls(), vec!["headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Events that change nothing the status shows publish nothing: the status line
+/// (each one an `sd_notify` call) is never repeated, and the status stream is not
+/// woken; a real change publishes once
+#[tokio::test(start_paused = true)]
+async fn test_noop_events_publish_no_status() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    let mut live = h.live().await;
+    live.borrow_and_update();
+
+    h.open(1, "zsh").await;
+    h.event(WindowEvent::Changed {
+        id: 1,
+        app_id: "zsh".to_string(),
+        title: "~/src".to_string(),
+    })
+    .await;
+    h.open(2, "zsh").await;
+    h.close(2).await;
+    h.open(3, "zsh").await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.jobs_submitted, 0);
+    assert_eq!(h.statuses(), vec!["Sink: Speakers".to_string()]);
+    assert!(
+        !live.has_changed().expect("loop running"),
+        "no status stream update"
+    );
+
+    h.open(4, "firefox").await;
+    h.wait_applied("headphones").await;
+    h.open(5, "zsh").await;
+    h.wait_windows(4).await;
+    assert_eq!(h.statuses(), vec![
+        "Sink: Speakers".to_string(),
+        "Sink: Headphones".to_string(),
+    ]);
+    assert!(live.has_changed().expect("loop running"));
+    let sink = live.borrow_and_update().sink.clone().expect("a sink");
+    assert_eq!(sink.node, "headphones");
+    h.open(6, "zsh").await;
+    h.wait_windows(5).await;
+    assert!(
+        !live.has_changed().expect("loop running"),
+        "nothing after the change itself"
+    );
     h.stop().await.expect("clean shutdown");
 }
 
@@ -1875,10 +2057,12 @@ async fn test_settle_held_change_switches_after_delay() {
     let t0 = Instant::now();
     h.open(1, "firefox").await;
     h.wait_windows(1).await;
-    tokio::time::sleep(Duration::from_millis(290)).await;
-    assert_eq!(h.calls(), Vec::<String>::new(), "not before the delay");
+    tokio::time::sleep(SETTLE.saturating_sub(Duration::from_millis(1))).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.jobs_submitted, 0, "not before the delay");
+    assert_eq!(snapshot.settling, Some(names(&["headphones"])));
     h.wait_applied("headphones").await;
-    assert!(t0.elapsed() >= SETTLE, "waited {:?}", t0.elapsed());
+    assert_eq!(t0.elapsed(), SETTLE, "switched when the delay ended");
     assert_eq!(h.calls(), vec!["headphones"]);
     h.stop().await.expect("clean shutdown");
 }
@@ -1896,14 +2080,14 @@ async fn test_settle_restarts_on_further_change() {
     let snapshot = h.wait_windows(2).await;
     assert_eq!(snapshot.settling, Some(names(&["hdmi"])));
     tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(h.calls(), Vec::<String>::new(), "B never switched");
+    assert_eq!(h.snapshot().await.jobs_submitted, 0, "B never switched");
     h.wait_applied("hdmi").await;
-    assert!(
-        changed_at.elapsed() >= SETTLE,
-        "switched {:?} after the last change",
-        changed_at.elapsed()
+    assert_eq!(
+        changed_at.elapsed(),
+        SETTLE,
+        "a full delay after the last change"
     );
-    assert!(t0.elapsed() >= Duration::from_millis(500));
+    assert_eq!(t0.elapsed(), Duration::from_millis(500));
     assert_eq!(h.calls(), vec!["hdmi"]);
     h.stop().await.expect("clean shutdown");
 }
@@ -1955,14 +2139,9 @@ async fn test_settle_noop_manual_request_resumes_the_remaining_wait() {
     let snapshot = h.snapshot().await;
     assert_eq!(snapshot.settling, Some(names(&["headphones"])));
     assert!(!snapshot.manual_override);
-    assert_eq!(h.calls(), Vec::<String>::new(), "not switched at once");
+    assert_eq!(snapshot.jobs_submitted, 1, "only the manual request's job");
     h.wait_applied("headphones").await;
-    assert!(t0.elapsed() >= SETTLE, "switched after {:?}", t0.elapsed());
-    assert!(
-        t0.elapsed() < SETTLE + Duration::from_millis(100),
-        "the wait did not start over: {:?}",
-        t0.elapsed()
-    );
+    assert_eq!(t0.elapsed(), SETTLE, "the wait did not start over");
     assert_eq!(h.calls(), vec!["headphones"]);
     h.stop().await.expect("clean shutdown");
 }
@@ -2257,11 +2436,7 @@ async fn test_settle_delay_is_per_dimension() {
         Some(names(&["mic.arctis", "mic.headset"]))
     );
     tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(
-        h.source_calls(),
-        Vec::<String>::new(),
-        "not before its delay"
-    );
+    assert_eq!(h.snapshot().await.jobs_submitted, 0, "not before its delay");
     h.wait_source("mic.arctis").await;
     assert_eq!(h.calls(), Vec::<String>::new(), "no sink switch at all");
     assert_eq!(h.halves(), vec![(false, true)]);
@@ -2685,4 +2860,5 @@ async fn test_status_reports_backend_and_monitor_info() {
     h.stop().await.expect("clean shutdown");
 }
 
+mod ipc;
 mod status_stream;

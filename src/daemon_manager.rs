@@ -162,27 +162,61 @@ mod tests {
         assert_eq!(cgroup_is_unit(content, SYSTEMD_UNIT), expected);
     }
 
+    /// How long the "slow" test commands would run if they were not killed
+    const SLOW_SECS: u64 = 600;
+
+    /// A command that writes its process id to `pid_file`, then runs for
+    /// [`SLOW_SECS`] (unless killed)
+    fn slow_command(pid_file: &std::path::Path) -> Command {
+        let mut slow = Command::new("sh");
+        slow.arg("-c")
+            .arg(format!("echo $$ > \"$1\"; exec sleep {SLOW_SECS}"))
+            .arg("sh")
+            .arg(pid_file);
+        slow
+    }
+
+    /// The process `slow_command` started is gone: killed and reaped (a zombie would
+    /// still have its `/proc` entry)
+    fn assert_gone(pid_file: &std::path::Path) {
+        let pid = std::fs::read_to_string(pid_file).expect("the command wrote its pid");
+        let pid = pid.trim();
+        assert!(!pid.is_empty(), "no pid written");
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "process {pid} still exists"
+        );
+    }
+
+    /// Whether the command wrote its pid (it may be killed before it gets to)
+    fn pid_written(pid_file: &std::path::Path) -> bool {
+        std::fs::read_to_string(pid_file).is_ok_and(|p| p.ends_with('\n'))
+    }
+
     #[test]
     fn test_status_with_timeout() {
         let ok = status_with_timeout(Command::new("true"), Duration::from_secs(5));
-        assert!(ok.is_some_and(|s| s.success()));
+        assert!(ok.is_some_and(|s| s.success()), "{ok:?}");
+        let failed = status_with_timeout(Command::new("false"), Duration::from_secs(5));
+        assert_eq!(failed.and_then(|s| s.code()), Some(1));
 
-        let mut slow = Command::new("sleep");
-        slow.arg("5");
+        // A timeout long enough for the shell to write its pid on a loaded machine; the
+        // command itself would run for ten minutes: returning at all means it was killed
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("pid");
         let start = Instant::now();
-        assert!(status_with_timeout(slow, Duration::from_millis(100)).is_none());
-        assert!(
-            start.elapsed() < Duration::from_secs(4),
-            "child must be killed"
-        );
+        let status = status_with_timeout(slow_command(&pid_file), Duration::from_secs(2));
+        assert!(status.is_none(), "timed out, got {status:?}");
+        assert!(start.elapsed() < Duration::from_secs(SLOW_SECS / 2));
+        if pid_written(&pid_file) {
+            assert_gone(&pid_file);
+        }
 
-        assert!(
-            status_with_timeout(
-                Command::new("/nonexistent/pwsw-test-binary"),
-                Duration::from_secs(1)
-            )
-            .is_none()
+        let missing = status_with_timeout(
+            Command::new("/nonexistent/pwsw-test-binary"),
+            Duration::from_secs(1),
         );
+        assert!(missing.is_none(), "cannot spawn, got {missing:?}");
     }
 
     #[test]
@@ -194,8 +228,14 @@ mod tests {
         assert_eq!(output.stdout, "out\n");
         assert_eq!(output.stderr, "err\n");
 
-        let mut slow = Command::new("sleep");
-        slow.arg("5");
-        assert!(output_with_timeout(slow, Duration::from_millis(100)).is_none());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pid_file = dir.path().join("pid");
+        let start = Instant::now();
+        let output = output_with_timeout(slow_command(&pid_file), Duration::from_secs(2));
+        assert!(output.is_none(), "timed out, got {output:?}");
+        assert!(start.elapsed() < Duration::from_secs(SLOW_SECS / 2));
+        if pid_written(&pid_file) {
+            assert_gone(&pid_file);
+        }
     }
 }

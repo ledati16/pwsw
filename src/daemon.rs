@@ -438,7 +438,15 @@ struct ConfigWatch {
     targets: Arc<Mutex<Vec<PathBuf>>>,
     /// Directories currently watched
     watched: Vec<PathBuf>,
+    /// A test's marker file and where its events go instead (see the tests' `drain`)
+    #[cfg(test)]
+    fence: Fence,
 }
+
+/// A marker file whose events the callback reports on their own channel: events are
+/// handled in order, so once the marker's arrives, every earlier one has been sent
+#[cfg(test)]
+type Fence = Arc<Mutex<Option<(PathBuf, mpsc::UnboundedSender<()>)>>>;
 
 impl ConfigWatch {
     /// Start watching; each relevant event sends `()` on `tx`
@@ -449,9 +457,21 @@ impl ConfigWatch {
     fn start(config_path: &Path, tx: mpsc::UnboundedSender<()>) -> Result<Self> {
         let targets: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
         let matching = Arc::clone(&targets);
+        #[cfg(test)]
+        let fence: Fence = Arc::default();
+        #[cfg(test)]
+        let fenced = Arc::clone(&fence);
         let watcher =
             notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
                 Ok(event) => {
+                    #[cfg(test)]
+                    if let Some((marker, tx)) =
+                        &*fenced.lock().unwrap_or_else(PoisonError::into_inner)
+                        && event.paths.contains(marker)
+                    {
+                        let _ = tx.send(());
+                        return;
+                    }
                     if !(event.kind.is_modify() || event.kind.is_create()) {
                         return;
                     }
@@ -467,6 +487,8 @@ impl ConfigWatch {
             config_path: config_path.to_path_buf(),
             targets,
             watched: Vec::new(),
+            #[cfg(test)]
+            fence,
         };
         watch.refresh();
         Ok(watch)
@@ -571,9 +593,23 @@ mod tests {
         );
     }
 
-    /// Let stray events arrive, then drop them
-    async fn drain(rx: &mut mpsc::UnboundedReceiver<()>) {
-        tokio::time::sleep(Duration::from_millis(200)).await;
+    /// Drop every event of the steps so far, so a late one cannot satisfy the next
+    /// [`expect_event`]: write a marker file into `dir` (a watched directory) and wait
+    /// for its event, which the watcher handles after all earlier ones
+    async fn drain(watch: &ConfigWatch, dir: &Path, rx: &mut mpsc::UnboundedReceiver<()>) {
+        static MARKERS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = MARKERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let marker = dir.join(format!(".fence-{n}"));
+        let (tx, mut fenced) = mpsc::unbounded_channel();
+        *watch.fence.lock().expect("lock") = Some((marker.clone(), tx));
+        std::fs::write(&marker, "").expect("write marker");
+        let got = tokio::time::timeout(EVENT_WAIT, fenced.recv()).await;
+        assert!(
+            matches!(got, Ok(Some(()))),
+            "no event for the marker {} within {EVENT_WAIT:?}",
+            marker.display()
+        );
+        *watch.fence.lock().expect("lock") = None;
         while rx.try_recv().is_ok() {}
     }
 
@@ -600,11 +636,11 @@ mod tests {
 
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut watch = ConfigWatch::start(&config_path, tx).expect("watcher");
-        drain(&mut rx).await;
+        drain(&watch, &link_dir, &mut rx).await;
 
         std::fs::write(&target_a, "# a, edited\n").expect("write");
         expect_event(&mut rx, "editing the symlink target").await;
-        drain(&mut rx).await;
+        drain(&watch, &link_dir, &mut rx).await;
 
         // Point the symlink at another file (atomically, like `ln -sf` via rename)
         let tmp_link = link_dir.join(".config.toml.tmp");
@@ -612,7 +648,7 @@ mod tests {
         std::fs::rename(&tmp_link, &config_path).expect("retarget");
         expect_event(&mut rx, "retargeting the symlink").await;
         watch.refresh();
-        drain(&mut rx).await;
+        drain(&watch, &link_dir, &mut rx).await;
 
         std::fs::write(&target_b, "# b, edited\n").expect("write");
         expect_event(&mut rx, "editing the new symlink target").await;
@@ -632,7 +668,7 @@ mod tests {
         std::fs::write(&config_path, "# v1\n").expect("write");
         let (tx, mut rx) = mpsc::unbounded_channel();
         let watch = ConfigWatch::start(&config_path, tx).expect("watcher");
-        drain(&mut rx).await;
+        drain(&watch, &base, &mut rx).await;
         std::fs::write(&config_path, "# v2\n").expect("write");
         expect_event(&mut rx, "editing the config").await;
         assert_eq!(watch.watched, vec![base]);

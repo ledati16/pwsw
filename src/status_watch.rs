@@ -191,13 +191,31 @@ fn human_line(line: Line<'_>) -> String {
     }
 }
 
+/// Where a [`Printer`] writes each line (with its newline)
+type WriteFn = Box<dyn FnMut(&[u8])>;
+
 /// Prints lines, skipping one identical to the line before
 struct Printer {
     json: bool,
     last: Option<String>,
+    write: WriteFn,
 }
 
 impl Printer {
+    /// Print to stdout: flushed at once; a reader that went away ends the process
+    /// with status 0
+    fn stdout(json: bool) -> Self {
+        Self::with_writer(json, Box::new(crate::style::write_stdout_bytes))
+    }
+
+    fn with_writer(json: bool, write: WriteFn) -> Self {
+        Self {
+            json,
+            last: None,
+            write,
+        }
+    }
+
     fn print(&mut self, line: Line<'_>) {
         let text = if self.json {
             json_line(line).to_string()
@@ -207,8 +225,7 @@ impl Printer {
         if self.last.as_deref() == Some(text.as_str()) {
             return;
         }
-        // Flushed at once; a reader that went away ends the process with status 0
-        crate::style::write_stdout_bytes(format!("{text}\n").as_bytes());
+        (self.write)(format!("{text}\n").as_bytes());
         self.last = Some(text);
     }
 }
@@ -222,7 +239,7 @@ pub async fn run(json: bool) -> Result<()> {
     let mut interrupt = signal(SignalKind::interrupt()).context("Failed to listen for SIGINT")?;
     let mut terminate = signal(SignalKind::terminate()).context("Failed to listen for SIGTERM")?;
     tokio::select! {
-        () = follow(Printer { json, last: None }) => {}
+        () = follow(Printer::stdout(json)) => {}
         _ = interrupt.recv() => {}
         _ = terminate.recv() => {}
         () = stdout_hung_up() => {}
@@ -440,6 +457,60 @@ mod tests {
         assert!(!human.contains('\n'), "{human}");
         let tooltip = tooltip(&status);
         assert_eq!(tooltip.lines().count(), 2, "{tooltip}");
+    }
+
+    /// A printer writing into a buffer the test reads
+    fn printer(json: bool) -> (Printer, std::rc::Rc<std::cell::RefCell<Vec<u8>>>) {
+        let out = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&out);
+        let printer = Printer::with_writer(
+            json,
+            Box::new(move |bytes: &[u8]| sink.borrow_mut().extend_from_slice(bytes)),
+        );
+        (printer, out)
+    }
+
+    /// A line identical to the one before is never printed again (a daemon that
+    /// stays down, an update a bar cannot tell apart); a different one always is,
+    /// also when it repeats an older line
+    #[test_case::test_case(false ; "human")]
+    #[test_case::test_case(true ; "json")]
+    fn test_printer_never_repeats_a_line(json: bool) {
+        let (mut printer, written) = printer(json);
+        let running = update(false, None, false);
+        let paused = update(false, None, true);
+        for line in [
+            Line::Stopped,
+            Line::Stopped,
+            Line::Running(&running),
+            Line::Running(&running.clone()),
+            Line::Running(&paused),
+            Line::Running(&running),
+            Line::Stopped,
+            Line::Stopped,
+        ] {
+            printer.print(line);
+        }
+        let text = |line: Line<'_>| {
+            if json {
+                json_line(line).to_string()
+            } else {
+                human_line(line)
+            }
+        };
+        let mut expected = String::new();
+        for line in [
+            Line::Stopped,
+            Line::Running(&running),
+            Line::Running(&paused),
+            Line::Running(&running),
+            Line::Stopped,
+        ] {
+            expected.push_str(&text(line));
+            expected.push('\n');
+        }
+        let output = String::from_utf8(written.borrow().clone()).expect("utf-8");
+        assert_eq!(output, expected);
     }
 
     #[test]

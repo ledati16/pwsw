@@ -190,6 +190,15 @@ pub(crate) struct Snapshot {
     /// The candidates of a source switch waiting for the settle delay
     #[cfg(test)]
     pub source_settling: Option<Vec<String>>,
+    /// How many jobs (of both lanes) the loop has submitted so far
+    #[cfg(test)]
+    pub jobs_submitted: u64,
+    /// Whether a sink job is submitted and its result not in yet
+    #[cfg(test)]
+    pub sink_in_flight: bool,
+    /// When the sink lane last submitted an upgrade check
+    #[cfg(test)]
+    pub last_upgrade_check: Option<Instant>,
 }
 
 /// Everything the loop listens to
@@ -393,6 +402,10 @@ pub(crate) struct Daemon {
     /// Wait (at most this long) for [`WindowEvent::InitialSync`] before the startup
     /// baseline; `None`: take it at once (tests that do not model the marker)
     initial_sync: Option<Duration>,
+    /// Counts the loop's steps (every input handled except a [`Command::Query`]), so
+    /// tests can wait for the loop to act instead of polling on a clock
+    #[cfg(test)]
+    steps: watch::Sender<u64>,
 }
 
 impl Daemon {
@@ -426,7 +439,16 @@ impl Daemon {
             replies: Vec::new(),
             compositor: None,
             initial_sync: None,
+            #[cfg(test)]
+            steps: watch::Sender::new(0),
         }
+    }
+
+    /// Follows the loop's step count (see [`Daemon::steps`]); queries do not count,
+    /// so polling with snapshots never wakes the poller itself
+    #[cfg(test)]
+    pub(crate) fn steps(&self) -> watch::Receiver<u64> {
+        self.steps.subscribe()
     }
 
     /// Apply the windows the compositor reports as already open (up to its
@@ -562,6 +584,9 @@ impl Daemon {
                 Some(command) = inputs.commands.recv() => match command {
                     Command::Query(reply) => {
                         let _ = reply.send(self.snapshot());
+                        // Read-only: not a step
+                        #[cfg(test)]
+                        continue;
                     }
                     Command::Switch { request, reply } => self.on_manual(request, reply),
                     Command::Pause { request, reply } => {
@@ -602,6 +627,8 @@ impl Daemon {
                     }
                 },
             }
+            #[cfg(test)]
+            self.steps.send_modify(|n| *n += 1);
         }
     }
 
@@ -1676,6 +1703,12 @@ impl Daemon {
             source_manual_override: source.manual_override,
             #[cfg(test)]
             source_settling: source.settle.as_ref().map(|s| s.candidates.clone()),
+            #[cfg(test)]
+            jobs_submitted: self.next_generation,
+            #[cfg(test)]
+            sink_in_flight: sink.submitted.is_some(),
+            #[cfg(test)]
+            last_upgrade_check: sink.last_upgrade_check,
         }
     }
 

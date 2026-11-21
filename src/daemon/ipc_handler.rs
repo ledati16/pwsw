@@ -374,7 +374,204 @@ fn test_rule_response(windows: &[WindowInfo], pattern: String) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::watch;
+
     use super::*;
+
+    /// Upper bound for any single wait (virtual time on a paused clock)
+    const WAIT: Duration = Duration::from_secs(30);
+
+    fn info() -> ServerInfo {
+        ServerInfo {
+            version: "v9.9.9+test".to_string(),
+            started: std::time::Instant::now(),
+            daemon_manager: DaemonManager::Direct,
+            compositor: None,
+        }
+    }
+
+    /// Serve one connection in front of `commands`; returns the client end and the
+    /// server task
+    async fn connect(
+        commands: &mpsc::Sender<Command>,
+        request: &Request,
+    ) -> (UnixStream, JoinHandle<Result<()>>) {
+        let (mut client, server) = UnixStream::pair().expect("socket pair");
+        let commands = commands.clone();
+        let task = tokio::spawn(async move { handle_connection(server, &commands, &info()).await });
+        let body = serde_json::to_vec(request).expect("serialize");
+        let len = u32::try_from(body.len()).expect("small message");
+        tokio::time::timeout(WAIT, async {
+            client.write_all(&len.to_be_bytes()).await.expect("write");
+            client.write_all(&body).await.expect("write");
+        })
+        .await
+        .expect("request written in time");
+        (client, task)
+    }
+
+    /// The next frame from the server
+    async fn read_frame(client: &mut UnixStream) -> Response {
+        let buf = tokio::time::timeout(WAIT, async {
+            let mut len = [0_u8; 4];
+            client.read_exact(&mut len).await.expect("read length");
+            let mut buf = vec![0_u8; usize::try_from(u32::from_be_bytes(len)).expect("fits")];
+            client.read_exact(&mut buf).await.expect("read body");
+            buf
+        })
+        .await
+        .expect("a frame in time");
+        serde_json::from_slice(&buf).expect("response json")
+    }
+
+    /// One request, one reply
+    async fn exchange(commands: &mpsc::Sender<Command>, request: &Request) -> Response {
+        let (mut client, task) = connect(commands, request).await;
+        let response = read_frame(&mut client).await;
+        tokio::time::timeout(WAIT, task)
+            .await
+            .expect("server done in time")
+            .expect("server task")
+            .expect("handled");
+        response
+    }
+
+    /// A loop that takes every command and drops it unanswered (as one that is
+    /// shutting down does with what it had queued)
+    fn dropping_loop() -> mpsc::Sender<Command> {
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                drop(command);
+            }
+        });
+        tx
+    }
+
+    fn is_shutting_down(response: &Response) -> bool {
+        matches!(response, Response::Error { message } if message == "Daemon is shutting down")
+    }
+
+    /// A loop that took a request but dropped its reply: the client hears that the
+    /// daemon is shutting down (no hang, no dropped connection)
+    #[tokio::test(start_paused = true)]
+    async fn test_dropped_replies_answer_shutting_down() {
+        let commands = dropping_loop();
+        for request in [
+            Request::Status,
+            Request::ListWindows,
+            Request::TestRule {
+                pattern: "x".to_string(),
+            },
+            Request::SetSink {
+                sink: "HDMI".to_string(),
+            },
+            Request::NextSink,
+            Request::Pause,
+            Request::TogglePause,
+            Request::Subscribe,
+        ] {
+            let response = exchange(&commands, &request).await;
+            assert!(is_shutting_down(&response), "{request:?}: {response:?}");
+        }
+    }
+
+    /// A switch the loop does not answer within [`SWITCH_REPLY_TIMEOUT`] is reported
+    /// as still in progress (before the client's own read timeout)
+    #[tokio::test(start_paused = true)]
+    async fn test_slow_switch_replies_in_progress() {
+        let (commands, mut rx) = mpsc::channel(8);
+        let held = tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Some(command) = rx.recv().await {
+                held.push(command);
+            }
+            held.len()
+        });
+        let started = tokio::time::Instant::now();
+        let response = exchange(&commands, &Request::NextSink).await;
+        assert!(
+            matches!(&response, Response::Ok { message }
+                if message == "Switch in progress (taking longer than expected)"),
+            "{response:?}"
+        );
+        assert_eq!(started.elapsed(), SWITCH_REPLY_TIMEOUT);
+        drop(commands);
+        assert_eq!(held.await.expect("loop task"), 1);
+    }
+
+    /// The arms `handle_connection` answers itself still have a sensible answer
+    #[tokio::test(start_paused = true)]
+    async fn test_respond_to_connection_level_requests() {
+        let commands = dropping_loop();
+        let response = respond(Request::Shutdown, &commands, &info()).await;
+        assert!(
+            matches!(&response, Response::Ok { message } if message == "Daemon shutting down..."),
+            "{response:?}"
+        );
+        let response = respond(Request::Subscribe, &commands, &info()).await;
+        assert!(
+            matches!(&response, Response::Error { message } if message.contains("keeps the connection open")),
+            "{response:?}"
+        );
+    }
+
+    fn live(paused: bool) -> LiveStatus {
+        LiveStatus {
+            paused,
+            ..LiveStatus::default()
+        }
+    }
+
+    /// The stream sends a frame only for a value that differs from the last one sent:
+    /// a wakeup whose value is unchanged (or changed and changed back) sends nothing
+    #[tokio::test(start_paused = true)]
+    async fn test_stream_skips_unchanged_values() {
+        let status = watch::Sender::new(live(false));
+        let (commands, mut rx) = mpsc::channel(8);
+        let subscribe = status.subscribe();
+        tokio::spawn(async move {
+            let mut subscribe = Some(subscribe);
+            while let Some(command) = rx.recv().await {
+                if let Command::Subscribe(reply) = command {
+                    let _ = reply.send(subscribe.take());
+                }
+            }
+        });
+        let (mut client, server) = connect(&commands, &Request::Subscribe).await;
+        let Response::StatusUpdate(first) = read_frame(&mut client).await else {
+            panic!("expected the first status update");
+        };
+        assert!(!first.paused);
+
+        // Woken with the value it sent already, twice (once changed and back)
+        status.send_replace(live(false));
+        tokio::task::yield_now().await;
+        status.send_replace(live(true));
+        status.send_replace(live(false));
+        // No frame: the clock runs out first (it only advances with nothing to do,
+        // so a frame already written would have been read)
+        let mut probe = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(1), client.read(&mut probe)).await;
+        let Err(_elapsed) = read else {
+            panic!("no frame for an unchanged status, read {read:?}");
+        };
+
+        // A real change is sent
+        status.send_replace(live(true));
+        let Response::StatusUpdate(next) = read_frame(&mut client).await else {
+            panic!("expected a status update");
+        };
+        assert!(next.paused);
+
+        drop(client);
+        tokio::time::timeout(WAIT, server)
+            .await
+            .expect("server done in time")
+            .expect("server task")
+            .expect("handled");
+    }
 
     /// A refused client's retries are logged at `info` once; unknown clients always
     #[test]
