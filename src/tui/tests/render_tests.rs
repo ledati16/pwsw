@@ -191,6 +191,12 @@ fn states() -> Vec<(&'static str, Setup)> {
             app.current_screen = Screen::Rules;
             app.rules_screen.start_edit(&app.config.rules);
         }),
+        ("rule from window", |app| {
+            // Nautilus: no rule matches it (matched windows are listed first)
+            app.dashboard_screen.toggle_view();
+            app.dashboard_screen.window_selected = 3;
+            simulate_key_event(app, KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        }),
         ("rule sink picker", |app| {
             app.current_screen = Screen::Rules;
             app.rules_screen.start_add();
@@ -467,6 +473,85 @@ fn test_rule_form_shows_every_field_at_80x24() {
 }
 
 #[test]
+fn test_rule_form_from_window_at_80x24() {
+    let mut app = state("rule from window");
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("╭ Add Rule "), "{screen}");
+    for (label, value) in [
+        ("App ID", r"^org\.gnome\.Nautilus$"),
+        ("Title", "any title"),
+        ("Sink", "none chosen"),
+    ] {
+        assert!(
+            rows.iter()
+                .any(|r| r.contains(&format!("{label} ")) && r.contains(value)),
+            "{label}: {value}\n{screen}"
+        );
+    }
+    assert!(screen.contains("Current title: Downloads"), "{screen}");
+    assert!(screen.contains("Matching windows (1)"), "{screen}");
+    assert!(
+        screen.contains("org.gnome.Nautilus | Downloads"),
+        "{screen}"
+    );
+    assert!(rows[23].contains("Space choose"), "{}", rows[23]);
+
+    // A long title is cut to the dialog
+    let mut app = state("rule from window");
+    app.rules_screen.editor.window_title = Some("y".repeat(300));
+    let rows = draw_rows(&mut app, 80, 24);
+    let hint = rows
+        .iter()
+        .find(|r| r.contains("Current title: "))
+        .expect("hint row");
+    assert!(hint.contains("y…"), "{hint}");
+    assert!(rows.iter().all(|r| r.chars().count() == 80));
+
+    // A window that a rule already matches opens that rule
+    let mut app = fixture();
+    app.dashboard_screen.toggle_view();
+    app.dashboard_screen.window_selected = 1; // mpv
+    simulate_key_event(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+    );
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("╭ Edit Rule "), "{screen}");
+    assert!(
+        rows[23].contains("This window already matches rule 2"),
+        "{}",
+        rows[23]
+    );
+}
+
+#[test]
+fn test_windows_view_highlights_selection_and_offers_new_rule() {
+    let mut app = state("dashboard windows");
+    simulate_key_event(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let terminal = terminal(&mut app, 80, 24);
+    let rows = rows_of(&terminal);
+    let screen = rows.join("\n");
+    assert!(rows[23].contains("n new rule"), "{}", rows[23]);
+    let y = rows
+        .iter()
+        .position(|r| r.contains("mpv"))
+        .expect("mpv row");
+    let x = rows[y].find("mpv").expect("mpv");
+    let x = rows[y][..x].chars().count();
+    let cell =
+        &terminal.backend().buffer()[(u16::try_from(x).expect("x"), u16::try_from(y).expect("y"))];
+    assert!(
+        cell.modifier.contains(ratatui::style::Modifier::REVERSED),
+        "selected row highlighted:\n{screen}"
+    );
+    // The logs view does not offer it
+    let rows = draw_rows(&mut state("dashboard"), 80, 24);
+    assert!(!rows[23].contains("new rule"), "{}", rows[23]);
+}
+
+#[test]
 fn test_rule_form_fits_the_smallest_terminal() {
     let mut app = state("rule edit");
     let rows = draw_rows(&mut app, 60, 16);
@@ -587,6 +672,10 @@ fn test_empty_states() {
     let screen = draw_rows(&mut state("no rules"), 80, 24).join("\n");
     assert!(
         screen.contains("No rules yet — press a to send a window's audio to a sink"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("or pick a window in Dashboard → w → n"),
         "{screen}"
     );
 
@@ -714,7 +803,15 @@ fn test_text_uses_the_terminal_colors() {
 /// (`cargo test print_80x24 -- --nocapture`)
 #[test]
 fn test_print_80x24_screens() {
-    for name in ["dashboard", "sinks", "sink edit", "rule edit", "no rules"] {
+    for name in [
+        "dashboard",
+        "dashboard windows",
+        "sinks",
+        "sink edit",
+        "rule edit",
+        "rule from window",
+        "no rules",
+    ] {
         let rows = draw_rows(&mut state(name), 80, 24);
         println!("--- {name} ---\n{}", rows.join("\n"));
     }

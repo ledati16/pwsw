@@ -9,6 +9,7 @@ use ratatui::widgets::{Cell, ListItem, ListState, Paragraph, Row};
 use tui_input::Input;
 
 use crate::config::{Rule, SinkConfig, compile_rule_regex};
+use crate::ipc::WindowInfo;
 use crate::tui::preview::{MAX_SHOWN, PreviewView, build_preview_lines};
 use crate::tui::screens::list::{
     FormEditor, ListMode, ListScreen, open_editor_dialog, optional, render_delete_dialog,
@@ -69,6 +70,8 @@ pub struct RuleEditor {
     pub sink_dropdown_index: usize,
     /// Scroll state of the target sink selector
     pub sink_selector_state: ListState,
+    /// Title of the window the form was opened from (shown as a hint to copy from)
+    pub window_title: Option<String>,
     /// App ID, title, sink, description and notify when the editor opened
     initial: RuleValues,
 }
@@ -185,6 +188,34 @@ impl FormEditor for RuleEditor {
 pub type RulesScreen = ListScreen<RuleEditor>;
 
 impl RulesScreen {
+    /// Open the add form pre-filled for `window`: its app ID escaped and anchored,
+    /// any title (its current title shown as a hint), the Sink field focused and
+    /// the sink chosen only when there is exactly one.
+    pub(crate) fn start_add_for_window(&mut self, window: &WindowInfo, sinks: &[SinkConfig]) {
+        self.start_add();
+        let editor = &mut self.editor;
+        editor.app_id_pattern = Input::new(format!("^{}$", regex::escape(&window.app_id)));
+        if let [only] = sinks {
+            editor.sink_ref.clone_from(&only.desc);
+        }
+        editor.focused_field = RuleField::Sink;
+        editor.window_title = Some(window.title.clone());
+        // Nothing typed yet: Esc closes without asking
+        editor.initial = editor.values();
+    }
+
+    /// Open rule `index` of `rules` for editing, showing `window`'s title as a hint
+    pub(crate) fn start_edit_for_window(
+        &mut self,
+        index: usize,
+        rules: &[Rule],
+        window: &WindowInfo,
+    ) {
+        self.selected = index;
+        self.start_edit(rules);
+        self.editor.window_title = Some(window.title.clone());
+    }
+
     /// Open the target sink selector on the sink the rule currently targets.
     pub(crate) fn open_sink_selector(&mut self, sinks: &[SinkConfig]) {
         let current = &self.editor.sink_ref;
@@ -302,6 +333,12 @@ fn render_list(
                     Span::raw(" — press "),
                     Span::styled("a", theme::key()),
                     Span::raw(" to send a window's audio to a sink"),
+                ]),
+                Line::from(vec![
+                    Span::raw("or pick a window in Dashboard → "),
+                    Span::styled("w", theme::key()),
+                    Span::raw(" → "),
+                    Span::styled("n", theme::key()),
                 ]),
                 Line::from(""),
                 Line::from(Span::styled(
@@ -484,8 +521,10 @@ fn render_editor(
         preview,
         daemon_running,
     );
-    // Fields, a separator row, the preview
-    let wanted = FORM_ROWS + 1 + u16::try_from(preview_lines.len()).unwrap_or(u16::MAX) + 2;
+    let hint_rows = u16::from(editor.window_title.is_some());
+    // Fields, the title hint, a separator row, the preview
+    let wanted =
+        FORM_ROWS + hint_rows + 1 + u16::try_from(preview_lines.len()).unwrap_or(u16::MAX) + 2;
     let title = screen_state.editor_title("Rule");
     let inner = open_editor_dialog(frame, area, &title, MAX_DIALOG_WIDTH, wanted);
 
@@ -498,12 +537,35 @@ fn render_editor(
         },
         &fields,
     );
+    let mut used = form_rows;
+
+    // The window the form was opened from: its title, to copy part of it
+    if let Some(window_title) = &editor.window_title
+        && inner.height > used
+    {
+        const LABEL: &str = "Current title: ";
+        let room = usize::from(inner.width).saturating_sub(text_width(LABEL));
+        let value = if window_title.is_empty() {
+            Span::styled("(empty)", theme::dim())
+        } else {
+            Span::raw(ellipsize(window_title, room))
+        };
+        frame.render_widget(
+            Line::from(vec![Span::styled(LABEL, theme::dim()), value]),
+            Rect {
+                y: inner.y + used,
+                height: 1,
+                ..inner
+            },
+        );
+        used += 1;
+    }
 
     // The preview gets what is left, if at least its heading and one line fit
-    let remaining = inner.height - form_rows;
+    let remaining = inner.height - used;
     if remaining >= 2 {
         let separator = Rect {
-            y: inner.y + form_rows,
+            y: inner.y + used,
             height: 1,
             ..inner
         };

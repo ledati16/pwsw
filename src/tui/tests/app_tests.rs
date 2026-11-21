@@ -1,4 +1,5 @@
-//! App state tests: saving, quitting, pasting and the "changed on disk" dialog.
+//! App state tests: saving, quitting, pasting, the "changed on disk" dialog and
+//! making a rule from a window.
 //!
 //! Configs live in temporary directories (`load_from_path`/`save_to`); nothing
 //! touches the default config path.
@@ -413,4 +414,208 @@ fn test_esc_cancels_quit_waiting_for_save() {
         outcome: SaveOutcome::Saved,
     });
     assert!(!app.should_quit, "quit was cancelled");
+}
+
+// ============================================================================
+// "New rule for this window" (n in the Dashboard's window list)
+// ============================================================================
+
+fn window(id: u64, app_id: &str, title: &str, matched: bool) -> crate::ipc::WindowInfo {
+    crate::ipc::WindowInfo {
+        id: Some(id),
+        app_id: app_id.to_string(),
+        title: title.to_string(),
+        matched_on: None,
+        tracked: matched.then(|| crate::ipc::TrackedInfo {
+            sink_name: "s1".to_string(),
+            sink_desc: "Sink One".to_string(),
+            fallbacks: Vec::new(),
+        }),
+    }
+}
+
+/// The Dashboard's window list showing `windows`, with these sinks and rules
+fn windows_app(
+    sinks: Vec<crate::config::SinkConfig>,
+    rules: Vec<crate::config::Rule>,
+    windows: Vec<crate::ipc::WindowInfo>,
+) -> App {
+    let mut app = App::with_config(make_config(sinks, rules));
+    app.handle_update(AppUpdate::DaemonState {
+        running: true,
+        windows,
+        unit_installed: false,
+        service_enabled: None,
+    });
+    app.dashboard_screen.toggle_view();
+    app
+}
+
+fn two_sinks() -> Vec<crate::config::SinkConfig> {
+    vec![
+        make_sink("s1", "Sink One", true),
+        make_sink("s2", "Sink Two", false),
+    ]
+}
+
+#[test]
+fn test_new_rule_from_window_escapes_and_anchors_app_id() {
+    for (app_id, expected) in [
+        ("org.mozilla.firefox", r"^org\.mozilla\.firefox$"),
+        ("a+b", r"^a\+b$"),
+    ] {
+        let mut app = windows_app(
+            two_sinks(),
+            vec![make_rule("^kitty$", None, "Sink One")],
+            vec![window(1, app_id, "Some Title", false)],
+        );
+        simulate_key_event(&mut app, key(KeyCode::Char('n')));
+
+        assert_eq!(app.current_screen, Screen::Rules, "{app_id}");
+        let screen = &app.rules_screen;
+        assert_eq!(screen.mode, ListMode::AddEdit, "{app_id}");
+        assert_eq!(screen.editing_index, None, "adds a rule: {app_id}");
+        let editor = &screen.editor;
+        assert_eq!(editor.app_id_pattern.value(), expected);
+        assert_eq!(editor.title_pattern.value(), "", "any title");
+        assert_eq!(editor.desc.value(), "");
+        assert_eq!(editor.sink_ref, "", "the user chooses the sink");
+        assert_eq!(editor.focused_field, RuleField::Sink);
+        assert_eq!(editor.window_title.as_deref(), Some("Some Title"));
+
+        // The pattern matches exactly this app ID
+        let rule_re = regex::Regex::new(expected).expect("valid regex");
+        assert!(rule_re.is_match(app_id));
+        for other in ["orgXmozillaXfirefox", "aab", "x.a+b", "a+bc"] {
+            assert!(!rule_re.is_match(other), "{expected} matches {other}");
+        }
+    }
+}
+
+#[test]
+fn test_new_rule_from_window_saves_after_choosing_a_sink() {
+    let mut app = windows_app(two_sinks(), vec![], vec![window(
+        1,
+        "org.mozilla.firefox",
+        "Firefox",
+        false,
+    )]);
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    // Untouched: Esc closes without asking
+    simulate_key_event(&mut app, key(KeyCode::Esc));
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    assert!(!app.rules_screen.confirm_discard);
+
+    app.goto_screen(Screen::Dashboard);
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    simulate_key_event(&mut app, key(KeyCode::Char(' '))); // open the sink list
+    simulate_key_event(&mut app, key(KeyCode::Down));
+    simulate_key_event(&mut app, key(KeyCode::Enter)); // Sink Two
+    simulate_key_event(&mut app, key(KeyCode::Enter)); // save
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    let rule = app.config.rules.first().expect("rule added");
+    assert_eq!(rule.app_id_pattern, r"^org\.mozilla\.firefox$");
+    assert_eq!(rule.title_pattern, None);
+    assert_eq!(rule.sink_ref, "Sink Two");
+    assert!(app.config_dirty);
+}
+
+#[test]
+fn test_new_rule_from_window_with_one_sink_preselects_it() {
+    let mut app = windows_app(vec![make_sink("s1", "Sink One", true)], vec![], vec![
+        window(1, "mpv", "video.mkv", false),
+    ]);
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
+    assert_eq!(app.rules_screen.editor.sink_ref, "Sink One");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.rules.len(), 1, "saved as it is");
+    assert_eq!(app.config.rules[0].app_id_pattern, "^mpv$");
+}
+
+#[test]
+fn test_new_rule_from_window_opens_the_rule_that_already_matches() {
+    let mut app = windows_app(
+        two_sinks(),
+        vec![
+            make_rule("^kitty$", None, "Sink One"),
+            make_rule("firefox", None, "Sink Two"),
+            make_rule("fire", None, "Sink One"),
+        ],
+        vec![window(1, "org.mozilla.firefox", "Rust Book", true)],
+    );
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.current_screen, Screen::Rules);
+    let screen = &app.rules_screen;
+    assert_eq!(screen.mode, ListMode::AddEdit);
+    assert_eq!(screen.editing_index, Some(1), "the first matching rule");
+    assert_eq!(screen.editor.app_id_pattern.value(), "firefox");
+    assert_eq!(screen.editor.window_title.as_deref(), Some("Rust Book"));
+    assert_eq!(
+        app.status_message(),
+        Some("This window already matches rule 2")
+    );
+}
+
+#[test]
+fn test_new_rule_follows_the_window_selection() {
+    // Matched windows are listed first: firefox, then kitty, then mpv
+    let mut app = windows_app(
+        two_sinks(),
+        vec![make_rule("firefox", None, "Sink One")],
+        vec![
+            window(1, "kitty", "~", false),
+            window(2, "firefox", "Browser", true),
+            window(3, "mpv", "video", false),
+        ],
+    );
+    simulate_key_event(&mut app, key(KeyCode::Down));
+    simulate_key_event(&mut app, key(KeyCode::Down));
+    // The list refreshes with the same windows: the selection stays on mpv
+    app.handle_update(AppUpdate::DaemonState {
+        running: true,
+        windows: vec![
+            window(3, "mpv", "video", false),
+            window(2, "firefox", "Browser", true),
+            window(1, "kitty", "~", false),
+        ],
+        unit_installed: false,
+        service_enabled: None,
+    });
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "^mpv$");
+}
+
+#[test]
+fn test_new_rule_without_windows_only_says_why() {
+    // Daemon running, no windows
+    let mut app = windows_app(two_sinks(), vec![], vec![]);
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.current_screen, Screen::Dashboard);
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    assert_eq!(app.status_message(), Some("No windows to make a rule for"));
+
+    // Daemon stopped
+    let mut app = windows_app(two_sinks(), vec![], vec![window(1, "mpv", "x", false)]);
+    app.daemon_running = false;
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.current_screen, Screen::Dashboard);
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    assert_eq!(
+        app.status_message(),
+        Some("Daemon not running: start it to list windows")
+    );
+
+    // No sinks to send the window to
+    let mut app = windows_app(vec![], vec![], vec![window(1, "mpv", "x", false)]);
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.current_screen, Screen::Dashboard);
+    assert_eq!(app.status_message(), Some("Add a sink first (2 Sinks → a)"));
+
+    // In the logs view n does nothing
+    let mut app = windows_app(two_sinks(), vec![], vec![window(1, "mpv", "x", false)]);
+    app.dashboard_screen.toggle_view();
+    simulate_key_event(&mut app, key(KeyCode::Char('n')));
+    assert_eq!(app.current_screen, Screen::Dashboard);
+    assert_eq!(app.status_message(), None);
 }

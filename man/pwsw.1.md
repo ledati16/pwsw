@@ -116,7 +116,8 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 :   `←/→`: Select daemon action (Start/Stop/Restart; Enable/Disable when the systemd unit is installed)
 :   `Enter`: Run the selected action
 :   `w`: Toggle between Logs and Windows view
-:   `↑/↓`, `PgUp/PgDn`, `Home/End`: Scroll (`End` returns the log to live view)
+:   `↑/↓`, `PgUp/PgDn`, `Home/End`: Scroll the log (`End` returns to live view), or select a window in the Windows view
+:   `n` (Windows view): New rule for the selected window, its app ID escaped and anchored so it matches that app ID only; the Sink field is focused (preselected when there is only one sink) and the window's title is shown to copy from. If a rule already matches the window, that rule opens for editing instead
 
 **Sinks and Rules lists**
 :   `↑/↓`: Navigate

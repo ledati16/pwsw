@@ -5,6 +5,8 @@ use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, BgCommand, DaemonAction, Screen, StatusKind};
+use super::preview::first_matching_rule;
+use super::screens::dashboard::DashboardView;
 use super::screens::list::{FormEditor, ListMode, ListScreen};
 use super::screens::rules::RuleField;
 use super::screens::settings::LOG_LEVELS;
@@ -213,10 +215,17 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
         // Scrolling (view-aware; page size and limits come from the last render)
         (KeyCode::Up, KeyModifiers::NONE) => dashboard.scroll_up(1),
         (KeyCode::Down, KeyModifiers::NONE) => dashboard.scroll_down(1),
-        (KeyCode::PageUp, _) => dashboard.scroll_up(dashboard.page_size()),
-        (KeyCode::PageDown, _) => dashboard.scroll_down(dashboard.page_size()),
+        (KeyCode::PageUp, _) => dashboard.page_up(),
+        (KeyCode::PageDown, _) => dashboard.page_down(),
         (KeyCode::Home, _) => dashboard.scroll_to_top(),
         (KeyCode::End, _) => dashboard.scroll_to_bottom(),
+
+        // n in the window list: a rule for the selected window
+        (KeyCode::Char('n'), KeyModifiers::NONE)
+            if dashboard.current_view == DashboardView::Windows =>
+        {
+            new_rule_from_selected_window(app);
+        }
 
         // Enter: execute selected daemon action
         (KeyCode::Enter, KeyModifiers::NONE) => {
@@ -237,6 +246,40 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
         }
 
         _ => {}
+    }
+}
+
+/// Open the Rules screen's form for the window selected in the Dashboard's
+/// window list: the rule that already matches it, or a new rule pre-filled
+/// from it. Says why in the status line when there is no window to use.
+fn new_rule_from_selected_window(app: &mut App) {
+    if !app.daemon_running {
+        app.set_status(
+            StatusKind::Warning,
+            "Daemon not running: start it to list windows",
+        );
+        return;
+    }
+    let Some(window) = app.dashboard_screen.selected_window(&app.windows).cloned() else {
+        app.set_status(StatusKind::Warning, "No windows to make a rule for");
+        return;
+    };
+    if app.config.sinks.is_empty() {
+        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
+        return;
+    }
+    app.goto_screen(Screen::Rules);
+    // The rule the daemon would apply, found the way the live preview matches
+    if let Some(index) = first_matching_rule(&app.config.rules, &window) {
+        app.rules_screen
+            .start_edit_for_window(index, &app.config.rules, &window);
+        app.set_status(
+            StatusKind::Info,
+            format!("This window already matches rule {}", index + 1),
+        );
+    } else {
+        app.rules_screen
+            .start_add_for_window(&window, &app.config.sinks);
     }
 }
 

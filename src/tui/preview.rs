@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use ratatui::text::{Line, Span};
 use regex::Regex;
 
-use crate::config::compile_rule_regex;
+use crate::config::{Rule, compile_rule_regex};
 use crate::ipc::WindowInfo;
 
 /// How many matching windows the preview lists (the rest are counted).
@@ -138,6 +138,24 @@ impl LivePreview {
     }
 }
 
+/// Whether `window` matches an `app_id` pattern and an optional title pattern
+/// (`None`: any title), the way the daemon matches rules.
+pub(crate) fn window_matches(
+    app_re: &Regex,
+    title_re: Option<&Regex>,
+    window: &WindowInfo,
+) -> bool {
+    app_re.is_match(&window.app_id) && title_re.is_none_or(|r| r.is_match(&window.title))
+}
+
+/// Index of the first rule (in config order) that matches `window`, the rule
+/// the daemon would apply to it.
+pub(crate) fn first_matching_rule(rules: &[Rule], window: &WindowInfo) -> Option<usize> {
+    rules
+        .iter()
+        .position(|rule| window_matches(&rule.app_id_regex, rule.title_regex.as_ref(), window))
+}
+
 /// Match windows against compiled patterns.
 ///
 /// Returns up to `max_shown` formatted "`app_id` | title" strings and the total
@@ -151,7 +169,7 @@ fn match_windows(
     let mut shown = Vec::new();
     let mut total = 0usize;
     for w in windows {
-        if app_re.is_match(&w.app_id) && title_re.is_none_or(|r| r.is_match(&w.title)) {
+        if window_matches(app_re, title_re, w) {
             total += 1;
             if shown.len() < max_shown {
                 shown.push(format!("{} | {}", w.app_id, w.title));
@@ -273,6 +291,20 @@ mod tests {
         preview.refresh("app", "", &wins, 0);
         assert_eq!(preview.view().shown.len(), MAX_SHOWN);
         assert_eq!(preview.view().total, 12);
+    }
+
+    #[test]
+    fn test_first_matching_rule_uses_rule_order_and_titles() {
+        use crate::test_utils::fixtures::make_rule;
+
+        let rules = vec![
+            make_rule("^firefox$", Some("Private"), "s"),
+            make_rule("fire", None, "s"),
+        ];
+        let wins = windows();
+        assert_eq!(first_matching_rule(&rules, &wins[0]), Some(1));
+        assert_eq!(first_matching_rule(&rules, &wins[2]), Some(0));
+        assert_eq!(first_matching_rule(&rules, &wins[1]), None);
     }
 
     #[test]

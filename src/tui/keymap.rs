@@ -12,6 +12,7 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::app::Screen;
+use super::screens::dashboard::DashboardView;
 
 /// Where a binding applies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +21,9 @@ pub(crate) enum Context {
     Global,
     /// A screen's main view (no dialog open)
     List(Screen),
+    /// The Dashboard's logs or windows view (active together with
+    /// `List(Screen::Dashboard)`)
+    DashboardView(DashboardView),
     /// The add/edit dialog of a screen
     Editor(Screen),
     /// A selection list opened from a screen (node, target sink, log level)
@@ -45,6 +49,7 @@ impl Context {
             | Self::Dropdown(s)
             | Self::Dialog(s)
             | Self::Discard(s) => Some(s),
+            Self::DashboardView(_) => Some(Screen::Dashboard),
             Self::Global | Self::TextInput | Self::Help | Self::Conflict => None,
         }
     }
@@ -56,6 +61,8 @@ impl Context {
             Self::Dropdown(_) => Some("In a selection list:"),
             Self::Dialog(_) => Some("In the delete/details dialog:"),
             Self::Discard(_) => Some("When asked to discard changes:"),
+            Self::DashboardView(DashboardView::Logs) => Some("In the Logs view:"),
+            Self::DashboardView(DashboardView::Windows) => Some("In the Windows view:"),
             Self::List(_) | Self::Global | Self::TextInput | Self::Help | Self::Conflict => None,
         }
     }
@@ -215,24 +222,51 @@ pub(crate) static BINDINGS: &[Binding] = &[
     )
     .hint("w", "logs/windows", 3),
     b(
-        Context::List(Screen::Dashboard),
+        Context::DashboardView(DashboardView::Logs),
         "↑/↓",
         "Scroll one line",
         UP_DOWN,
     )
     .hint("↑/↓", "scroll", 5),
     b(
-        Context::List(Screen::Dashboard),
+        Context::DashboardView(DashboardView::Logs),
         "PgUp/PgDn",
         "Scroll one page",
         PAGE,
     ),
     b(
-        Context::List(Screen::Dashboard),
+        Context::DashboardView(DashboardView::Logs),
         "Home/End",
-        "Oldest/newest logs (End returns to live) · first/last window",
+        "Oldest/newest logs (End returns to live)",
         HOME_END,
     ),
+    b(
+        Context::DashboardView(DashboardView::Windows),
+        "↑/↓",
+        "Select a window",
+        UP_DOWN,
+    )
+    .hint("↑/↓", "select", 5),
+    b(
+        Context::DashboardView(DashboardView::Windows),
+        "PgUp/PgDn",
+        "Scroll one page",
+        PAGE,
+    ),
+    b(
+        Context::DashboardView(DashboardView::Windows),
+        "Home/End",
+        "First/last window",
+        HOME_END,
+    ),
+    b(
+        Context::DashboardView(DashboardView::Windows),
+        "n",
+        "New rule for the selected window (its app ID, anchored); opens the rule instead if \
+         one already matches it",
+        &[(KeyCode::Char('n'), NONE)],
+    )
+    .hint("n", "new rule", 2),
     // --- Sinks ---
     b(
         Context::List(Screen::Sinks),

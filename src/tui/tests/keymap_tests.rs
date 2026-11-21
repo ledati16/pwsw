@@ -99,6 +99,26 @@ fn base(dir: &Path) -> App {
 
 type Setup = Box<dyn Fn(&mut App)>;
 
+/// The Dashboard in `view`, at the top and in the middle of the lists
+fn dashboard_setups(view: DashboardView) -> Vec<Setup> {
+    [false, true]
+        .into_iter()
+        .map(|middle| -> Setup {
+            Box::new(move |app: &mut App| {
+                app.current_screen = Screen::Dashboard;
+                app.dashboard_screen.current_view = view;
+                draw(app); // records the scroll limits
+                if middle {
+                    app.dashboard_screen.log_scroll_offset = 5;
+                    app.dashboard_screen.window_scroll_offset = 5;
+                    app.dashboard_screen.window_selected = 7;
+                    app.dashboard_screen.selected_action = 1;
+                }
+            })
+        })
+        .collect()
+}
+
 /// Realistic states in which bindings of `context` apply.
 fn setups(context: Context) -> Vec<Setup> {
     let mut out: Vec<Setup> = Vec::new();
@@ -110,20 +130,10 @@ fn setups(context: Context) -> Vec<Setup> {
         }
         Context::List(Screen::Dashboard) => {
             for view in [DashboardView::Logs, DashboardView::Windows] {
-                for middle in [false, true] {
-                    out.push(Box::new(move |app: &mut App| {
-                        app.current_screen = Screen::Dashboard;
-                        app.dashboard_screen.current_view = view;
-                        draw(app); // records the scroll limits
-                        if middle {
-                            app.dashboard_screen.log_scroll_offset = 5;
-                            app.dashboard_screen.window_scroll_offset = 5;
-                            app.dashboard_screen.selected_action = 1;
-                        }
-                    }));
-                }
+                out.extend(dashboard_setups(view));
             }
         }
+        Context::DashboardView(view) => out.extend(dashboard_setups(view)),
         Context::List(screen) => {
             for selected in [0, 1] {
                 out.push(Box::new(move |app: &mut App| {
@@ -363,10 +373,12 @@ fn test_footer_hints_come_from_bindings_and_fit() {
         if context == Context::TextInput {
             continue; // typed into, never the footer's context
         }
-        let active = if matches!(context, Context::List(_)) {
-            vec![context, Context::Global]
-        } else {
-            vec![context]
+        let active = match context {
+            Context::List(_) => vec![context, Context::Global],
+            Context::DashboardView(_) => {
+                vec![Context::List(Screen::Dashboard), context, Context::Global]
+            }
+            _ => vec![context],
         };
         for width in [40, 76, 200] {
             let hints = footer_hints(&active, true, width);

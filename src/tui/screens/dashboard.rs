@@ -7,6 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Padding, Paragraph, Row, Table};
 
 use crate::config::Config;
+use crate::ipc::WindowInfo;
 use crate::tui::theme;
 use crate::tui::widgets::{
     char_width, column_widths, ellipsize, render_scrollbar, rounded_block, text_width,
@@ -42,6 +43,8 @@ pub struct DashboardScreen {
     pub log_scroll_offset: usize,
     /// First window shown in the window list
     pub window_scroll_offset: usize,
+    /// Selected row of the window list (in display order, see [`windows_in_display_order`])
+    pub window_selected: usize,
     pub current_view: DashboardView, // Toggle between Logs and Windows
     pub max_action_index: usize,     // Maximum action index (2 without unit, 4 with)
     pub service_enabled: Option<bool>, // None without unit, Some(true/false) with it
@@ -53,6 +56,8 @@ pub struct DashboardScreen {
     window_page: usize,
     /// Largest useful `window_scroll_offset` at the last render
     window_max_offset: usize,
+    /// Windows in the list at the last render
+    window_count: usize,
 }
 
 impl DashboardScreen {
@@ -61,6 +66,7 @@ impl DashboardScreen {
             selected_action: 0,
             log_scroll_offset: 0,
             window_scroll_offset: 0,
+            window_selected: 0,
             current_view: DashboardView::Logs, // Default to logs
             max_action_index: 2,               // Default to 3 actions (start/stop/restart)
             service_enabled: None,             // Updated by background worker
@@ -68,6 +74,7 @@ impl DashboardScreen {
             log_max_offset: usize::MAX,
             window_page: 5,
             window_max_offset: usize::MAX,
+            window_count: usize::MAX,
         }
     }
 
@@ -126,7 +133,7 @@ impl DashboardScreen {
         if page == 0 { 1 } else { page }
     }
 
-    /// Scroll the current view towards older logs / the top of the window list
+    /// Scroll towards older logs / move the window selection up `lines` rows
     pub(crate) fn scroll_up(&mut self, lines: usize) {
         match self.current_view {
             DashboardView::Logs => {
@@ -136,31 +143,58 @@ impl DashboardScreen {
                     .min(self.log_max_offset);
             }
             DashboardView::Windows => {
-                self.window_scroll_offset = self.window_scroll_offset.saturating_sub(lines);
+                self.window_selected = self.window_selected.saturating_sub(lines);
+                self.keep_window_selection_visible();
             }
         }
     }
 
-    /// Scroll the current view towards newer logs / the bottom of the window list
+    /// Scroll towards newer logs / move the window selection down `lines` rows
     pub(crate) fn scroll_down(&mut self, lines: usize) {
         match self.current_view {
             DashboardView::Logs => {
                 self.log_scroll_offset = self.log_scroll_offset.saturating_sub(lines);
             }
             DashboardView::Windows => {
-                self.window_scroll_offset = self
-                    .window_scroll_offset
+                self.window_selected = self
+                    .window_selected
                     .saturating_add(lines)
-                    .min(self.window_max_offset);
+                    .min(self.window_count.saturating_sub(1));
+                self.keep_window_selection_visible();
             }
         }
+    }
+
+    /// One page towards older logs / up the window list (the list and its
+    /// selection move together)
+    pub(crate) fn page_up(&mut self) {
+        let page = self.page_size();
+        if self.current_view == DashboardView::Windows {
+            self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page);
+        }
+        self.scroll_up(page);
+    }
+
+    /// One page towards newer logs / down the window list
+    pub(crate) fn page_down(&mut self) {
+        let page = self.page_size();
+        if self.current_view == DashboardView::Windows {
+            self.window_scroll_offset = self
+                .window_scroll_offset
+                .saturating_add(page)
+                .min(self.window_max_offset);
+        }
+        self.scroll_down(page);
     }
 
     /// Jump to the oldest logs / the first window
     pub(crate) const fn scroll_to_top(&mut self) {
         match self.current_view {
             DashboardView::Logs => self.log_scroll_offset = self.log_max_offset,
-            DashboardView::Windows => self.window_scroll_offset = 0,
+            DashboardView::Windows => {
+                self.window_scroll_offset = 0;
+                self.window_selected = 0;
+            }
         }
     }
 
@@ -168,7 +202,41 @@ impl DashboardScreen {
     pub(crate) const fn scroll_to_bottom(&mut self) {
         match self.current_view {
             DashboardView::Logs => self.log_scroll_offset = 0,
-            DashboardView::Windows => self.window_scroll_offset = self.window_max_offset,
+            DashboardView::Windows => {
+                self.window_scroll_offset = self.window_max_offset;
+                self.window_selected = self.window_count.saturating_sub(1);
+            }
+        }
+    }
+
+    /// Scroll the window list just enough to show the selected row
+    const fn keep_window_selection_visible(&mut self) {
+        if self.window_selected < self.window_scroll_offset {
+            self.window_scroll_offset = self.window_selected;
+        } else if self.window_page > 0
+            && self.window_selected >= self.window_scroll_offset + self.window_page
+        {
+            self.window_scroll_offset = self.window_selected + 1 - self.window_page;
+        }
+    }
+
+    /// The selected window of `windows` (`None` when there are none)
+    pub(crate) fn selected_window<'a>(&self, windows: &'a [WindowInfo]) -> Option<&'a WindowInfo> {
+        let last = windows.len().checked_sub(1)?;
+        windows_in_display_order(windows).nth(self.window_selected.min(last))
+    }
+
+    /// The window list was replaced by `windows`: keep the selection on the
+    /// window with ID `selected_id` (the one selected before), wherever it moved
+    pub(crate) fn follow_selected_window(
+        &mut self,
+        selected_id: Option<u64>,
+        windows: &[WindowInfo],
+    ) {
+        if let Some(id) = selected_id
+            && let Some(pos) = windows_in_display_order(windows).position(|w| w.id == Some(id))
+        {
+            self.window_selected = pos;
         }
     }
 
@@ -191,7 +259,7 @@ pub struct DashboardRenderContext<'a> {
     pub screen_state: &'a mut DashboardScreen,
     pub daemon_running: bool,
     pub daemon_logs: &'a [String],
-    pub windows: &'a [crate::ipc::WindowInfo],
+    pub windows: &'a [WindowInfo],
     /// Active sinks from the last `PipeWire` snapshot (one has `is_default`)
     pub active_sinks: &'a [crate::pipewire::ActiveSink],
     /// Whether the last `PipeWire` snapshot succeeded
@@ -378,6 +446,16 @@ fn render_sink_card(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext)
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The windows in the order the window list shows them: matched first, then the rest
+pub(crate) fn windows_in_display_order(
+    windows: &[WindowInfo],
+) -> impl Iterator<Item = &WindowInfo> {
+    windows
+        .iter()
+        .filter(|w| w.tracked.is_some())
+        .chain(windows.iter().filter(|w| w.tracked.is_none()))
+}
+
 /// Columns of the window table: marker, app ID, title, sink
 const WINDOW_COLUMNS: [Constraint; 4] = [
     Constraint::Length(1),
@@ -387,7 +465,7 @@ const WINDOW_COLUMNS: [Constraint; 4] = [
 ];
 
 /// One row of the window table, cells cut to `cols`
-fn window_row<'a>(win: &'a crate::ipc::WindowInfo, cols: &[usize]) -> Row<'a> {
+fn window_row<'a>(win: &'a WindowInfo, cols: &[usize]) -> Row<'a> {
     let cut = |text: &str, col: usize| ellipsize(text, cols[col]).into_owned();
     match &win.tracked {
         Some(tracked) => Row::new(vec![
@@ -412,7 +490,7 @@ fn window_row<'a>(win: &'a crate::ipc::WindowInfo, cols: &[usize]) -> Row<'a> {
 fn render_window_tracking(
     frame: &mut Frame,
     area: Rect,
-    windows: &[crate::ipc::WindowInfo],
+    windows: &[WindowInfo],
     matched_count: usize,
     state: &mut DashboardScreen,
 ) {
@@ -423,9 +501,13 @@ fn render_window_tracking(
     // One row for the header; the rest list windows
     let visible = usize::from(inner.height).saturating_sub(1);
     state.window_page = visible;
+    state.window_count = total;
     state.window_max_offset = total.saturating_sub(visible);
+    state.window_selected = state.window_selected.min(total.saturating_sub(1));
+    state.keep_window_selection_visible();
     state.window_scroll_offset = state.window_scroll_offset.min(state.window_max_offset);
     let start = state.window_scroll_offset;
+    let selected = state.window_selected;
 
     let mut right = Vec::new();
     if total > visible && visible > 0 {
@@ -457,13 +539,18 @@ fn render_window_tracking(
 
     let cols = column_widths(&WINDOW_COLUMNS, inner.width, 0);
     // Matched windows first, then the rest
-    let rows: Vec<Row> = windows
-        .iter()
-        .filter(|w| w.tracked.is_some())
-        .chain(windows.iter().filter(|w| w.tracked.is_none()))
+    let rows: Vec<Row> = windows_in_display_order(windows)
+        .enumerate()
         .skip(start)
         .take(visible)
-        .map(|w| window_row(w, &cols))
+        .map(|(i, w)| {
+            let row = window_row(w, &cols);
+            if i == selected {
+                row.style(theme::selected())
+            } else {
+                row
+            }
+        })
         .collect();
     let table = Table::new(rows, WINDOW_COLUMNS)
         .header(Row::new(vec!["", "App ID", "Title", "Sink"]).style(theme::bold()))
@@ -772,17 +859,68 @@ mod tests {
         state.toggle_view();
         state.window_page = 4;
         state.window_max_offset = 6;
-        state.scroll_down(state.page_size());
+        state.window_count = 10;
+        state.page_down();
         assert_eq!(
-            state.window_scroll_offset, 4,
-            "PageDown moves down the list"
+            (state.window_scroll_offset, state.window_selected),
+            (4, 4),
+            "PageDown moves the list and the selection down a page"
         );
-        state.scroll_down(state.page_size());
-        assert_eq!(state.window_scroll_offset, 6);
-        state.scroll_up(1);
-        assert_eq!(state.window_scroll_offset, 5);
+        state.page_down();
+        assert_eq!((state.window_scroll_offset, state.window_selected), (6, 8));
+        state.scroll_down(5);
+        assert_eq!(state.window_selected, 9, "clamped to the last window");
+        state.scroll_up(4);
+        assert_eq!(
+            (state.window_scroll_offset, state.window_selected),
+            (5, 5),
+            "the list follows the selection up"
+        );
+        state.scroll_to_bottom();
+        assert_eq!((state.window_scroll_offset, state.window_selected), (6, 9));
         state.scroll_to_top();
-        assert_eq!(state.window_scroll_offset, 0);
+        assert_eq!((state.window_scroll_offset, state.window_selected), (0, 0));
+    }
+
+    fn win(id: u64, app_id: &str, matched: bool) -> WindowInfo {
+        WindowInfo {
+            id: Some(id),
+            app_id: app_id.to_string(),
+            title: String::new(),
+            matched_on: None,
+            tracked: matched.then(|| crate::ipc::TrackedInfo {
+                sink_name: String::new(),
+                sink_desc: String::new(),
+                fallbacks: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_selected_window_in_display_order_and_followed() {
+        let mut state = DashboardScreen::new();
+        assert!(state.selected_window(&[]).is_none());
+        let windows = vec![win(1, "a", false), win(2, "b", true), win(3, "c", false)];
+        assert_eq!(
+            state.selected_window(&windows).map(|w| w.app_id.as_str()),
+            Some("b"),
+            "matched windows come first"
+        );
+        state.window_selected = 7;
+        assert_eq!(
+            state.selected_window(&windows).map(|w| w.app_id.as_str()),
+            Some("c"),
+            "past the end: the last window"
+        );
+        // Window 3 moves to the top once it is matched
+        state.window_selected = 2;
+        let updated = vec![win(1, "a", false), win(2, "b", true), win(3, "c", true)];
+        state.follow_selected_window(Some(3), &updated);
+        assert_eq!(state.window_selected, 1);
+        assert_eq!(
+            state.selected_window(&updated).map(|w| w.app_id.as_str()),
+            Some("c")
+        );
     }
 
     #[test]

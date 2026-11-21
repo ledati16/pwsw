@@ -95,6 +95,9 @@ the daemon switches less eagerly than before.
 - TUI: unsaved-changes protection on quit (`q` or `Ctrl+C`), a "changed on disk" dialog,
   bracketed paste into text fields, scrollbars, and help generated from the real key
   bindings.
+- TUI: `n` in the Dashboard's Windows view makes a rule for the selected window (its app
+  ID escaped and anchored, its title shown to copy from), or opens the rule that already
+  matches it. The window list now has a selection (`↑/↓`, `PgUp/PgDn`, `Home/End`).
 
 ### Fixed
 

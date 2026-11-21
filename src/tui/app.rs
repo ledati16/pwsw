@@ -497,7 +497,15 @@ impl App {
                 .editing_log_level
                 .then_some(Context::Dropdown(screen)),
         };
-        modal.map_or_else(|| vec![Context::List(screen), Context::Global], |c| vec![c])
+        match modal {
+            Some(context) => vec![context],
+            None if screen == Screen::Dashboard => vec![
+                Context::List(screen),
+                Context::DashboardView(self.dashboard_screen.current_view),
+                Context::Global,
+            ],
+            None => vec![Context::List(screen), Context::Global],
+        }
     }
 
     /// Whether background work the user is waiting for is in flight (drives the
@@ -748,7 +756,14 @@ impl App {
                 if changed {
                     self.windows_generation = self.windows_generation.wrapping_add(1);
                 }
+                // The window list's selection stays on the same window
+                let selected_id = self
+                    .dashboard_screen
+                    .selected_window(&self.windows)
+                    .and_then(|w| w.id);
                 self.windows = windows;
+                self.dashboard_screen
+                    .follow_selected_window(selected_id, &self.windows);
                 self.dashboard_screen.service_enabled = service_enabled;
                 // Enable/disable act on the installed unit, however the daemon runs
                 self.dashboard_screen.set_max_actions(unit_installed);
