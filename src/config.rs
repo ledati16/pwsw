@@ -717,6 +717,15 @@ impl Config {
         self.save_impl(path.as_ref(), false)
     }
 
+    /// Like [`Config::save_to`], but overwrite the file even if it changed on disk since
+    /// it was loaded.
+    ///
+    /// # Errors
+    /// Returns an error if the config is invalid or cannot be written.
+    pub fn save_force_to<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.save_impl(path.as_ref(), true)
+    }
+
     fn save_impl(&self, path: &Path, force: bool) -> Result<()> {
         self.validate()?;
         self.validate_patterns()?;

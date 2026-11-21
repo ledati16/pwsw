@@ -1,5 +1,6 @@
 //! Background worker and command-queue tests (fake backend, paused clock).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,7 +11,7 @@ use tokio::time::Instant;
 
 use crate::config::Config;
 use crate::test_utils::fixtures::{make_config, make_sink};
-use crate::tui::app::{App, AppUpdate, BgCommand, DaemonAction, Screen};
+use crate::tui::app::{App, AppUpdate, BgCommand, DaemonAction, SaveOutcome, Screen};
 use crate::tui::input::simulate_key_event;
 use crate::tui::worker::{self, Backend, STATUS_POLL};
 
@@ -26,7 +27,7 @@ impl Backend for Fake {
         AppUpdate::DaemonState {
             running: true,
             windows: Vec::new(),
-            daemon_manager: None,
+            unit_installed: false,
             service_enabled: None,
         }
     }
@@ -39,12 +40,33 @@ impl Backend for Fake {
         std::future::ready(Ok(format!("{action:?} done")))
     }
 
-    fn save_config(&self, _config: Config) -> impl Future<Output = Result<()>> + Send {
+    fn save_config(
+        &self,
+        _config: Config,
+        _path: PathBuf,
+        _force: bool,
+    ) -> impl Future<Output = SaveOutcome> + Send {
         let panic = self.panic_on_save;
         async move {
             assert!(!panic, "save exploded");
-            Ok(())
+            SaveOutcome::Saved
         }
+    }
+
+    fn load_config(
+        &self,
+        _path: PathBuf,
+    ) -> impl Future<Output = Result<Box<Config>, String>> + Send {
+        std::future::ready(Ok(Box::new(make_config(vec![], vec![]))))
+    }
+}
+
+/// A save command for the fake backend (the path is never touched).
+fn save_command() -> BgCommand {
+    BgCommand::SaveConfig {
+        config: Box::new(make_config(vec![], vec![])),
+        path: PathBuf::from("unused"),
+        force: false,
     }
 }
 
@@ -99,18 +121,25 @@ async fn test_worker_runs_commands_immediately_despite_slow_poll() {
     );
     let start = Instant::now();
 
-    h.commands
-        .send(BgCommand::SaveConfig(make_config(vec![], vec![])))
-        .await
-        .expect("queued");
+    h.commands.send(save_command()).await.expect("queued");
     let saved = recv_until(&mut h.updates, |u| {
         matches!(u, AppUpdate::ConfigSaved { .. })
     })
     .await;
     assert!(matches!(saved, AppUpdate::ConfigSaved {
-        success: true,
+        outcome: SaveOutcome::Saved,
         ..
     }));
+
+    h.commands
+        .send(BgCommand::ReloadConfig(PathBuf::from("unused")))
+        .await
+        .expect("queued");
+    let reloaded = recv_until(&mut h.updates, |u| {
+        matches!(u, AppUpdate::ConfigReloaded(_))
+    })
+    .await;
+    assert!(matches!(reloaded, AppUpdate::ConfigReloaded(Ok(_))));
 
     h.commands
         .send(BgCommand::DaemonAction(DaemonAction::Enable))
@@ -187,10 +216,7 @@ async fn test_worker_reraises_task_panics() {
         },
         false,
     );
-    h.commands
-        .send(BgCommand::SaveConfig(make_config(vec![], vec![])))
-        .await
-        .expect("queued");
+    h.commands.send(save_command()).await.expect("queued");
     let joined = tokio::time::timeout(Duration::from_secs(5), h.handle)
         .await
         .expect("worker ends");
@@ -200,6 +226,7 @@ async fn test_worker_reraises_task_panics() {
 fn dirty_app(tx: mpsc::Sender<BgCommand>) -> App {
     let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
     app.bg_cmd_tx = Some(tx);
+    app.config_path = Some(PathBuf::from("unused"));
     app.config_dirty = true;
     app
 }

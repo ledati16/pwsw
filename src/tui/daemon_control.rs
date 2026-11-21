@@ -34,6 +34,12 @@ fn store_is_enabled(value: bool) {
     }
 }
 
+/// How long a cached "unit installed" answer is reused by the poll loop.
+const UNIT_INSTALLED_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// Last "unit installed" answer and when it was obtained.
+static UNIT_INSTALLED_CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+
 impl DaemonManager {
     /// Decide how the `TUI` should control the daemon (start/stop/restart).
     ///
@@ -59,6 +65,22 @@ impl DaemonManager {
         } else {
             Self::Direct
         }
+    }
+
+    /// Whether the `pwsw.service` unit file is installed, cached for a few
+    /// seconds (the `TUI` asks on every status poll).
+    pub async fn unit_installed_cached() -> bool {
+        let cached = UNIT_INSTALLED_CACHE.lock().ok().and_then(|guard| {
+            guard.and_then(|(at, value)| (at.elapsed() < UNIT_INSTALLED_CACHE_TTL).then_some(value))
+        });
+        if let Some(value) = cached {
+            return value;
+        }
+        let value = detached(Self::unit_installed).await.unwrap_or(false);
+        if let Ok(mut guard) = UNIT_INSTALLED_CACHE.lock() {
+            *guard = Some((Instant::now(), value));
+        }
+        value
     }
 
     /// Start the daemon
@@ -180,35 +202,6 @@ impl DaemonManager {
                     .await
                     .context("Old daemon did not exit")?;
                 self.start().await
-            }
-        }
-    }
-
-    /// Check if the daemon is currently running
-    ///
-    /// For systemd mode: Checks if the systemd service is active using `systemctl is-active`.
-    /// Returns `false` if the command fails or the service is inactive.
-    ///
-    /// For direct mode: Attempts to connect to the daemon via IPC socket with a health check.
-    /// Returns `true` if the socket exists and responds to a status query within timeout.
-    pub async fn is_running(self) -> bool {
-        match self {
-            Self::Systemd => {
-                // Check systemd service status
-                detached(move || {
-                    Command::new("systemctl")
-                        .args(["--user", "is-active", "pwsw.service"])
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .is_ok_and(|status| status.success())
-                })
-                .await
-                .unwrap_or(false)
-            }
-            Self::Direct => {
-                // Check via IPC
-                ipc::is_daemon_running().await
             }
         }
     }

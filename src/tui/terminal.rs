@@ -1,4 +1,5 @@
-//! Terminal session: raw mode + alternate screen, restored exactly once.
+//! Terminal session: raw mode + alternate screen + bracketed paste, restored
+//! exactly once.
 //!
 //! [`TerminalSession::enter`] installs a panic hook *before* touching the
 //! terminal and creates the guard that undoes everything, so a failure half-way
@@ -17,6 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use color_eyre::eyre::{Context, Result};
 use crossterm::cursor::Show;
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::execute;
 use crossterm::terminal::{EnterAlternateScreen, enable_raw_mode};
 use ratatui::backend::CrosstermBackend;
@@ -29,9 +31,11 @@ static TERMINAL_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Set by the panic hook; the event loop exits when it sees it.
 static PANIC_SEEN: AtomicBool = AtomicBool::new(false);
 
-/// Leave raw mode and the alternate screen if (and only if) they are active.
+/// Leave raw mode, bracketed paste and the alternate screen if (and only if)
+/// they are active.
 fn restore_once() {
     if TERMINAL_ACTIVE.swap(false, Ordering::SeqCst) {
+        let _ = execute!(stdout(), DisableBracketedPaste);
         ratatui::restore();
         let _ = execute!(stdout(), Show);
     }
@@ -84,7 +88,8 @@ pub(crate) struct TerminalSession {
 }
 
 impl TerminalSession {
-    /// Enter raw mode and the alternate screen.
+    /// Enter raw mode and the alternate screen, and enable bracketed paste (a
+    /// paste arrives as one `Event::Paste` instead of a stream of key presses).
     ///
     /// # Errors
     /// Returns an error if raw mode, the alternate screen or the terminal backend
@@ -95,6 +100,7 @@ impl TerminalSession {
         TERMINAL_ACTIVE.store(true, Ordering::SeqCst);
         enable_raw_mode().context("Failed to enable raw mode")?;
         execute!(stdout(), EnterAlternateScreen).context("Failed to enter alternate screen")?;
+        execute!(stdout(), EnableBracketedPaste).context("Failed to enable bracketed paste")?;
         let terminal =
             Terminal::new(CrosstermBackend::new(stdout())).context("Failed to create terminal")?;
         Ok(Self {

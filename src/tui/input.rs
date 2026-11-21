@@ -1,24 +1,28 @@
 //! Input handling for keyboard events
 
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, BgCommand, DaemonAction, Screen};
-use super::screens::rules::RulesMode;
-use super::screens::sinks::SinksMode;
+use super::screens::rules::{RuleField, RulesMode};
+use super::screens::settings::LOG_LEVELS;
+use super::screens::sinks::{SinkField, SinksMode, selector_names};
 use crate::config::{Rule, SinkConfig, compile_rule_regex};
 
 /// Handle a single input event and update app state
 ///
-/// Sets `app.dirty = true` to trigger a redraw. Delegates to `handle_key_event` for
-/// keyboard input and handles terminal resize events.
+/// Key presses go to `handle_key_event`; a bracketed paste goes to the focused
+/// text field only (never to key bindings); resizes trigger a redraw.
 pub fn handle_event(app: &mut App, event: &Event) {
-    if let Event::Key(key_event) = event {
-        handle_key_event(app, *key_event);
-        app.dirty = true;
-    } else if let Event::Resize(..) = event {
+    match event {
+        Event::Key(key_event) if key_event.kind != KeyEventKind::Release => {
+            handle_key_event(app, *key_event);
+            app.dirty = true;
+        }
+        Event::Paste(text) => app.paste(text),
         // Ratatui handles resize automatically, but mark dirty so UI redraws at new size
-        app.dirty = true;
+        Event::Resize(..) => app.dirty = true,
+        _ => {}
     }
 }
 
@@ -26,6 +30,7 @@ pub fn handle_event(app: &mut App, event: &Event) {
 pub fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event::KeyEvent) {
     handle_key_event(app, key);
 }
+
 /// Check if any modal or editor is currently active
 fn is_modal_active(app: &App) -> bool {
     // Check screen-specific modals
@@ -40,39 +45,65 @@ fn is_modal_active(app: &App) -> bool {
 /// Handle keyboard input
 // Input dispatch across all screens - cohesive routing logic
 fn handle_key_event(app: &mut App, key: KeyEvent) {
-    // Always-global keybindings (work even in modals)
-    match (key.code, key.modifiers) {
-        // Ctrl+C always quits immediately
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => {
+    let ctrl_c = key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL;
+
+    // A pending "unsaved changes" quit prompt: the very next key decides. q (where
+    // it is a command, not text) or Ctrl+C quits; Esc only dismisses the prompt;
+    // any other key dismisses it and then does its normal job.
+    if app.confirm_quit {
+        let q_command = key.code == KeyCode::Char('q')
+            && key.modifiers == KeyModifiers::NONE
+            && !is_modal_active(app)
+            && !app.save_conflict;
+        if ctrl_c || q_command {
             app.quit();
             return;
         }
-
-        // Ctrl+S: Save config (global)
-        (KeyCode::Char('s'), KeyModifiers::CONTROL) => {
-            if app.config_dirty {
-                if app.bg_cmd_tx.is_some() {
-                    // Don't clear config_dirty - wait for ConfigSaved result
-                    if app.send_command(BgCommand::SaveConfig(app.config.clone())) {
-                        app.save_pending = true;
-                        app.set_status("Saving configuration...".to_string());
-                    }
-                } else {
-                    // Fallback to blocking save if background worker not available
-                    if let Err(e) = app.save_config() {
-                        app.set_status(format!("Failed to save config: {e}"));
-                    }
-                }
-            }
+        app.cancel_quit();
+        if key.code == KeyCode::Esc {
             return;
         }
+    }
 
-        _ => {}
+    // Always-global keybindings (work even in modals)
+    if ctrl_c {
+        app.request_quit();
+        return;
+    }
+    if key.code == KeyCode::Char('s') && key.modifiers == KeyModifiers::CONTROL {
+        if app.config_dirty {
+            // config_dirty stays until the save reports back
+            app.request_save(false);
+        } else {
+            app.set_status("No unsaved changes".to_string());
+        }
+        return;
+    }
+
+    // "Changed on disk" dialog (blocks everything else)
+    if app.save_conflict {
+        match key.code {
+            KeyCode::Char('o') => {
+                app.save_conflict = false;
+                app.request_save(true);
+            }
+            KeyCode::Char('r') => {
+                app.save_conflict = false;
+                app.request_reload();
+            }
+            KeyCode::Esc => {
+                app.save_conflict = false;
+                app.set_status("Not saved; your changes are kept".to_string());
+            }
+            _ => {}
+        }
+        return;
     }
 
     // Help overlay input (blocks everything else)
     if app.show_help {
-        const HELP_PAGE_SIZE: usize = 15;
+        // One page = the help viewport measured at the last render
+        let page = app.help_viewport_height.max(1);
         match key.code {
             KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?' | 'q') => {
                 app.show_help = false;
@@ -163,11 +194,11 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::PageUp => {
                 let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                let new_selected = current_selected.saturating_sub(HELP_PAGE_SIZE);
+                let new_selected = current_selected.saturating_sub(page);
                 app.help_scroll_state.select(Some(new_selected));
 
                 let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_sub(HELP_PAGE_SIZE);
+                let new_offset = current_offset.saturating_sub(page);
                 *app.help_scroll_state.offset_mut() = new_offset;
             }
             KeyCode::PageDown => {
@@ -177,7 +208,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 );
                 let current_selected = app.help_scroll_state.selected().unwrap_or(0);
                 let new_selected = current_selected
-                    .saturating_add(HELP_PAGE_SIZE)
+                    .saturating_add(page)
                     .min(row_count.saturating_sub(1));
                 app.help_scroll_state.select(Some(new_selected));
 
@@ -187,9 +218,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                     app.help_viewport_height,
                 );
                 let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset
-                    .saturating_add(HELP_PAGE_SIZE)
-                    .min(max_offset);
+                let new_offset = current_offset.saturating_add(page).min(max_offset);
                 *app.help_scroll_state.offset_mut() = new_offset;
             }
             _ => {}
@@ -201,50 +230,24 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     // If a modal is active (other than help), pass most keys to screen-specific handlers
     if is_modal_active(app) {
         match key.code {
-            KeyCode::Esc => {
-                // Priority: quit confirmation > modal
-                if app.confirm_quit {
-                    app.cancel_quit();
-                } else {
-                    // Let screen handler close modal
-                    handle_screen_specific_input(app, key);
-                }
-                return;
-            }
             // F1: Toggle help overlay (global)
             KeyCode::F(1) => {
                 app.show_help = true;
                 app.reset_help_scroll();
-                return;
             }
-            // Help toggle is handled in global section below if no modal,
-            // but if modal is active, we might want to allow it?
-            // "Global shortcuts" say ? is global.
-            // Let's allow ? to open help even over a modal, but ONLY if not in input
+            // ? opens help over a modal too, unless it is being typed into a field
             KeyCode::Char('?') if !app.is_input_focused() => {
                 app.show_help = true;
                 app.reset_help_scroll();
-                return;
             }
-            _ => {
-                handle_screen_specific_input(app, key);
-                return;
-            }
+            _ => handle_screen_specific_input(app, key),
         }
+        return;
     }
 
     // Normal global keybindings (only when no modal is active)
     match (key.code, key.modifiers) {
-        // Quit: q
-        (KeyCode::Char('q'), KeyModifiers::NONE) => {
-            if app.confirm_quit {
-                // User already confirmed, actually quit
-                app.confirm_quit_action();
-            } else {
-                // First quit request - check for unsaved changes
-                app.request_quit();
-            }
-        }
+        (KeyCode::Char('q'), KeyModifiers::NONE) => app.request_quit(),
 
         // Tab: next screen
         (KeyCode::Tab, KeyModifiers::NONE) => {
@@ -270,14 +273,8 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             app.goto_screen(Screen::Settings);
         }
 
-        // Escape: cancel quit confirmation or clear status message
-        (KeyCode::Esc, KeyModifiers::NONE) => {
-            if app.confirm_quit {
-                app.cancel_quit();
-            } else {
-                app.clear_status();
-            }
-        }
+        // Escape: clear status message
+        (KeyCode::Esc, KeyModifiers::NONE) => app.clear_status(),
 
         // F1: Always toggle help overlay (global)
         (KeyCode::F(1), _) => {
@@ -312,83 +309,26 @@ fn handle_screen_specific_input(app: &mut App, key: KeyEvent) {
 
 /// Handle dashboard screen input
 fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
-    use crossterm::event::KeyModifiers;
-
-    use super::screens::DashboardView;
-
+    let dashboard = &mut app.dashboard_screen;
     match (key.code, key.modifiers) {
-        // Toggle between Logs and Windows view (Phase 9B)
-        (KeyCode::Char('w'), KeyModifiers::NONE) => {
-            app.dashboard_screen.toggle_view();
-        }
+        // Toggle between Logs and Windows view
+        (KeyCode::Char('w'), KeyModifiers::NONE) => dashboard.toggle_view(),
 
-        // Left/Right for horizontal daemon action navigation (Phase 9A)
-        (KeyCode::Left, KeyModifiers::NONE) => {
-            app.dashboard_screen.select_previous();
-        }
-        (KeyCode::Right, KeyModifiers::NONE) => {
-            app.dashboard_screen.select_next();
-        }
+        // Left/Right for horizontal daemon action navigation
+        (KeyCode::Left, KeyModifiers::NONE) => dashboard.select_previous(),
+        (KeyCode::Right, KeyModifiers::NONE) => dashboard.select_next(),
 
-        // Up/Down for scrolling (view-aware)
-        (KeyCode::Up, KeyModifiers::NONE) => match app.dashboard_screen.current_view {
-            DashboardView::Logs => {
-                let total = app.daemon_log_lines.len();
-                let visible = 20;
-                app.dashboard_screen.scroll_logs_up(total, visible);
-            }
-            DashboardView::Windows => {
-                // Single-line scroll not implemented for windows (use PageUp/Down)
-            }
-        },
-        (KeyCode::Down, KeyModifiers::NONE) => match app.dashboard_screen.current_view {
-            DashboardView::Logs => {
-                app.dashboard_screen.scroll_logs_down();
-            }
-            DashboardView::Windows => {
-                // Single-line scroll not implemented for windows (use PageUp/Down)
-            }
-        },
-
-        // PageUp/PageDown for scrolling (view-aware)
-        (KeyCode::PageUp, _) => match app.dashboard_screen.current_view {
-            DashboardView::Logs => {
-                let total = app.daemon_log_lines.len();
-                let visible = 10;
-                app.dashboard_screen.scroll_logs_page_up(total, visible);
-            }
-            DashboardView::Windows => {
-                let page_size = 5;
-                let total = app.windows.len();
-                app.dashboard_screen
-                    .scroll_windows_page_up(page_size, total);
-            }
-        },
-        (KeyCode::PageDown, _) => match app.dashboard_screen.current_view {
-            DashboardView::Logs => {
-                let visible = 10;
-                app.dashboard_screen.scroll_logs_page_down(visible);
-            }
-            DashboardView::Windows => {
-                let page_size = 5;
-                app.dashboard_screen.scroll_windows_page_down(page_size);
-            }
-        },
-
-        // Home: jump to top/bottom (view-aware)
-        (KeyCode::Home, _) => match app.dashboard_screen.current_view {
-            DashboardView::Logs => {
-                app.dashboard_screen.scroll_logs_to_bottom(); // Reset to latest
-            }
-            DashboardView::Windows => {
-                app.dashboard_screen.scroll_windows_to_top();
-            }
-        },
+        // Scrolling (view-aware; page size and limits come from the last render)
+        (KeyCode::Up, KeyModifiers::NONE) => dashboard.scroll_up(1),
+        (KeyCode::Down, KeyModifiers::NONE) => dashboard.scroll_down(1),
+        (KeyCode::PageUp, _) => dashboard.scroll_up(dashboard.page_size()),
+        (KeyCode::PageDown, _) => dashboard.scroll_down(dashboard.page_size()),
+        (KeyCode::Home, _) => dashboard.scroll_to_top(),
+        (KeyCode::End, _) => dashboard.scroll_to_bottom(),
 
         // Enter: execute selected daemon action
         (KeyCode::Enter, KeyModifiers::NONE) => {
-            // Send the daemon action to the background worker if available
-            let action = match app.dashboard_screen.selected_action {
+            let action = match dashboard.selected_action {
                 0 => DaemonAction::Start,
                 1 => DaemonAction::Stop,
                 2 => DaemonAction::Restart,
@@ -419,15 +359,16 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
                 }
             }
             KeyCode::Down => {
-                if app.settings_screen.log_level_index < 4 {
+                if app.settings_screen.log_level_index + 1 < LOG_LEVELS.len() {
                     app.settings_screen.log_level_index += 1;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char(' ') => {
                 // Apply the selected log level
-                let log_levels = ["error", "warn", "info", "debug", "trace"];
-                app.config.settings.log_level =
-                    log_levels[app.settings_screen.log_level_index].to_string();
+                app.config.settings.log_level = LOG_LEVELS
+                    .get(app.settings_screen.log_level_index)
+                    .unwrap_or(&"info")
+                    .to_string();
                 app.settings_screen.editing_log_level = false;
                 app.mark_dirty();
             }
@@ -548,12 +489,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                             return;
                         }
 
-                        // Adjust selection
-                        if app.sinks_screen.selected >= app.config.sinks.len()
-                            && !app.config.sinks.is_empty()
-                        {
-                            app.sinks_screen.selected = app.config.sinks.len() - 1;
-                        }
+                        app.sinks_screen.clamp_selection(app.config.sinks.len());
 
                         app.mark_dirty();
                         app.set_status("Sink deleted".to_string());
@@ -566,59 +502,20 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
                 _ => {}
             }
         }
-        SinksMode::SelectSink => {
-            // Total number of selectable items (active + profile sinks, excluding headers)
-            let total_items = app.active_sink_list.len() + app.profile_sink_list.len();
-
-            match key.code {
-                KeyCode::Up => {
-                    if total_items > 0 && app.sinks_screen.sink_selector_index > 0 {
-                        app.sinks_screen.sink_selector_index -= 1;
-                    }
-                }
-                KeyCode::Down => {
-                    if total_items > 0 && app.sinks_screen.sink_selector_index < total_items - 1 {
-                        app.sinks_screen.sink_selector_index += 1;
-                    }
-                }
-                KeyCode::Char(' ') => {
-                    // Select the chosen sink and populate editor fields
-                    let idx = app.sinks_screen.sink_selector_index;
-
-                    if idx < app.active_sink_list.len() {
-                        // Active sink selected
-                        let sink = &app.active_sink_list[idx];
-                        app.sinks_screen.editor.name.set_value(sink.name.clone());
-                        app.sinks_screen
-                            .editor
-                            .desc
-                            .set_value(sink.description.clone());
-                    } else {
-                        // Profile sink selected
-                        let profile_idx = idx - app.active_sink_list.len();
-                        if profile_idx < app.profile_sink_list.len() {
-                            let sink = &app.profile_sink_list[profile_idx];
-                            app.sinks_screen
-                                .editor
-                                .name
-                                .set_value(sink.predicted_name.clone());
-                            app.sinks_screen
-                                .editor
-                                .desc
-                                .set_value(sink.description.clone());
-                        }
-                    }
-
-                    // Return to editor mode
-                    app.sinks_screen.mode = SinksMode::AddEdit;
-                }
-                KeyCode::Esc => {
-                    // Cancel and return to editor
-                    app.sinks_screen.mode = SinksMode::AddEdit;
-                }
-                _ => {}
+        SinksMode::SelectSink => match key.code {
+            KeyCode::Up | KeyCode::Down => {
+                // The lists are replaced by every poll: move by node name
+                let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
+                app.sinks_screen
+                    .move_selector(&names, key.code == KeyCode::Down);
             }
-        }
+            KeyCode::Char(' ') | KeyCode::Enter => pick_selected_node(app),
+            KeyCode::Esc => {
+                // Cancel and return to editor
+                app.sinks_screen.mode = SinksMode::AddEdit;
+            }
+            _ => {}
+        },
         SinksMode::Inspect => match key.code {
             KeyCode::Enter | KeyCode::Esc => {
                 app.sinks_screen.cancel();
@@ -626,6 +523,35 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
             _ => {}
         },
     }
+}
+
+/// Fill the sink editor from the node highlighted in the node selector.
+///
+/// The node is looked up by name in the current lists, so a list refresh while
+/// the selector was open cannot substitute a different node.
+fn pick_selected_node(app: &mut App) {
+    let Some(node) = app.sinks_screen.selector_node.clone() else {
+        app.set_status("No node selected".to_string());
+        return;
+    };
+    let found = app
+        .active_sink_list
+        .iter()
+        .find(|s| s.name == node)
+        .map(|s| s.description.clone())
+        .or_else(|| {
+            app.profile_sink_list
+                .iter()
+                .find(|s| s.predicted_name == node)
+                .map(|s| s.description.clone())
+        });
+    let Some(description) = found else {
+        app.set_status(format!("Node {node} is no longer available"));
+        return;
+    };
+    app.sinks_screen.editor.name.set_value(node);
+    app.sinks_screen.editor.desc.set_value(description);
+    app.sinks_screen.mode = SinksMode::AddEdit;
 }
 
 /// Handle sink editor input (add/edit modal)
@@ -648,28 +574,20 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         }
 
         // --- Field Actions (Space) ---
-        KeyCode::Char(' ') => {
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    // Open sink selector modal when on Name field
-                    app.sinks_screen.mode = SinksMode::SelectSink;
-                    app.sinks_screen.sink_selector_index = 0;
-                }
-                3 => {
-                    // Toggle default checkbox
-                    app.sinks_screen.editor.default = !app.sinks_screen.editor.default;
-                }
-                _ => {
-                    // For text fields (desc, icon), type a space
-                    let event = Event::Key(key);
-                    match app.sinks_screen.editor.focused_field {
-                        1 => app.sinks_screen.editor.desc.input.handle_event(&event),
-                        2 => app.sinks_screen.editor.icon.input.handle_event(&event),
-                        _ => None,
-                    };
+        KeyCode::Char(' ') => match app.sinks_screen.editor.focused_field {
+            SinkField::Name => {
+                // Open the node selector on the Name field
+                let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
+                app.sinks_screen.open_selector(&names);
+            }
+            SinkField::Default => app.sinks_screen.editor.default.toggle(),
+            SinkField::Desc | SinkField::Icon => {
+                // Text fields: type a space
+                if let Some(input) = app.sinks_screen.editor.focused_input_mut() {
+                    input.handle_event(&Event::Key(key));
                 }
             }
-        }
+        },
 
         // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
@@ -716,21 +634,10 @@ fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.sinks_screen.cancel();
         }
-        // --- Field Specific Input ---
+        // --- Field Specific Input (the Default checkbox only responds to Space) ---
         _ => {
-            let event = Event::Key(key);
-            match app.sinks_screen.editor.focused_field {
-                0 => {
-                    app.sinks_screen.editor.name.input.handle_event(&event);
-                }
-                1 => {
-                    app.sinks_screen.editor.desc.input.handle_event(&event);
-                }
-                2 => {
-                    app.sinks_screen.editor.icon.input.handle_event(&event);
-                }
-                // Field 3 (default) only responds to Space, handled above
-                _ => {}
+            if let Some(input) = app.sinks_screen.editor.focused_input_mut() {
+                input.handle_event(&Event::Key(key));
             }
         }
     }
@@ -814,11 +721,7 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                         return;
                     }
 
-                    if app.rules_screen.selected >= app.config.rules.len()
-                        && !app.config.rules.is_empty()
-                    {
-                        app.rules_screen.selected = app.config.rules.len() - 1;
-                    }
+                    app.rules_screen.clamp_selection(app.config.rules.len());
 
                     app.mark_dirty();
                     app.set_status("Rule deleted".to_string());
@@ -844,10 +747,10 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
                     app.rules_screen.editor.sink_dropdown_index += 1;
                 }
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char(' ') | KeyCode::Enter => {
                 let idx = app.rules_screen.editor.sink_dropdown_index;
-                if idx < app.config.sinks.len() {
-                    app.rules_screen.editor.sink_ref = app.config.sinks[idx].desc.clone();
+                if let Some(sink) = app.config.sinks.get(idx) {
+                    app.rules_screen.editor.sink_ref.clone_from(&sink.desc);
                 }
                 app.rules_screen.mode = RulesMode::AddEdit;
             }
@@ -874,46 +777,23 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Down | KeyCode::Tab => app.rules_screen.editor.next_field(),
 
         // --- Field Actions (Space) ---
-        KeyCode::Char(' ') => {
-            match app.rules_screen.editor.focused_field {
-                2 => {
-                    // Open sink selector when on Sink field
-                    app.rules_screen.open_sink_selector();
-                }
-                4 => {
-                    // Cycle notify setting: None -> Some(true) -> Some(false) -> None
-                    app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
-                        None => Some(true),
-                        Some(true) => Some(false),
-                        Some(false) => None,
-                    };
-                }
-                _ => {
-                    // For text fields (app_id, title, desc), type a space
-                    let event = Event::Key(key);
-                    match app.rules_screen.editor.focused_field {
-                        0 => {
-                            app.rules_screen
-                                .editor
-                                .app_id_pattern
-                                .input
-                                .handle_event(&event);
-                        }
-                        1 => {
-                            app.rules_screen
-                                .editor
-                                .title_pattern
-                                .input
-                                .handle_event(&event);
-                        }
-                        3 => {
-                            app.rules_screen.editor.desc.input.handle_event(&event);
-                        }
-                        _ => {}
-                    }
+        KeyCode::Char(' ') => match app.rules_screen.editor.focused_field {
+            RuleField::Sink => app.rules_screen.open_sink_selector(&app.config.sinks),
+            RuleField::Notify => {
+                // Cycle notify setting: None -> Some(true) -> Some(false) -> None
+                app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
+                    None => Some(true),
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                };
+            }
+            RuleField::AppId | RuleField::Title | RuleField::Desc => {
+                // Text fields: type a space
+                if let Some(input) = app.rules_screen.editor.focused_input_mut() {
+                    input.handle_event(&Event::Key(key));
                 }
             }
-        }
+        },
 
         // --- Actions (Save/Cancel) ---
         KeyCode::Enter => {
@@ -991,30 +871,11 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             app.rules_screen.cancel();
         }
-        // --- Field Specific Input ---
+        // --- Field Specific Input (sink and notify only respond to Space) ---
         // (the live preview follows the pattern text by itself; see `App::refresh_preview`)
         _ => {
-            let event = Event::Key(key);
-            match app.rules_screen.editor.focused_field {
-                0 => {
-                    app.rules_screen
-                        .editor
-                        .app_id_pattern
-                        .input
-                        .handle_event(&event);
-                }
-                1 => {
-                    app.rules_screen
-                        .editor
-                        .title_pattern
-                        .input
-                        .handle_event(&event);
-                }
-                3 => {
-                    app.rules_screen.editor.desc.input.handle_event(&event);
-                }
-                // Fields 2 (sink) and 4 (notify) only respond to Space, handled above
-                _ => {}
+            if let Some(input) = app.rules_screen.editor.focused_input_mut() {
+                input.handle_event(&Event::Key(key));
             }
         }
     }

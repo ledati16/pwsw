@@ -2,33 +2,63 @@
 //!
 //! Reads and tails the daemon log file located at `~/.local/share/pwsw/daemon.log`.
 //!
+//! - Only complete lines are returned; a line still being written is kept until
+//!   its newline arrives.
+//! - Bytes are decoded lossily, so invalid `UTF-8` can never stall the tail.
+//! - Change notifications are filtered to modifications, creations, renames and
+//!   removals of the log file (the tailer's own opens and reads are ignored).
+//!
 //! ## Log Rotation Handling
 //!
-//! The daemon uses a `RotatingFileAppender` that renames `daemon.log` to `daemon.log.old`
-//! when the file exceeds 1MB. This tailer detects rotation by checking if the file size
-//! decreased since the last read, and recovers any unread lines from the old file before
-//! continuing with the new file.
+//! The daemon's `RotatingFileAppender` renames `daemon.log` to `daemon.log.old`
+//! when it exceeds 1MB and starts a new `daemon.log`. The tailer remembers the
+//! identity (device and inode) of the file it reads; when `daemon.log` becomes a
+//! different file it finishes the old one through `daemon.log.old` (if that is
+//! still the same file) and then reads the new one from the start.
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::io::{Read, Seek, SeekFrom};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
 use color_eyre::eyre::{Context, ContextCompat, Result};
-use notify::{Event, RecursiveMode, Watcher};
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 
-/// Maximum number of log lines to keep in the tailer's internal buffer.
-///
-/// Note: The TUI's App state uses a smaller buffer (500 lines) for display.
-/// This larger buffer allows the tailer to maintain more history for its
-/// internal `get_lines()` method while the App controls what's shown.
-const MAX_LOG_LINES: usize = 1000;
+/// How much of the end of the log is read to find the initial lines.
+const INITIAL_READ_BYTES: u64 = 256 * 1024;
+
+/// Longest line kept; a longer one is emitted in pieces of this size.
+const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Most bytes read per call (the rest follows on the next call).
+const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Identity of a file on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileId {
+    dev: u64,
+    ino: u64,
+}
+
+impl FileId {
+    fn of(meta: &std::fs::Metadata) -> Self {
+        Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+        }
+    }
+}
 
 /// Log tailer that reads daemon log file
 pub struct LogTailer {
     log_path: PathBuf,
-    lines: Vec<String>,
-    last_position: u64,
+    /// Bytes of the current file consumed so far
+    position: u64,
+    /// The file `position` refers to
+    file_id: Option<FileId>,
+    /// Bytes of an unfinished last line
+    partial: Vec<u8>,
     _watcher: notify::RecommendedWatcher,
     event_rx: mpsc::Receiver<notify::Result<Event>>,
 }
@@ -39,9 +69,15 @@ impl LogTailer {
     /// # Errors
     /// Returns an error if the log file path cannot be determined or watcher creation fails
     pub fn new() -> Result<Self> {
-        let log_path = crate::daemon::get_log_file_path()?;
+        Self::with_path(crate::daemon::get_log_file_path()?)
+    }
 
-        // Create file watcher for log file
+    /// Create a tailer for the log file at `log_path` (its directory is created
+    /// if missing and watched).
+    ///
+    /// # Errors
+    /// Returns an error if the directory cannot be created or watched.
+    pub fn with_path(log_path: PathBuf) -> Result<Self> {
         let (tx, rx) = mpsc::channel();
         let mut watcher =
             notify::recommended_watcher(tx).context("Failed to create file watcher")?;
@@ -50,50 +86,65 @@ impl LogTailer {
         let watch_dir = log_path
             .parent()
             .context("Log file has no parent directory")?;
-
-        // Create directory if it doesn't exist
         std::fs::create_dir_all(watch_dir)
             .with_context(|| format!("Failed to create log directory: {}", watch_dir.display()))?;
-
         watcher
             .watch(watch_dir, RecursiveMode::NonRecursive)
             .with_context(|| format!("Failed to watch log directory: {}", watch_dir.display()))?;
 
         Ok(Self {
             log_path,
-            lines: Vec::new(),
-            last_position: 0,
+            position: 0,
+            file_id: None,
+            partial: Vec::new(),
             _watcher: watcher,
             event_rx: rx,
         })
     }
 
-    /// Read initial log contents (last N lines)
+    /// Read the last `max_lines` complete lines and start tailing after them.
+    ///
+    /// Only the end of the file is read. Blocking: call off the async runtime.
     ///
     /// # Errors
-    /// Returns an error if the file cannot be read
-    pub fn read_initial(&mut self, max_lines: usize) -> Result<()> {
-        if !self.log_path.exists() {
+    /// Returns an error if the file exists but cannot be read
+    pub fn read_initial(&mut self, max_lines: usize) -> Result<Vec<String>> {
+        let Some(mut file) = self.open()? else {
             // Log file doesn't exist yet (daemon not started or no logs)
-            return Ok(());
+            return Ok(Vec::new());
+        };
+        let meta = file.metadata()?;
+        let start = meta.len().saturating_sub(INITIAL_READ_BYTES);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+
+        self.file_id = Some(FileId::of(&meta));
+        self.position = start + bytes.len() as u64;
+        self.partial.clear();
+
+        // Started mid-file: the first line is incomplete
+        let mut chunk = bytes.as_slice();
+        if start > 0 {
+            chunk = chunk
+                .iter()
+                .position(|&b| b == b'\n')
+                .map_or(&[][..], |nl| &chunk[nl + 1..]);
         }
+        let mut lines = self.split_lines(chunk);
+        let excess = lines.len().saturating_sub(max_lines);
+        lines.drain(..excess);
+        Ok(lines)
+    }
 
-        let file = File::open(&self.log_path)
-            .with_context(|| format!("Failed to open log file: {}", self.log_path.display()))?;
-
-        // Use by_ref() so we can get the file handle back to check position
-        let mut reader = BufReader::new(file);
-        let all_lines: Vec<String> = reader.by_ref().lines().collect::<std::io::Result<_>>()?;
-
-        // Keep only last N lines
-        let start = all_lines.len().saturating_sub(max_lines);
-        self.lines = all_lines.into_iter().skip(start).collect();
-
-        // Update position to actual EOF after reading (handles race with concurrent writes)
-        let mut file = reader.into_inner();
-        self.last_position = file.stream_position()?;
-
-        Ok(())
+    /// Open the log file; `None` if it does not exist.
+    fn open(&self) -> Result<Option<File>> {
+        match File::open(&self.log_path) {
+            Ok(file) => Ok(Some(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e)
+                .with_context(|| format!("Failed to open log file: {}", self.log_path.display())),
+        }
     }
 
     /// Get the backup log file path (daemon.log.old)
@@ -107,237 +158,331 @@ impl LogTailer {
         self.log_path.with_file_name(format!("{filename}.old"))
     }
 
+    /// Append `bytes` to the unfinished line and return the lines completed.
+    fn split_lines(&mut self, bytes: &[u8]) -> Vec<String> {
+        self.partial.extend_from_slice(bytes);
+        let mut lines = Vec::new();
+        let mut rest = self.partial.as_slice();
+        while let Some(nl) = rest.iter().position(|&b| b == b'\n') {
+            lines.push(decode_line(&rest[..nl]));
+            rest = &rest[nl + 1..];
+        }
+        while rest.len() > MAX_LINE_BYTES {
+            lines.push(decode_line(&rest[..MAX_LINE_BYTES]));
+            rest = &rest[MAX_LINE_BYTES..];
+        }
+        self.partial = rest.to_vec();
+        lines
+    }
+
+    /// Read from `file` at the current position and return the completed lines.
+    fn read_from(&mut self, file: &mut File) -> Result<Vec<String>> {
+        file.seek(SeekFrom::Start(self.position))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_READ_BYTES).read_to_end(&mut bytes)?;
+        self.position += bytes.len() as u64;
+        Ok(self.split_lines(&bytes))
+    }
+
     /// Check for new log lines since last read
     ///
-    /// Handles log rotation gracefully by reading any unread lines from the
-    /// rotated-out file (`daemon.log.old`) before continuing with the new file.
+    /// Handles log rotation by finishing the rotated-out file (`daemon.log.old`)
+    /// before continuing with the new file, and truncation by starting over.
+    /// Blocking (small reads of a local file).
     ///
     /// # Errors
     /// Returns an error if the file cannot be read
     pub fn read_new_lines(&mut self) -> Result<Vec<String>> {
-        if !self.log_path.exists() {
+        let Some(mut file) = self.open()? else {
             return Ok(Vec::new());
-        }
-
-        let mut file = File::open(&self.log_path)
-            .with_context(|| format!("Failed to open log file: {}", self.log_path.display()))?;
-
-        let current_size = file.metadata()?.len();
+        };
+        let meta = file.metadata()?;
+        let id = FileId::of(&meta);
         let mut new_lines = Vec::new();
 
-        // Handle log rotation (file got smaller)
-        if current_size < self.last_position {
-            // Read any remaining lines from the rotated-out file before it's overwritten
-            // by the next rotation. Our last_position was in what is now daemon.log.old.
-            let backup = self.backup_path();
-            if backup.exists()
-                && let Ok(mut old_file) = File::open(&backup)
-                && old_file.seek(SeekFrom::Start(self.last_position)).is_ok()
-            {
-                let reader = BufReader::new(old_file);
-                // Use map_while to gracefully handle any I/O errors on individual lines
-                // (e.g., if the file was truncated mid-line during rotation)
-                new_lines.extend(reader.lines().map_while(Result::ok));
+        match self.file_id {
+            Some(old) if old != id => {
+                // Rotated: what we were reading is now the backup (if it still is)
+                if let Ok(mut old_file) = File::open(self.backup_path())
+                    && old_file.metadata().is_ok_and(|m| FileId::of(&m) == old)
+                {
+                    new_lines.extend(self.read_from(&mut old_file)?);
+                }
+                self.finish_partial(&mut new_lines);
+                self.position = 0;
             }
-            // Reset position for the new file
-            self.last_position = 0;
+            // Truncated in place
+            _ if meta.len() < self.position => {
+                self.partial.clear();
+                self.position = 0;
+            }
+            _ => {}
         }
+        self.file_id = Some(id);
 
-        // Seek to last read position in current file
-        file.seek(SeekFrom::Start(self.last_position))?;
-
-        // Use by_ref() to borrow the reader so we can get the file handle back after
-        let mut reader = BufReader::new(file);
-        new_lines.extend(
-            reader
-                .by_ref()
-                .lines()
-                .collect::<std::io::Result<Vec<_>>>()?,
-        );
-
-        // Update position to actual EOF after reading (not the size captured earlier)
-        // This handles the race where more data is written between capturing current_size
-        // and finishing our read - BufReader reads to actual EOF, so we must track that.
-        let mut file = reader.into_inner();
-        self.last_position = file.stream_position()?;
-
-        // Add new lines to buffer
-        self.lines.extend(new_lines.iter().cloned());
-
-        // Trim if we exceed max lines
-        if self.lines.len() > MAX_LOG_LINES {
-            let excess = self.lines.len() - MAX_LOG_LINES;
-            self.lines.drain(0..excess);
-        }
-
+        new_lines.extend(self.read_from(&mut file)?);
         Ok(new_lines)
     }
 
-    /// Get all buffered log lines
-    #[must_use]
-    pub fn get_lines(&self) -> &[String] {
-        &self.lines
+    /// The unfinished line of a file that will not grow any more is complete.
+    fn finish_partial(&mut self, lines: &mut Vec<String>) {
+        if !self.partial.is_empty() {
+            lines.push(decode_line(&self.partial));
+            self.partial.clear();
+        }
     }
 
     /// Check if log file has been modified (non-blocking)
     ///
-    /// Drains all pending file watch events and returns true if the log file was modified.
+    /// Drains all pending file watch events and returns true if the log file was
+    /// written, created, renamed or removed.
     #[must_use]
     pub fn has_file_changed(&self) -> bool {
         let mut changed = false;
-        let log_file_name = self.log_path.file_name();
-
         // Drain all pending events (non-blocking)
         while let Ok(event_result) = self.event_rx.try_recv() {
-            if let Ok(event) = event_result {
-                // Check if this event is for our log file
-                if event.paths.iter().any(|p| p.file_name() == log_file_name) {
-                    changed = true;
-                }
+            if let Ok(event) = event_result
+                && is_log_change(&event, &self.log_path)
+            {
+                changed = true;
             }
         }
-
         changed
     }
 }
 
+/// Decode one line (without its newline), replacing invalid `UTF-8`.
+fn decode_line(bytes: &[u8]) -> String {
+    let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// Whether `event` means the log file's content may have changed. Access
+/// events (opening, reading, closing, including the tailer's own) do not.
+fn is_log_change(event: &Event, log_path: &Path) -> bool {
+    let relevant_kind = matches!(
+        event.kind,
+        EventKind::Modify(_) | EventKind::Create(_) | EventKind::Remove(_)
+    );
+    relevant_kind
+        && event
+            .paths
+            .iter()
+            .any(|p| p.file_name() == log_path.file_name())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
     use std::io::Write;
+    use std::time::{Duration, Instant};
+
+    use notify::event::{AccessKind, AccessMode, CreateKind, DataChange, ModifyKind, RenameMode};
+    use pretty_assertions::assert_eq;
+    use tempfile::TempDir;
 
     use super::*;
 
-    /// Create a test-only `LogTailer` without file watching
-    fn create_test_tailer(log_path: PathBuf) -> LogTailer {
-        let (tx, rx) = mpsc::channel();
-        // Create a dummy watcher that won't be used in tests
-        let watcher = notify::recommended_watcher(tx).unwrap();
-        LogTailer {
-            log_path,
-            lines: Vec::new(),
-            last_position: 0,
-            _watcher: watcher,
-            event_rx: rx,
-        }
+    fn tailer_in(dir: &TempDir) -> (LogTailer, PathBuf) {
+        let path = dir.path().join("daemon.log");
+        (LogTailer::with_path(path.clone()).expect("tailer"), path)
+    }
+
+    fn append(path: &Path, bytes: &[u8]) {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .expect("open log");
+        file.write_all(bytes).expect("write log");
     }
 
     #[test]
     fn test_log_tailer_reads_initial_logs() {
-        use tempfile::NamedTempFile;
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        append(
+            &path,
+            b"2025-12-17T10:00:00 INFO line 1\n2025-12-17T10:00:01 WARN line 2\n",
+        );
 
-        // Create temp log file
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "2025-12-17T10:00:00 INFO test log line 1").unwrap();
-        writeln!(temp_file, "2025-12-17T10:00:01 WARN test log line 2").unwrap();
-        temp_file.flush().unwrap();
-
-        // Create tailer with this specific path
-        let log_path = temp_file.path().to_path_buf();
-        let mut tailer = create_test_tailer(log_path);
-
-        // Read initial logs
-        tailer.read_initial(100).unwrap();
-
-        // Verify logs were read
-        let lines = tailer.get_lines();
+        let lines = tailer.read_initial(100).expect("read");
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("INFO"));
         assert!(lines[1].contains("WARN"));
+
+        // Only the last N are returned
+        let (mut tailer, _) = tailer_in(&dir);
+        assert_eq!(tailer.read_initial(1).expect("read"), vec![
+            "2025-12-17T10:00:01 WARN line 2"
+        ]);
+    }
+
+    #[test]
+    fn test_log_tailer_initial_read_of_large_file_reads_only_the_end() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        let mut content = String::new();
+        for i in 0..20_000 {
+            let _ = writeln!(content, "line {i:05} padding padding padding");
+        }
+        append(&path, content.as_bytes());
+
+        let lines = tailer.read_initial(3).expect("read");
+        assert_eq!(lines, vec![
+            "line 19997 padding padding padding",
+            "line 19998 padding padding padding",
+            "line 19999 padding padding padding"
+        ]);
+        append(&path, b"next\n");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec!["next"]);
     }
 
     #[test]
     fn test_log_tailer_reads_new_lines() {
-        use tempfile::NamedTempFile;
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        append(&path, b"line 1\n");
+        assert_eq!(tailer.read_initial(100).expect("read").len(), 1);
 
-        // Create temp file with initial content
-        let mut temp_file = NamedTempFile::new().unwrap();
-        writeln!(temp_file, "line 1").unwrap();
-        temp_file.flush().unwrap();
-
-        let log_path = temp_file.path().to_path_buf();
-        let mut tailer = create_test_tailer(log_path);
-
-        // Read initial content
-        tailer.read_initial(100).unwrap();
-        assert_eq!(tailer.get_lines().len(), 1);
-
-        // Append new lines
-        writeln!(temp_file, "line 2").unwrap();
-        writeln!(temp_file, "line 3").unwrap();
-        temp_file.flush().unwrap();
-
-        // Read new lines
-        let new_lines = tailer.read_new_lines().unwrap();
-        assert_eq!(new_lines.len(), 2);
-        assert_eq!(tailer.get_lines().len(), 3);
+        append(&path, b"line 2\nline 3\n");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec![
+            "line 2", "line 3"
+        ]);
+        assert_eq!(tailer.read_new_lines().expect("read"), Vec::<String>::new());
     }
 
     #[test]
-    fn test_log_tailer_handles_rotation() {
-        use tempfile::TempDir;
+    fn test_log_tailer_keeps_partial_line_until_complete() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        append(&path, b"first\nsec");
+        assert_eq!(tailer.read_initial(100).expect("read"), vec!["first"]);
 
-        // Create a temp directory to simulate log rotation
-        let temp_dir = TempDir::new().unwrap();
-        let log_path = temp_dir.path().join("daemon.log");
-        let backup_path = temp_dir.path().join("daemon.log.old");
+        append(&path, b"ond half");
+        assert_eq!(tailer.read_new_lines().expect("read"), Vec::<String>::new());
+        append(&path, b"\nthird\n");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec![
+            "second half",
+            "third"
+        ]);
+    }
 
-        // Create initial log file with some lines
-        {
-            let mut file = File::create(&log_path).unwrap();
-            writeln!(file, "line 1").unwrap();
-            writeln!(file, "line 2").unwrap();
-            file.flush().unwrap();
-        }
-
-        let mut tailer = create_test_tailer(log_path.clone());
-
-        // Read initial content (only line 1)
-        tailer.read_initial(100).unwrap();
-        assert_eq!(tailer.get_lines().len(), 2);
-        // last_position is now at end of file
-
-        // Simulate more writes before rotation
-        {
-            let mut file = std::fs::OpenOptions::new()
-                .append(true)
-                .open(&log_path)
-                .unwrap();
-            writeln!(file, "line 3").unwrap();
-            writeln!(file, "line 4").unwrap();
-            file.flush().unwrap();
-        }
-
-        // Simulate log rotation: rename current -> old, create new
-        std::fs::rename(&log_path, &backup_path).unwrap();
-        {
-            let mut file = File::create(&log_path).unwrap();
-            writeln!(file, "line 5").unwrap();
-            file.flush().unwrap();
-        }
-
-        // Now read - should detect rotation and recover lines 3,4 from old file
-        let new_lines = tailer.read_new_lines().unwrap();
-
-        // Should have read lines 3, 4 from old file, and line 5 from new file
+    #[test]
+    fn test_log_tailer_survives_invalid_utf8() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
         assert_eq!(
-            new_lines.len(),
-            3,
-            "Expected 3 new lines (2 from old + 1 from new)"
+            tailer.read_initial(100).expect("read"),
+            Vec::<String>::new()
         );
-        assert_eq!(new_lines[0], "line 3");
-        assert_eq!(new_lines[1], "line 4");
-        assert_eq!(new_lines[2], "line 5");
 
-        // Total buffer should have all 5 lines
-        assert_eq!(tailer.get_lines().len(), 5);
+        append(&path, b"bad \xff\xfe bytes\n");
+        let lines = tailer.read_new_lines().expect("read");
+        assert_eq!(lines, vec!["bad \u{fffd}\u{fffd} bytes"]);
+
+        // The position moved on: later lines still arrive
+        append(&path, b"after\n");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec!["after"]);
+    }
+
+    #[test]
+    fn test_log_tailer_handles_rotation_by_inode() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        let backup = dir.path().join("daemon.log.old");
+
+        append(&path, b"line 1\nline 2\n");
+        assert_eq!(tailer.read_initial(100).expect("read").len(), 2);
+        append(&path, b"line 3\nline 4\n");
+
+        // Rotate: the new file is *larger* than what was read of the old one, so
+        // a size comparison would not notice
+        std::fs::rename(&path, &backup).expect("rotate");
+        append(&path, b"line 5 is long enough to exceed the old position\n");
+
+        assert_eq!(tailer.read_new_lines().expect("read"), vec![
+            "line 3",
+            "line 4",
+            "line 5 is long enough to exceed the old position"
+        ]);
+        append(&path, b"line 6\n");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec!["line 6"]);
+    }
+
+    #[test]
+    fn test_log_tailer_handles_truncation() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        append(&path, b"a long first line\n");
+        tailer.read_initial(10).expect("read");
+
+        std::fs::write(&path, b"x\n").expect("truncate");
+        assert_eq!(tailer.read_new_lines().expect("read"), vec!["x"]);
+    }
+
+    #[test]
+    fn test_is_log_change_ignores_access_events() {
+        let path = Path::new("/logs/daemon.log");
+        let event = |kind| Event::new(kind).add_path(PathBuf::from("/logs/daemon.log"));
+
+        assert!(!is_log_change(
+            &event(EventKind::Access(AccessKind::Open(AccessMode::Any))),
+            path
+        ));
+        assert!(!is_log_change(
+            &event(EventKind::Access(AccessKind::Close(AccessMode::Read))),
+            path
+        ));
+        assert!(is_log_change(
+            &event(EventKind::Modify(ModifyKind::Data(DataChange::Any))),
+            path
+        ));
+        assert!(is_log_change(
+            &event(EventKind::Modify(ModifyKind::Name(RenameMode::From))),
+            path
+        ));
+        assert!(is_log_change(
+            &event(EventKind::Create(CreateKind::File)),
+            path
+        ));
+        let other = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Any)))
+            .add_path(PathBuf::from("/logs/other.log"));
+        assert!(!is_log_change(&other, path));
+    }
+
+    #[test]
+    fn test_reading_the_log_does_not_count_as_a_change() {
+        let dir = TempDir::new().expect("tempdir");
+        let (mut tailer, path) = tailer_in(&dir);
+        append(&path, b"line\n");
+
+        // The write is noticed...
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !tailer.has_file_changed() {
+            assert!(Instant::now() < deadline, "write never reported");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // One append can produce several modify events that arrive spread out under
+        // load; let them all drain (300 ms of quiet) so only the read is measured.
+        let mut quiet_since = Instant::now();
+        while quiet_since.elapsed() < Duration::from_millis(300) {
+            assert!(Instant::now() < deadline, "write events never settled");
+            if tailer.has_file_changed() {
+                quiet_since = Instant::now();
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // ...but the tailer's own open and read of the file are not
+        assert_eq!(tailer.read_new_lines().expect("read"), vec!["line"]);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!tailer.has_file_changed(), "own read reported as a change");
     }
 
     #[test]
     fn test_backup_path_generation() {
-        let tailer = create_test_tailer(PathBuf::from("/var/log/pwsw/daemon.log"));
-        assert_eq!(
-            tailer.backup_path(),
-            PathBuf::from("/var/log/pwsw/daemon.log.old")
-        );
+        let dir = TempDir::new().expect("tempdir");
+        let (tailer, path) = tailer_in(&dir);
+        assert_eq!(tailer.backup_path(), path.with_file_name("daemon.log.old"));
     }
 }

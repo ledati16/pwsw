@@ -1,23 +1,25 @@
 //! Rules screen - Manage window matching rules
 
-use std::fmt::Write;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row,
-    Table, TableState,
+    BorderType, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table, TableState,
 };
+use tui_input::Input;
 
 use crate::config::{Rule, SinkConfig};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
 use crate::tui::preview::{MAX_SHOWN, PreviewView, build_preview_lines};
 use crate::tui::widgets::{
-    ValidationState, centered_modal, modal_size, render_input, render_validated_input,
+    ValidationState, centered_modal, field_line, modal_size, render_input, render_scrollbar,
+    render_text_modal, render_validated_input, rounded_block,
 };
+
+/// Rows of the rules table above the first rule (header + its margin)
+const TABLE_HEADER_ROWS: u16 = 2;
 
 /// Rules screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -30,6 +32,44 @@ pub enum RulesMode {
     Inspect,
 }
 
+/// Field of the rule editor
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RuleField {
+    #[default]
+    AppId,
+    Title,
+    /// Target sink (Space opens the selector)
+    Sink,
+    Desc,
+    /// Notify toggle (Space cycles it)
+    Notify,
+}
+
+impl RuleField {
+    pub(crate) const fn next(self) -> Self {
+        match self {
+            Self::AppId => Self::Title,
+            Self::Title => Self::Sink,
+            Self::Sink => Self::Desc,
+            Self::Desc | Self::Notify => Self::Notify,
+        }
+    }
+
+    pub(crate) const fn prev(self) -> Self {
+        match self {
+            Self::AppId | Self::Title => Self::AppId,
+            Self::Sink => Self::Title,
+            Self::Desc => Self::Sink,
+            Self::Notify => Self::Desc,
+        }
+    }
+
+    /// Whether the field is a text input
+    pub(crate) const fn is_text(self) -> bool {
+        matches!(self, Self::AppId | Self::Title | Self::Desc)
+    }
+}
+
 /// Editor state for add/edit modal
 #[derive(Debug, Clone)]
 pub struct RuleEditor {
@@ -38,7 +78,7 @@ pub struct RuleEditor {
     pub sink_ref: String,
     pub desc: EditorState,
     pub notify: Option<bool>,
-    pub focused_field: usize, // 0=app_id, 1=title, 2=sink, 3=desc, 4=notify
+    pub focused_field: RuleField,
     pub sink_dropdown_index: usize,
     /// State for sink selector dropdown
     pub sink_selector_state: ListState,
@@ -52,7 +92,7 @@ impl RuleEditor {
             sink_ref: String::new(),
             desc: EditorState::new(),
             notify: None,
-            focused_field: 0,
+            focused_field: RuleField::AppId,
             sink_dropdown_index: 0,
             sink_selector_state: ListState::default(),
         }
@@ -65,26 +105,33 @@ impl RuleEditor {
             sink_ref: rule.sink_ref.clone(),
             desc: EditorState::from_string(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
-            focused_field: 0,
+            focused_field: RuleField::AppId,
             sink_dropdown_index: 0,
             sink_selector_state: ListState::default(),
         }
     }
 
     pub(crate) const fn next_field(&mut self) {
-        if self.focused_field < 4 {
-            self.focused_field += 1;
-        }
+        self.focused_field = self.focused_field.next();
     }
 
     pub(crate) const fn prev_field(&mut self) {
-        if self.focused_field > 0 {
-            self.focused_field -= 1;
+        self.focused_field = self.focused_field.prev();
+    }
+
+    /// The text input of the focused field (`None` on the selector and toggle)
+    pub(crate) const fn focused_input_mut(&mut self) -> Option<&mut Input> {
+        match self.focused_field {
+            RuleField::AppId => Some(&mut self.app_id_pattern.input),
+            RuleField::Title => Some(&mut self.title_pattern.input),
+            RuleField::Desc => Some(&mut self.desc.input),
+            RuleField::Sink | RuleField::Notify => None,
         }
     }
 }
 
 /// Rules screen state
+#[derive(Debug)]
 pub struct RulesScreen {
     pub mode: RulesMode,
     pub selected: usize,
@@ -117,6 +164,13 @@ impl RulesScreen {
         }
     }
 
+    /// Keep the selection inside a list of `rule_count` rules.
+    pub(crate) const fn clamp_selection(&mut self, rule_count: usize) {
+        if self.selected >= rule_count {
+            self.selected = rule_count.saturating_sub(1);
+        }
+    }
+
     pub(crate) fn start_add(&mut self) {
         self.mode = RulesMode::AddEdit;
         self.editor = RuleEditor::new();
@@ -135,7 +189,13 @@ impl RulesScreen {
         self.mode = RulesMode::Delete;
     }
 
-    pub(crate) const fn open_sink_selector(&mut self) {
+    /// Open the target sink selector on the sink the rule currently targets.
+    pub(crate) fn open_sink_selector(&mut self, sinks: &[SinkConfig]) {
+        let current = &self.editor.sink_ref;
+        self.editor.sink_dropdown_index = sinks
+            .iter()
+            .position(|s| s.desc == *current || s.name == *current)
+            .unwrap_or(0);
         self.mode = RulesMode::SelectSink;
     }
 
@@ -191,6 +251,7 @@ fn render_list(
     sinks: &[SinkConfig],
     screen_state: &mut RulesScreen,
 ) {
+    screen_state.clamp_selection(rules.len());
     let rows: Vec<Row> = rules
         .iter()
         .enumerate()
@@ -286,97 +347,37 @@ fn render_list(
         )
         .bottom_margin(1),
     )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Rules "),
-    );
+    .block(rounded_block().title(" Rules "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(table, area, &mut screen_state.state);
-
-    // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-
-    // Determine whether there is content above/below the current viewport
-    let raw_offset = screen_state.state.offset();
-    let total = rules.len();
-    // For table rows which do not wrap, use logical offset
-    let has_above = raw_offset > 0;
-    let has_below = raw_offset + view_height < total;
-
-    // Render scroll arrows using helper
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
+    render_scrollbar(
+        frame,
+        area,
+        TABLE_HEADER_ROWS,
+        rules.len(),
+        screen_state.state.offset(),
+    );
 }
 
 /// Render inspect modal
 fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_state: &RulesScreen) {
-    if screen_state.selected >= rules.len() {
+    let Some(rule) = rules.get(screen_state.selected) else {
         return;
-    }
-    let rule = &rules[screen_state.selected];
-
-    let popup_area = centered_modal(modal_size::SMALL, area);
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(" Rule Details ")
-        .style(Style::default().bg(colors::UI_MODAL_BG));
-    frame.render_widget(block.clone(), popup_area);
-
-    let inner = block.inner(popup_area);
-
-    let mut lines = Vec::new();
-
-    // Helper for fields with regular values
-    let add_field = |lines: &mut Vec<Line>, label: &str, value: &str| {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label}: "),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-            Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
-        ]));
     };
 
-    // Helper for fields with placeholder/auto values
-    let add_field_placeholder = |lines: &mut Vec<Line>, label: &str, value: &str| {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label}: "),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-            Span::styled(
-                value.to_string(),
-                Style::default()
-                    .fg(colors::UI_SECONDARY)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    };
-
-    add_field(&mut lines, "App ID Pattern", &rule.app_id_pattern);
-
-    if let Some(title) = &rule.title_pattern {
-        add_field(&mut lines, "Title Pattern", title);
-    } else {
-        add_field_placeholder(&mut lines, "Title Pattern", "(any title)");
-    }
-
-    add_field(&mut lines, "Target Sink", &rule.sink_ref);
-
+    let mut lines = vec![
+        field_line("App ID Pattern", &rule.app_id_pattern, false),
+        match &rule.title_pattern {
+            Some(title) => field_line("Title Pattern", title, false),
+            None => field_line("Title Pattern", "(any title)", true),
+        },
+        field_line("Target Sink", &rule.sink_ref, false),
+    ];
     if let Some(desc) = &rule.desc {
-        add_field(&mut lines, "Description", desc);
+        lines.push(field_line("Description", desc, false));
     }
-
     lines.push(Line::from("")); // Space before notify status
 
     // Notify status with icon
@@ -390,9 +391,7 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, rules: &[Rule], screen_st
         Style::default().fg(notify_color),
     )));
 
-    let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
-
-    frame.render_widget(paragraph, inner);
+    render_text_modal(frame, area, " Rule Details ", BorderType::Rounded, lines);
 }
 
 /// Render the add/edit modal
@@ -432,9 +431,7 @@ fn render_editor(
     .margin(2)
     .areas(popup_area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+    let block = rounded_block()
         .padding(Padding::horizontal(1))
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
@@ -454,7 +451,7 @@ fn render_editor(
         app_id_area,
         "App ID Pattern (regex):",
         &screen_state.editor.app_id_pattern.input,
-        screen_state.editor.focused_field == 0,
+        screen_state.editor.focused_field == RuleField::AppId,
         app_id_validation,
     );
 
@@ -472,7 +469,7 @@ fn render_editor(
         title_area,
         "Title Pattern (optional regex):",
         &screen_state.editor.title_pattern.input,
-        screen_state.editor.focused_field == 1,
+        screen_state.editor.focused_field == RuleField::Title,
         title_validation,
     );
 
@@ -494,7 +491,7 @@ fn render_editor(
         sink_area,
         "Target Sink",
         sink_display,
-        screen_state.editor.focused_field == 2,
+        screen_state.editor.focused_field == RuleField::Sink,
     );
 
     // Description field
@@ -503,7 +500,7 @@ fn render_editor(
         desc_area,
         "Description (optional):",
         &screen_state.editor.desc.input,
-        screen_state.editor.focused_field == 3,
+        screen_state.editor.focused_field == RuleField::Desc,
     );
 
     // Notify toggle with border-based focus
@@ -526,14 +523,11 @@ fn render_editor(
         }
     }
 
-    let border_style =
-        crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 4);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style);
-
-    let notify_widget = Paragraph::new(Line::from(notify_spans)).block(block);
+    let border_style = crate::tui::widgets::focus_border_style(
+        screen_state.editor.focused_field == RuleField::Notify,
+    );
+    let notify_widget =
+        Paragraph::new(Line::from(notify_spans)).block(rounded_block().border_style(border_style));
     frame.render_widget(notify_widget, notify_area);
 
     // Live preview panel
@@ -598,12 +592,7 @@ fn render_live_preview(
     }
 
     let preview_widget = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title("Matching Windows"),
-        )
+        .block(rounded_block().title("Matching Windows"))
         .wrap(ratatui::widgets::Wrap { trim: false });
     frame.render_widget(preview_widget, area);
 }
@@ -619,11 +608,7 @@ fn render_sink_selector(
     frame.render_widget(Clear, popup_area);
 
     // Use truncation helpers to avoid overly long sink descriptions/names
-    let inner = popup_area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let content_width = inner.width.max(1);
+    let content_width = popup_area.width.saturating_sub(2).max(1);
 
     let items: Vec<ListItem> = sinks
         .iter()
@@ -650,9 +635,7 @@ fn render_sink_selector(
 
     let list = List::new(items)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+            rounded_block()
                 .padding(Padding::horizontal(1))
                 .title("Select Target Sink")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
@@ -665,46 +648,21 @@ fn render_sink_selector(
         .highlight_symbol(" →")
         .scroll_padding(1);
 
-    // Sync state
+    // Sync state (the sink list may have shrunk since the index was chosen)
+    editor.sink_dropdown_index = editor
+        .sink_dropdown_index
+        .min(sinks.len().saturating_sub(1));
     editor
         .sink_selector_state
-        .select(Some(editor.sink_dropdown_index));
+        .select((!sinks.is_empty()).then_some(editor.sink_dropdown_index));
     frame.render_stateful_widget(list, popup_area, &mut editor.sink_selector_state);
-
-    // Compute visible viewport height for indicators in dropdown
-    let inner = popup_area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-
-    let raw_offset = editor.sink_selector_state.offset();
-
-    // Build visual_items to account for wrapping like in the selector rendering
-    let mut visual_items: Vec<String> = Vec::new();
-    for sink in sinks {
-        let desc_text = crate::tui::widgets::truncate_desc(&sink.desc, content_width);
-        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
-        visual_items.push({
-            let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
-            let _ = write!(tmp, "  {desc_text} ({name_text})");
-            tmp
-        });
-    }
-
-    // Compute content width and logical offset
-    let content_width = inner.width as usize;
-
-    // Use helper to compute whether content exists above/below (accounts for wrapping)
-    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
-        &visual_items,
-        content_width,
-        raw_offset,
-        view_height,
+    render_scrollbar(
+        frame,
+        popup_area,
+        0,
+        sinks.len(),
+        editor.sink_selector_state.offset(),
     );
-
-    // Render arrows via helper
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
 /// Render delete confirmation
@@ -714,21 +672,8 @@ fn render_delete_confirmation(
     rules: &[Rule],
     screen_state: &RulesScreen,
 ) {
-    if screen_state.selected >= rules.len() {
+    let Some(rule) = rules.get(screen_state.selected) else {
         return;
-    }
-
-    let rule = &rules[screen_state.selected];
-    let popup_area = centered_modal(modal_size::SMALL, area);
-    frame.render_widget(Clear, popup_area);
-
-    let title_line = if let Some(ref title) = rule.title_pattern {
-        Line::from(vec![
-            Span::raw("Title: "),
-            Span::styled(title.as_str(), Style::default().fg(colors::UI_TEXT)),
-        ])
-    } else {
-        Line::from("Title: (any)")
     };
 
     let text = vec![
@@ -740,24 +685,12 @@ fn render_delete_confirmation(
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("App ID: "),
-            Span::styled(&rule.app_id_pattern, Style::default().fg(colors::UI_TEXT)),
-        ]),
-        title_line,
-        Line::from(vec![
-            Span::raw("Sink: "),
-            Span::styled(&rule.sink_ref, Style::default().fg(colors::UI_WARNING)),
-        ]),
+        field_line("App ID", &rule.app_id_pattern, false),
+        match &rule.title_pattern {
+            Some(title) => field_line("Title", title, false),
+            None => field_line("Title", "(any)", true),
+        },
+        field_line("Sink", &rule.sink_ref, false),
     ];
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .padding(Padding::horizontal(1))
-        .title("Delete Rule")
-        .style(Style::default().bg(colors::UI_MODAL_BG));
-
-    let paragraph = Paragraph::new(text).block(block);
-    frame.render_widget(paragraph, popup_area);
+    render_text_modal(frame, area, " Delete Rule ", BorderType::Double, text);
 }

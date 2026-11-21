@@ -4,11 +4,14 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Padding, Paragraph, Wrap};
 
 use crate::config::Settings;
 use crate::style::colors;
-use crate::tui::widgets::{centered_modal, modal_size};
+use crate::tui::widgets::{centered_modal, modal_size, render_scrollbar, rounded_block};
+
+/// Log levels offered by the dropdown, least verbose first
+pub(crate) const LOG_LEVELS: [&str; 5] = ["error", "warn", "info", "debug", "trace"];
 
 /// Minimum height of the description panel at the bottom of the settings screen
 const DESCRIPTION_PANEL_MIN_HEIGHT: u16 = 14;
@@ -141,21 +144,16 @@ impl SettingItem {
                  • trace: Very verbose tracing (for development)\n\
                  \n\
                  Log file: ~/.local/share/pwsw/daemon.log\n\
-                 (systemd: journalctl --user -u pwsw -f)\n\
-                 Or in TUI: Dashboard → [l] for logs view\n\
+                 Or in TUI: the Dashboard log view ([w] toggles Logs/Windows)\n\
                  \n\
                  Default: info"
             }
         }
     }
-
-    /// Check if this setting requires daemon restart to take effect
-    pub(crate) const fn requires_restart(self) -> bool {
-        matches!(self, Self::MatchByIndex | Self::LogLevel)
-    }
 }
 
 /// Settings screen state
+#[derive(Debug)]
 pub struct SettingsScreen {
     /// Currently selected item
     pub selected: usize,
@@ -174,20 +172,18 @@ pub struct SettingsScreen {
 impl SettingsScreen {
     /// Create a new settings screen
     pub(crate) fn new(settings: &Settings) -> Self {
-        let log_level_index = match settings.log_level.as_str() {
-            "error" => 0,
-            "warn" => 1,
-            "debug" => 3,
-            "trace" => 4,
-            _ => 2, // Default to info
-        };
+        // Unknown levels fall back to info
+        let log_level_index = LOG_LEVELS
+            .iter()
+            .position(|l| *l == settings.log_level)
+            .unwrap_or(2);
 
         // Build padded names cache based on longest setting name
         let names: Vec<String> = SettingItem::all()
             .iter()
             .map(|i| i.name().to_string())
             .collect();
-        let max_len = names.iter().map(String::len).max().unwrap_or(0);
+        let max_len = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
         let padded_names = names
             .into_iter()
             .map(|n| format!("{n:<max_len$}"))
@@ -237,23 +233,23 @@ impl SettingsScreen {
 
         match SettingItem::all()[self.selected] {
             SettingItem::DefaultOnStartup => {
-                settings.default_on_startup = !settings.default_on_startup;
+                settings.default_on_startup.toggle();
                 true
             }
             SettingItem::SetSmartToggle => {
-                settings.set_smart_toggle = !settings.set_smart_toggle;
+                settings.set_smart_toggle.toggle();
                 true
             }
             SettingItem::NotifyManual => {
-                settings.notify_manual = !settings.notify_manual;
+                settings.notify_manual.toggle();
                 true
             }
             SettingItem::NotifyRules => {
-                settings.notify_rules = !settings.notify_rules;
+                settings.notify_rules.toggle();
                 true
             }
             SettingItem::MatchByIndex => {
-                settings.match_by_index = !settings.match_by_index;
+                settings.match_by_index.toggle();
                 true
             }
             SettingItem::LogLevel => {
@@ -293,6 +289,11 @@ pub fn render_settings(
 
     // Render description
     render_description(frame, desc_area, screen_state);
+
+    // The dropdown goes on top of everything, centred on the whole screen
+    if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
+        render_log_level_dropdown(frame, frame.area(), screen_state);
+    }
 }
 
 /// Render the settings list
@@ -368,37 +369,19 @@ fn render_settings_list(
         .collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(" Settings "),
-        )
+        .block(rounded_block().title(" Settings "))
         .scroll_padding(1);
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(list, area, &mut screen_state.state);
-
-    // Compute visible viewport (inner area) for arrow indicators
-    let inner = area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-
-    let offset = screen_state.state.offset();
-    let total = SettingItem::all().len();
-    let has_above = offset > 0;
-    let has_below = offset + view_height < total;
-
-    // Render scroll arrows using helper
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
-
-    // Render log level dropdown if editing
-    if screen_state.editing_log_level && screen_state.current_item() == SettingItem::LogLevel {
-        render_log_level_dropdown(frame, area, screen_state);
-    }
+    render_scrollbar(
+        frame,
+        area,
+        0,
+        SettingItem::all().len(),
+        screen_state.state.offset(),
+    );
 }
 
 /// Get the display value for a setting
@@ -424,12 +407,11 @@ fn format_bool(value: bool) -> String {
 
 /// Render the log level dropdown
 fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
-    let log_levels = ["error", "warn", "info", "debug", "trace"];
-
-    // Create dropdown in center of screen
+    // Create dropdown in center of screen, hiding what is below it
     let popup_area = centered_modal(modal_size::DROPDOWN, area);
+    frame.render_widget(Clear, popup_area);
 
-    let items: Vec<ListItem> = log_levels
+    let items: Vec<ListItem> = LOG_LEVELS
         .iter()
         .enumerate()
         .map(|(i, level)| {
@@ -464,9 +446,7 @@ fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &Setti
 
     let list = List::new(items)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+            rounded_block()
                 .padding(Padding::horizontal(1))
                 .title("Select Log Level")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
@@ -481,7 +461,6 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
     let current_item = screen_state.current_item();
     let short_desc = current_item.description();
     let detailed_desc = current_item.detailed_description();
-    let needs_restart = current_item.requires_restart();
 
     let mut lines = vec![];
 
@@ -493,25 +472,12 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
             .add_modifier(Modifier::BOLD),
     )));
 
-    // Restart warning badge if needed (with extra space after emoji)
-    if needs_restart {
-        lines.push(Line::from(Span::styled(
-            "⚠  Requires daemon restart",
-            Style::default()
-                .fg(colors::UI_WARNING)
-                .add_modifier(Modifier::BOLD),
-        )));
-    }
-
     lines.push(Line::from("")); // Spacing
 
     // Parse the detailed description with simpler, consistent coloring
     for line in detailed_desc.lines() {
         if line.is_empty() {
             lines.push(Line::from(""));
-        } else if line.starts_with("⚠") {
-            // Skip hardcoded warnings - we show the badge dynamically now
-            // (no action needed - line not added to output)
         } else if line.starts_with("When enabled:") {
             // "When enabled:" prefix - green, rest white
             let rest = line.trim_start_matches("When enabled:");
@@ -558,27 +524,17 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
         }
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+    let block = rounded_block()
         .padding(Padding::horizontal(1))
         .title(" Description ");
 
     let inner_area = block.inner(area);
-    let width = inner_area.width as usize;
-    let height = inner_area.height as usize;
+    // A zero-width panel (tiny terminal) still counts one row per line
+    let width = usize::from(inner_area.width).max(1);
+    let height = usize::from(inner_area.height);
 
     // Calculate total visual lines (accounting for wrapping)
-    let mut total_visual_lines = 0;
-    for line in &lines {
-        let line_width = line.width();
-        if line_width == 0 {
-            total_visual_lines += 1;
-        } else {
-            // Ceiling division
-            total_visual_lines += line_width.div_ceil(width);
-        }
-    }
+    let total_visual_lines: usize = lines.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
 
     // Determine max scroll
     let max_scroll = u16::try_from(total_visual_lines.saturating_sub(height)).unwrap_or(u16::MAX);
@@ -588,13 +544,15 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .wrap(ratatui::widgets::Wrap { trim: false })
+        .wrap(Wrap { trim: false })
         .scroll((screen_state.desc_scroll, 0));
 
     frame.render_widget(paragraph, area);
-
-    // Render scroll arrows
-    let has_above = screen_state.desc_scroll > 0;
-    let has_below = screen_state.desc_scroll < max_scroll;
-    crate::tui::widgets::render_scroll_arrows(frame, inner_area, has_above, has_below);
+    render_scrollbar(
+        frame,
+        area,
+        0,
+        total_visual_lines,
+        usize::from(screen_state.desc_scroll),
+    );
 }

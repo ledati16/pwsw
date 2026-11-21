@@ -1,34 +1,230 @@
 //! Help overlay - Context-aware keyboard shortcut reference
+//!
+//! Everything shown comes from [`crate::tui::keymap::BINDINGS`]; the row layout
+//! computed by [`help_layout`] is shared by rendering and section navigation.
+
+use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState,
-};
+use ratatui::widgets::{Cell, Clear, Padding, Row, Table, TableState};
 
 use crate::style::colors;
 use crate::tui::app::Screen;
-use crate::tui::widgets::{centered_modal, modal_size};
+use crate::tui::keymap::{BINDINGS, Binding, Context, REGEX_EXAMPLES};
+use crate::tui::widgets::{centered_modal, modal_size, render_scrollbar, rounded_block};
+
+/// Width of the key column
+const KEY_COLUMN_WIDTH: u16 = 22;
+
+/// Name of the shared text-input section
+const TEXT_INPUT_SECTION: &str = "Text Input Fields";
+/// Name of the shared global section
+const GLOBAL_SECTION: &str = "Global Shortcuts";
+
+/// One row of the help table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HelpRow {
+    /// Collapsible section header
+    Section { name: String, collapsed: bool },
+    /// Sub-heading or spacer inside a section
+    Hint(&'static str),
+    /// A key binding
+    Key(&'static str, &'static str),
+}
+
+/// Name of the screen-specific section
+fn screen_section(screen: Screen) -> String {
+    format!("{} Screen", screen.name())
+}
+
+fn push_bindings<'a>(rows: &mut Vec<HelpRow>, bindings: impl Iterator<Item = &'a Binding>) {
+    let mut last_heading = None;
+    for binding in bindings {
+        let heading = binding.context.heading();
+        if heading.is_some() && heading != last_heading {
+            rows.push(HelpRow::Hint(""));
+            rows.extend(heading.map(HelpRow::Hint));
+        }
+        last_heading = heading;
+        rows.push(HelpRow::Key(binding.keys, binding.description));
+    }
+}
+
+/// The rows of the help overlay for `screen` with `collapsed` sections folded.
+fn help_layout(screen: Screen, collapsed: &HashSet<String>) -> Vec<HelpRow> {
+    let mut rows = Vec::new();
+    let section = |rows: &mut Vec<HelpRow>, name: String| -> bool {
+        let is_collapsed = collapsed.contains(&name);
+        rows.push(HelpRow::Section {
+            name,
+            collapsed: is_collapsed,
+        });
+        !is_collapsed
+    };
+
+    if section(&mut rows, screen_section(screen)) {
+        push_bindings(
+            &mut rows,
+            BINDINGS
+                .iter()
+                .filter(|b| b.context.screen() == Some(screen)),
+        );
+        if screen == Screen::Rules {
+            rows.push(HelpRow::Hint(""));
+            rows.push(HelpRow::Hint("Regex Examples:"));
+            rows.extend(REGEX_EXAMPLES.iter().map(|(p, d)| HelpRow::Key(p, d)));
+        }
+    }
+    if section(&mut rows, TEXT_INPUT_SECTION.to_string()) {
+        push_bindings(
+            &mut rows,
+            BINDINGS.iter().filter(|b| b.context == Context::TextInput),
+        );
+    }
+    if section(&mut rows, GLOBAL_SECTION.to_string()) {
+        push_bindings(
+            &mut rows,
+            BINDINGS
+                .iter()
+                .filter(|b| matches!(b.context, Context::Global | Context::Help)),
+        );
+    }
+    rows
+}
 
 /// Get the number of rows in the help content for a given screen
-pub fn get_help_row_count(
-    current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
-) -> usize {
-    // For counting rows, width doesn't matter as we just need the number of items
-    build_help_rows(current_screen, collapsed_sections, u16::MAX).len()
+pub fn get_help_row_count(current_screen: Screen, collapsed_sections: &HashSet<String>) -> usize {
+    help_layout(current_screen, collapsed_sections).len()
 }
 
 /// Get the maximum scroll offset for the help screen given viewport height
 pub fn get_help_max_offset(
     current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
+    collapsed_sections: &HashSet<String>,
     viewport_height: usize,
 ) -> usize {
-    let total_rows = get_help_row_count(current_screen, collapsed_sections);
-    total_rows.saturating_sub(viewport_height)
+    get_help_row_count(current_screen, collapsed_sections).saturating_sub(viewport_height)
+}
+
+/// Find the next section header row index starting from current row
+pub fn find_next_section_header(
+    current_screen: Screen,
+    collapsed_sections: &HashSet<String>,
+    current_row: usize,
+) -> Option<usize> {
+    help_layout(current_screen, collapsed_sections)
+        .iter()
+        .enumerate()
+        .skip(current_row + 1)
+        .find(|(_, row)| matches!(row, HelpRow::Section { .. }))
+        .map(|(i, _)| i)
+}
+
+/// Find the previous section header row index starting from current row
+pub fn find_prev_section_header(
+    current_screen: Screen,
+    collapsed_sections: &HashSet<String>,
+    current_row: usize,
+) -> Option<usize> {
+    help_layout(current_screen, collapsed_sections)
+        .iter()
+        .enumerate()
+        .take(current_row)
+        .rev()
+        .find(|(_, row)| matches!(row, HelpRow::Section { .. }))
+        .map(|(i, _)| i)
+}
+
+/// Get the section name at a given row index if it's a section header
+pub fn get_section_at_row(
+    current_screen: Screen,
+    collapsed_sections: &HashSet<String>,
+    row_index: usize,
+) -> Option<String> {
+    match help_layout(current_screen, collapsed_sections)
+        .into_iter()
+        .nth(row_index)
+    {
+        Some(HelpRow::Section { name, .. }) => Some(name),
+        _ => None,
+    }
+}
+
+/// Word-wrap `text` to `width` columns; returns the text and its row count.
+fn wrap_text(text: &str, width: usize) -> (String, u16) {
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0;
+    for word in text.split_whitespace() {
+        let word_width = word.chars().count();
+        let space = usize::from(current_width != 0);
+        if current_width + space + word_width <= width || current_width == 0 {
+            if space > 0 {
+                current.push(' ');
+            }
+            current.push_str(word);
+            current_width += space + word_width;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.push_str(word);
+            current_width = word_width;
+        }
+    }
+    lines.push(current);
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    (lines.join("\n"), height)
+}
+
+/// Turn the layout into table rows, wrapping descriptions to `desc_width`
+fn build_help_rows(layout: Vec<HelpRow>, desc_width: usize) -> Vec<Row<'static>> {
+    layout
+        .into_iter()
+        .map(|row| match row {
+            HelpRow::Section { name, collapsed } => {
+                let indicator = if collapsed { "›" } else { "▾" };
+                let action = if collapsed { "expand" } else { "collapse" };
+                let hint_style = Style::default()
+                    .fg(colors::UI_SECONDARY)
+                    .add_modifier(Modifier::ITALIC);
+                Row::new(vec![
+                    Cell::from(Span::styled(
+                        format!("{indicator} {name}"),
+                        Style::default()
+                            .fg(colors::UI_WARNING)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Cell::from(Line::from(vec![
+                        Span::styled("<", hint_style),
+                        Span::styled(
+                            "space",
+                            Style::default()
+                                .fg(colors::UI_SUCCESS)
+                                .add_modifier(Modifier::ITALIC),
+                        ),
+                        Span::styled(format!(" to {action}>"), hint_style),
+                    ])),
+                ])
+            }
+            HelpRow::Hint(text) => Row::new(vec![
+                Cell::from(""),
+                Cell::from(Span::styled(
+                    text,
+                    Style::default().fg(colors::UI_SECONDARY),
+                )),
+            ]),
+            HelpRow::Key(keys, description) => {
+                let (wrapped, height) = wrap_text(description, desc_width);
+                Row::new(vec![
+                    Cell::from(Span::styled(keys, Style::default().fg(colors::UI_SUCCESS))),
+                    Cell::from(wrapped),
+                ])
+                .height(height)
+            }
+        })
+        .collect()
 }
 
 /// Render help overlay on top of the current screen
@@ -38,7 +234,7 @@ pub fn render_help(
     current_screen: Screen,
     scroll_state: &mut TableState,
     viewport_height: &mut usize,
-    collapsed_sections: &std::collections::HashSet<String>,
+    collapsed_sections: &HashSet<String>,
 ) {
     // Create centered modal
     let popup_area = centered_modal(modal_size::HELP, area);
@@ -46,26 +242,27 @@ pub fn render_help(
     // Clear background to prevent bleed-through from underlying screens
     frame.render_widget(Clear, popup_area);
 
-    // Calculate description column width for wrapping
-    // width - 2 (border) - 2 (padding) - 22 (key col) - 2 (spacing)
-    let desc_width = popup_area.width.saturating_sub(2 + 2 + 22 + 2).max(1);
+    // Description column width: border (2) + padding (2) + key column + spacing (2)
+    let desc_width = usize::from(
+        popup_area
+            .width
+            .saturating_sub(2 + 2 + KEY_COLUMN_WIDTH + 2),
+    )
+    .max(1);
 
-    // Build help content
-    let rows = build_help_rows(current_screen, collapsed_sections, desc_width);
+    let rows = build_help_rows(help_layout(current_screen, collapsed_sections), desc_width);
     let total_rows = rows.len();
 
     let table = Table::new(rows, [
-        Constraint::Length(22), // Key column (accommodate long combinations like "Ctrl+W, Alt+Backspace")
-        Constraint::Fill(1),    // Description column (take remaining space and wrap)
+        Constraint::Length(KEY_COLUMN_WIDTH),
+        Constraint::Fill(1), // Description column (take remaining space and wrap)
     ])
     .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
+        rounded_block()
             .padding(Padding::horizontal(1))
             .title(" Help "),
     )
-    .column_spacing(2) // Add spacing between columns for better readability
+    .column_spacing(2)
     .row_highlight_style(
         Style::default()
             .bg(colors::UI_SELECTED_BG)
@@ -80,473 +277,80 @@ pub fn render_help(
 
     frame.render_stateful_widget(table, popup_area, scroll_state);
 
-    // Calculate scroll indicators
-    let inner = popup_area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-    *viewport_height = view_height; // Update cached viewport height for scroll handling
-    let current_offset = scroll_state.offset();
-
-    // Simple scroll indicator logic: check if we can scroll in each direction
-    let has_above = current_offset > 0;
-    let has_below = current_offset + view_height < total_rows;
-
-    // Calculate scroll indicators
-    // Top: shows how many lines are hidden above (counting up from start)
-    // Bottom: shows how many lines remain below (counting down to end)
-    let lines_above = current_offset;
-    let lines_below = total_rows.saturating_sub(current_offset + view_height);
-
-    // Draw top arrow if there's more above
-    if has_above {
-        let arrow_text = format!("↑{lines_above}");
-        let arrow_width = u16::try_from(arrow_text.len()).unwrap_or(5); // Safe: arrow text is very short (< 10 chars)
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(arrow_width),
-            y: inner.y,
-            width: arrow_width,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled(
-            arrow_text,
-            Style::default().fg(colors::UI_WARNING),
-        ));
-        frame.render_widget(p, r);
-    }
-
-    // Draw bottom arrow if there's more below
-    if has_below {
-        let arrow_text = format!("↓{lines_below}");
-        let arrow_width = u16::try_from(arrow_text.len()).unwrap_or(5); // Safe: arrow text is very short (< 10 chars)
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(arrow_width),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: arrow_width,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled(
-            arrow_text,
-            Style::default().fg(colors::UI_WARNING),
-        ));
-        frame.render_widget(p, r);
-    }
+    // Cache the viewport height for scroll handling
+    *viewport_height = usize::from(popup_area.height.saturating_sub(2));
+    render_scrollbar(frame, popup_area, 0, total_rows, scroll_state.offset());
 }
 
-/// Metadata for help rows to track section boundaries
-#[derive(Clone)]
-struct HelpRowMeta {
-    is_section_header: bool,
-    section_name: Option<String>,
-}
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
 
-/// Find the next section header row index starting from current row
-pub fn find_next_section_header(
-    current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
-    current_row: usize,
-) -> Option<usize> {
-    let row_count = get_help_row_count(current_screen, collapsed_sections);
+    use super::*;
 
-    ((current_row + 1)..row_count)
-        .find(|&row| get_section_at_row(current_screen, collapsed_sections, row).is_some())
-}
-
-/// Find the previous section header row index starting from current row
-pub fn find_prev_section_header(
-    current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
-    current_row: usize,
-) -> Option<usize> {
-    if current_row == 0 {
-        return None;
+    fn sections(screen: Screen, collapsed: &HashSet<String>) -> Vec<(usize, String)> {
+        (0..get_help_row_count(screen, collapsed))
+            .filter_map(|row| get_section_at_row(screen, collapsed, row).map(|s| (row, s)))
+            .collect()
     }
 
-    (0..current_row)
-        .rev()
-        .find(|&row| get_section_at_row(current_screen, collapsed_sections, row).is_some())
-}
-
-/// Get the section name at a given row index if it's a section header
-pub fn get_section_at_row(
-    current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
-    row_index: usize,
-) -> Option<String> {
-    // IMPORTANT: Metadata must be rebuilt on every call because the help content structure
-    // is dynamic - sections can be collapsed/expanded which changes row counts and indices.
-    // The metadata needs to exactly match the current visible rows accounting for collapsed
-    // state, so we rebuild it here with the same logic as build_help_rows().
-    //
-    // This is O(n) where n is the number of help rows, but simple and correct. An alternative
-    // would be to cache metadata and invalidate on collapse/expand, but that adds complexity
-    // for a rarely-used feature (help overlay navigation).
-    let mut metadata: Vec<HelpRowMeta> = Vec::new();
-
-    // Helper to track metadata (simplified version)
-    let add_meta_keybind = |meta: &mut Vec<HelpRowMeta>| {
-        meta.push(HelpRowMeta {
-            is_section_header: false,
-            section_name: None,
-        });
-    };
-
-    let add_meta_section = |meta: &mut Vec<HelpRowMeta>, name: &str| {
-        meta.push(HelpRowMeta {
-            is_section_header: true,
-            section_name: Some(name.to_string()),
-        });
-    };
-
-    // Rebuild metadata structure (must match build_help_rows exactly)
-    // Note: No hint line anymore, first row is a section header
-
-    // Screen section
-    let screen_section_name = format!("{} Screen", current_screen.name());
-    add_meta_section(&mut metadata, &screen_section_name);
-
-    if !collapsed_sections.contains(&screen_section_name) {
-        match current_screen {
-            Screen::Dashboard => {
-                for _ in 0..6 {
-                    add_meta_keybind(&mut metadata);
-                }
-            }
-            Screen::Sinks => {
-                for _ in 0..9 {
-                    add_meta_keybind(&mut metadata);
-                }
-            }
-            Screen::Rules => {
-                // 9 keybinds + 2 hints (empty + "Regex Examples:") + 6 regex examples = 17
-                for _ in 0..17 {
-                    add_meta_keybind(&mut metadata);
-                }
-            }
-            Screen::Settings => {
-                for _ in 0..3 {
-                    add_meta_keybind(&mut metadata);
-                }
-            }
-        }
-    }
-
-    // Text Input section
-    let text_input_section = "Text Input Fields".to_string();
-    add_meta_section(&mut metadata, &text_input_section);
-    if !collapsed_sections.contains(&text_input_section) {
-        for _ in 0..8 {
-            add_meta_keybind(&mut metadata);
-        }
-    }
-
-    // Global section
-    let global_section = "Global Shortcuts".to_string();
-    add_meta_section(&mut metadata, &global_section);
-    if !collapsed_sections.contains(&global_section) {
-        for _ in 0..8 {
-            add_meta_keybind(&mut metadata);
-        }
-    }
-
-    metadata.get(row_index).and_then(|m| {
-        if m.is_section_header {
-            m.section_name.clone()
-        } else {
-            None
-        }
-    })
-}
-
-/// Build the list of rows for the help table with collapsible sections
-fn build_help_rows(
-    current_screen: Screen,
-    collapsed_sections: &std::collections::HashSet<String>,
-    desc_width: u16,
-) -> Vec<Row<'static>> {
-    let mut rows = Vec::new();
-    let mut metadata: Vec<HelpRowMeta> = Vec::new();
-
-    // Helper to wrap text and calculate height
-    let wrap_text = |text: &str| -> (String, u16) {
-        if text.is_empty() {
-            return (String::new(), 1);
-        }
-
-        let mut lines = Vec::new();
-        let mut current_line = String::new();
-        let mut current_width = 0;
-
-        for word in text.split_whitespace() {
-            let word_len = word.len();
-            // +1 for space if not at start of line
-            let space = usize::from(current_width != 0);
-
-            if current_width + space + word_len <= desc_width as usize {
-                if space > 0 {
-                    current_line.push(' ');
-                }
-                current_line.push_str(word);
-                current_width += space + word_len;
-            } else {
-                lines.push(current_line);
-                current_line = word.to_string();
-                current_width = word_len;
-            }
-        }
-        lines.push(current_line);
-
-        (
-            lines.join("\n"),
-            u16::try_from(lines.len()).unwrap_or(u16::MAX),
-        )
-    };
-
-    // Helper to add a keybind row
-    let add_keybind = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, key: &str, desc: &str| {
-        let (wrapped_desc, height) = wrap_text(desc);
-        rows.push(
-            Row::new(vec![
-                Cell::from(Span::styled(
-                    key.to_string(),
-                    Style::default().fg(colors::UI_SUCCESS),
-                )),
-                Cell::from(wrapped_desc),
-            ])
-            .height(height),
-        );
-        meta.push(HelpRowMeta {
-            is_section_header: false,
-            section_name: None,
-        });
-    };
-
-    // Helper to add a collapsible section header
-    let add_section_header =
-        |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, name: &str, is_collapsed: bool| {
-            let indicator = if is_collapsed { "›" } else { "▾" };
-            let action = if is_collapsed { "expand" } else { "collapse" };
-
-            // Build hint with highlighted "space" key
-            let hint_line = Line::from(vec![
-                Span::styled(
-                    "<",
-                    Style::default()
-                        .fg(colors::UI_SECONDARY)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-                Span::styled(
-                    "space",
-                    Style::default()
-                        .fg(colors::UI_SUCCESS)
-                        .add_modifier(Modifier::ITALIC),
-                ),
-                Span::styled(
-                    format!(" to {action}>"),
-                    Style::default()
-                        .fg(colors::UI_SECONDARY)
-                        .add_modifier(Modifier::ITALIC),
-                ),
+    #[test]
+    fn test_sections_follow_the_keymap() {
+        let none = HashSet::new();
+        for &screen in Screen::all() {
+            let found = sections(screen, &none);
+            let names: Vec<&str> = found.iter().map(|(_, n)| n.as_str()).collect();
+            assert_eq!(names, vec![
+                screen_section(screen).as_str(),
+                TEXT_INPUT_SECTION,
+                GLOBAL_SECTION
             ]);
 
-            rows.push(Row::new(vec![
-                Cell::from(Span::styled(
-                    format!("{indicator} {name}"),
-                    Style::default()
-                        .fg(colors::UI_WARNING)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Cell::from(hint_line),
-            ]));
-            meta.push(HelpRowMeta {
-                is_section_header: true,
-                section_name: Some(name.to_string()),
-            });
-        };
+            // The global section holds exactly the global and help bindings
+            let global_row = found[2].0;
+            let global_keys = BINDINGS
+                .iter()
+                .filter(|b| matches!(b.context, Context::Global | Context::Help))
+                .count();
+            assert_eq!(
+                get_help_row_count(screen, &none) - global_row - 1,
+                global_keys,
+                "{screen:?}"
+            );
 
-    // Helper to add compact hint text (for regex examples in Rules screen)
-    let add_hint = |rows: &mut Vec<Row>, meta: &mut Vec<HelpRowMeta>, text: &str| {
-        let (wrapped_text, height) = wrap_text(text);
-        rows.push(
-            Row::new(vec![
-                Cell::from(""),
-                Cell::from(Span::styled(
-                    wrapped_text,
-                    Style::default().fg(colors::UI_SECONDARY),
-                )),
-            ])
-            .height(height),
-        );
-        meta.push(HelpRowMeta {
-            is_section_header: false,
-            section_name: None,
-        });
-    };
-
-    // Screen-specific section
-    let screen_section_name = format!("{} Screen", current_screen.name());
-    let screen_collapsed = collapsed_sections.contains(&screen_section_name);
-    add_section_header(
-        &mut rows,
-        &mut metadata,
-        &screen_section_name,
-        screen_collapsed,
-    );
-
-    if !screen_collapsed {
-        match current_screen {
-            Screen::Dashboard => {
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "w",
-                    "Toggle between Logs ↔ Windows view",
-                );
-                add_keybind(&mut rows, &mut metadata, "←/→", "Navigate daemon actions");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Enter",
-                    "Execute selected action (start/stop/restart/enable/disable)",
-                );
-                add_keybind(&mut rows, &mut metadata, "↑/↓", "Scroll logs line by line");
-                add_keybind(&mut rows, &mut metadata, "PageUp/PageDown", "Page scroll");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Home",
-                    "Jump to latest (logs) / top (windows)",
-                );
-            }
-            Screen::Sinks => {
-                add_keybind(&mut rows, &mut metadata, "↑/↓", "Navigate list");
-                add_keybind(&mut rows, &mut metadata, "Shift+↑/↓", "Reorder items");
-                add_keybind(&mut rows, &mut metadata, "a", "Add new sink");
-                add_keybind(&mut rows, &mut metadata, "e", "Edit selected sink");
-                add_keybind(&mut rows, &mut metadata, "x", "Delete selected sink");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Space",
-                    "Set default / Open node selector",
-                );
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Tab/Shift+Tab",
-                    "Switch field (in editor)",
-                );
-                add_keybind(&mut rows, &mut metadata, "Enter", "Save sink / Inspect");
-                add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
-            }
-            Screen::Rules => {
-                add_keybind(&mut rows, &mut metadata, "↑/↓", "Navigate list");
-                add_keybind(&mut rows, &mut metadata, "Shift+↑/↓", "Reorder items");
-                add_keybind(&mut rows, &mut metadata, "a", "Add new rule");
-                add_keybind(&mut rows, &mut metadata, "e", "Edit selected rule");
-                add_keybind(&mut rows, &mut metadata, "x", "Delete selected rule");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Tab/Shift+Tab",
-                    "Switch field (in editor)",
-                );
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Space",
-                    "Open sink selector / Cycle notify",
-                );
-                add_keybind(&mut rows, &mut metadata, "Enter", "Save rule / Inspect");
-                add_keybind(&mut rows, &mut metadata, "Esc", "Cancel editing");
-                add_hint(&mut rows, &mut metadata, "");
-                add_hint(&mut rows, &mut metadata, "Regex Examples:");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "firefox",
-                    "Matches anywhere in text",
-                );
-                add_keybind(&mut rows, &mut metadata, "^steam$", "Exact match only");
-                add_keybind(&mut rows, &mut metadata, "^chrome", "Starts with chrome");
-                add_keybind(&mut rows, &mut metadata, "^(mpv|vlc)$", "Match mpv OR vlc");
-                add_keybind(&mut rows, &mut metadata, ".*", "Match all windows");
-                add_keybind(&mut rows, &mut metadata, "(?i)discord", "Case-insensitive");
-            }
-            Screen::Settings => {
-                add_keybind(&mut rows, &mut metadata, "↑/↓", "Navigate settings");
-                add_keybind(
-                    &mut rows,
-                    &mut metadata,
-                    "Enter/Space",
-                    "Toggle setting / Open dropdown",
-                );
-                add_keybind(&mut rows, &mut metadata, "Esc", "Cancel dropdown");
-            }
+            // Collapsing a section removes exactly its rows and keeps the others found
+            let mut collapsed = HashSet::new();
+            collapsed.insert(screen_section(screen));
+            let folded = sections(screen, &collapsed);
+            assert_eq!(folded[0], (0, screen_section(screen)));
+            assert_eq!(folded[1].0, 1);
+            assert_eq!(folded[2].1, GLOBAL_SECTION);
         }
     }
 
-    // Text Input Fields section (collapsed by default)
-    let text_input_section = "Text Input Fields".to_string();
-    let text_collapsed = collapsed_sections.contains(&text_input_section);
-    add_section_header(
-        &mut rows,
-        &mut metadata,
-        &text_input_section,
-        text_collapsed,
-    );
-
-    if !text_collapsed {
-        add_keybind(&mut rows, &mut metadata, "←/→", "Move cursor left/right");
-        add_keybind(
-            &mut rows,
-            &mut metadata,
-            "Home/End, Ctrl+A/E",
-            "Jump to start/end",
+    #[test]
+    fn test_section_navigation() {
+        let none = HashSet::new();
+        let found = sections(Screen::Sinks, &none);
+        assert_eq!(
+            find_next_section_header(Screen::Sinks, &none, 0),
+            Some(found[1].0)
         );
-        add_keybind(&mut rows, &mut metadata, "Alt+B/F, Alt+←/→", "Move by word");
-        add_keybind(
-            &mut rows,
-            &mut metadata,
-            "Backspace/Del",
-            "Delete character",
+        assert_eq!(
+            find_prev_section_header(Screen::Sinks, &none, found[2].0),
+            Some(found[1].0)
         );
-        add_keybind(
-            &mut rows,
-            &mut metadata,
-            "Ctrl+W, Alt+Backspace",
-            "Delete previous word",
-        );
-        add_keybind(&mut rows, &mut metadata, "Alt+D", "Delete next word");
-        add_keybind(&mut rows, &mut metadata, "Ctrl+U", "Clear entire line");
-        add_keybind(
-            &mut rows,
-            &mut metadata,
-            "Ctrl+K",
-            "Delete from cursor to end",
+        assert_eq!(find_prev_section_header(Screen::Sinks, &none, 0), None);
+        assert_eq!(
+            find_next_section_header(Screen::Sinks, &none, found[2].0),
+            None
         );
     }
 
-    // Global Shortcuts section
-    let global_section = "Global Shortcuts".to_string();
-    let global_collapsed = collapsed_sections.contains(&global_section);
-    add_section_header(&mut rows, &mut metadata, &global_section, global_collapsed);
-
-    if !global_collapsed {
-        add_keybind(&mut rows, &mut metadata, "Tab", "Next screen");
-        add_keybind(&mut rows, &mut metadata, "Shift+Tab", "Previous screen");
-        add_keybind(&mut rows, &mut metadata, "1-4", "Jump directly to screen");
-        add_keybind(&mut rows, &mut metadata, "Ctrl+S", "Save configuration");
-        add_keybind(&mut rows, &mut metadata, "q, Ctrl+C", "Quit application");
-        add_keybind(
-            &mut rows,
-            &mut metadata,
-            "Esc",
-            "Clear status / Cancel quit",
-        );
-        add_keybind(&mut rows, &mut metadata, "F1, ?", "Toggle this help");
+    #[test]
+    fn test_wrap_text() {
+        assert_eq!(wrap_text("aa bb cc", 5), ("aa bb\ncc".to_string(), 2));
+        assert_eq!(wrap_text("ääää ö", 4), ("ääää\nö".to_string(), 2));
+        assert_eq!(wrap_text("", 4), (String::new(), 1));
     }
-
-    rows
 }

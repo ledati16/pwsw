@@ -24,7 +24,7 @@ fn sinks_editor_input_wiring() {
     // Start with empty
     app.sinks_screen.editor.name =
         crate::tui::editor_state::EditorState::from_string(String::new());
-    app.sinks_screen.editor.focused_field = 0;
+    app.sinks_screen.editor.focused_field = crate::tui::screens::sinks::SinkField::Name;
 
     // Type 'a'
     let ke = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE);
@@ -53,7 +53,7 @@ fn rules_editor_input_wiring() {
     app.rules_screen.start_add();
     app.rules_screen.editor.app_id_pattern =
         crate::tui::editor_state::EditorState::from_string("foo".to_string());
-    app.rules_screen.editor.focused_field = 0;
+    app.rules_screen.editor.focused_field = crate::tui::screens::rules::RuleField::AppId;
 
     // Type 'd'
     let ke = KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE);

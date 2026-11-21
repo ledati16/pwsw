@@ -1,20 +1,25 @@
 //! Sinks screen - Manage audio output sinks
 
-use std::fmt::Write;
-
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, Cell, Clear, ListItem, ListState, Padding, Paragraph, Row, Table,
-    TableState,
+    BorderType, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table, TableState,
 };
+use tui_input::Input;
 
 use crate::config::SinkConfig;
+use crate::pipewire::{ActiveSink, ProfileSink};
 use crate::style::colors;
 use crate::tui::editor_state::EditorState;
-use crate::tui::widgets::{centered_modal, modal_size, render_input};
+use crate::tui::widgets::{
+    centered_modal, field_line, modal_size, render_input, render_scrollbar, render_text_modal,
+    rounded_block,
+};
+
+/// Rows of the sinks table above the first sink (header + its margin)
+const TABLE_HEADER_ROWS: u16 = 2;
 
 /// Sinks screen mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -27,13 +32,49 @@ pub enum SinksMode {
     Inspect,
 }
 
+/// Field of the sink editor
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SinkField {
+    /// Node name (text, or pick from the node selector with Space)
+    #[default]
+    Name,
+    Desc,
+    Icon,
+    /// Default checkbox (Space toggles)
+    Default,
+}
+
+impl SinkField {
+    pub(crate) const fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Desc,
+            Self::Desc => Self::Icon,
+            Self::Icon | Self::Default => Self::Default,
+        }
+    }
+
+    pub(crate) const fn prev(self) -> Self {
+        match self {
+            Self::Name | Self::Desc => Self::Name,
+            Self::Icon => Self::Desc,
+            Self::Default => Self::Icon,
+        }
+    }
+
+    /// Whether the field is a text input
+    pub(crate) const fn is_text(self) -> bool {
+        !matches!(self, Self::Default)
+    }
+}
+
 /// Editor state for add/edit modal
+#[derive(Debug)]
 pub struct SinkEditor {
     pub name: EditorState,
     pub desc: EditorState,
     pub icon: EditorState,
     pub default: bool,
-    pub focused_field: usize, // 0=name, 1=desc, 2=icon, 3=default
+    pub focused_field: SinkField,
 }
 
 impl SinkEditor {
@@ -43,7 +84,7 @@ impl SinkEditor {
             desc: EditorState::new(),
             icon: EditorState::new(),
             default: false,
-            focused_field: 0,
+            focused_field: SinkField::Name,
         }
     }
 
@@ -53,31 +94,59 @@ impl SinkEditor {
             desc: EditorState::from_string(sink.desc.clone()),
             icon: EditorState::from_string(sink.icon.clone().unwrap_or_default()),
             default: sink.default,
-            focused_field: 0,
+            focused_field: SinkField::Name,
         }
     }
 
     pub(crate) const fn next_field(&mut self) {
-        if self.focused_field < 3 {
-            self.focused_field += 1;
-        }
+        self.focused_field = self.focused_field.next();
     }
 
     pub(crate) const fn prev_field(&mut self) {
-        if self.focused_field > 0 {
-            self.focused_field -= 1;
+        self.focused_field = self.focused_field.prev();
+    }
+
+    /// The text input of the focused field (`None` on the checkbox)
+    pub(crate) const fn focused_input_mut(&mut self) -> Option<&mut Input> {
+        match self.focused_field {
+            SinkField::Name => Some(&mut self.name.input),
+            SinkField::Desc => Some(&mut self.desc.input),
+            SinkField::Icon => Some(&mut self.icon.input),
+            SinkField::Default => None,
         }
     }
 }
 
+/// Node names offered by the node selector, in display order (active sinks,
+/// then sinks that need a profile switch).
+pub(crate) fn selector_names<'a>(
+    active: &'a [ActiveSink],
+    profiles: &'a [ProfileSink],
+) -> Vec<&'a str> {
+    active
+        .iter()
+        .map(|s| s.name.as_str())
+        .chain(profiles.iter().map(|s| s.predicted_name.as_str()))
+        .collect()
+}
+
+/// Row of the node selector list showing the entry at `pos` of
+/// [`selector_names`]: entries sit below the "Active" header, profile entries
+/// additionally below a spacer and the "Profile" header.
+pub(crate) const fn selector_list_index(pos: usize, active_len: usize) -> usize {
+    if pos < active_len { 1 + pos } else { 3 + pos }
+}
+
 /// Sinks screen state
+#[derive(Debug)]
 pub struct SinksScreen {
     pub mode: SinksMode,
     pub selected: usize,
     pub editor: SinkEditor,
     pub editing_index: Option<usize>, // None = adding, Some(i) = editing
-    /// Selected index in sink selector (0 = first header, skips headers during selection)
-    pub sink_selector_index: usize,
+    /// Node name highlighted in the node selector. Kept by name because the
+    /// lists behind the selector are replaced by every `PipeWire` poll.
+    pub selector_node: Option<String>,
     /// State for sink selector dropdown
     pub sink_selector_state: ListState,
     /// Table scroll state
@@ -91,7 +160,7 @@ impl SinksScreen {
             selected: 0,
             editor: SinkEditor::new(),
             editing_index: None,
-            sink_selector_index: 0,
+            selector_node: None,
             sink_selector_state: ListState::default(),
             state: TableState::default(),
         }
@@ -106,6 +175,13 @@ impl SinksScreen {
     pub(crate) const fn select_next(&mut self, sink_count: usize) {
         if sink_count > 0 && self.selected < sink_count - 1 {
             self.selected += 1;
+        }
+    }
+
+    /// Keep the selection inside a list of `sink_count` sinks.
+    pub(crate) const fn clamp_selection(&mut self, sink_count: usize) {
+        if self.selected >= sink_count {
+            self.selected = sink_count.saturating_sub(1);
         }
     }
 
@@ -134,6 +210,33 @@ impl SinksScreen {
     pub(crate) const fn cancel(&mut self) {
         self.mode = SinksMode::List;
     }
+
+    /// Open the node selector on the edited node name if it is listed, else on
+    /// the first entry.
+    pub(crate) fn open_selector(&mut self, names: &[&str]) {
+        let current = self.editor.name.value();
+        self.selector_node = names
+            .iter()
+            .find(|n| **n == current)
+            .or_else(|| names.first())
+            .map(|n| (*n).to_string());
+        self.mode = SinksMode::SelectSink;
+    }
+
+    /// Move the node selector highlight by one entry (`down` or up) within
+    /// `names`; a highlight that disappeared restarts at the first entry.
+    pub(crate) fn move_selector(&mut self, names: &[&str], down: bool) {
+        let pos = self
+            .selector_node
+            .as_deref()
+            .and_then(|node| names.iter().position(|n| *n == node));
+        let new = match pos {
+            None => 0,
+            Some(p) if down => (p + 1).min(names.len().saturating_sub(1)),
+            Some(p) => p.saturating_sub(1),
+        };
+        self.selector_node = names.get(new).map(|n| (*n).to_string());
+    }
 }
 
 /// Context for rendering the sinks screen (bundles related parameters)
@@ -141,8 +244,8 @@ pub struct SinksRenderContext<'a> {
     pub sinks: &'a [SinkConfig],
     pub screen_state: &'a mut SinksScreen,
     pub active_sinks: &'a [String],
-    pub active_sink_list: &'a [crate::pipewire::ActiveSink],
-    pub profile_sink_list: &'a [crate::pipewire::ProfileSink],
+    pub active_sink_list: &'a [ActiveSink],
+    pub profile_sink_list: &'a [ProfileSink],
     pub pipewire_available: bool,
 }
 
@@ -214,11 +317,14 @@ fn render_list(
         return;
     }
 
+    screen_state.clamp_selection(sinks.len());
+
     // If PipeWire is unavailable, show warning and adjust area for table
     let table_area = if pipewire_available {
         area
     } else {
-        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        let [warning_area, table_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
         let warning = Paragraph::new(Line::from(vec![
             Span::styled("⚠ ", Style::default().fg(colors::UI_WARNING)),
             Span::styled(
@@ -230,8 +336,8 @@ fn render_list(
                 Style::default().fg(colors::UI_SECONDARY),
             ),
         ]));
-        frame.render_widget(warning, chunks[0]);
-        chunks[1]
+        frame.render_widget(warning, warning_area);
+        table_area
     };
 
     let rows: Vec<Row> = sinks
@@ -258,12 +364,10 @@ fn render_list(
             ]));
 
             // Description Cell (with icon if present)
-            let mut desc_text = sink.desc.clone();
-            if let Some(icon) = &sink.icon {
-                let mut tmp = String::with_capacity(icon.len() + 1 + desc_text.len());
-                let _ = write!(tmp, "{icon} {desc_text}");
-                desc_text = tmp;
-            }
+            let desc_text = match &sink.icon {
+                Some(icon) => format!("{icon} {}", sink.desc),
+                None => sink.desc.clone(),
+            };
             let desc_cell = Cell::from(Span::styled(
                 desc_text,
                 if is_selected {
@@ -318,31 +422,18 @@ fn render_list(
             )
             .bottom_margin(1),
     )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Sinks "),
-    );
+    .block(rounded_block().title(" Sinks "));
 
     // Sync state
     screen_state.state.select(Some(screen_state.selected));
     frame.render_stateful_widget(table, table_area, &mut screen_state.state);
-
-    // Compute visible viewport (inner area) for arrow indicators
-    let inner = table_area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-
-    let raw_offset = screen_state.state.offset();
-    let total = sinks.len();
-    let has_above = raw_offset > 0;
-    let has_below = raw_offset + view_height < total;
-
-    // Render scroll arrows using helper
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
+    render_scrollbar(
+        frame,
+        table_area,
+        TABLE_HEADER_ROWS,
+        sinks.len(),
+        screen_state.state.offset(),
+    );
 }
 
 /// Render inspect modal
@@ -352,78 +443,32 @@ fn render_inspect_popup(
     sinks: &[SinkConfig],
     screen_state: &SinksScreen,
 ) {
-    if screen_state.selected >= sinks.len() {
+    let Some(sink) = sinks.get(screen_state.selected) else {
         return;
-    }
-    let sink = &sinks[screen_state.selected];
-
-    let popup_area = centered_modal(modal_size::SMALL, area);
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(" Sink Details ")
-        .style(Style::default().bg(colors::UI_MODAL_BG));
-    frame.render_widget(block.clone(), popup_area);
-
-    let inner = block.inner(popup_area);
-
-    let mut lines = Vec::new();
-
-    // Helper for fields with regular values
-    let add_field = |lines: &mut Vec<Line>, label: &str, value: &str| {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label}: "),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-            Span::styled(value.to_string(), Style::default().fg(colors::UI_TEXT)),
-        ]));
     };
 
-    // Helper for fields with placeholder/auto values
-    let add_field_placeholder = |lines: &mut Vec<Line>, label: &str, value: &str| {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label}: "),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-            Span::styled(
-                value.to_string(),
-                Style::default()
-                    .fg(colors::UI_SECONDARY)
-                    .add_modifier(Modifier::ITALIC),
-            ),
-        ]));
-    };
-
-    add_field(&mut lines, "Name", &sink.name);
-    add_field(&mut lines, "Description", &sink.desc);
-
-    if let Some(icon) = &sink.icon {
-        add_field(&mut lines, "Icon", icon);
-    } else {
-        add_field_placeholder(&mut lines, "Icon", "(auto-detected)");
-    }
-
-    lines.push(Line::from("")); // Space before status
-
-    if sink.default {
-        lines.push(Line::from(Span::styled(
+    let mut lines = vec![
+        field_line("Name", &sink.name, false),
+        field_line("Description", &sink.desc, false),
+        match &sink.icon {
+            Some(icon) => field_line("Icon", icon, false),
+            None => field_line("Icon", "(auto-detected)", true),
+        },
+        Line::from(""),
+    ];
+    lines.push(if sink.default {
+        Line::from(Span::styled(
             "✓ Default Sink",
             Style::default().fg(colors::UI_SUCCESS),
-        )));
+        ))
     } else {
-        lines.push(Line::from(Span::styled(
+        Line::from(Span::styled(
             "○ Not Default",
             Style::default().fg(colors::UI_SECONDARY),
-        )));
-    }
+        ))
+    });
 
-    let paragraph = Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: false });
-
-    frame.render_widget(paragraph, inner);
+    render_text_modal(frame, area, " Sink Details ", BorderType::Rounded, lines);
 }
 
 /// Render the add/edit modal
@@ -448,9 +493,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
     .areas(popup_area);
 
     // Background block
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+    let block = rounded_block()
         .padding(Padding::horizontal(1))
         .title(title)
         .style(Style::default().bg(colors::UI_MODAL_BG));
@@ -468,7 +511,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         name_area,
         "Node Name",
         name_display,
-        screen_state.editor.focused_field == 0,
+        screen_state.editor.focused_field == SinkField::Name,
     );
 
     // Desc field
@@ -477,7 +520,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         desc_area,
         "Description:",
         &screen_state.editor.desc.input,
-        screen_state.editor.focused_field == 1,
+        screen_state.editor.focused_field == SinkField::Desc,
     );
 
     // Icon field
@@ -486,7 +529,7 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         icon_area,
         "Icon (optional):",
         &screen_state.editor.icon.input,
-        screen_state.editor.focused_field == 2,
+        screen_state.editor.focused_field == SinkField::Icon,
     );
 
     // Default checkbox with border-based focus
@@ -499,14 +542,11 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
         checkbox_spans.push(Span::raw("Default Sink"));
     }
 
-    let border_style =
-        crate::tui::widgets::focus_border_style(screen_state.editor.focused_field == 3);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style);
-
-    let checkbox = Paragraph::new(Line::from(checkbox_spans)).block(block);
+    let border_style = crate::tui::widgets::focus_border_style(
+        screen_state.editor.focused_field == SinkField::Default,
+    );
+    let checkbox = Paragraph::new(Line::from(checkbox_spans))
+        .block(rounded_block().border_style(border_style));
     frame.render_widget(checkbox, default_area);
 }
 
@@ -517,13 +557,9 @@ fn render_delete_confirmation(
     sinks: &[SinkConfig],
     screen_state: &SinksScreen,
 ) {
-    if screen_state.selected >= sinks.len() {
+    let Some(sink) = sinks.get(screen_state.selected) else {
         return;
-    }
-
-    let sink = &sinks[screen_state.selected];
-    let popup_area = centered_modal(modal_size::SMALL, area);
-    frame.render_widget(Clear, popup_area);
+    };
 
     let text = vec![
         Line::from(""),
@@ -534,34 +570,37 @@ fn render_delete_confirmation(
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("Description: "),
-            Span::styled(&sink.desc, Style::default().fg(colors::UI_TEXT)),
-        ]),
-        Line::from(vec![
-            Span::raw("Node Name: "),
-            Span::styled(&sink.name, Style::default().fg(colors::UI_SECONDARY)),
-        ]),
+        field_line("Description", &sink.desc, false),
+        field_line("Node Name", &sink.name, false),
     ];
+    render_text_modal(frame, area, " Delete Sink ", BorderType::Double, text);
+}
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .padding(Padding::horizontal(1))
-        .title("Delete Sink")
-        .style(Style::default().bg(colors::UI_MODAL_BG));
-
-    let paragraph = Paragraph::new(text).block(block);
-    frame.render_widget(paragraph, popup_area);
+/// One node selector entry: "  description (node name)"
+fn selector_item(description: &str, node: &str, max_desc_width: u16) -> ListItem<'static> {
+    ListItem::new(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            crate::tui::widgets::truncate_desc(description, max_desc_width),
+            Style::default().fg(colors::UI_TEXT),
+        ),
+        Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
+        Span::styled(
+            crate::tui::widgets::truncate_node_name(node, 35),
+            Style::default()
+                .fg(colors::UI_SECONDARY)
+                .add_modifier(Modifier::DIM),
+        ),
+        Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
+    ]))
 }
 
 /// Render sink selector modal for adding sinks
-// Sink selector modal rendering - complex table with multiple sections
 fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,
-    active_sinks: &[crate::pipewire::ActiveSink],
-    profile_sinks: &[crate::pipewire::ProfileSink],
+    active_sinks: &[ActiveSink],
+    profile_sinks: &[ProfileSink],
     screen_state: &mut SinksScreen,
 ) {
     let popup_area = centered_modal(modal_size::MEDIUM, area);
@@ -571,40 +610,17 @@ fn render_sink_selector(
     let available_width = popup_area.width.saturating_sub(6); // 2 borders + 2 prefix + 2 margin
     let max_desc_width = available_width.saturating_sub(40); // Reserve space for node name in parens
 
-    // Use shared truncation helpers from `tui::widgets` to avoid duplication
-    // (truncate_desc and truncate_node_name present in src/tui/widgets.rs)
-
-    // Build list items from both active and profile sinks
-    let mut items: Vec<ListItem> = Vec::new();
-
-    // Active sinks header
-    items.push(ListItem::new(Line::from(Span::styled(
+    let mut items: Vec<ListItem> = vec![ListItem::new(Line::from(Span::styled(
         "── Active Sinks ──",
         Style::default()
             .fg(colors::UI_HIGHLIGHT)
             .add_modifier(Modifier::BOLD),
-    ))));
-
-    for sink in active_sinks {
-        let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
-        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
-
-        let line = Line::from(vec![
-            Span::raw("  "),
-            Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
-            Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-            Span::styled(
-                name_text,
-                Style::default()
-                    .fg(colors::UI_SECONDARY)
-                    .add_modifier(Modifier::DIM),
-            ),
-            Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
-        ]);
-        items.push(ListItem::new(line));
-    }
-
-    // Profile sinks header (if any) — List items already appended above
+    )))];
+    items.extend(
+        active_sinks
+            .iter()
+            .map(|s| selector_item(&s.description, &s.name, max_desc_width)),
+    );
     if !profile_sinks.is_empty() {
         items.push(ListItem::new(Line::from("")));
         items.push(ListItem::new(Line::from(Span::styled(
@@ -613,69 +629,17 @@ fn render_sink_selector(
                 .fg(colors::UI_WARNING)
                 .add_modifier(Modifier::BOLD),
         ))));
-
-        for sink in profile_sinks {
-            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
-            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
-
-            let line = Line::from(vec![
-                Span::raw("  "),
-                Span::styled(desc_text, Style::default().fg(colors::UI_TEXT)),
-                Span::styled(" (", Style::default().fg(colors::UI_SECONDARY)),
-                Span::styled(
-                    name_text,
-                    Style::default()
-                        .fg(colors::UI_SECONDARY)
-                        .add_modifier(Modifier::DIM),
-                ),
-                Span::styled(")", Style::default().fg(colors::UI_SECONDARY)),
-            ]);
-            items.push(ListItem::new(line));
-        }
+        items.extend(
+            profile_sinks
+                .iter()
+                .map(|s| selector_item(&s.description, &s.predicted_name, max_desc_width)),
+        );
     }
+    let total_items = items.len();
 
-    // Compute visual viewport and line counts
-    let inner = popup_area.inner(ratatui::layout::Margin {
-        vertical: 1,
-        horizontal: 0,
-    });
-    let view_height = inner.height as usize;
-
-    // Build a vector of displayed strings (headers, spacers, and items) to measure wrapping
-    let mut visual_items: Vec<String> = Vec::new();
-    visual_items.push("── Active Sinks ──".to_string());
-    for sink in active_sinks {
-        let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
-        let name_text = crate::tui::widgets::truncate_node_name(&sink.name, 35);
-        visual_items.push({
-            let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
-            let _ = write!(tmp, "  {desc_text} ({name_text})");
-            tmp
-        });
-    }
-
-    let active_len = active_sinks.len();
-
-    if !profile_sinks.is_empty() {
-        visual_items.push(String::new()); // spacer
-        visual_items.push("── Profile Sinks (require switching) ──".to_string());
-        for sink in profile_sinks {
-            let desc_text = crate::tui::widgets::truncate_desc(&sink.description, max_desc_width);
-            let name_text = crate::tui::widgets::truncate_node_name(&sink.predicted_name, 35);
-            visual_items.push({
-                let mut tmp = String::with_capacity(2 + desc_text.len() + 3 + name_text.len());
-                let _ = write!(tmp, "  {desc_text} ({name_text})");
-                tmp
-            });
-        }
-    }
-
-    // Build and render the list widget (was removed accidentally during refactor)
-    let list = ratatui::widgets::List::new(items)
+    let list = List::new(items)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+            rounded_block()
                 .padding(Padding::horizontal(1))
                 .title("Select Node")
                 .style(Style::default().bg(colors::UI_MODAL_BG)),
@@ -688,102 +652,97 @@ fn render_sink_selector(
         .highlight_symbol(" →")
         .scroll_padding(1);
 
-    // Map our logical selector index (skipping headers) to the list item index
-    let total_selectable = active_sinks.len() + profile_sinks.len();
-    if total_selectable > 0 {
-        let sel = screen_state.sink_selector_index.min(total_selectable - 1);
-        let list_index = if sel < active_len {
-            // Active sink: after the active header
-            1 + sel
-        } else {
-            // Profile sink: account for active items + spacer + profile header
-            let profile_idx = sel - active_len;
-            3 + active_len + profile_idx
-        };
-        screen_state.sink_selector_state.select(Some(list_index));
-    } else {
-        screen_state.sink_selector_state.select(None);
-    }
+    // Highlight the selected node wherever it is in the current lists
+    let names = selector_names(active_sinks, profile_sinks);
+    let row = screen_state
+        .selector_node
+        .as_deref()
+        .and_then(|node| names.iter().position(|n| *n == node))
+        .map(|pos| selector_list_index(pos, active_sinks.len()));
+    screen_state.sink_selector_state.select(row);
 
     frame.render_stateful_widget(list, popup_area, &mut screen_state.sink_selector_state);
-
-    // Compute visual line counts per item using the inner width
-    let content_width = inner.width as usize;
-    let (has_above, has_below) = crate::tui::widgets::compute_has_above_below(
-        &visual_items,
-        content_width,
+    render_scrollbar(
+        frame,
+        popup_area,
+        0,
+        total_items,
         screen_state.sink_selector_state.offset(),
-        view_height,
     );
-
-    // Render scroll arrows
-    crate::tui::widgets::render_scroll_arrows(frame, inner, has_above, has_below);
 }
 
 #[cfg(test)]
 mod tests {
-    /// Helper to calculate the list index from a logical selector index
-    /// This mirrors the logic in `render_sink_selector_popup` (lines 556-571)
-    fn calculate_list_index(
-        selector_index: usize,
-        active_len: usize,
-        profile_len: usize,
-    ) -> Option<usize> {
-        let total_selectable = active_len + profile_len;
-        if total_selectable == 0 {
-            return None;
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn active(name: &str) -> ActiveSink {
+        ActiveSink {
+            name: name.to_string(),
+            description: format!("{name} desc"),
+            is_default: false,
         }
+    }
 
-        let sel = selector_index.min(total_selectable - 1);
-        let list_index = if sel < active_len {
-            // Active sink: after the active header (line 0 is header, sinks start at line 1)
-            1 + sel
-        } else {
-            // Profile sink: account for active items + spacer + profile header
-            // Layout: [Active header] [active sinks...] [spacer] [Profile header] [profile sinks...]
-            // Indices: 0              1..active_len+1    active_len+1  active_len+2      active_len+3...
-            let profile_idx = sel - active_len;
-            3 + active_len + profile_idx
-        };
-        Some(list_index)
+    fn profile(name: &str) -> ProfileSink {
+        ProfileSink {
+            predicted_name: name.to_string(),
+            description: format!("{name} desc"),
+            device_name: "dev".to_string(),
+            device_id: 1,
+            profile_name: "p".to_string(),
+            profile_index: 1,
+        }
     }
 
     #[test]
-    fn test_sink_selector_index_mapping_empty_lists() {
-        // Case 1: Empty lists → no selection
-        assert_eq!(calculate_list_index(0, 0, 0), None);
+    fn test_selector_list_index_skips_headers() {
+        // [Active header] a0 a1 [spacer] [Profile header] p0 p1
+        assert_eq!(selector_list_index(0, 2), 1);
+        assert_eq!(selector_list_index(1, 2), 2);
+        assert_eq!(selector_list_index(2, 2), 5);
+        assert_eq!(selector_list_index(3, 2), 6);
+        // Only profile sinks: [Active header] [spacer] [Profile header] p0
+        assert_eq!(selector_list_index(0, 0), 3);
     }
 
     #[test]
-    fn test_sink_selector_index_mapping_only_active() {
-        // Case 2: Only active sinks (3 items)
-        // Layout: [Header(0)] [Active0(1)] [Active1(2)] [Active2(3)]
-        assert_eq!(calculate_list_index(0, 3, 0), Some(1)); // First active → list index 1
-        assert_eq!(calculate_list_index(1, 3, 0), Some(2)); // Second active → list index 2
-        assert_eq!(calculate_list_index(2, 3, 0), Some(3)); // Third active → list index 3
+    fn test_selector_follows_node_when_lists_change() {
+        let mut screen = SinksScreen::new();
+        let before = [active("alsa.a"), active("alsa.b")];
+        let names = selector_names(&before, &[]);
+        screen.open_selector(&names);
+        screen.move_selector(&names, true);
+        assert_eq!(screen.selector_node.as_deref(), Some("alsa.b"));
+
+        // A Bluetooth sink appears in front: the highlight stays on alsa.b
+        let after = [active("bluez.x"), active("alsa.a"), active("alsa.b")];
+        let profiles = [profile("alsa.c")];
+        let names = selector_names(&after, &profiles);
+        assert_eq!(screen.selector_node.as_deref(), Some("alsa.b"));
+        screen.move_selector(&names, true);
+        assert_eq!(screen.selector_node.as_deref(), Some("alsa.c"));
+        screen.move_selector(&names, true);
+        assert_eq!(
+            screen.selector_node.as_deref(),
+            Some("alsa.c"),
+            "stops at end"
+        );
+        screen.move_selector(&names, false);
+        assert_eq!(screen.selector_node.as_deref(), Some("alsa.b"));
     }
 
     #[test]
-    fn test_sink_selector_index_mapping_only_profile() {
-        // Case 3: Only profile sinks (2 items)
-        // Layout: [Active Header(0)] [Spacer(1)] [Profile Header(2)] [Profile0(3)] [Profile1(4)]
-        assert_eq!(calculate_list_index(0, 0, 2), Some(3)); // First profile → list index 3
-        assert_eq!(calculate_list_index(1, 0, 2), Some(4)); // Second profile → list index 4
-    }
+    fn test_open_selector_preselects_edited_node() {
+        let mut screen = SinksScreen::new();
+        screen.editor.name.set_value("alsa.b".to_string());
+        let sinks = [active("alsa.a"), active("alsa.b")];
+        screen.open_selector(&selector_names(&sinks, &[]));
+        assert_eq!(screen.selector_node.as_deref(), Some("alsa.b"));
 
-    #[test]
-    fn test_sink_selector_index_mapping_mixed() {
-        // Case 4: Mixed (2 active, 2 profile)
-        // Layout: [Active Header(0)] [Active0(1)] [Active1(2)] [Spacer(3)] [Profile Header(4)] [Profile0(5)] [Profile1(6)]
-        assert_eq!(calculate_list_index(0, 2, 2), Some(1)); // First active → list index 1
-        assert_eq!(calculate_list_index(1, 2, 2), Some(2)); // Second active → list index 2
-        assert_eq!(calculate_list_index(2, 2, 2), Some(5)); // First profile → list index 5 (3 + 2 + 0)
-        assert_eq!(calculate_list_index(3, 2, 2), Some(6)); // Second profile → list index 6 (3 + 2 + 1)
-    }
-
-    #[test]
-    fn test_sink_selector_index_mapping_out_of_bounds() {
-        // Case 5: Selector index exceeds total → should clamp to last item
-        assert_eq!(calculate_list_index(10, 2, 2), Some(6)); // Clamped to last profile (index 3)
+        let mut empty = SinksScreen::new();
+        empty.open_selector(&[]);
+        assert_eq!(empty.selector_node, None);
     }
 }

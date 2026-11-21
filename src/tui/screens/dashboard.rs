@@ -4,11 +4,11 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{Block, Paragraph};
 
 use crate::config::Config;
 use crate::style::colors;
-use crate::tui::widgets::truncate_node_name;
+use crate::tui::widgets::{rounded_block, truncate_node_name};
 
 /// Patterns to highlight in log messages (keyword, color, bold)
 const HIGHLIGHT_PATTERNS: &[(&str, Color, bool)] = &[
@@ -53,13 +53,27 @@ pub enum DashboardView {
 }
 
 /// Dashboard screen state
+///
+/// Scroll limits and page sizes depend on the viewport, so rendering records
+/// them here and the input handlers use them.
+#[derive(Debug)]
 pub struct DashboardScreen {
-    pub selected_action: usize,   // 0-4: start, stop, restart, enable, disable
-    pub log_scroll_offset: usize, // Lines scrolled back from the end (0 = showing latest)
-    pub window_scroll_offset: usize, // Window list scroll offset
+    pub selected_action: usize, // 0-4: start, stop, restart, enable, disable
+    /// Log lines scrolled back from the end (0 = live, following the newest)
+    pub log_scroll_offset: usize,
+    /// First window shown in the window list
+    pub window_scroll_offset: usize,
     pub current_view: DashboardView, // Toggle between Logs and Windows
-    pub max_action_index: usize,  // Maximum action index (2 for direct, 4 for systemd)
-    pub service_enabled: Option<bool>, // None for direct mode, Some(true/false) for systemd
+    pub max_action_index: usize,     // Maximum action index (2 without unit, 4 with)
+    pub service_enabled: Option<bool>, // None without unit, Some(true/false) with it
+    /// Rows of the log viewport at the last render
+    log_viewport: usize,
+    /// Largest useful `log_scroll_offset` at the last render
+    log_max_offset: usize,
+    /// Windows that fit on one page at the last render
+    window_page: usize,
+    /// Largest useful `window_scroll_offset` at the last render
+    window_max_offset: usize,
 }
 
 impl DashboardScreen {
@@ -71,12 +85,16 @@ impl DashboardScreen {
             current_view: DashboardView::Logs, // Default to logs
             max_action_index: 2,               // Default to 3 actions (start/stop/restart)
             service_enabled: None,             // Updated by background worker
+            log_viewport: 10,
+            log_max_offset: usize::MAX,
+            window_page: 5,
+            window_max_offset: usize::MAX,
         }
     }
 
-    /// Update max action index based on daemon manager type
-    pub(crate) const fn set_max_actions(&mut self, is_systemd: bool) {
-        self.max_action_index = if is_systemd { 4 } else { 2 };
+    /// Show enable/disable only if the systemd unit is installed
+    pub(crate) const fn set_max_actions(&mut self, unit_installed: bool) {
+        self.max_action_index = if unit_installed { 4 } else { 2 };
         // Clamp current selection if it's out of range
         if self.selected_action > self.max_action_index {
             self.selected_action = 0;
@@ -107,47 +125,70 @@ impl DashboardScreen {
         };
     }
 
-    /// Scroll logs up (show older logs)
-    pub(crate) fn scroll_logs_up(&mut self, total_lines: usize, visible_lines: usize) {
-        let max_offset = total_lines.saturating_sub(visible_lines);
-        self.log_scroll_offset = (self.log_scroll_offset + 1).min(max_offset);
+    /// Lines one page of the current view scrolls by
+    pub(crate) const fn page_size(&self) -> usize {
+        let page = match self.current_view {
+            DashboardView::Logs => self.log_viewport,
+            DashboardView::Windows => self.window_page,
+        };
+        if page == 0 { 1 } else { page }
     }
 
-    /// Scroll logs down (show newer logs)
-    pub(crate) const fn scroll_logs_down(&mut self) {
-        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(1);
+    /// Scroll the current view towards older logs / the top of the window list
+    pub(crate) fn scroll_up(&mut self, lines: usize) {
+        match self.current_view {
+            DashboardView::Logs => {
+                self.log_scroll_offset = self
+                    .log_scroll_offset
+                    .saturating_add(lines)
+                    .min(self.log_max_offset);
+            }
+            DashboardView::Windows => {
+                self.window_scroll_offset = self.window_scroll_offset.saturating_sub(lines);
+            }
+        }
     }
 
-    /// Scroll logs up by page
-    pub(crate) fn scroll_logs_page_up(&mut self, total_lines: usize, visible_lines: usize) {
-        let max_offset = total_lines.saturating_sub(visible_lines);
-        self.log_scroll_offset = (self.log_scroll_offset + visible_lines).min(max_offset);
+    /// Scroll the current view towards newer logs / the bottom of the window list
+    pub(crate) fn scroll_down(&mut self, lines: usize) {
+        match self.current_view {
+            DashboardView::Logs => {
+                self.log_scroll_offset = self.log_scroll_offset.saturating_sub(lines);
+            }
+            DashboardView::Windows => {
+                self.window_scroll_offset = self
+                    .window_scroll_offset
+                    .saturating_add(lines)
+                    .min(self.window_max_offset);
+            }
+        }
     }
 
-    /// Scroll logs down by page
-    pub(crate) const fn scroll_logs_page_down(&mut self, visible_lines: usize) {
-        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(visible_lines);
+    /// Jump to the oldest logs / the first window
+    pub(crate) const fn scroll_to_top(&mut self) {
+        match self.current_view {
+            DashboardView::Logs => self.log_scroll_offset = self.log_max_offset,
+            DashboardView::Windows => self.window_scroll_offset = 0,
+        }
     }
 
-    /// Reset scroll to show latest logs
-    pub(crate) const fn scroll_logs_to_bottom(&mut self) {
-        self.log_scroll_offset = 0;
+    /// Jump back to live logs / the last window
+    pub(crate) const fn scroll_to_bottom(&mut self) {
+        match self.current_view {
+            DashboardView::Logs => self.log_scroll_offset = 0,
+            DashboardView::Windows => self.window_scroll_offset = self.window_max_offset,
+        }
     }
 
-    /// Scroll windows up by page
-    pub(crate) fn scroll_windows_page_up(&mut self, page_size: usize, total_windows: usize) {
-        let max_offset = total_windows.saturating_sub(page_size);
-        self.window_scroll_offset = (self.window_scroll_offset + page_size).min(max_offset);
-    }
-
-    /// Scroll windows down by page
-    pub(crate) const fn scroll_windows_page_down(&mut self, page_size: usize) {
-        self.window_scroll_offset = self.window_scroll_offset.saturating_sub(page_size);
-    }
-
-    /// Reset scroll to show top of window list
-    pub(crate) const fn scroll_windows_to_top(&mut self) {
-        self.window_scroll_offset = 0;
+    /// After `added` lines were appended (buffer now `len` lines long), keep a
+    /// scrolled-back log view on the same lines; the live view follows.
+    pub(crate) fn keep_log_position(&mut self, added: usize, len: usize) {
+        if self.log_scroll_offset > 0 {
+            self.log_scroll_offset = self
+                .log_scroll_offset
+                .saturating_add(added)
+                .min(len.saturating_sub(1));
+        }
     }
 }
 
@@ -170,7 +211,8 @@ fn truncate(s: &str, max_len: usize) -> String {
 /// Context for rendering the dashboard screen
 pub struct DashboardRenderContext<'a> {
     pub config: &'a Config,
-    pub screen_state: &'a DashboardScreen,
+    /// Rendering records viewport sizes in it for scrolling
+    pub screen_state: &'a mut DashboardScreen,
     pub daemon_running: bool,
     pub window_count: usize,
     pub daemon_logs: &'a [String],
@@ -182,7 +224,7 @@ pub struct DashboardRenderContext<'a> {
 }
 
 /// Render the dashboard screen
-pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
+pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &mut DashboardRenderContext) {
     // Two-section layout (top section + toggleable bottom)
     let [top_section, bottom_section] = Layout::vertical([
         Constraint::Length(10), // Top section (daemon + sink + summary)
@@ -246,7 +288,7 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderCont
                 bottom_section,
                 ctx.daemon_logs,
                 ctx.daemon_running,
-                ctx.screen_state.log_scroll_offset,
+                ctx.screen_state,
             );
         }
         DashboardView::Windows => {
@@ -255,7 +297,7 @@ pub fn render_dashboard(frame: &mut Frame, area: Rect, ctx: &DashboardRenderCont
                 bottom_section,
                 ctx.windows,
                 matched_count,
-                ctx.screen_state.window_scroll_offset,
+                ctx.screen_state,
             );
         }
     }
@@ -268,10 +310,7 @@ fn render_daemon_section(
     screen_state: &DashboardScreen,
     daemon_running: bool,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(" Daemon ");
+    let block = rounded_block().title(" Daemon ");
     frame.render_widget(block.clone(), area);
 
     let inner = block.inner(area);
@@ -370,10 +409,7 @@ fn render_window_summary(
     matched_count: usize,
     current_view: DashboardView,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(" Windows ");
+    let block = rounded_block().title(" Windows ");
     frame.render_widget(block.clone(), area);
 
     let inner = block.inner(area);
@@ -458,9 +494,7 @@ fn render_sink_card(
 
     let paragraph = Paragraph::new(text)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+            rounded_block()
                 .title(" Active Sink ")
                 .border_style(Style::default().fg(colors::UI_HIGHLIGHT)),
         )
@@ -501,14 +535,54 @@ fn render_statistics_card(
         ]),
     ];
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(" Overview "),
-    );
+    let paragraph = Paragraph::new(lines).block(rounded_block().title(" Overview "));
 
     frame.render_widget(paragraph, area);
+}
+
+/// One row of the window list
+fn window_line(win: &crate::ipc::WindowInfo) -> Line<'_> {
+    let matched = win.tracked.is_some();
+    let mut spans = if matched {
+        vec![
+            Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
+            Span::styled(
+                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
+                Style::default()
+                    .fg(colors::UI_TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]
+    } else {
+        vec![
+            Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
+            Span::styled(
+                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]
+    };
+
+    // Add title inline if present
+    if !win.title.is_empty() {
+        spans.push(Span::styled(
+            " · ",
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+        spans.push(Span::styled(
+            truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
+            Style::default().fg(colors::UI_SECONDARY),
+        ));
+    }
+
+    if let Some(tracked) = &win.tracked {
+        spans.push(Span::raw(" → "));
+        spans.push(Span::styled(
+            tracked.sink_desc.as_str(),
+            Style::default().fg(colors::UI_HIGHLIGHT),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Render window tracking section (full width bottom section when view is Windows)
@@ -517,27 +591,24 @@ fn render_window_tracking(
     area: Rect,
     windows: &[crate::ipc::WindowInfo],
     matched_count: usize,
-    scroll_offset: usize,
+    state: &mut DashboardScreen,
 ) {
+    /// Rows above the list: the "Matched" line and a spacer
+    const HEADER_ROWS: usize = 2;
+
     let title = " Window Tracking - [w] to toggle back to Logs ";
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+    let block = rounded_block()
         .title(title)
         .border_style(Style::default().fg(colors::UI_HIGHLIGHT));
-    frame.render_widget(block.clone(), area);
-
     let inner = block.inner(area);
-    let available_height = inner.height as usize;
+    frame.render_widget(block, area);
 
-    // Count matched vs total
-    let total_count = windows.len();
-
+    let total = windows.len();
     let mut lines = vec![
         Line::from(vec![
             Span::styled("Matched: ", Style::default().fg(colors::UI_SECONDARY)),
             Span::styled(
-                format!("{matched_count}/{total_count} windows"),
+                format!("{matched_count}/{total} windows"),
                 Style::default()
                     .fg(colors::UI_STAT)
                     .add_modifier(Modifier::BOLD),
@@ -546,112 +617,49 @@ fn render_window_tracking(
         Line::from(""),
     ];
 
-    // Build window list with matched windows first
-    let mut window_lines: Vec<Line> = Vec::new();
-
-    // Add matched windows (use UI_MATCHED color - green for matched)
-    for win in windows.iter().filter(|w| w.tracked.is_some()) {
-        let rule_desc = win
-            .tracked
-            .as_ref()
-            .map_or("Unknown", |t| t.sink_desc.as_str());
-
-        let mut spans = vec![
-            Span::styled("● ", Style::default().fg(colors::UI_MATCHED)),
-            Span::styled(
-                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
-                Style::default()
-                    .fg(colors::UI_TEXT)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ];
-
-        // Add title inline if present
-        if !win.title.is_empty() {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().add_modifier(Modifier::DIM),
-            ));
-            spans.push(Span::styled(
-                truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
-                Style::default().fg(colors::UI_SECONDARY),
-            ));
-        }
-
-        spans.push(Span::raw(" → "));
-        spans.push(Span::styled(
-            rule_desc,
-            Style::default().fg(colors::UI_HIGHLIGHT),
-        ));
-
-        window_lines.push(Line::from(spans));
-    }
-
-    // Add unmatched windows (dim bullet, readable text)
-    for win in windows.iter().filter(|w| w.tracked.is_none()) {
-        let mut spans = vec![
-            Span::styled("○ ", Style::default().fg(colors::UI_UNMATCHED)),
-            Span::styled(
-                truncate(&win.app_id, WINDOW_APPID_MAX_WIDTH),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-        ];
-
-        // Add title inline if present
-        if !win.title.is_empty() {
-            spans.push(Span::styled(
-                " · ",
-                Style::default().add_modifier(Modifier::DIM),
-            ));
-            spans.push(Span::styled(
-                truncate(&win.title, WINDOW_TITLE_MAX_WIDTH),
-                Style::default().fg(colors::UI_SECONDARY),
-            ));
-        }
-
-        window_lines.push(Line::from(spans));
-    }
-
-    // Calculate visible range based on scroll offset
-    let total_lines = window_lines.len();
-    let visible_count = available_height.saturating_sub(2); // Reserve space for header
-    let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
-    let end_idx = (start_idx + visible_count).min(total_lines);
-
-    // Add visible window lines
-    for line in window_lines
-        .iter()
-        .skip(start_idx)
-        .take(end_idx - start_idx)
-    {
-        lines.push(line.clone());
-    }
-
-    // Add scroll indicator if needed
-    if total_lines > visible_count {
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  [{}/{}] ", start_idx + 1, total_lines),
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-            Span::styled(
-                "PgUp/PgDn to scroll",
-                Style::default().fg(colors::UI_SECONDARY),
-            ),
-        ]));
-    }
-
-    // Handle empty window list
-    if window_lines.is_empty() {
+    if windows.is_empty() {
         lines.push(Line::from(Span::styled(
             "No windows tracked",
             Style::default().fg(colors::UI_SECONDARY),
         )));
     }
 
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
+    // Matched windows first, then the rest
+    let ordered = windows
+        .iter()
+        .filter(|w| w.tracked.is_some())
+        .chain(windows.iter().filter(|w| w.tracked.is_none()));
+
+    // Rows for the list; one is given up for the position indicator if it overflows
+    let list_rows = usize::from(inner.height).saturating_sub(HEADER_ROWS);
+    let overflows = total > list_rows;
+    let visible = if overflows {
+        list_rows.saturating_sub(1)
+    } else {
+        list_rows
+    };
+    state.window_page = visible;
+    state.window_max_offset = total.saturating_sub(visible);
+    state.window_scroll_offset = state.window_scroll_offset.min(state.window_max_offset);
+    let start = state.window_scroll_offset;
+
+    lines.extend(ordered.skip(start).take(visible).map(window_line));
+
+    if overflows && visible > 0 {
+        let end = (start + visible).min(total);
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  [{}-{end}/{total}] ", start + 1),
+                Style::default().fg(colors::UI_STAT),
+            ),
+            Span::styled(
+                "↑↓/PgUp/PgDn/Home/End to scroll",
+                Style::default().fg(colors::UI_SECONDARY),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 /// Highlight patterns in log message (`app_id`, `title`, `Rule matched`, etc.)
@@ -735,31 +743,24 @@ fn style_log_line(line: &str) -> Line<'_> {
     // Try to parse log format: "TIMESTAMP LEVEL message"
     // Example: "2025-12-17T10:00:00.123456Z  INFO message here"
 
-    let parts: Vec<&str> = line.splitn(3, ' ').collect();
-
-    if parts.len() < 3 {
+    // The level may be padded ("…Z  INFO msg")
+    let Some((full_timestamp, rest)) = line.split_once(' ') else {
+        return Line::from(Span::raw(line));
+    };
+    let Some((level, message)) = rest.trim_start().split_once(' ') else {
         // Malformed line, return as-is
         return Line::from(Span::raw(line));
-    }
-
-    let full_timestamp = parts[0];
-    let level = parts[1].trim();
-    let message = parts[2];
+    };
 
     // Extract time-only from ISO 8601 timestamp (HH:MM:SS)
-    // Format: "2025-12-17T10:00:00.123456Z" -> "10:00:00"
-    let timestamp = if let Some(time_start) = full_timestamp.find('T') {
-        let time_part = &full_timestamp[time_start + 1..];
-        // Take up to the first '.' (milliseconds) or 8 chars (HH:MM:SS)
-        if let Some(dot_pos) = time_part.find('.') {
-            &time_part[..dot_pos.min(8)]
-        } else {
-            &time_part[..8.min(time_part.len())]
-        }
-    } else {
-        // Fallback: use full timestamp if parsing fails
-        full_timestamp
-    };
+    // Format: "2025-12-17T10:00:00.123456Z" -> "10:00:00". Character-based: the
+    // line may contain anything, so never cut inside a character.
+    let timestamp = full_timestamp
+        .split_once('T')
+        .map_or(full_timestamp, |(_, time)| {
+            let time = time.split('.').next().unwrap_or(time);
+            time.char_indices().nth(8).map_or(time, |(i, _)| &time[..i])
+        });
 
     // Determine colors based on log level
     let (level_color, level_bold) = match level {
@@ -793,198 +794,271 @@ fn style_log_line(line: &str) -> Line<'_> {
     Line::from(line_spans)
 }
 
+/// Display width of one character (0 for control characters).
+fn char_width(c: char) -> usize {
+    let mut buf = [0u8; 4];
+    Span::raw(&*c.encode_utf8(&mut buf)).width()
+}
+
+/// Split `line` into rows of at most `width` columns, breaking anywhere.
+///
+/// Wrapping by hand (instead of `Paragraph::wrap`) makes the number of rows
+/// each log line takes exact, so the newest line can be kept on screen.
+fn wrap_line(line: Line<'_>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut row_width = 0;
+    for span in line.spans {
+        let mut text = String::new();
+        for c in span.content.chars() {
+            let w = char_width(c);
+            if row_width + w > width && row_width > 0 {
+                if !text.is_empty() {
+                    row.push(Span::styled(std::mem::take(&mut text), span.style));
+                }
+                rows.push(Line::from(std::mem::take(&mut row)));
+                row_width = 0;
+            }
+            text.push(c);
+            row_width += w;
+        }
+        if !text.is_empty() {
+            row.push(Span::styled(text, span.style));
+        }
+    }
+    rows.push(Line::from(row));
+    rows
+}
+
+/// The rows to show for `logs` in a `width`×`height` viewport, scrolled back
+/// `offset` lines from the newest, plus the largest useful offset.
+///
+/// The newest shown line always ends on the last row; older lines fill the
+/// rows above it (the oldest shown may be cut at the top).
+fn log_rows(
+    logs: &[String],
+    offset: usize,
+    width: usize,
+    height: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let rows_of = |line: &String| wrap_line(style_log_line(line), width);
+
+    // Scrolling further back than the point where the oldest line reaches the
+    // top would only leave empty rows at the top.
+    let mut filled = 0;
+    let mut first_full_end = logs.len();
+    for (i, line) in logs.iter().enumerate() {
+        filled += rows_of(line).len();
+        if filled >= height {
+            first_full_end = i + 1;
+            break;
+        }
+    }
+    let max_offset = logs.len() - first_full_end;
+
+    let end = logs.len() - offset.min(max_offset);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for line in logs[..end].iter().rev() {
+        if rows.len() >= height {
+            break;
+        }
+        let mut wrapped = rows_of(line);
+        wrapped.append(&mut rows);
+        rows = wrapped;
+    }
+    let excess = rows.len().saturating_sub(height);
+    rows.drain(..excess);
+    (rows, max_offset)
+}
+
 /// Render daemon log viewer
 fn render_log_viewer(
     frame: &mut Frame,
     area: Rect,
     daemon_logs: &[String],
     daemon_running: bool,
-    scroll_offset: usize,
+    state: &mut DashboardScreen,
 ) {
-    let available_height = area.height.saturating_sub(2) as usize; // Account for borders
-    let total_lines = daemon_logs.len();
-
-    // Calculate which lines to show based on scroll offset
-    // scroll_offset=0 means showing latest logs (bottom)
-    // scroll_offset>0 means scrolled back in history
-    let end_index = total_lines.saturating_sub(scroll_offset);
-    let start_index = end_index.saturating_sub(available_height);
-
-    // Build title with scroll indicator and toggle hint (with colors)
-    let title = if scroll_offset > 0 {
-        let status_text = if daemon_running { "Live" } else { "Stopped" };
-        let status_color = if daemon_running {
-            colors::UI_SUCCESS
-        } else {
-            colors::UI_ERROR
-        };
-
-        Line::from(vec![
-            Span::raw(" Daemon Logs ("),
-            Span::styled(status_text, Style::default().fg(status_color)),
-            Span::raw(") - "),
-            Span::styled(
-                format!("↑{scroll_offset}"),
-                Style::default().fg(colors::UI_WARNING),
-            ),
-            Span::raw(" - [w] to toggle to Windows "),
-        ])
+    let (status_text, status_color) = if daemon_running {
+        ("Live", colors::UI_SUCCESS)
     } else {
-        let status_text = if daemon_running { "Live" } else { "Stopped" };
-        let status_color = if daemon_running {
-            colors::UI_SUCCESS
-        } else {
-            colors::UI_ERROR
-        };
-
-        Line::from(vec![
-            Span::raw(" Daemon Logs ("),
-            Span::styled(status_text, Style::default().fg(status_color)),
-            Span::raw(") - [w] to toggle to Windows "),
-        ])
+        ("Stopped", colors::UI_ERROR)
     };
-
     let border_color = if daemon_running {
         colors::UI_BORDER_ACTIVE
     } else {
         colors::UI_BORDER_INACTIVE
     };
 
-    let visible_logs: Vec<Line> = daemon_logs
-        .iter()
-        .skip(start_index)
-        .take(end_index - start_index)
-        .map(|line| style_log_line(line))
-        .collect();
+    // Measure the viewport first: scroll limits depend on it
+    let block: Block = rounded_block().border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    let width = usize::from(inner.width);
+    let height = usize::from(inner.height);
+    let (rows, max_offset) = log_rows(daemon_logs, state.log_scroll_offset, width, height);
+    state.log_viewport = height;
+    state.log_max_offset = max_offset;
+    state.log_scroll_offset = state.log_scroll_offset.min(max_offset);
+    let scroll_offset = state.log_scroll_offset;
 
-    let log_text = if visible_logs.is_empty() {
+    // Title with scroll position and toggle hint
+    let mut title = vec![
+        Span::raw(" Daemon Logs ("),
+        Span::styled(status_text, Style::default().fg(status_color)),
+        Span::raw(")"),
+    ];
+    if scroll_offset > 0 {
+        title.push(Span::raw(" - "));
+        title.push(Span::styled(
+            format!("↑{scroll_offset} (End: live)"),
+            Style::default().fg(colors::UI_WARNING),
+        ));
+    }
+    title.push(Span::raw(" - [w] to toggle to Windows "));
+
+    let log_text = if daemon_logs.is_empty() {
         vec![Line::from(Span::styled(
             "No logs available. Start the daemon to see logs here.",
             Style::default().fg(colors::UI_SECONDARY),
         ))]
     } else {
-        visible_logs
+        rows
     };
 
-    let paragraph = Paragraph::new(log_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .title(title)
-                .border_style(Style::default().fg(border_color)),
-        )
-        .wrap(ratatui::widgets::Wrap { trim: false });
-
+    let paragraph = Paragraph::new(log_text).block(block.title(Line::from(title)));
     frame.render_widget(paragraph, area);
 }
 
 #[cfg(test)]
 mod tests {
-    /// Helper to calculate log viewport indices
-    /// This mirrors the logic in `render_log_viewer` (lines 752-754)
-    fn calculate_log_viewport(
-        total_lines: usize,
-        scroll_offset: usize,
-        available_height: usize,
-    ) -> (usize, usize) {
-        let end_index = total_lines.saturating_sub(scroll_offset);
-        let start_index = end_index.saturating_sub(available_height);
-        (start_index, end_index)
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn text(rows: &[Line]) -> Vec<String> {
+        rows.iter().map(ToString::to_string).collect()
+    }
+
+    fn logs(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("l{i}")).collect()
     }
 
     #[test]
-    fn test_log_scroll_viewport_empty_logs() {
-        // Empty logs → no content to display
-        let (start, end) = calculate_log_viewport(0, 0, 20);
-        assert_eq!((start, end), (0, 0));
-        assert_eq!(end - start, 0); // No lines to display
+    fn test_log_rows_live_shows_newest_at_bottom() {
+        let logs = logs(100);
+        let (rows, max_offset) = log_rows(&logs, 0, 20, 5);
+        assert_eq!(text(&rows), vec!["l95", "l96", "l97", "l98", "l99"]);
+        assert_eq!(max_offset, 95);
     }
 
     #[test]
-    fn test_log_scroll_viewport_logs_smaller_than_viewport() {
-        // 5 logs, 20 line viewport → show all 5
-        let (start, end) = calculate_log_viewport(5, 0, 20);
-        assert_eq!((start, end), (0, 5));
-        assert_eq!(end - start, 5);
+    fn test_log_rows_scrolled_and_clamped() {
+        let logs = logs(100);
+        let (rows, _) = log_rows(&logs, 10, 20, 3);
+        assert_eq!(text(&rows), vec!["l87", "l88", "l89"]);
+        // Scrolling past the oldest line stops with the oldest at the top
+        let (rows, max_offset) = log_rows(&logs, 1000, 20, 3);
+        assert_eq!(max_offset, 97);
+        assert_eq!(text(&rows), vec!["l0", "l1", "l2"]);
     }
 
     #[test]
-    fn test_log_scroll_viewport_scroll_offset_exceeds_total() {
-        // 10 logs, scroll_offset=100 (way too much) → end_index becomes 0
-        // When end_index = 0, no logs are visible
-        let (start, end) = calculate_log_viewport(10, 100, 20);
-        assert_eq!((start, end), (0, 0));
-        assert_eq!(end - start, 0); // No lines visible when scrolled way beyond available logs
+    fn test_log_rows_wrapped_line_keeps_newest_visible() {
+        let mut logs = logs(10);
+        logs.push("x".repeat(25)); // wraps into 3 rows of width 10
+        logs.push("newest".to_string());
+        let (rows, _) = log_rows(&logs, 0, 10, 4);
+        assert_eq!(text(&rows), vec![
+            "xxxxxxxxxx",
+            "xxxxxxxxxx",
+            "xxxxx",
+            "newest"
+        ]);
     }
 
     #[test]
-    fn test_log_scroll_viewport_exactly_viewport_size() {
-        // 20 logs, 20 line viewport, no scroll → show all
-        let (start, end) = calculate_log_viewport(20, 0, 20);
-        assert_eq!((start, end), (0, 20));
-        assert_eq!(end - start, 20);
+    fn test_log_rows_fewer_lines_than_viewport() {
+        let (rows, max_offset) = log_rows(&logs(3), 5, 20, 10);
+        assert_eq!(max_offset, 0);
+        assert_eq!(text(&rows), vec!["l0", "l1", "l2"]);
+        let (rows, max_offset) = log_rows(&[], 0, 20, 10);
+        assert_eq!(text(&rows), Vec::<String>::new());
+        assert_eq!(max_offset, 0);
     }
 
     #[test]
-    fn test_log_scroll_viewport_normal_scroll() {
-        // 100 logs, 20 line viewport, scroll_offset=10 → show lines 70-90
-        let (start, end) = calculate_log_viewport(100, 10, 20);
-        assert_eq!((start, end), (70, 90));
-        assert_eq!(end - start, 20);
+    fn test_wrap_line_counts_wide_characters() {
+        let rows = wrap_line(Line::from("日本語テキスト"), 4);
+        assert_eq!(text(&rows), vec!["日本", "語テ", "キス", "ト"]);
+        assert_eq!(wrap_line(Line::from(""), 4).len(), 1);
     }
 
     #[test]
-    fn test_log_scroll_viewport_max_scroll() {
-        // 100 logs, 20 line viewport, scroll_offset=80 → show lines 0-20 (oldest)
-        let (start, end) = calculate_log_viewport(100, 80, 20);
-        assert_eq!((start, end), (0, 20));
-        assert_eq!(end - start, 20);
-    }
+    fn test_scroll_state_uses_rendered_limits() {
+        let mut state = DashboardScreen::new();
+        state.log_viewport = 7;
+        state.log_max_offset = 10;
+        assert_eq!(state.page_size(), 7);
+        state.scroll_up(state.page_size());
+        state.scroll_up(state.page_size());
+        assert_eq!(state.log_scroll_offset, 10, "clamped to the oldest");
+        state.scroll_down(3);
+        assert_eq!(state.log_scroll_offset, 7);
+        state.scroll_to_bottom();
+        assert_eq!(state.log_scroll_offset, 0, "End returns to live");
 
-    /// Helper to calculate window viewport indices
-    /// This mirrors the logic in `render_window_tracking` (line 598)
-    fn calculate_window_viewport(
-        total_lines: usize,
-        scroll_offset: usize,
-        visible_count: usize,
-    ) -> (usize, usize) {
-        let start_idx = scroll_offset.min(total_lines.saturating_sub(visible_count));
-        let end_idx = (start_idx + visible_count).min(total_lines);
-        (start_idx, end_idx)
-    }
-
-    #[test]
-    fn test_window_scroll_viewport_empty() {
-        let (start, end) = calculate_window_viewport(0, 0, 20);
-        assert_eq!((start, end), (0, 0));
-    }
-
-    #[test]
-    fn test_window_scroll_viewport_smaller_than_page() {
-        let (start, end) = calculate_window_viewport(5, 0, 20);
-        assert_eq!((start, end), (0, 5));
-    }
-
-    #[test]
-    fn test_window_scroll_viewport_scroll_beyond_end() {
-        // 10 windows, scroll_offset=50 → clamp to show last page
-        let (start, end) = calculate_window_viewport(10, 50, 20);
-        assert_eq!((start, end), (0, 10));
+        state.toggle_view();
+        state.window_page = 4;
+        state.window_max_offset = 6;
+        state.scroll_down(state.page_size());
+        assert_eq!(
+            state.window_scroll_offset, 4,
+            "PageDown moves down the list"
+        );
+        state.scroll_down(state.page_size());
+        assert_eq!(state.window_scroll_offset, 6);
+        state.scroll_up(1);
+        assert_eq!(state.window_scroll_offset, 5);
+        state.scroll_to_top();
+        assert_eq!(state.window_scroll_offset, 0);
     }
 
     #[test]
-    fn test_window_scroll_viewport_normal_pagination() {
-        // 100 windows, page_size=20, scroll_offset=40 → show lines 40-60
-        let (start, end) = calculate_window_viewport(100, 40, 20);
-        assert_eq!((start, end), (40, 60));
-        assert_eq!(end - start, 20);
+    fn test_keep_log_position_when_scrolled_back() {
+        let mut state = DashboardScreen::new();
+        state.keep_log_position(5, 100);
+        assert_eq!(state.log_scroll_offset, 0, "live view follows new lines");
+        state.log_scroll_offset = 3;
+        state.keep_log_position(5, 100);
+        assert_eq!(state.log_scroll_offset, 8);
+    }
+
+    #[test]
+    fn test_style_log_line_non_ascii_timestamp_does_not_panic() {
+        for line in [
+            "2025-12-17T10:00:0é.5Z INFO x",
+            "xTé INFO y",
+            "2025-12-17Tääääääääää INFO z",
+            "日本T語語語語語語語語語.語 WARN ü",
+        ] {
+            let rendered = style_log_line(line);
+            assert!(!rendered.spans.is_empty(), "{line}");
+        }
+        let line = style_log_line("2025-12-17Tääääääääää INFO z");
+        assert_eq!(line.spans[0].content, "ääääääää");
+    }
+
+    #[test]
+    fn test_style_log_line_padded_level() {
+        let line = style_log_line("2025-12-17T10:00:00.1Z  INFO Starting");
+        let spans: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert_eq!(spans[0], "10:00:00");
+        assert_eq!(spans[2], "INFO");
     }
 
     #[test]
     fn test_truncate_utf8_window_titles() {
-        use super::truncate;
-
         // Test UTF-8 multibyte characters in window titles
         // ✳ is 3 bytes, but 1 character
         assert_eq!(
@@ -1020,8 +1094,6 @@ mod tests {
 
     #[test]
     fn test_style_log_line_valid_format() {
-        use super::style_log_line;
-
         // Standard log format: "TIMESTAMP LEVEL message"
         let line = style_log_line("2025-12-17T10:00:00.123456Z INFO Starting daemon");
         let spans: Vec<_> = line.spans.iter().map(|s| s.content.to_string()).collect();
@@ -1038,8 +1110,6 @@ mod tests {
 
     #[test]
     fn test_style_log_line_malformed() {
-        use super::style_log_line;
-
         // Less than 3 parts after split
         let line = style_log_line("malformed log");
         // Should return as-is without crashing
@@ -1058,8 +1128,6 @@ mod tests {
 
     #[test]
     fn test_style_log_line_timestamp_formats() {
-        use super::style_log_line;
-
         // Standard ISO 8601 with microseconds
         let line1 = style_log_line("2025-12-17T14:30:45.123456Z INFO test");
         let spans1: Vec<_> = line1.spans.iter().map(|s| s.content.to_string()).collect();
@@ -1081,8 +1149,6 @@ mod tests {
 
     #[test]
     fn test_highlight_message_patterns() {
-        use super::highlight_message;
-
         // Test pattern highlighting
         let spans = highlight_message("Rule matched: firefox -> headphones");
         // Should have highlighted "Rule matched:" portion
@@ -1102,8 +1168,6 @@ mod tests {
 
     #[test]
     fn test_highlight_message_no_patterns() {
-        use super::highlight_message;
-
         // Message with no highlight patterns
         let spans = highlight_message("Just a plain message");
         assert_eq!(spans.len(), 1);
@@ -1112,8 +1176,6 @@ mod tests {
 
     #[test]
     fn test_highlight_message_overlapping_patterns() {
-        use super::highlight_message;
-
         // "Loaded" and "rules" are both patterns - they shouldn't overlap
         let spans = highlight_message("Loaded 5 sinks, 3 rules");
         // Should handle without crashing
@@ -1125,8 +1187,6 @@ mod tests {
 
     #[test]
     fn test_style_log_line_all_levels() {
-        use super::style_log_line;
-
         // Test all log levels are parsed correctly
         for level in &["TRACE", "DEBUG", "INFO", "WARN", "ERROR"] {
             let log_str = format!("2025-01-01T00:00:00Z {level} test");

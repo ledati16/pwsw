@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +26,7 @@ use tokio::task::JoinSet;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::debug;
 
-use super::app::{AppUpdate, BgCommand, DaemonAction};
+use super::app::{AppUpdate, BgCommand, DaemonAction, SaveOutcome, load_blocking, save_blocking};
 use super::log_tailer::LogTailer;
 use crate::config::Config;
 use crate::daemon_manager::DaemonManager;
@@ -71,8 +72,18 @@ pub(crate) trait Backend: Send + Sync + 'static {
     fn sinks_snapshot(&self) -> impl Future<Output = AppUpdate> + Send;
     /// Run a daemon control action, returning a message for the status line.
     fn daemon_action(&self, action: DaemonAction) -> impl Future<Output = Result<String>> + Send;
-    /// Save the config atomically.
-    fn save_config(&self, config: Config) -> impl Future<Output = Result<()>> + Send;
+    /// Save the config atomically to `path` (`force` overwrites external changes).
+    fn save_config(
+        &self,
+        config: Config,
+        path: PathBuf,
+        force: bool,
+    ) -> impl Future<Output = SaveOutcome> + Send;
+    /// Load the config file at `path`.
+    fn load_config(
+        &self,
+        path: PathBuf,
+    ) -> impl Future<Output = Result<Box<Config>, String>> + Send;
 }
 
 /// The real backend: `IPC`, `pw-dump`, `systemctl`, the config file.
@@ -87,9 +98,11 @@ impl Backend for System {
             _ => None, // Daemon not running or query failed
         };
         let running = daemon_manager.is_some();
-        let service_enabled = match daemon_manager {
-            Some(dm @ DaemonManager::Systemd) => Some(dm.is_enabled().await),
-            _ => None,
+        let unit_installed = DaemonManager::unit_installed_cached().await;
+        let service_enabled = if unit_installed {
+            Some(DaemonManager::Systemd.is_enabled().await)
+        } else {
+            None
         };
         let windows = if running {
             match send_request(Request::ListWindows).await {
@@ -102,7 +115,7 @@ impl Backend for System {
         AppUpdate::DaemonState {
             running,
             windows,
-            daemon_manager,
+            unit_installed,
             service_enabled,
         }
     }
@@ -142,8 +155,16 @@ impl Backend for System {
         }
     }
 
-    async fn save_config(&self, config: Config) -> Result<()> {
-        detached(move || config.save()).await?
+    async fn save_config(&self, config: Config, path: PathBuf, force: bool) -> SaveOutcome {
+        detached(move || save_blocking(&config, &path, force))
+            .await
+            .unwrap_or_else(|e| SaveOutcome::Failed(format!("{e:#}")))
+    }
+
+    async fn load_config(&self, path: PathBuf) -> Result<Box<Config>, String> {
+        detached(move || load_blocking(&path))
+            .await
+            .unwrap_or_else(|e| Err(format!("{e:#}")))
     }
 }
 
@@ -153,6 +174,7 @@ enum Done {
     Sinks,
     Action,
     Save,
+    Reload,
 }
 
 /// Run the worker until the command channel closes (the UI is gone).
@@ -176,14 +198,19 @@ pub(crate) async fn run<B: Backend>(
     let mut action_busy = false;
     let mut save_busy = false;
     let mut actions: VecDeque<DaemonAction> = VecDeque::new();
-    let mut next_save: Option<Config> = None;
+    let mut next_save: Option<(Box<Config>, PathBuf, bool)> = None;
+    let mut next_reload: Option<PathBuf> = None;
+    let mut reload_busy = false;
     let mut visible = *sinks_visible.borrow_and_update();
 
     loop {
         tokio::select! {
             cmd = commands.recv() => match cmd {
                 Some(BgCommand::DaemonAction(action)) => actions.push_back(action),
-                Some(BgCommand::SaveConfig(config)) => next_save = Some(config),
+                Some(BgCommand::SaveConfig { config, path, force }) => {
+                    next_save = Some((config, path, force));
+                }
+                Some(BgCommand::ReloadConfig(path)) => next_reload = Some(path),
                 None => break,
             },
             Some(done) = tasks.join_next() => match done {
@@ -191,6 +218,7 @@ pub(crate) async fn run<B: Backend>(
                 Ok(Done::Sinks) => sinks_busy = false,
                 Ok(Done::Action) => action_busy = false,
                 Ok(Done::Save) => save_busy = false,
+                Ok(Done::Reload) => reload_busy = false,
                 Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
                 Err(_) => {}
             },
@@ -236,22 +264,28 @@ pub(crate) async fn run<B: Backend>(
                 Done::Action
             });
         }
-        if !save_busy && let Some(config) = next_save.take() {
+        if !save_busy && let Some((config, path, force)) = next_save.take() {
             save_busy = true;
             let (backend, updates) = (Arc::clone(&backend), updates.clone());
             tasks.spawn(async move {
-                let update = match backend.save_config(config).await {
-                    Ok(()) => AppUpdate::ConfigSaved {
-                        success: true,
-                        message: "Configuration saved successfully".to_string(),
-                    },
-                    Err(e) => AppUpdate::ConfigSaved {
-                        success: false,
-                        message: format!("Failed to save config: {e:#}"),
-                    },
-                };
-                let _ = updates.send(update);
+                let outcome = backend.save_config((*config).clone(), path, force).await;
+                let _ = updates.send(AppUpdate::ConfigSaved {
+                    saved: config,
+                    outcome,
+                });
                 Done::Save
+            });
+        }
+        // A reload waits for a running save (it must read what the save wrote)
+        if !save_busy
+            && !reload_busy
+            && let Some(path) = next_reload.take()
+        {
+            reload_busy = true;
+            let (backend, updates) = (Arc::clone(&backend), updates.clone());
+            tasks.spawn(async move {
+                let _ = updates.send(AppUpdate::ConfigReloaded(backend.load_config(path).await));
+                Done::Reload
             });
         }
     }

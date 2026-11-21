@@ -17,7 +17,7 @@ use futures_util::StreamExt;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Tabs};
+use ratatui::widgets::{BorderType, Paragraph, Tabs};
 use ratatui::{Frame, Terminal};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
@@ -30,6 +30,7 @@ mod app;
 mod daemon_control;
 mod editor_state;
 mod input;
+mod keymap;
 mod log_tailer;
 mod preview;
 mod screens;
@@ -78,24 +79,38 @@ pub async fn run() -> Result<()> {
     // Everything that may print or block happens before the terminal is taken
     // over, so first-run messages appear normally and Ctrl+C still works. The
     // TUI is the one place that creates the commented default config.
+    let config_path = crate::config::Config::get_config_path()?;
     let config = crate::config::Config::load_or_init()?;
-    let mut app = App::with_config(config);
+    let mut app = App::new(config, config_path);
 
-    // Ask the running daemon how it is managed; if none runs, whether the unit is installed
-    let is_systemd = crate::daemon_manager::DaemonManager::for_control().await
-        == crate::daemon_manager::DaemonManager::Systemd;
-    app.dashboard_screen.set_max_actions(is_systemd);
+    // Enable/disable are offered whenever the systemd unit is installed
+    let unit_installed = crate::daemon_manager::DaemonManager::unit_installed_cached().await;
+    app.dashboard_screen.set_max_actions(unit_installed);
 
     let logs = match log_tailer::LogTailer::new() {
         Ok(mut tailer) => {
-            if let Err(e) = tailer.read_initial(100) {
-                app.set_status(format!("Could not read daemon log: {e:#}"));
+            // File I/O: off the runtime
+            match worker::detached(move || {
+                let initial = tailer.read_initial(100);
+                (tailer, initial)
+            })
+            .await
+            {
+                Ok((tailer, initial)) => {
+                    match initial {
+                        Ok(lines) if !lines.is_empty() => {
+                            app.handle_update(AppUpdate::DaemonLogs(lines));
+                        }
+                        Ok(_) => {}
+                        Err(e) => app.set_status(format!("Could not read daemon log: {e:#}")),
+                    }
+                    Some(tailer)
+                }
+                Err(e) => {
+                    app.set_status(format!("Daemon log unavailable: {e:#}"));
+                    None
+                }
             }
-            let initial = tailer.get_lines().to_vec();
-            if !initial.is_empty() {
-                app.handle_update(AppUpdate::DaemonLogs(initial));
-            }
-            Some(tailer)
         }
         Err(e) => {
             app.set_status(format!("Daemon log unavailable: {e:#}"));
@@ -210,7 +225,7 @@ fn worker_ended(joined: Result<(), tokio::task::JoinError>) -> eyre::Report {
 }
 
 /// Render the complete UI
-fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
+pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Cap TUI width for better proportions on wide screens
     // This prevents content from stretching excessively and looking lost
     const MAX_TUI_WIDTH: u16 = 180;
@@ -249,9 +264,9 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     // Render screen content
     match app.current_screen {
         Screen::Dashboard => {
-            let ctx = screens::DashboardRenderContext {
+            let mut ctx = screens::DashboardRenderContext {
                 config: &app.config,
-                screen_state: &app.dashboard_screen,
+                screen_state: &mut app.dashboard_screen,
                 daemon_running: app.daemon_running,
                 window_count: app.window_count,
                 daemon_logs: &app.daemon_log_lines,
@@ -259,7 +274,7 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
                 active_sinks: &app.active_sink_list,
                 pipewire_available: app.pipewire_available,
             };
-            render_dashboard(frame, main_area, &ctx);
+            render_dashboard(frame, main_area, &mut ctx);
         }
         Screen::Sinks => render_sinks(frame, main_area, &mut SinksRenderContext {
             sinks: &app.config.sinks,
@@ -288,6 +303,10 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     let (status, busy, throbber) = app.footer_parts();
     render_footer(frame, footer_area, status, busy, throbber);
 
+    if app.save_conflict {
+        render_conflict_dialog(frame, content_area);
+    }
+
     // Render help overlay on top if active
     if app.show_help {
         render_help(
@@ -299,6 +318,41 @@ fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             &app.help_collapsed_sections,
         );
     }
+}
+
+/// Render the "config changed on disk" dialog shown when a save was refused
+fn render_conflict_dialog(frame: &mut Frame, area: Rect) {
+    let key = |k: &'static str| Span::styled(k, Style::default().fg(colors::UI_HIGHLIGHT));
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "The config file changed on disk since it was loaded.",
+            Style::default()
+                .fg(colors::UI_WARNING)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("Saving now would overwrite those changes."),
+        Line::from(""),
+        Line::from(vec![
+            key("[o]"),
+            Span::raw(" Overwrite the file with your changes"),
+        ]),
+        Line::from(vec![
+            key("[r]"),
+            Span::raw(" Reload from disk (discards your unsaved edits)"),
+        ]),
+        Line::from(vec![
+            key("[Esc]"),
+            Span::raw(" Cancel (keep editing, nothing saved)"),
+        ]),
+    ];
+    widgets::render_text_modal(
+        frame,
+        area,
+        " Config Changed on Disk ",
+        BorderType::Double,
+        lines,
+    );
 }
 
 /// Render the header with tab navigation
@@ -336,9 +390,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
 
     let tabs = Tabs::new(titles)
         .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+            widgets::rounded_block()
                 .title(left_title)
                 .title_top(right_title),
         )
@@ -358,16 +410,13 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, current_screen: Screen)
 
 /// Render the context bar with border at bottom of screen
 fn render_context_bar(frame: &mut Frame, area: Rect, content: Line) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title_bottom(
-            Line::from(vec![
-                Span::styled("[q]", Style::default().fg(colors::UI_HIGHLIGHT)),
-                Span::raw(" Quit "),
-            ])
-            .alignment(Alignment::Right),
-        );
+    let block = widgets::rounded_block().title_bottom(
+        Line::from(vec![
+            Span::styled("[q]", Style::default().fg(colors::UI_HIGHLIGHT)),
+            Span::raw(" Quit "),
+        ])
+        .alignment(Alignment::Right),
+    );
 
     let paragraph = Paragraph::new(content)
         .block(block)

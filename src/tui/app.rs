@@ -2,6 +2,8 @@
 //!
 //! Manages screen navigation, user input, and application state.
 
+use std::path::{Path, PathBuf};
+
 use color_eyre::eyre::Result;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -9,8 +11,14 @@ use throbber_widgets_tui::ThrobberState;
 
 use super::preview::LivePreview;
 use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
-use crate::config::Config;
+use crate::config::{Config, ConfigModifiedOnDisk};
 use crate::style::colors;
+
+/// Longest paste accepted into a text field (characters).
+const MAX_PASTE_CHARS: usize = 4096;
+
+/// Maximum number of daemon log lines kept for the log view.
+pub(crate) const MAX_LOG_LINES: usize = 500;
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,18 +106,27 @@ pub enum AppUpdate {
     DaemonState {
         running: bool,
         windows: Vec<crate::ipc::WindowInfo>,
-        daemon_manager: Option<crate::daemon_manager::DaemonManager>, // None if daemon not running
-        service_enabled: Option<bool>, // None for direct mode, Some(bool) for systemd
+        /// Whether the `pwsw.service` user unit is installed (enables enable/disable,
+        /// however the running daemon was started)
+        unit_installed: bool,
+        /// Whether the unit is enabled; `None` when it is not installed
+        service_enabled: Option<bool>,
     },
     /// Result message from daemon control action (start/stop/restart/enable/disable)
     ///
     /// Sent immediately after a daemon action completes, containing success or error message.
     ActionResult(String),
-    /// Config save result (success or failure with message)
+    /// Config save result
     ///
-    /// Sent by background worker after `SaveConfig` command completes.
-    /// On success, App updates `original_config` to match current config.
-    ConfigSaved { success: bool, message: String },
+    /// Sent by background worker after a `SaveConfig` command completes. `saved` is
+    /// the snapshot that was written: on success it becomes the clean baseline, so
+    /// edits made while the save ran stay marked unsaved.
+    ConfigSaved {
+        saved: Box<Config>,
+        outcome: SaveOutcome,
+    },
+    /// Result of re-reading the config file (`ReloadConfig`)
+    ConfigReloaded(Result<Box<Config>, String>),
     /// New daemon log lines
     ///
     /// Sent by log tail worker when new lines are appended to daemon log file.
@@ -117,12 +134,56 @@ pub enum AppUpdate {
     DaemonLogs(Vec<String>),
 }
 
+/// How a config save ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    /// Written to disk
+    Saved,
+    /// Refused: the file changed on disk since it was loaded or last saved
+    ModifiedOnDisk,
+    /// Failed with this message
+    Failed(String),
+}
+
+impl SaveOutcome {
+    /// Classify the result of [`Config::save_to`] / [`Config::save_force_to`].
+    pub(crate) fn from_result(result: Result<()>) -> Self {
+        match result {
+            Ok(()) => Self::Saved,
+            Err(e) if e.downcast_ref::<ConfigModifiedOnDisk>().is_some() => Self::ModifiedOnDisk,
+            Err(e) => Self::Failed(format!("{e:#}")),
+        }
+    }
+}
+
+/// Save `config` to `path`, overwriting external changes only if `force`.
+pub(crate) fn save_blocking(config: &Config, path: &Path, force: bool) -> SaveOutcome {
+    SaveOutcome::from_result(if force {
+        config.save_force_to(path)
+    } else {
+        config.save_to(path)
+    })
+}
+
+/// Load the config file at `path` for a reload.
+pub(crate) fn load_blocking(path: &Path) -> Result<Box<Config>, String> {
+    Config::load_from_path(path)
+        .map(Box::new)
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Commands sent from UI to background worker
 #[derive(Debug)]
 pub enum BgCommand {
     DaemonAction(DaemonAction),
-    /// Request an atomic config save
-    SaveConfig(Config),
+    /// Save this snapshot atomically to `path` (`force` overwrites external changes)
+    SaveConfig {
+        config: Box<Config>,
+        path: PathBuf,
+        force: bool,
+    },
+    /// Re-read the config file at this path
+    ReloadConfig(PathBuf),
 }
 
 // TUI state with multiple independent boolean flags for UI state tracking
@@ -136,6 +197,11 @@ pub struct App {
     pub(crate) should_quit: bool,
     /// Configuration (loaded at startup, editable in TUI)
     pub(crate) config: Config,
+    /// File the config is saved to and reloaded from (`None`: saving disabled)
+    pub(crate) config_path: Option<PathBuf>,
+    /// The last save was refused because the file changed on disk; the conflict
+    /// dialog is open
+    pub(crate) save_conflict: bool,
     /// Snapshot of config at last save (for dirty comparison)
     original_config: Config,
     /// Status message to display (errors, confirmations)
@@ -176,6 +242,8 @@ pub struct App {
     pub(crate) daemon_action_pending: bool,
     /// Whether a config save sent to the background worker has not reported back yet
     pub(crate) save_pending: bool,
+    /// Whether a config reload sent to the background worker has not reported back yet
+    pub(crate) reload_pending: bool,
     /// Cached active sinks snapshot (updated by background worker)
     pub(crate) active_sinks: Vec<String>,
     /// Cached full active sinks with descriptions
@@ -202,7 +270,16 @@ pub enum DaemonAction {
 }
 
 impl App {
-    /// Create a new application instance with a pre-loaded config
+    /// Create an application instance for a config loaded from `config_path`
+    #[must_use]
+    pub(crate) fn new(config: Config, config_path: PathBuf) -> Self {
+        let mut app = Self::with_config(config);
+        app.config_path = Some(config_path);
+        app
+    }
+
+    /// Create an application instance with a pre-loaded config that is not tied
+    /// to a file (saving and reloading are refused until `config_path` is set)
     #[must_use]
     pub(crate) fn with_config(config: Config) -> Self {
         // bg_update channels initialized by caller (run()), set to None here
@@ -216,6 +293,8 @@ impl App {
             current_screen: Screen::Dashboard,
             should_quit: false,
             config,
+            config_path: None,
+            save_conflict: false,
             original_config,
             status_message: None,
             preview: LivePreview::default(),
@@ -240,6 +319,7 @@ impl App {
             pipewire_available: true, // Optimistic default until first poll
             daemon_action_pending: false,
             save_pending: false,
+            reload_pending: false,
             daemon_log_lines: Vec::new(),
 
             bg_cmd_tx: None,
@@ -305,13 +385,47 @@ impl App {
             Screen::Dashboard | Screen::Settings => false,
             Screen::Sinks => {
                 self.sinks_screen.mode == SinksMode::AddEdit
-                    && self.sinks_screen.editor.focused_field < 3 // name, desc, icon are inputs
+                    && self.sinks_screen.editor.focused_field.is_text()
             }
             Screen::Rules => {
                 self.rules_screen.mode == RulesMode::AddEdit
-                    && [0, 1, 3].contains(&self.rules_screen.editor.focused_field) // app_id, title, desc are inputs
+                    && self.rules_screen.editor.focused_field.is_text()
             }
         }
+    }
+
+    /// The focused text input, if any (only while an editor modal is open and
+    /// no overlay covers it)
+    pub(crate) fn focused_input_mut(&mut self) -> Option<&mut tui_input::Input> {
+        if self.show_help || self.save_conflict || !self.is_input_focused() {
+            return None;
+        }
+        match self.current_screen {
+            Screen::Sinks => self.sinks_screen.editor.focused_input_mut(),
+            Screen::Rules => self.rules_screen.editor.focused_input_mut(),
+            Screen::Dashboard | Screen::Settings => None,
+        }
+    }
+
+    /// Insert pasted text into the focused text input.
+    ///
+    /// Newlines and other control characters are dropped (a pasted newline must
+    /// not act as Enter) and very long pastes are cut off. Ignored when no text
+    /// input has focus, so pasted text can never trigger key bindings.
+    pub(crate) fn paste(&mut self, text: &str) {
+        use tui_input::InputRequest;
+
+        let Some(input) = self.focused_input_mut() else {
+            return;
+        };
+        for c in text
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(MAX_PASTE_CHARS)
+        {
+            input.handle(InputRequest::InsertChar(c));
+        }
+        self.dirty = true;
     }
 
     /// Set a status message to display to the user
@@ -335,7 +449,7 @@ impl App {
     /// Whether background work the user is waiting for is in flight (drives the
     /// footer spinner; the UI only animates while this is true).
     pub(crate) const fn is_busy(&self) -> bool {
-        self.daemon_action_pending || self.save_pending
+        self.daemon_action_pending || self.save_pending || self.reload_pending
     }
 
     /// Advance the footer spinner by one frame.
@@ -403,21 +517,19 @@ impl App {
         self.dirty = true;
     }
 
-    /// Request quit (with unsaved changes check)
+    /// Request quit: quits at once without unsaved changes, otherwise asks for
+    /// confirmation (the next key decides, see `input::handle_key_event`)
     pub(crate) fn request_quit(&mut self) {
         if self.config_dirty {
             self.confirm_quit = true;
-            self.set_status("Unsaved changes! Press 'q' again to quit, Esc to cancel".to_string());
+            self.set_status(
+                "Unsaved changes! Press q or Ctrl+C again to quit without saving, any other key \
+                 to stay"
+                    .to_string(),
+            );
         } else {
-            self.should_quit = true;
-            self.dirty = true;
+            self.quit();
         }
-    }
-
-    /// Confirm quit (when user presses 'q' again)
-    pub(crate) const fn confirm_quit_action(&mut self) {
-        self.should_quit = true;
-        self.dirty = true;
     }
 
     /// Cancel quit confirmation
@@ -439,16 +551,64 @@ impl App {
         self.dirty = true;
     }
 
-    /// Save configuration to disk
+    /// Save the current config (a snapshot of it) to the config file.
     ///
-    /// # Errors
-    /// Returns an error if config save fails.
-    pub(crate) fn save_config(&mut self) -> Result<()> {
-        self.config.save()?;
-        self.original_config.clone_from(&self.config);
+    /// Runs on the background worker; without one (tests) it saves right away.
+    /// `force` overwrites changes made to the file by someone else.
+    pub(crate) fn request_save(&mut self, force: bool) {
+        let Some(path) = self.config_path.clone() else {
+            self.set_status("No config file to save to".to_string());
+            return;
+        };
+        let snapshot = Box::new(self.config.clone());
+        if self.bg_cmd_tx.is_some() {
+            if self.send_command(BgCommand::SaveConfig {
+                config: snapshot,
+                path,
+                force,
+            }) {
+                self.save_pending = true;
+                self.set_status("Saving configuration...".to_string());
+            }
+        } else {
+            let outcome = save_blocking(&snapshot, &path, force);
+            self.handle_update(AppUpdate::ConfigSaved {
+                saved: snapshot,
+                outcome,
+            });
+        }
+    }
+
+    /// Re-read the config file, discarding unsaved edits once it loads.
+    ///
+    /// Runs on the background worker; without one (tests) it loads right away.
+    pub(crate) fn request_reload(&mut self) {
+        let Some(path) = self.config_path.clone() else {
+            self.set_status("No config file to reload".to_string());
+            return;
+        };
+        if self.bg_cmd_tx.is_some() {
+            if self.send_command(BgCommand::ReloadConfig(path)) {
+                self.reload_pending = true;
+                self.set_status("Reloading configuration...".to_string());
+            }
+        } else {
+            let result = load_blocking(&path);
+            self.handle_update(AppUpdate::ConfigReloaded(result));
+        }
+    }
+
+    /// Replace the edited config with `config` (fresh from disk): it becomes the
+    /// clean baseline and all editor state is reset.
+    fn replace_config(&mut self, config: Config) {
+        self.original_config.clone_from(&config);
+        self.settings_screen = SettingsScreen::new(&config.settings);
+        self.config = config;
         self.config_dirty = false;
-        self.set_status("Configuration saved successfully".to_string());
-        Ok(())
+        self.sinks_screen = SinksScreen::new();
+        self.rules_screen = RulesScreen::new();
+        self.confirm_quit = false;
+        self.dirty = true;
     }
 
     /// Generate the context bar text based on current app state
@@ -457,6 +617,18 @@ impl App {
         use super::screens::sinks::SinksMode;
 
         let mode = self.get_screen_mode();
+        let key = |k: &'static str| Span::styled(k, Style::default().fg(colors::UI_HIGHLIGHT));
+
+        if self.save_conflict {
+            return Line::from(vec![
+                key("[o]"),
+                Span::raw(" Overwrite  "),
+                key("[r]"),
+                Span::raw(" Reload from disk  "),
+                key("[Esc]"),
+                Span::raw(" Cancel"),
+            ]);
+        }
 
         // Build screen-specific content
         let base_line = match (self.current_screen, mode) {
@@ -473,11 +645,10 @@ impl App {
                 // Add view-specific scrolling hints
                 match self.dashboard_screen.current_view {
                     DashboardView::Logs => {
-                        spans.push(Span::styled(
-                            "[↑↓/PgUp/PgDn]",
-                            Style::default().fg(colors::UI_HIGHLIGHT),
-                        ));
-                        spans.push(Span::raw(" Scroll Logs  "));
+                        spans.push(key("[↑↓/PgUp/PgDn]"));
+                        spans.push(Span::raw(" Scroll  "));
+                        spans.push(key("[End]"));
+                        spans.push(Span::raw(" Live  "));
                         spans.push(Span::styled(
                             "[w]",
                             Style::default().fg(colors::UI_HIGHLIGHT),
@@ -485,10 +656,7 @@ impl App {
                         spans.push(Span::raw(" View Windows"));
                     }
                     DashboardView::Windows => {
-                        spans.push(Span::styled(
-                            "[PgUp/PgDn]",
-                            Style::default().fg(colors::UI_HIGHLIGHT),
-                        ));
+                        spans.push(key("[↑↓/PgUp/PgDn]"));
                         spans.push(Span::raw(" Scroll Windows  "));
                         spans.push(Span::styled(
                             "[w]",
@@ -537,7 +705,7 @@ impl App {
                     ]),
                     SinksMode::SelectSink => Line::from(vec![
                         Span::raw("↑↓ Navigate  "),
-                        Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        key("[Space/Enter]"),
                         Span::raw(" Select  "),
                         Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Cancel"),
@@ -595,7 +763,7 @@ impl App {
                     ]),
                     RulesMode::SelectSink => Line::from(vec![
                         Span::raw("↑↓ Navigate  "),
-                        Span::styled("[Space]", Style::default().fg(colors::UI_HIGHLIGHT)),
+                        key("[Space/Enter]"),
                         Span::raw(" Select  "),
                         Span::styled("[Esc]", Style::default().fg(colors::UI_HIGHLIGHT)),
                         Span::raw(" Cancel"),
@@ -661,7 +829,7 @@ impl App {
             AppUpdate::DaemonState {
                 running,
                 windows,
-                daemon_manager,
+                unit_installed,
                 service_enabled,
             } => {
                 self.daemon_running = running;
@@ -676,11 +844,8 @@ impl App {
                 }
                 self.windows = windows;
                 self.dashboard_screen.service_enabled = service_enabled;
-                // Update max actions if daemon manager changed (e.g., service installed/removed)
-                if let Some(dm) = daemon_manager {
-                    let is_systemd = dm == crate::daemon_manager::DaemonManager::Systemd;
-                    self.dashboard_screen.set_max_actions(is_systemd);
-                }
+                // Enable/disable act on the installed unit, however the daemon runs
+                self.dashboard_screen.set_max_actions(unit_installed);
                 self.dirty = true;
             }
             AppUpdate::ActionResult(msg) => {
@@ -689,34 +854,58 @@ impl App {
                 self.daemon_action_pending = false;
                 // set_status sets dirty already
             }
-            AppUpdate::ConfigSaved { success, message } => {
+            AppUpdate::ConfigSaved { saved, outcome } => {
                 self.save_pending = false;
-                self.set_status(message);
-                if success {
-                    self.original_config.clone_from(&self.config);
-                    self.config_dirty = false;
+                match outcome {
+                    SaveOutcome::Saved => {
+                        // The snapshot is what is on disk now; anything edited
+                        // since Ctrl+S stays unsaved.
+                        self.original_config = *saved;
+                        self.mark_dirty();
+                        self.save_conflict = false;
+                        self.set_status(if self.config_dirty {
+                            "Configuration saved (changes made since are not saved yet)".to_string()
+                        } else {
+                            "Configuration saved successfully".to_string()
+                        });
+                    }
+                    SaveOutcome::ModifiedOnDisk => {
+                        self.save_conflict = true;
+                        self.set_status(
+                            "Config file changed on disk; not saved (choose in the dialog)"
+                                .to_string(),
+                        );
+                    }
+                    SaveOutcome::Failed(message) => {
+                        // Dirty flag stays: the user still sees the save indicator
+                        self.set_status(format!("Failed to save config: {message}"));
+                    }
                 }
-                // On failure: dirty flag stays true - user still sees save indicator
+            }
+            AppUpdate::ConfigReloaded(result) => {
+                self.reload_pending = false;
+                match result {
+                    Ok(config) => {
+                        self.replace_config(*config);
+                        self.set_status("Configuration reloaded from disk".to_string());
+                    }
+                    Err(message) => self.set_status(format!("Failed to reload config: {message}")),
+                }
             }
             AppUpdate::DaemonLogs(new_lines) => {
-                // Limit burst size before extending to avoid temporary memory spikes
-                const MAX_LOG_LINES: usize = 500;
-                let available_space = MAX_LOG_LINES.saturating_sub(self.daemon_log_lines.len());
-                let safe_new_lines = if new_lines.len() > available_space {
-                    // Take last N lines if burst is too large
-                    &new_lines[new_lines.len().saturating_sub(MAX_LOG_LINES)..]
-                } else {
-                    &new_lines
-                };
+                // Only the newest lines of a large burst can be kept
+                let skip = new_lines.len().saturating_sub(MAX_LOG_LINES);
+                let added = new_lines.len() - skip;
+                self.daemon_log_lines
+                    .extend(new_lines.into_iter().skip(skip));
 
-                // Append new log lines to the buffer
-                self.daemon_log_lines.extend_from_slice(safe_new_lines);
-
-                // Keep only last 500 lines to avoid unbounded growth (defensive)
                 if self.daemon_log_lines.len() > MAX_LOG_LINES {
                     let excess = self.daemon_log_lines.len() - MAX_LOG_LINES;
                     self.daemon_log_lines.drain(0..excess);
                 }
+                // While scrolled back, keep showing the same lines
+                self.dashboard_screen
+                    .keep_log_position(added, self.daemon_log_lines.len());
                 self.dirty = true;
             }
         }

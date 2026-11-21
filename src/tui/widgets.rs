@@ -1,40 +1,16 @@
 //! Shared TUI widget helpers
 
-use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
+};
+use ratatui::{Frame, symbols};
 use tui_input::Input;
 
 use crate::style::colors;
-
-/// Helper to create centered rect for modals
-///
-/// Creates a centered rectangle with the given percentage of screen width/height.
-/// Used for modal dialogs and overlays.
-///
-/// # Arguments
-/// * `percent_x` - Width as percentage of screen (0-100)
-/// * `percent_y` - Height as percentage of screen (0-100)
-/// * `r` - The area to center within
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let [_, row, _] = Layout::vertical([
-        Constraint::Percentage((100 - percent_y) / 2),
-        Constraint::Percentage(percent_y),
-        Constraint::Percentage((100 - percent_y) / 2),
-    ])
-    .areas(r);
-
-    let [_, center, _] = Layout::horizontal([
-        Constraint::Percentage((100 - percent_x) / 2),
-        Constraint::Percentage(percent_x),
-        Constraint::Percentage((100 - percent_x) / 2),
-    ])
-    .areas(row);
-
-    center
-}
 
 /// Standard modal sizes (width%, height%)
 pub mod modal_size {
@@ -46,13 +22,95 @@ pub mod modal_size {
     pub const HELP: (u16, u16) = (90, 80);
 }
 
-/// Helper to create centered modal with standard size
-///
-/// Returns the calculated `Rect` for the modal area. Callers must use this rect
-/// to render the modal widget.
+/// Centered modal area of a standard size (percent of `r`).
 #[must_use]
 pub fn centered_modal(size: (u16, u16), r: Rect) -> Rect {
-    centered_rect(size.0, size.1, r)
+    r.centered(
+        Constraint::Percentage(size.0),
+        Constraint::Percentage(size.1),
+    )
+}
+
+/// The bordered, rounded block used by every panel.
+#[must_use]
+pub fn rounded_block<'a>() -> Block<'a> {
+    Block::bordered().border_type(BorderType::Rounded)
+}
+
+/// Draw a text modal (inspect details, delete confirmation): clears what is
+/// below, draws a padded block of the given border type and wraps `lines`.
+pub fn render_text_modal(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    border: BorderType,
+    lines: Vec<Line>,
+) {
+    let popup_area = centered_modal(modal_size::SMALL, area);
+    frame.render_widget(Clear, popup_area);
+    let block = Block::bordered()
+        .border_type(border)
+        .padding(Padding::horizontal(1))
+        .title(title)
+        .style(Style::default().bg(colors::UI_MODAL_BG));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, popup_area);
+}
+
+/// A "Label: value" line for detail modals; `placeholder` dims the value.
+#[must_use]
+pub fn field_line<'a>(label: &str, value: &'a str, placeholder: bool) -> Line<'a> {
+    let value_style = if placeholder {
+        Style::default()
+            .fg(colors::UI_SECONDARY)
+            .add_modifier(Modifier::ITALIC)
+    } else {
+        Style::default().fg(colors::UI_TEXT)
+    };
+    Line::from(vec![
+        Span::styled(
+            format!("{label}: "),
+            Style::default().fg(colors::UI_SECONDARY),
+        ),
+        Span::styled(value, value_style),
+    ])
+}
+
+/// Draw a vertical scrollbar over the right border of a bordered widget.
+///
+/// `area` is the widget's outer area (with borders), `header_rows` the rows
+/// inside the border that do not scroll (e.g. a table header and its margin),
+/// `total` the number of scrollable rows and `offset` the first visible one (as
+/// reported by the widget's `ListState`/`TableState` after rendering). Nothing is
+/// drawn when everything fits.
+pub fn render_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    header_rows: u16,
+    total: usize,
+    offset: usize,
+) {
+    let track = Rect {
+        y: area.y.saturating_add(1).saturating_add(header_rows),
+        height: area.height.saturating_sub(2).saturating_sub(header_rows),
+        ..area
+    };
+    let viewport = usize::from(track.height);
+    if viewport == 0 || total <= viewport {
+        return;
+    }
+    let max_offset = total - viewport;
+    let mut state = ScrollbarState::new(max_offset + 1)
+        .position(offset.min(max_offset))
+        .viewport_content_length(viewport);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .symbols(symbols::scrollbar::VERTICAL)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .thumb_style(Style::default().fg(colors::UI_HIGHLIGHT));
+    frame.render_stateful_widget(scrollbar, track, &mut state);
 }
 
 /// Get focus-aware border style
@@ -102,11 +160,7 @@ pub fn render_validated_input(
         }
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .title(title);
+    let block = rounded_block().border_style(border_style).title(title);
 
     let inner_area = block.inner(area);
     frame.render_widget(block, area);
@@ -195,12 +249,8 @@ pub fn render_selector_button(
         ));
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style);
-
-    let paragraph = Paragraph::new(Line::from(spans)).block(block);
+    let paragraph =
+        Paragraph::new(Line::from(spans)).block(rounded_block().border_style(border_style));
     frame.render_widget(paragraph, area);
 }
 
@@ -239,7 +289,9 @@ pub fn truncate_desc(text: &str, max_width: u16) -> String {
 pub fn truncate_node_name(text: &str, max_width: u16) -> String {
     let max_len = max_width as usize;
 
-    if text.len() <= max_len {
+    let width = |s: &str| s.chars().count();
+
+    if width(text) <= max_len {
         return text.to_string();
     }
 
@@ -252,13 +304,13 @@ pub fn truncate_node_name(text: &str, max_width: u16) -> String {
             let combined = format!("{prefix}...{suffix}");
 
             // If the intelligent format fits, use it
-            if combined.len() <= max_len {
+            if width(&combined) <= max_len {
                 return combined;
             }
 
             // Otherwise, truncate the suffix to fit within max_width
             // Format: "prefix...truncated_suffix..."
-            let prefix_len = prefix.len();
+            let prefix_len = width(prefix);
             let ellipsis_len = 3; // "..."
             let available_for_suffix =
                 max_len.saturating_sub(prefix_len + ellipsis_len + ellipsis_len);
@@ -286,17 +338,17 @@ pub fn truncate_node_name(text: &str, max_width: u16) -> String {
             let mac = parts[1]; // "40_ED_98_1C_1D_08"
             let device_num = parts[2]; // "1"
 
-            // Extract last 2 octets from MAC (last 5 chars: "1D_08")
-            let mac_suffix = if mac.len() >= 5 {
-                &mac[mac.len() - 5..]
-            } else {
-                mac
-            };
+            // Extract last 2 octets from MAC (last 5 chars: "1D_08"), on a char boundary
+            let mac_suffix = mac
+                .char_indices()
+                .rev()
+                .nth(4)
+                .map_or(mac, |(i, _)| &mac[i..]);
 
             let combined = format!("{prefix}...{mac_suffix}.{device_num}");
 
             // If the intelligent format fits, use it
-            if combined.len() <= max_len {
+            if width(&combined) <= max_len {
                 return combined;
             }
 
@@ -309,63 +361,6 @@ pub fn truncate_node_name(text: &str, max_width: u16) -> String {
     truncate_desc(text, max_width)
 }
 
-/// Compute visual line counts for a list of items given `content_width`.
-///
-/// Returns a vector of per-item visual heights (in rows), accounting for wrapping at `content_width`.
-fn compute_visual_line_counts(items: &[String], content_width: usize) -> Vec<usize> {
-    let mut per_row_lines: Vec<usize> = Vec::with_capacity(items.len());
-    for s in items {
-        let w = content_width.max(1);
-        let char_count = s.chars().count();
-        let lines = (char_count.saturating_add(w - 1)) / w;
-        per_row_lines.push(lines.max(1));
-    }
-    per_row_lines
-}
-
-/// Compute whether there is content above/below the current viewport
-/// for a list of visual items that may wrap at `content_width`.
-pub fn compute_has_above_below(
-    items: &[String],
-    content_width: usize,
-    offset: usize,
-    view_height: usize,
-) -> (bool, bool) {
-    let per_row_lines = compute_visual_line_counts(items, content_width);
-    let total_visual_lines: usize = per_row_lines.iter().sum();
-    let mut visual_pos = 0usize;
-    for lines in per_row_lines.iter().take(offset.min(per_row_lines.len())) {
-        visual_pos += *lines;
-    }
-    let has_above = visual_pos > 0;
-    let has_below = (visual_pos + view_height) < total_visual_lines;
-    (has_above, has_below)
-}
-
-/// Render small up/down arrows at the right edge of `inner` to indicate scroll.
-pub fn render_scroll_arrows(frame: &mut Frame, inner: Rect, has_above: bool, has_below: bool) {
-    if has_above {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y,
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↑", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(p, r);
-    }
-    if has_below {
-        let r = Rect {
-            x: inner.x + inner.width.saturating_sub(2),
-            y: inner.y + inner.height.saturating_sub(1),
-            width: 1,
-            height: 1,
-        };
-        let p = Paragraph::new(Span::styled("↓", Style::default().fg(colors::UI_WARNING)));
-        frame.render_widget(p, r);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,14 +371,6 @@ mod tests {
         assert_eq!(truncate_desc("this is long", 8), "this ...");
         assert_eq!(truncate_desc("abc", 3), "abc");
         assert_eq!(truncate_desc("abcdef", 3), "abc");
-    }
-
-    #[test]
-    fn test_compute_visual_line_counts() {
-        let items = vec!["abcd".to_string(), "efghijkl".to_string()];
-        // width=4 => first -> 1, second -> 2
-        let counts = compute_visual_line_counts(&items, 4);
-        assert_eq!(counts, vec![1usize, 2usize]);
     }
 
     #[test]
@@ -484,5 +471,41 @@ mod tests {
         let generic_utf8 = "device✳with✓special★chars";
         let result = truncate_node_name(generic_utf8, 15);
         assert_eq!(result, "device✳with✓...");
+
+        // Non-ASCII MAC part must not split a character
+        assert_eq!(
+            truncate_node_name("bluez_output.ÄÖ_ÜÄ_ÖÜ_ÄÖ_ÜÄ_ÖÜ.1", 25),
+            "bluez_output...ÜÄ_ÖÜ.1"
+        );
+    }
+
+    #[test]
+    fn test_render_scrollbar_only_when_overflowing() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let draw = |total: usize, offset: usize| {
+            let mut terminal = Terminal::new(TestBackend::new(10, 6)).expect("terminal");
+            terminal
+                .draw(|f| {
+                    f.render_widget(rounded_block(), f.area());
+                    render_scrollbar(f, f.area(), 0, total, offset);
+                })
+                .expect("draw");
+            let buffer = terminal.backend().buffer().clone();
+            (1..5)
+                .map(|y| buffer[(9, y)].symbol().to_string())
+                .collect::<Vec<_>>()
+        };
+        // Fits: plain border
+        assert_eq!(draw(4, 0), vec!["│"; 4]);
+        // Overflowing, scrolled to the end: thumb at the bottom
+        let bottom = draw(8, 4);
+        assert_eq!(bottom[3], "█", "{bottom:?}");
+        assert_eq!(bottom[0], "│", "{bottom:?}");
+        // At the top: thumb at the top
+        let top = draw(8, 0);
+        assert_eq!(top[0], "█", "{top:?}");
+        assert_eq!(top[3], "│", "{top:?}");
     }
 }
