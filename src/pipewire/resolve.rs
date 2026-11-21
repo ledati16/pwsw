@@ -87,6 +87,18 @@ pub(crate) struct ProfileSwitch {
     pub(crate) mapping: String,
     /// `card.profile.devices` of the chosen profile's `kind` side.
     pub(crate) card_devices: Vec<u32>,
+    /// The card's profile before the switch, to switch back to if the node never
+    /// appears (`None` when the snapshot did not report it)
+    pub(crate) previous: Option<PreviousProfile>,
+}
+
+/// The profile a card had before a switch (see [`ProfileSwitch::previous`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PreviousProfile {
+    pub(crate) index: u32,
+    pub(crate) name: String,
+    /// Whether it may be switched back to (not reported unavailable)
+    pub(crate) available: bool,
 }
 
 impl ProfileSwitch {
@@ -99,6 +111,11 @@ impl ProfileSwitch {
             kind,
             mapping: mapping.to_string(),
             card_devices: profile.card_devices(kind).to_vec(),
+            previous: active_profile(device).map(|p| PreviousProfile {
+                index: p.index,
+                name: p.name.clone(),
+                available: p.available != Availability::No,
+            }),
         }
     }
 
@@ -427,9 +444,14 @@ pub(crate) fn sink_switch_touches(
     let Some((_, Plan::SwitchProfile(sw))) = &plan.sink else {
         return false;
     };
-    sources.iter().any(|target| {
-        source_card(snapshot, target).is_some_and(|(device, _)| device == sw.device_id)
-    })
+    on_source_card(snapshot, sources, sw.device_id)
+}
+
+/// Whether one of `sources` is on the card `device_id`
+pub(crate) fn on_source_card(snapshot: &Snapshot, sources: &[String], device_id: u32) -> bool {
+    sources
+        .iter()
+        .any(|target| source_card(snapshot, target).is_some_and(|(device, _)| device == device_id))
 }
 
 /// How the job's source is reached
@@ -847,6 +869,7 @@ mod tests {
             kind: Endpoint::Sink,
             mapping: "analog-stereo".to_string(),
             card_devices: vec![3, 4],
+            previous: None,
         };
         let node = |profile_name: Option<&str>, card_device: u32| Node {
             id: 99,

@@ -238,7 +238,7 @@ overwrite or reload it.
 
 ```toml
 [settings]
-default_on_startup = false # switch to the rules' sink when the daemon starts
+default_on_startup = false # switch to the rules' sink when the daemon starts (silently)
 set_smart_toggle = true    # set-sink on the active sink toggles back to the default
 notify_manual = true       # notifications for manual switches and daemon events
 notify_rules = true        # notifications for rule-driven switches
@@ -356,7 +356,8 @@ running), the TUI's Windows view, or your compositor (`swaymsg -t get_tree`,
   closes, changes title or moves to another monitor, or a config change alters the
   rules. A sink chosen elsewhere (pavucontrol, WirePlumber) stays until then.
 - At startup it waits (up to 2 s) for the compositor to list the open windows, then
-  switches to what the rules want only with `default_on_startup = true`.
+  switches to what the rules want only with `default_on_startup = true` (without a
+  notification: it would come with every login).
 - With `switch_delay_ms` it switches only once the rules' answer has held that long;
   `pwsw pause` stops rule-driven switching until `pwsw resume`.
 - With `[[sources]]` the microphone is decided the same way, independently of the sink.
@@ -390,8 +391,10 @@ the log, and says how to fix each problem it finds. It changes nothing.
   lines if start-up fails.
 - **A rule doesn't fire:** check the window's real `app_id` with `pwsw list-windows` and
   test the pattern with `pwsw test-rule`.
-- **"sink did not appear" after a profile switch:** some devices are slow; raise
-  `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (their total sleep is capped at 5 s).
+- **"sink did not appear" after a profile switch:** some devices are slow. pwsw waits
+  3 s by default, then switches the card back to its previous profile so the audio stays
+  where it was; raise `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (their
+  total sleep is capped at 5 s).
 - **After upgrading pwsw**, restart the daemon (`systemctl --user restart pwsw`);
   `pwsw status` tells you if the running daemon speaks a different protocol version.
 

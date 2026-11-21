@@ -27,16 +27,15 @@ use tracing::debug;
 
 use crate::config::{Config, Endpoint};
 use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
-use crate::pipewire::PipeWire;
+use crate::pipewire::{Activated, PipeWire};
 
 /// One half of an activation: candidates (configured node names, in priority order),
 /// for an upgrade check the index of the candidate that is the default already, and
 /// whether it only rides along with the sink half ([`Target::Keep`])
 pub type Half<'a> = crate::pipewire::JobHalf<'a>;
 
-/// What one half did: the index of the candidate made default and the node name, or
-/// `None` when an upgrade check found no better candidate reachable
-pub type HalfResult = Result<Option<(usize, String)>>;
+/// What one half did (see [`Activated`])
+pub type HalfResult = Result<Activated>;
 
 /// Something that can make configured sinks and sources the defaults
 pub trait SinkSwitcher: Send + Sync + 'static {
@@ -46,8 +45,10 @@ pub trait SinkSwitcher: Send + Sync + 'static {
     ///
     /// Within a half, an activation that fails moves on to the next reachable
     /// candidate. With `upgrade_from: Some(k)` (candidate `k` is the default already),
-    /// the half returns `Ok(None)` without changing anything unless a candidate
-    /// before `k` is reachable. A source half with `keep` returns `Ok(None)` unless
+    /// the half returns [`Activated::Unchanged`] without changing anything unless a
+    /// candidate before `k` is reachable, and [`Activated::Elsewhere`] when the real
+    /// default is not candidate `k` (chosen outside pwsw since). A source half with
+    /// `keep` returns [`Activated::Unchanged`] unless
     /// the sink half's profile switch is on its card (see
     /// [`crate::pipewire::JobHalf::keep`]). A half's error means no candidate could be
     /// activated.
@@ -124,6 +125,9 @@ pub(crate) enum Outcome {
     Activated { index: usize, node_name: String },
     /// An upgrade check found no better candidate reachable; nothing changed
     Unchanged,
+    /// An upgrade check found the default changed outside pwsw (this node is the
+    /// default now); nothing changed
+    Elsewhere(String),
     /// Nothing needed doing (manual request); the reply message
     Done(String),
     /// The error (formatted with its causes)
@@ -140,6 +144,9 @@ pub(crate) struct JobResult {
     pub tried: Vec<String>,
     /// The real default the probe saw before acting (manual jobs only)
     pub observed: Option<String>,
+    /// A manual request whose target was the default already (smart toggle): the
+    /// description of that target; the job switched to the default sink (source)
+    pub toggled_from: Option<String>,
     pub outcome: Outcome,
     /// Another result of the same run follows (the other half of a joint
     /// activation), so the loop can publish the status once for the whole run
@@ -170,6 +177,7 @@ enum Prepared {
         upgrade_from: Option<usize>,
         keep: bool,
         observed: Option<String>,
+        toggled_from: Option<String>,
     },
     Finished(JobResult),
 }
@@ -187,6 +195,7 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
             kind,
             tried: Vec::new(),
             observed,
+            toggled_from: None,
             outcome,
             more: false,
         })
@@ -200,12 +209,14 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
             upgrade_from,
             keep: false,
             observed: None,
+            toggled_from: None,
         },
         Target::Keep { candidates } => Prepared::Activate {
             tried: candidates,
             upgrade_from: None,
             keep: true,
             observed: None,
+            toggled_from: None,
         },
         Target::Manual { request, config } => {
             let probed = match probe {
@@ -230,6 +241,14 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
                     upgrade_from: None,
                     keep: false,
                     observed,
+                    toggled_from: None,
+                },
+                Ok(ManualTarget::ToggleBack { from, to }) => Prepared::Activate {
+                    tried: vec![to.name.clone()],
+                    upgrade_from: None,
+                    keep: false,
+                    observed,
+                    toggled_from: Some(from.desc.clone()),
                 },
                 Ok(ManualTarget::Done(message)) => finished(observed, Outcome::Done(message)),
                 Err(message) => finished(observed, Outcome::Failed(message)),
@@ -241,14 +260,15 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
 /// The outcome of one activated half
 fn outcome_of(result: Option<HalfResult>, tried: &[String]) -> Outcome {
     match result {
-        Some(Ok(Some((index, node_name)))) if index < tried.len() => {
+        Some(Ok(Activated::Switched { index, node_name })) if index < tried.len() => {
             Outcome::Activated { index, node_name }
         }
-        Some(Ok(Some((index, node_name)))) => Outcome::Failed(format!(
+        Some(Ok(Activated::Switched { index, node_name })) => Outcome::Failed(format!(
             "Internal error: activated candidate {index} ({node_name}) of {}",
             tried.len()
         )),
-        Some(Ok(None)) => Outcome::Unchanged,
+        Some(Ok(Activated::Unchanged)) => Outcome::Unchanged,
+        Some(Ok(Activated::Elsewhere(current))) => Outcome::Elsewhere(current),
         Some(Err(e)) => Outcome::Failed(format!("{e:#}")),
         None => Outcome::Failed("Internal error: the activation returned nothing".to_string()),
     }
@@ -261,6 +281,7 @@ struct Ready {
     upgrade_from: Option<usize>,
     keep: bool,
     observed: Option<String>,
+    toggled_from: Option<String>,
 }
 
 /// Run the pending jobs (at most one per slot) as one joint activation (blocking)
@@ -284,6 +305,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 upgrade_from,
                 keep,
                 observed,
+                toggled_from,
             } => {
                 halves[kind.index()] = Some(Ready {
                     generation,
@@ -291,6 +313,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                     upgrade_from,
                     keep,
                     observed,
+                    toggled_from,
                 });
             }
             Prepared::Finished(result) => results.push(result),
@@ -305,6 +328,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 generation,
                 tried,
                 observed,
+                toggled_from,
                 ..
             }) = slot
             {
@@ -313,6 +337,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                     kind,
                     tried,
                     observed,
+                    toggled_from,
                     outcome: Outcome::Unchanged,
                     more: false,
                 });
@@ -326,6 +351,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
             generation,
             tried,
             observed,
+            toggled_from,
             ..
         }) = halves[kind.index()].take()
         {
@@ -335,6 +361,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 kind,
                 tried,
                 observed,
+                toggled_from,
                 outcome,
                 more: false,
             });
@@ -374,7 +401,7 @@ async fn run<S: SinkSwitcher>(
                     job.generation
                 ),
                 Target::Manual { request, .. } => {
-                    debug!("Manual request {request:?} (job {})", job.generation);
+                    debug!("Manual request {request} (job {})", job.generation);
                 }
                 Target::Keep { candidates } => debug!(
                     "Keeping the {} [{}] across the sink's activation (job {})",
@@ -409,6 +436,7 @@ async fn run<S: SinkSwitcher>(
                         kind,
                         tried,
                         observed: None,
+                        toggled_from: None,
                         outcome: Outcome::Failed(format!("activation task failed: {e}")),
                         more: false,
                     })

@@ -312,7 +312,15 @@ pub fn spawn_compositor_thread_on_with_preference(
             anyhow::bail!("Wayland thread exited during protocol detection")
         }
     };
-    info!("Using {protocol:?} protocol ({preference:?} preference)");
+    let why = match (preference, protocol) {
+        (ProtocolPreference::Auto, Backend::Ext) => "the standard one",
+        (ProtocolPreference::Auto, Backend::Wlr) => "ext is not offered",
+        (ProtocolPreference::PreferWlr, Backend::Wlr) => "the config has output rules",
+        (ProtocolPreference::PreferWlr, Backend::Ext) => {
+            "the config has output rules, but wlr is not offered"
+        }
+    };
+    info!("Using the {} protocol ({why})", protocol.name());
 
     std::thread::Builder::new()
         .name("pwsw-wayland-fwd".into())
@@ -335,7 +343,10 @@ fn wayland_thread(
 ) {
     match run_wayland(conn, preference, outbox, tx_probe, ready) {
         Ok(()) => info!("Wayland thread stopped"),
-        Err(e) => error!("Wayland event loop ended: {e:#}"),
+        Err(e) => error!(
+            "Wayland event loop ended: {}",
+            crate::sanitize::error_line(&e)
+        ),
     }
     outbox.close();
 }

@@ -103,9 +103,29 @@ fn git_revision(manifest_dir: &Path) -> Option<String> {
             watch_if_exists(&manifest_dir.join(path));
         }
     }
-    // Edits to the sources change the dirty marker
-    for path in ["src", "build.rs", "Cargo.toml", "Cargo.lock"] {
-        watch_if_exists(&manifest_dir.join(path));
+    // Whatever can change the dirty marker: every tracked top-level entry (an edit,
+    // or its revert), and every untracked one `git status` reports (so the marker goes
+    // away again once it is removed: Cargo re-runs the script for a missing path).
+    // Ignored paths (`target/`) are not watched, or every build would re-run this.
+    if let Some(tracked) = git(manifest_dir, &["ls-tree", "-z", "--name-only", "HEAD"]) {
+        for name in tracked.split('\0').filter(|n| !n.is_empty()) {
+            println!(
+                "cargo:rerun-if-changed={}",
+                manifest_dir.join(name).display()
+            );
+        }
+    }
+    let untracked = git(manifest_dir, &[
+        "ls-files",
+        "-z",
+        "--others",
+        "--exclude-standard",
+        "--directory",
+    ]);
+    for name in untracked.iter().flat_map(|u| u.split('\0')) {
+        if let Some(top) = name.split('/').next().filter(|t| !t.is_empty()) {
+            watch_if_exists(&manifest_dir.join(top));
+        }
     }
 
     let hash = git(manifest_dir, &["rev-parse", "--short", "HEAD"])?;

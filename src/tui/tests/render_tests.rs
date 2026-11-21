@@ -79,6 +79,7 @@ fn window(app_id: &str, title: &str, sink: Option<&str>) -> WindowInfo {
             sink_desc: s.to_string(),
             fallbacks: Vec::new(),
             sources: Vec::new(),
+            fallback_in_use: None,
         }),
     }
 }

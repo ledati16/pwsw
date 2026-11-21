@@ -64,6 +64,7 @@ use super::notifier::{Notice, NoticeKind, Notifier};
 use super::worker::{self, Job, JobResult, Outcome, Pending, SinkSwitcher, Target};
 use crate::compositor::{Capabilities, ProtocolPreference, WindowEvent};
 use crate::config::{Config, ConfigNotFound, Endpoint, SinkConfig};
+use crate::daemon_manager::DaemonManager;
 use crate::ipc::{EndpointStatus, FallbackSink, Response, RuleWindow, TrackedInfo, WindowInfo};
 pub(crate) use crate::manual::ManualSwitch;
 use crate::notification::{get_app_icon, get_sink_icon, get_source_icon};
@@ -250,25 +251,48 @@ pub(crate) struct CompositorInfo {
 /// Spawned with [`ProtocolPreference::PreferWlr`] (the startup config had such rules)
 /// and still on `ext`, the compositor offers nothing else. Spawned without (the rules
 /// came with a reload), a restart picks `wlr` if the compositor has it; the connection
-/// is not swapped while running.
+/// is not swapped while running. The restart hint fits how the daemon runs
+/// (`manager`; both ways when unknown).
 pub(crate) fn output_rules_warning(
     compositor: CompositorInfo,
     has_output_rules: bool,
-) -> Option<&'static str> {
+    manager: Option<DaemonManager>,
+) -> Option<OutputRulesWarning> {
     if !has_output_rules || compositor.capabilities.monitor_info() {
         return None;
     }
     Some(match compositor.preference {
-        ProtocolPreference::PreferWlr => {
-            "Monitor rules need wlr-foreign-toplevel-management; this compositor only offers \
-             ext-foreign-toplevel-list, so rules with `output` will never match"
-        }
+        ProtocolPreference::PreferWlr => OutputRulesWarning {
+            log: "Monitor rules need wlr-foreign-toplevel-management; this compositor only \
+                  offers ext-foreign-toplevel-list, so rules with `output` will never match"
+                .to_string(),
+            notice: "Rules with `output` cannot match on this compositor",
+        },
         ProtocolPreference::Auto => {
-            "Rules with `output` need monitor information, which the current compositor \
-             connection (ext-foreign-toplevel-list) does not report: restart pwsw to enable \
-             them (systemctl --user restart pwsw); they need wlr-foreign-toplevel-management"
+            let restart = match manager {
+                Some(DaemonManager::Systemd) => "systemctl --user restart pwsw",
+                Some(DaemonManager::Direct) => "pwsw shutdown, then pwsw daemon",
+                None => "systemctl --user restart pwsw, or pwsw shutdown, then pwsw daemon",
+            };
+            OutputRulesWarning {
+                log: format!(
+                    "Rules with `output` need monitor information, which the current \
+                     compositor connection (ext-foreign-toplevel-list) does not report: \
+                     restart pwsw to enable them ({restart}); they need \
+                     wlr-foreign-toplevel-management"
+                ),
+                notice: "Rules with `output` match only after pwsw is restarted",
+            }
         }
     })
+}
+
+/// What [`output_rules_warning`] says: the log line, and the note for the reload
+/// notification
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OutputRulesWarning {
+    pub(crate) log: String,
+    pub(crate) notice: &'static str,
 }
 
 /// Who asked for an activation
@@ -416,6 +440,8 @@ pub(crate) struct Daemon {
     replies: Vec<(Endpoint, u64, oneshot::Sender<Response>)>,
     /// The compositor connection (`None` in tests that do not set one)
     compositor: Option<CompositorInfo>,
+    /// How the daemon is run, for restart hints (`None`: unknown)
+    manager: Option<DaemonManager>,
     /// Wait (at most this long) for [`WindowEvent::InitialSync`] before the startup
     /// baseline; `None`: take it at once (tests that do not model the marker)
     initial_sync: Option<Duration>,
@@ -455,6 +481,7 @@ impl Daemon {
             next_generation: 0,
             replies: Vec::new(),
             compositor: None,
+            manager: None,
             initial_sync: None,
             #[cfg(test)]
             steps: watch::Sender::new(0),
@@ -482,6 +509,13 @@ impl Daemon {
     #[must_use]
     pub(crate) fn with_compositor(mut self, compositor: CompositorInfo) -> Self {
         self.compositor = Some(compositor);
+        self
+    }
+
+    /// How the daemon is run (systemd or directly), so restart hints fit
+    #[must_use]
+    pub(crate) const fn with_manager(mut self, manager: DaemonManager) -> Self {
+        self.manager = Some(manager);
         self
     }
 
@@ -742,11 +776,11 @@ impl Daemon {
             if self.state.config().settings.default_on_startup
                 && self.lane(kind).applied.as_deref() != names.first().map(String::as_str)
             {
-                info!(
+                let what = format!(
                     "Startup: switching to {} (what the rules want now)",
                     self.candidates_desc(kind, &names)
                 );
-                self.submit(kind, names, None);
+                self.submit_logged(kind, names, None, &what);
             }
         }
         self.publish_status();
@@ -1162,7 +1196,19 @@ impl Daemon {
         candidates: Vec<String>,
         notice: Option<RuleNotice>,
     ) -> u64 {
-        info!("Switching: {}", self.candidates_desc(kind, &candidates));
+        let what = format!("Switching: {}", self.candidates_desc(kind, &candidates));
+        self.submit_logged(kind, candidates, notice, &what)
+    }
+
+    /// [`Daemon::submit`], logging `what` (at info) instead of the usual line
+    fn submit_logged(
+        &mut self,
+        kind: Endpoint,
+        candidates: Vec<String>,
+        notice: Option<RuleNotice>,
+        what: &str,
+    ) -> u64 {
+        info!("{what}");
         self.submit_job(
             kind,
             Target::Rule {
@@ -1236,6 +1282,7 @@ impl Daemon {
         }
 
         let tried = result.tried;
+        let toggled_from = result.toggled_from;
         let response = match result.outcome {
             Outcome::Activated { index, node_name } if index < tried.len() => {
                 let name = tried[index].clone();
@@ -1245,10 +1292,34 @@ impl Daemon {
                     Endpoint::Sink => "Audio output",
                     Endpoint::Source => "Audio input",
                 };
-                info!(
-                    "{what} is now {desc}{} ({node_name})",
-                    if fallback { " (fallback)" } else { "" }
-                );
+                let marker = if fallback { " (fallback)" } else { "" };
+                // An upgrade that changed the default says why it switched
+                let upgraded_from = match &submitted {
+                    Some(Submitted {
+                        origin: Origin::Upgrade,
+                        ..
+                    }) => self
+                        .lane(kind)
+                        .applied
+                        .as_deref()
+                        .filter(|applied| *applied != name)
+                        .map(|applied| self.endpoint_desc(kind, applied)),
+                    _ => None,
+                };
+                if let Some(old) = upgraded_from {
+                    info!(
+                        "Upgrade: {} is now {desc}{marker} ({node_name}): available again, was \
+                         fallback {old}",
+                        what.to_lowercase()
+                    );
+                } else if let Some(from) = &toggled_from {
+                    info!(
+                        "{what} is now {desc} ({node_name}): {from} was already active, toggled \
+                         back"
+                    );
+                } else {
+                    info!("{what} is now {desc}{marker} ({node_name})");
+                }
                 // The candidate list the new value serves: a rule-driven job's (a stale
                 // result too: a manual job's single target is its own first choice),
                 // nothing for a manual choice; a `keep` that set the same value again
@@ -1318,7 +1389,11 @@ impl Daemon {
                 if fallback {
                     desc.push_str(" (fallback)");
                 }
-                Response::SinkSwitched { desc, node_name }
+                Response::SinkSwitched {
+                    desc,
+                    node_name,
+                    toggled_from,
+                }
             }
             Outcome::Activated { node_name, .. } => {
                 // Not produced by the worker; keep the loop consistent anyway
@@ -1341,6 +1416,31 @@ impl Daemon {
                     )
                 );
                 debug!("{message}");
+                Response::Ok { message }
+            }
+            Outcome::Elsewhere(current) => {
+                // Someone chose another default since the fallback was applied: that
+                // choice holds like any external one (no further upgrade checks fight
+                // it) until the rules' answer changes
+                let what = match kind {
+                    Endpoint::Sink => "output",
+                    Endpoint::Source => "input",
+                };
+                let message = format!(
+                    "Not upgrading to {}: the audio {what} was changed outside pwsw (now {}); \
+                     it stays until the rules want something else",
+                    tried
+                        .first()
+                        .map_or_else(|| noun.to_string(), |c| self.endpoint_desc(kind, c)),
+                    self.endpoint_desc(kind, &current)
+                );
+                info!("{message}");
+                if active {
+                    let lane = self.lane_mut(kind);
+                    lane.applied = Some(current);
+                    lane.applied_for = None;
+                    lane.applied_fallback = false;
+                }
                 Response::Ok { message }
             }
             Outcome::Done(message) => {
@@ -1372,7 +1472,7 @@ impl Daemon {
                             .join(", ")
                     ),
                 };
-                error!("{message}");
+                error!("{}", crate::sanitize::one_line(&message));
                 match submitted {
                     Some(Submitted {
                         origin: Origin::Rule,
@@ -1408,9 +1508,10 @@ impl Daemon {
     /// the rules, their target gets another try on the next event or reload
     fn keep_failed(&mut self, kind: Endpoint, tried: &[String], message: &str) {
         warn!(
-            "The sink's profile switch did not keep the {} ({}): {message}",
+            "The sink's profile switch did not keep the {} ({}): {}",
             kind.noun(),
-            self.candidates_desc(kind, tried)
+            self.candidates_desc(kind, tried),
+            crate::sanitize::one_line(message)
         );
         let following = !self.paused;
         let lane = self.lane_mut(kind);
@@ -1558,7 +1659,7 @@ impl Daemon {
             return;
         }
 
-        info!("Manual switch requested: {request:?}");
+        info!("Manual switch requested: {request}");
         let kind = request.kind();
         let lane = self.lane_mut(kind);
         // Coalesced manual requests share the state from before the first of them
@@ -1731,6 +1832,15 @@ impl Daemon {
             }
             Some(format!("{}: {desc}", w.trigger))
         });
+        // The fallback that plays for the deciding window (shown with that window)
+        let deciding = self.deciding_window(Endpoint::Sink).map(|w| w.id);
+        let fallback_in_use = self
+            .applied_fallback_rank(Endpoint::Sink)
+            .and_then(|_| self.configured(Endpoint::Sink, sink.applied.as_deref()?))
+            .map(|s| FallbackSink {
+                name: s.name.clone(),
+                desc: s.desc.clone(),
+            });
         let config = self.state.config();
         let sources_configured = !config.sources.is_empty();
         let fallbacks = |entries: &[&SinkConfig]| -> Vec<FallbackSink> {
@@ -1766,6 +1876,7 @@ impl Daemon {
                         sink_desc: first.desc.clone(),
                         fallbacks: fallbacks(rest),
                         sources: fallbacks(&w.sources),
+                        fallback_in_use: fallback_in_use.clone().filter(|_| deciding == Some(w.id)),
                     }),
                 })
                 .collect(),
@@ -1816,9 +1927,13 @@ impl Daemon {
                 info!("Config file missing (save in progress?); keeping current config");
             }
             Ok(Err(e)) => {
-                error!("Failed to reload config: {e:#}");
+                let text = format!("{e:#}");
+                error!(
+                    "Failed to reload config (keeping the current one): {}",
+                    crate::sanitize::error_line(&e)
+                );
                 if notify_manual {
-                    self.notify_daemon("Reload Failed", &format!("Config error: {e:#}"));
+                    self.notify_daemon("Reload Failed", &reload_failed_body(&text));
                 }
             }
             Ok(Ok(config)) => {
@@ -1850,17 +1965,18 @@ impl Daemon {
                         config.sinks.len(),
                         config.rules.len()
                     );
-                    if let Some(warning) = self
-                        .compositor
-                        .and_then(|c| output_rules_warning(c, config.has_output_rules()))
-                    {
-                        warn!("{warning}");
+                    let warning = self.compositor.and_then(|c| {
+                        output_rules_warning(c, config.has_output_rules(), self.manager)
+                    });
+                    if let Some(warning) = &warning {
+                        warn!("{}", warning.log);
                     }
                     if config.settings.notify_manual {
-                        self.notify_daemon(
-                            "Configuration Reloaded",
-                            "New settings applied successfully",
+                        let body = warning.map_or_else(
+                            || "New settings applied successfully".to_string(),
+                            |w| format!("New settings applied. {}", w.notice),
                         );
+                        self.notify_daemon("Configuration Reloaded", &body);
                     }
                     self.reconcile(None);
                 }
@@ -1889,6 +2005,21 @@ impl Daemon {
             debug!("sd_notify failed: {e}");
         }
     }
+}
+
+/// The "Reload Failed" notification body: the start of the error (a parse error's
+/// first line is only the file, so its second line, the position, comes along) and
+/// where to see all of it
+fn reload_failed_body(error: &str) -> String {
+    let mut lines = crate::sanitize::one_line(error)
+        .split("; ")
+        .take(2)
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if lines.len() == 2 && !lines[0].starts_with("Failed to parse config") {
+        lines.truncate(1);
+    }
+    format!("{} - run pwsw validate for details", lines.join(": "))
 }
 
 /// The compositor's window event channel closed (logged here)

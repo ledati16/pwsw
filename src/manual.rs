@@ -33,6 +33,19 @@ pub enum ManualSwitch {
     SetSource(String),
 }
 
+impl std::fmt::Display for ManualSwitch {
+    /// The request as the command that makes it: `set-sink Speakers`, `next-sink`
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::sanitize::for_log;
+        match self {
+            Self::Set(r) => write!(f, "set-sink {}", for_log(r)),
+            Self::Next => f.write_str("next-sink"),
+            Self::Prev => f.write_str("prev-sink"),
+            Self::SetSource(r) => write!(f, "set-source {}", for_log(r)),
+        }
+    }
+}
+
 impl ManualSwitch {
     /// Which default the request changes
     #[must_use]
@@ -93,6 +106,12 @@ impl Probe {
 pub enum ManualTarget<'a> {
     /// Activate this sink (this source, for [`ManualSwitch::SetSource`])
     Switch(&'a SinkConfig),
+    /// Smart toggle: `from` (the requested one) is the default already, so activate
+    /// `to`, the configured default, instead
+    ToggleBack {
+        from: &'a SinkConfig,
+        to: &'a SinkConfig,
+    },
     /// Nothing to do; reply with this message
     Done(String),
 }
@@ -189,7 +208,10 @@ pub fn plan<'a>(
                 if default.name == target.name {
                     return Ok(ManualTarget::Done(format!("Already on: {}", default.desc)));
                 }
-                return Ok(ManualTarget::Switch(default));
+                return Ok(ManualTarget::ToggleBack {
+                    from: target,
+                    to: default,
+                });
             }
             Ok(ManualTarget::Switch(target))
         }
@@ -204,7 +226,10 @@ pub fn plan<'a>(
                 if default.name == target.name {
                     return Ok(ManualTarget::Done(format!("Already on: {}", default.desc)));
                 }
-                return Ok(ManualTarget::Switch(default));
+                return Ok(ManualTarget::ToggleBack {
+                    from: target,
+                    to: default,
+                });
             }
             Ok(ManualTarget::Switch(target))
         }
@@ -294,9 +319,36 @@ mod tests {
 
     fn switch_to(result: Result<ManualTarget<'_>, String>) -> &str {
         match result {
-            Ok(ManualTarget::Switch(sink)) => &sink.name,
+            Ok(ManualTarget::Switch(sink) | ManualTarget::ToggleBack { to: sink, .. }) => {
+                &sink.name
+            }
             other => panic!("expected a switch, got {other:?}"),
         }
+    }
+
+    /// The smart toggle says which sink was active already
+    #[test]
+    fn test_smart_toggle_names_the_sink_it_toggles_away_from() {
+        let c = config();
+        match plan(
+            &c,
+            &ManualSwitch::Set("HDMI".to_string()),
+            &probe(Some("hdmi"), &[]),
+        ) {
+            Ok(ManualTarget::ToggleBack { from, to }) => {
+                assert_eq!((from.desc.as_str(), to.desc.as_str()), ("HDMI", "Speakers"));
+            }
+            other => panic!("expected a toggle, got {other:?}"),
+        }
+        assert_eq!(
+            ManualSwitch::Set("Speakers".to_string()).to_string(),
+            "set-sink Speakers"
+        );
+        assert_eq!(
+            ManualSwitch::SetSource("Desk\nMic".to_string()).to_string(),
+            "set-source Desk\\nMic"
+        );
+        assert_eq!(ManualSwitch::Next.to_string(), "next-sink");
     }
 
     #[test]

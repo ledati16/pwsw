@@ -437,6 +437,7 @@ fn window(id: u64, app_id: &str, title: &str, matched: bool) -> crate::ipc::Wind
             sink_desc: "Sink One".to_string(),
             fallbacks: Vec::new(),
             sources: Vec::new(),
+            fallback_in_use: None,
         }),
     }
 }

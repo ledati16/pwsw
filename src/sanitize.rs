@@ -91,6 +91,40 @@ pub fn for_display(input: &str) -> Cow<'_, str> {
     )
 }
 
+/// Fold a multi-line message (an error chain, a `TOML` parse error with its source
+/// excerpt) into one log line: lines trimmed and joined with `; `, empty lines and
+/// pure decoration (`|`, `^^^`) dropped, a line repeating the previous one dropped
+#[must_use]
+pub fn one_line(text: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        let decoration = line.chars().all(|c| matches!(c, '|' | '^' | '~' | ' '));
+        if decoration || parts.last() == Some(&line) {
+            continue;
+        }
+        parts.push(line);
+    }
+    parts.join("; ")
+}
+
+/// An error and its causes as one log line (like `{e:#}`), leaving out a cause whose
+/// text the message before it already ends with (some errors repeat their source in
+/// their own message: `Io error: Broken pipe: Broken pipe`)
+#[must_use]
+pub fn error_line(error: &anyhow::Error) -> String {
+    let mut text = String::new();
+    for cause in error.chain() {
+        let cause = cause.to_string();
+        if text.is_empty() {
+            text = cause;
+        } else if !text.ends_with(&cause) {
+            text.push_str(": ");
+            text.push_str(&cause);
+        }
+    }
+    one_line(&text)
+}
+
 /// Prepare untrusted text for a notification body: replace unsafe control
 /// characters (see `is_unsafe_char`) with a space and, if `markup` is set,
 /// escape the characters Pango markup interprets (`&`, `<`, `>`) so the text is
@@ -165,6 +199,46 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
+
+    #[test]
+    fn test_error_line_drops_repeated_causes() {
+        #[derive(Debug)]
+        struct Repeats(std::io::Error);
+        impl std::fmt::Display for Repeats {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "Io error: {}", self.0)
+            }
+        }
+        impl std::error::Error for Repeats {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(&self.0)
+            }
+        }
+        let io = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Broken pipe");
+        let error = anyhow::Error::new(Repeats(io)).context("Lost the Wayland connection");
+        assert_eq!(
+            error_line(&error),
+            "Lost the Wayland connection: Io error: Broken pipe"
+        );
+        let plain = anyhow::anyhow!("line one\nline two").context("outer");
+        assert_eq!(error_line(&plain), "outer: line one; line two");
+    }
+
+    #[test]
+    fn test_one_line_folds_multi_line_messages() {
+        let toml = "TOML parse error at line 3, column 5\n  |\n3 | foo\n  |     ^\nexpected `=`\n";
+        assert_eq!(
+            one_line(toml),
+            "TOML parse error at line 3, column 5; 3 | foo; expected `=`"
+        );
+        assert_eq!(
+            one_line("Compositor lost: Broken pipe (os error 32)\nBroken pipe (os error 32)"),
+            "Compositor lost: Broken pipe (os error 32); Broken pipe (os error 32)",
+            "only a line repeating the previous one is dropped"
+        );
+        assert_eq!(one_line("a\n\nb\nb\n"), "a; b");
+        assert_eq!(one_line("single"), "single");
+    }
 
     #[test_case("plain title", "plain title" ; "unchanged")]
     #[test_case("a\nb", "a\\nb" ; "newline escaped")]

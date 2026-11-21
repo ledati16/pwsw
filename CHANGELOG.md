@@ -54,7 +54,12 @@ maintenance mode.
   could silently undo; that write is gone.
 - **Profile switches are saved in WirePlumber** (so it keeps the profile), only
   available profiles are used, and a profile that keeps the card's microphone is
-  preferred.
+  preferred. pwsw waits up to 3 s for the new node (was 750 ms); if it does not
+  appear, the card is switched back to its previous profile, so a failed switch leaves
+  the audio where it was.
+- **A choice made outside pwsw is respected by fallbacks too:** when a rule settled
+  for a fallback and you pick another output (e.g. in pavucontrol), pwsw no longer
+  moves you to the rule's first choice when it becomes available.
 - **`next-sink`/`prev-sink` skip sinks that cannot be activated right now** (e.g. an
   HDMI output whose display is off) and start from the real PipeWire default.
   `set-sink` still tries the sink you asked for and reports why it failed (a

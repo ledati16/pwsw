@@ -47,7 +47,8 @@ that binary.
 
 **Decision is pure, acting is asynchronous.** `State::apply` folds `WindowEvent`s into
 the window set; `State::desired()` implements both priority modes (most recent window by
-a monotonic sequence number, renewed when a window starts matching; or lowest rule index
+a monotonic sequence number, renewed when a window starts matching a rule or a different
+rule; or lowest rule index
 with `match_by_index`, ties to the most recent), falling back to the default sink. Its
 answer is an ordered candidate list: the winning rule's sink and fallbacks
 (`sink = ["A", "B"]`), or the default sink alone. Each window is matched by the first
@@ -129,7 +130,15 @@ inside it.
   sink wins and that source candidate is skipped as unreachable. A source switch on the
   sink's card must keep the sink's output. A job never switches a card twice for its
   two halves (cards switched for the sink are frozen for the source's fallthrough).
-- Post-switch wait: `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES`, capped at 5 s.
+- Post-switch wait: `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES` (default
+  150 ms × 20 = 3 s), capped at 5 s. A switch whose node does not appear in time is
+  undone (the card goes back to its previous profile, if still available), so a failed
+  switch leaves the audio where it was; a `keep` source on that card then counts as
+  untouched, as it does when no snapshot could be taken at all.
+- Upgrade checks only act while the configured default is still the applied fallback
+  (by name or the node it resolves to); otherwise the half returns
+  `Activated::Elsewhere` and the loop adopts the observed default like a manual probe
+  (`applied_for` = None, no more upgrade checks).
 - `activate.rs` runs over the `AudioBackend` and `Clock` traits so the whole flow is
   tested with fakes; put new logic there or in `resolve.rs`, not in `cli.rs`.
 

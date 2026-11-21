@@ -572,12 +572,22 @@ fn window_row<'a>(win: &'a WindowInfo, cols: &[usize]) -> Row<'a> {
     }
     cells.push(match &win.tracked {
         Some(tracked) => Cell::from(Span::styled(
-            cut(&format!("→ {}", tracked.sink_desc), sink_col),
+            cut(&sink_cell(tracked), sink_col),
             theme::accent(),
         )),
         None => Cell::from(""),
     });
     Row::new(cells)
+}
+
+/// The Sink cell of a tracked window: its rule's sink, or the fallback that plays
+/// instead when this window decides the daemon's sink (the column is narrow: what
+/// plays comes first)
+fn sink_cell(tracked: &crate::ipc::TrackedInfo) -> String {
+    match &tracked.fallback_in_use {
+        Some(fallback) => format!("→ {} (fallback)", fallback.desc),
+        None => format!("→ {}", tracked.sink_desc),
+    }
 }
 
 /// Render the window table (bottom section when the view is Windows)
@@ -995,6 +1005,7 @@ mod tests {
                 sink_desc: String::new(),
                 fallbacks: Vec::new(),
                 sources: Vec::new(),
+                fallback_in_use: None,
             }),
         }
     }
@@ -1197,5 +1208,23 @@ mod tests {
                 "Level {level} should be parsed"
             );
         }
+    }
+    /// The deciding window's row shows the fallback that plays, not its rule's first
+    /// choice
+    #[test]
+    fn test_sink_cell_shows_the_fallback_in_use() {
+        let mut tracked = crate::ipc::TrackedInfo {
+            sink_name: "bt".to_string(),
+            sink_desc: "BT Headphones".to_string(),
+            fallbacks: Vec::new(),
+            sources: Vec::new(),
+            fallback_in_use: None,
+        };
+        assert_eq!(sink_cell(&tracked), "→ BT Headphones");
+        tracked.fallback_in_use = Some(crate::ipc::FallbackSink {
+            name: "headset".to_string(),
+            desc: "Headset".to_string(),
+        });
+        assert_eq!(sink_cell(&tracked), "→ Headset (fallback)");
     }
 }

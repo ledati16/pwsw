@@ -287,7 +287,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     let daemon_manager = tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::detect)
         .await
         .map_err(|e| anyhow::anyhow!("Join error during manager detection: {e:#}"))?;
-    info!("Daemon manager: {:?}", daemon_manager);
+    info!("Daemon manager: {daemon_manager:?}");
 
     let state = State::new(Arc::clone(&config))?;
 
@@ -330,8 +330,10 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         capabilities,
         preference,
     };
-    if let Some(warning) = output_rules_warning(compositor, config.has_output_rules()) {
-        warn!("{warning}");
+    if let Some(warning) =
+        output_rules_warning(compositor, config.has_output_rules(), Some(daemon_manager))
+    {
+        warn!("{}", warning.log);
     }
 
     let ipc_server = IpcServer::bind().await?;
@@ -385,6 +387,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     )
     .with_applied_source(applied_source)
     .with_compositor(compositor)
+    .with_manager(daemon_manager)
     // The baseline (and `default_on_startup`) takes the windows already open into
     // account, instead of switching once per window as they are reported
     .with_initial_sync(INITIAL_SYNC_TIMEOUT);
@@ -409,7 +412,10 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     let _ = ipc_task.await;
 
     if let Err(e) = &result {
-        error!("Daemon exiting with error: {e:#}");
+        error!(
+            "Daemon exiting with error: {}",
+            crate::sanitize::error_line(e)
+        );
     }
     result
 }

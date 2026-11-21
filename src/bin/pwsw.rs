@@ -82,7 +82,10 @@ fn main() -> ExitCode {
 fn load_config_with_sinks() -> Result<Config> {
     let config = Config::load()?;
     if config.sinks.is_empty() {
-        anyhow::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
+        anyhow::bail!(
+            "No sinks configured. Add sinks via '{}' first.",
+            commands::config_command("tui")
+        );
     }
     Ok(config)
 }
@@ -123,11 +126,14 @@ async fn run(args: Args) -> Result<ExitCode> {
 
             // Daemon requires at least one sink to operate
             if config.sinks.is_empty() {
+                let tui = commands::config_command("tui");
+                let list = commands::config_command("list-sinks");
+                let width = tui.chars().count().max(list.chars().count());
                 anyhow::bail!(
                     "No sinks configured. The daemon cannot start without sinks.\n\n\
                      Add sinks via:\n  \
-                     pwsw tui        (interactive setup)\n  \
-                     pwsw list-sinks (discover available sinks)\n\n\
+                     {tui:<width$} (interactive setup)\n  \
+                     {list:<width$} (discover available sinks)\n\n\
                      Or edit: {}",
                     Config::get_config_path()?.display()
                 );

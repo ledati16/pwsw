@@ -50,11 +50,23 @@ pub(crate) struct Notifier {
 
 impl Notifier {
     /// Start the notification thread, showing notices with [`send_notification`]
+    ///
+    /// A failure is logged as a warning once (no notification server is a common,
+    /// lasting condition), then at debug until a notification works again.
     pub(crate) fn spawn() -> Self {
-        Self::spawn_with(MIN_INTERVAL, |notice: &Notice| {
-            if let Err(e) = send_notification(&notice.summary, &notice.body, notice.icon.as_deref())
-            {
-                warn!("Notification failed: {e:#}");
+        let mut failures = Failures::default();
+        Self::spawn_with(MIN_INTERVAL, move |notice: &Notice| {
+            let result = send_notification(&notice.summary, &notice.body, notice.icon.as_deref());
+            if failures.record(result.is_ok()) {
+                if let Err(e) = result {
+                    warn!(
+                        "Notification failed: {}; further failures are logged at debug \
+                         until one works again",
+                        crate::sanitize::error_line(&e)
+                    );
+                }
+            } else if let Err(e) = result {
+                debug!("Notification failed: {e:#}");
             }
         })
     }
@@ -127,6 +139,27 @@ impl Notifier {
     }
 }
 
+/// Whether notifications are failing, so a lasting failure is warned about once
+#[derive(Debug, Default)]
+struct Failures {
+    failing: bool,
+}
+
+impl Failures {
+    /// Record one attempt; returns whether a failure deserves a warning (the first
+    /// one, or the first after a notification worked)
+    fn record(&mut self, ok: bool) -> bool {
+        if ok {
+            if self.failing {
+                debug!("Notifications work again");
+            }
+            self.failing = false;
+            return false;
+        }
+        !std::mem::replace(&mut self.failing, true)
+    }
+}
+
 /// Keep at most one pending notice per kind: a newer one replaces the older
 fn enqueue(pending: &mut Vec<Notice>, notice: Notice) {
     pending.retain(|n| n.kind != notice.kind);
@@ -191,6 +224,20 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
+
+    /// A lasting failure (no notification server) is warned about once, and again
+    /// only after a notification worked in between
+    #[test]
+    fn test_failures_warn_once_per_outage() {
+        let mut failures = Failures::default();
+        assert!(failures.record(false), "first failure warns");
+        assert!(!failures.record(false), "repeats do not");
+        assert!(!failures.record(false));
+        assert!(!failures.record(true), "a success never warns");
+        assert!(failures.record(false), "a new outage warns again");
+        assert!(!failures.record(true));
+        assert!(!failures.record(true));
+    }
 
     fn notice(kind: NoticeKind, body: &str) -> Notice {
         Notice {

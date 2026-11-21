@@ -54,8 +54,9 @@ impl Clock for SystemClock {
 /// Default poll interval while waiting for a sink after a profile switch.
 /// Override with `PROFILE_SWITCH_DELAY_MS`.
 const DEFAULT_POLL_INTERVAL_MS: u64 = 150;
-/// Default number of polls. Override with `PROFILE_SWITCH_MAX_RETRIES`.
-const DEFAULT_MAX_POLLS: u64 = 10;
+/// Default number of polls (3 s in all with the default interval). Override with
+/// `PROFILE_SWITCH_MAX_RETRIES`.
+const DEFAULT_MAX_POLLS: u64 = 20;
 /// Bounds for `PROFILE_SWITCH_DELAY_MS`.
 const MIN_POLL_INTERVAL_MS: u64 = 10;
 const MAX_POLL_INTERVAL_MS: u64 = 1_000;
@@ -136,12 +137,25 @@ pub(crate) struct Request<'a> {
 
 /// What a job did for each half it was given (`None`: the half was not asked for)
 ///
-/// Each result is the chosen candidate, `Ok(None)` when an upgrade check found
-/// nothing better (nothing touched), or the error.
+/// Each result is the chosen candidate, `Ok(None)` when nothing was touched (an
+/// upgrade check found nothing better or was skipped, a `keep` half was not
+/// affected), or the error.
 #[derive(Debug, Default)]
 pub(crate) struct JointOutcome {
     pub(crate) sink: Option<Result<Option<Chosen>>>,
     pub(crate) source: Option<Result<Option<Chosen>>>,
+    /// Per [`Endpoint::index`]: an upgrade check that was skipped because the
+    /// configured default is not the candidate it was told is applied (it was changed
+    /// outside pwsw); the default as the user sees it now
+    pub(crate) elsewhere: [Option<String>; 2],
+}
+
+/// Cards a job switched: every switch it attempted, and those of them it switched
+/// back after the node did not appear
+#[derive(Debug, Default)]
+struct Cards {
+    switched: HashSet<u32>,
+    restored: HashSet<u32>,
 }
 
 /// Make `target` (a configured node name) the default sink.
@@ -204,10 +218,16 @@ pub(crate) fn activate_first(
 ///
 /// With `upgrade_from: Some(k)` a half does nothing (`Ok(None)`) unless a candidate
 /// before `k` is reachable now; if one is, it proceeds as above over its whole list.
+/// It does nothing either when the configured default is not candidate `k` (someone
+/// chose another one since), and reports what is the default instead
+/// ([`JointOutcome::elsewhere`]).
 /// A source half with `keep` does nothing (`Ok(None)`) unless the sink's planned
 /// profile switch is on the card of one of its candidates; then it is planned with the
 /// sink like any source half (one profile for both, or the source reported as
-/// unreachable when none provides both: the sink's switch drops it).
+/// unreachable when none provides both: the sink's switch drops it). If the sink's
+/// switch was undone (its node did not appear and the card was switched back), or no
+/// snapshot could be taken at all, the `keep` half is `Ok(None)` as well: the card is
+/// as it was.
 pub(crate) fn activate_joint(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
@@ -232,28 +252,45 @@ pub(crate) fn activate_joint(
         Err(e) => {
             let message = format!("{e:#}");
             for (kind, half) in Endpoint::ALL.into_iter().zip(&halves) {
-                if half.is_some() {
-                    *outcome.slot(kind) = Some(Err(anyhow::anyhow!("{message}")));
+                if let Some(request) = half {
+                    // Nothing was switched, so a microphone riding along is untouched
+                    *outcome.slot(kind) = Some(if request.keep {
+                        Ok(None)
+                    } else {
+                        Err(anyhow::anyhow!("{message}"))
+                    });
                 }
             }
             return outcome;
         }
     };
 
-    // An upgrade check that finds nothing better leaves its half alone
+    // An upgrade check leaves its half alone when the default is no longer the
+    // fallback it would improve on (chosen outside pwsw since), or nothing better is
+    // reachable
     for (kind, half) in Endpoint::ALL.into_iter().zip(&mut halves) {
-        if let Some(Request {
+        let Some(Request {
             candidates,
             upgrade_from: Some(current),
             ..
         }) = *half
-            && !candidates[..current.min(candidates.len())]
-                .iter()
-                .any(|c| resolve::resolve_endpoint(&snapshot, kind, c).is_ok())
+        else {
+            continue;
+        };
+        if let Some(now) = default_elsewhere(&snapshot, kind, candidates.get(current)) {
+            debug!(
+                "Not upgrading the {}: the default is {now}, not the fallback pwsw set",
+                kind.noun()
+            );
+            outcome.elsewhere[kind.index()] = Some(now);
+        } else if candidates[..current.min(candidates.len())]
+            .iter()
+            .any(|c| resolve::resolve_endpoint(&snapshot, kind, c).is_ok())
         {
-            *half = None;
-            *outcome.slot(kind) = Some(Ok(None));
+            continue;
         }
+        *half = None;
+        *outcome.slot(kind) = Some(Ok(None));
     }
     let [sink, mut source] = halves;
     let sinks = sink.map_or(&[][..], |r| r.candidates);
@@ -266,8 +303,8 @@ pub(crate) fn activate_joint(
         outcome.source = Some(Ok(None));
     }
 
-    // Cards switched in this job (attempted or done)
-    let mut frozen: HashSet<u32> = HashSet::new();
+    // Cards switched in this job (attempted or done), and those switched back
+    let mut cards = Cards::default();
     let mut sink_as_planned = true;
     let mut sink_side = None;
     if sink.is_some() {
@@ -278,13 +315,24 @@ pub(crate) fn activate_joint(
             sinks,
             plan.sink.clone(),
             plan.sink_skipped.clone(),
-            &mut frozen,
+            &mut cards,
         );
         sink_as_planned = as_planned;
         if let Ok(Some(chosen)) = &result {
             sink_side = activated_side(&snapshot, &chosen.activation);
         }
         outcome.sink = Some(result);
+    }
+
+    // A riding source whose card the sink's activation ended up not changing (its
+    // switch failed and was undone, or it went to a candidate elsewhere) is as it was
+    if source.is_some_and(|r| r.keep)
+        && !sink_as_planned
+        && !keep_affected(&snapshot, sources, sink_side.as_ref(), &cards)
+    {
+        debug!("The sink's activation left the microphone's card as it was");
+        source = None;
+        outcome.source = Some(Ok(None));
     }
 
     if source.is_some() {
@@ -302,8 +350,13 @@ pub(crate) fn activate_joint(
                             side.device_id
                         );
                     }
-                    let again =
-                        resolve::plan_joint(&now, &[], sources, sink_side.as_ref(), &frozen);
+                    let again = resolve::plan_joint(
+                        &now,
+                        &[],
+                        sources,
+                        sink_side.as_ref(),
+                        &cards.switched,
+                    );
                     (again.source, again.source_skipped)
                 })
                 .map_err(|e| anyhow::anyhow!("after the sink's activation: {e:#}"))
@@ -316,12 +369,58 @@ pub(crate) fn activate_joint(
                 sources,
                 planned,
                 sink_side.as_ref(),
-                &mut frozen,
+                &mut cards,
             ),
             Err(e) => Err(e),
         });
     }
     outcome
+}
+
+/// Whether a riding source may have been changed by the sink's activation: its final
+/// profile switch is on one of the sources' cards, or a switch of such a card was
+/// not undone
+fn keep_affected(
+    snapshot: &Snapshot,
+    sources: &[String],
+    sink_side: Option<&SinkSide>,
+    cards: &Cards,
+) -> bool {
+    let switched_last = sink_side.is_some_and(|side| {
+        cards.switched.contains(&side.device_id)
+            && resolve::on_source_card(snapshot, sources, side.device_id)
+    });
+    switched_last
+        || cards
+            .switched
+            .difference(&cards.restored)
+            .any(|&device| resolve::on_source_card(snapshot, sources, device))
+}
+
+/// The default of `kind` as the user sees it, when the configured default is not
+/// `applied` (a configured node name, by name or as the node it resolves to): it was
+/// changed outside pwsw. `None` when it is `applied`, or nothing is configured.
+fn default_elsewhere(
+    snapshot: &Snapshot,
+    kind: Endpoint,
+    applied: Option<&String>,
+) -> Option<String> {
+    let configured = snapshot.defaults(kind).configured.as_deref()?;
+    let applied = applied?;
+    if configured == applied {
+        return None;
+    }
+    if let Ok(Plan::SetDefault { node_name }) = resolve::resolve_endpoint(snapshot, kind, applied)
+        && node_name == configured
+    {
+        return None;
+    }
+    Some(
+        snapshot
+            .current_default_of(kind)
+            .unwrap_or(configured)
+            .to_string(),
+    )
 }
 
 impl JointOutcome {
@@ -348,14 +447,16 @@ fn activated_side(snapshot: &Snapshot, activation: &Activation) -> Option<SinkSi
     })
 }
 
-/// The error for a half none of whose candidates could be activated
+/// The error for a half none of whose candidates could be activated (one line: it
+/// goes to the log, notifications and `IPC` replies)
 fn none_activated(failures: &[(String, String)]) -> anyhow::Error {
     if let [(_, only)] = failures {
         return anyhow::anyhow!("{only}");
     }
     let mut message = String::from("every candidate failed:");
-    for (target, e) in failures {
-        let _ = write!(message, "\n  - '{target}': {e}");
+    for (i, (target, e)) in failures.iter().enumerate() {
+        let sep = if i == 0 { " " } else { "; " };
+        let _ = write!(message, "{sep}'{target}': {e}");
     }
     anyhow::anyhow!(message)
 }
@@ -390,7 +491,7 @@ fn run_sink(
     candidates: &[String],
     planned: Option<(usize, Plan)>,
     mut failures: Vec<(String, String)>,
-    frozen: &mut HashSet<u32>,
+    cards: &mut Cards,
 ) -> (Result<Option<Chosen>>, bool) {
     let mut next = planned;
     let mut as_planned = true;
@@ -400,9 +501,9 @@ fn run_sink(
         };
         let target = &candidates[index];
         if let Plan::SwitchProfile(sw) = &plan {
-            frozen.insert(sw.device_id);
+            cards.switched.insert(sw.device_id);
         }
-        match execute(backend, clock, policy, Endpoint::Sink, plan, target) {
+        match execute(backend, clock, policy, Endpoint::Sink, plan, target, cards) {
             Ok(activation) => return (Ok(Some(Chosen { index, activation })), as_planned),
             Err(e) => {
                 as_planned = false;
@@ -448,7 +549,7 @@ fn run_source(
     candidates: &[String],
     (planned, mut failures): PlannedSource,
     sink_side: Option<&SinkSide>,
-    frozen: &mut HashSet<u32>,
+    cards: &mut Cards,
 ) -> Result<Option<Chosen>> {
     let mut next = planned;
     loop {
@@ -458,20 +559,33 @@ fn run_source(
         let target = &candidates[index];
         let result = match step {
             SourceStep::WithSinkSwitch(switch) => {
-                // The sink's half switched the card already
-                wait_for_node(backend, clock, policy, &switch, target).and_then(|node_name| {
-                    backend.set_default(Endpoint::Source, &node_name)?;
-                    Ok(Activation {
-                        node_name,
-                        profile_switch: Some(switch),
+                // The sink's half switched the card already (and succeeded: the
+                // switch is not undone for the source)
+                wait_for_node(backend, clock, policy, &switch)
+                    .map_err(|timeout| {
+                        anyhow::anyhow!("{}", timeout.message(&switch, target, policy, None))
                     })
-                })
+                    .and_then(|node_name| {
+                        backend.set_default(Endpoint::Source, &node_name)?;
+                        Ok(Activation {
+                            node_name,
+                            profile_switch: Some(switch),
+                        })
+                    })
             }
             SourceStep::Plan(plan) => {
                 if let Plan::SwitchProfile(sw) = &plan {
-                    frozen.insert(sw.device_id);
+                    cards.switched.insert(sw.device_id);
                 }
-                execute(backend, clock, policy, Endpoint::Source, plan, target)
+                execute(
+                    backend,
+                    clock,
+                    policy,
+                    Endpoint::Source,
+                    plan,
+                    target,
+                    cards,
+                )
             }
         };
         match result {
@@ -488,8 +602,13 @@ fn run_source(
                 let snapshot = backend
                     .snapshot()
                     .map_err(|e| anyhow::anyhow!("after activating '{target}' failed: {e:#}"))?;
-                let again =
-                    resolve::plan_joint(&snapshot, &[], &candidates[rest..], sink_side, frozen);
+                let again = resolve::plan_joint(
+                    &snapshot,
+                    &[],
+                    &candidates[rest..],
+                    sink_side,
+                    &cards.switched,
+                );
                 failures.extend(again.source_skipped);
                 next = again.source.map(|(i, step)| (rest + i, step));
             }
@@ -498,6 +617,10 @@ fn run_source(
 }
 
 /// Carry out a resolved plan for `target` (a sink or a source).
+///
+/// A profile switch whose node does not appear in time is undone (the card is
+/// switched back to its previous profile, recorded in `cards`), so a failed switch
+/// leaves the audio where it was; when that is not possible the error says so.
 fn execute(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
@@ -505,6 +628,7 @@ fn execute(
     kind: Endpoint,
     plan: Plan,
     target: &str,
+    cards: &mut Cards,
 ) -> Result<Activation> {
     let switch = match plan {
         Plan::SetDefault { node_name } => {
@@ -523,7 +647,16 @@ fn execute(
     );
     backend.set_profile(switch.device_id, switch.profile_index)?;
 
-    let node_name = wait_for_node(backend, clock, policy, &switch, target)?;
+    let node_name = match wait_for_node(backend, clock, policy, &switch) {
+        Ok(node_name) => node_name,
+        Err(timeout) => {
+            let undone = switch_back(backend, &switch, target, policy, cards);
+            anyhow::bail!(
+                "{}",
+                timeout.message(&switch, target, policy, Some(&undone))
+            );
+        }
+    };
     if node_name != target {
         info!("{} '{}' appeared as '{}'", kind.title(), target, node_name);
     }
@@ -534,14 +667,96 @@ fn execute(
     })
 }
 
-/// Poll snapshots until the switch's sink node appears or the deadline passes.
+/// Switch the card of a timed-out `switch` back to its previous profile (best
+/// effort); returns what happened, for the error message
+fn switch_back(
+    backend: &dyn AudioBackend,
+    switch: &ProfileSwitch,
+    target: &str,
+    policy: WaitPolicy,
+    cards: &mut Cards,
+) -> String {
+    let Some(previous) = &switch.previous else {
+        return format!(
+            "its previous profile is unknown, so the card stays on '{}'",
+            switch.profile_name
+        );
+    };
+    if previous.index == switch.profile_index {
+        return "the card was on that profile already".to_string();
+    }
+    if !previous.available {
+        return format!(
+            "its previous profile '{}' is not available, so the card stays on '{}'",
+            previous.name, switch.profile_name
+        );
+    }
+    match backend.set_profile(switch.device_id, previous.index) {
+        Ok(()) => {
+            cards.restored.insert(switch.device_id);
+            warn!(
+                "Switched {} back to profile {}: the {} for '{}' did not appear within {} ms",
+                switch.device_name,
+                previous.name,
+                switch.kind.noun(),
+                target,
+                policy.timeout.as_millis()
+            );
+            format!(
+                "switched it back to profile '{}', so the audio stays where it was",
+                previous.name
+            )
+        }
+        Err(e) => format!(
+            "switching it back to profile '{}' failed ({e:#}), so the card stays on '{}'",
+            previous.name, switch.profile_name
+        ),
+    }
+}
+
+/// The node of a profile switch did not appear in time
+#[derive(Debug)]
+struct WaitTimeout {
+    /// The last `pw-dump` error while waiting, if any
+    last_error: Option<String>,
+}
+
+impl WaitTimeout {
+    /// The error message (one line), with what was done about the switch (`undone`)
+    fn message(
+        &self,
+        switch: &ProfileSwitch,
+        target: &str,
+        policy: WaitPolicy,
+        undone: Option<&str>,
+    ) -> String {
+        let undone = undone.map_or_else(String::new, |u| format!("; {u}"));
+        let cause = self
+            .last_error
+            .as_ref()
+            .map_or_else(String::new, |e| format!(" (last pw-dump error: {e})"));
+        format!(
+            "Switched {} to profile '{}' but its {} for '{}' did not appear within {} ms{undone}. \
+             The device may need more time (raise PROFILE_SWITCH_DELAY_MS / \
+             PROFILE_SWITCH_MAX_RETRIES; the wait is capped at {} ms), or the port may have no \
+             hardware behind it (check `pwsw list-sinks`){cause}",
+            switch.device_name,
+            switch.profile_name,
+            switch.kind.noun(),
+            target,
+            policy.timeout.as_millis(),
+            MAX_TOTAL_WAIT_MS,
+        )
+    }
+}
+
+/// Poll snapshots until the switch's node appears or the deadline passes.
 fn wait_for_node(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
     policy: WaitPolicy,
     switch: &ProfileSwitch,
-    target: &str,
-) -> Result<String> {
+) -> Result<String, WaitTimeout> {
     let start = clock.now();
     let mut polls = 0u32;
     let mut last_error = None;
@@ -566,32 +781,18 @@ fn wait_for_node(
                     return Ok(node.name.clone());
                 }
                 debug!(
-                    "Waiting for {} '{}' (poll {})",
+                    "Waiting for the {} of {} (poll {polls})",
                     switch.kind.noun(),
-                    target,
-                    polls
+                    switch.mapping
                 );
             }
             Err(e) => {
-                debug!("pw-dump failed while waiting for '{}': {:#}", target, e);
-                last_error = Some(e);
+                debug!("pw-dump failed while waiting for {}: {e:#}", switch.mapping);
+                last_error = Some(format!("{e:#}"));
             }
         }
     }
-
-    let cause = last_error.map_or_else(String::new, |e| format!("\nLast pw-dump error: {e:#}"));
-    anyhow::bail!(
-        "Switched {} to profile '{}' but its {} for '{}' did not appear within {} ms.\n\
-         The device may need more time (raise PROFILE_SWITCH_DELAY_MS / \
-         PROFILE_SWITCH_MAX_RETRIES; total wait is capped at {} ms), or the port may \
-         have no hardware behind it. Check `pwsw list-sinks`.{cause}",
-        switch.device_name,
-        switch.profile_name,
-        switch.kind.noun(),
-        target,
-        policy.timeout.as_millis(),
-        MAX_TOTAL_WAIT_MS,
-    )
+    Err(WaitTimeout { last_error })
 }
 
 #[cfg(test)]
@@ -628,6 +829,10 @@ mod tests {
         never_appears_source: Option<&'static str>,
         pending: RefCell<Vec<(Endpoint, Node, usize)>>,
         calls: RefCell<Vec<Call>>,
+        /// Fail this many snapshots from now on (like a `pw-dump` that timed out)
+        failing_snapshots: Cell<usize>,
+        /// Switching a device to this profile index fails
+        failing_profile: Option<u32>,
     }
 
     impl FakeBackend {
@@ -644,7 +849,19 @@ mod tests {
                 never_appears_source: None,
                 pending: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
+                failing_snapshots: Cell::new(0),
+                failing_profile: None,
             }
+        }
+
+        /// Set the configured default, as `pavucontrol` would
+        fn set_configured(&self, kind: Endpoint, name: &str) {
+            let mut state = self.state.borrow_mut();
+            let defaults = match kind {
+                Endpoint::Sink => &mut state.defaults,
+                Endpoint::Source => &mut state.source_defaults,
+            };
+            defaults.configured = Some(name.to_string());
         }
 
         fn calls(&self) -> Vec<Call> {
@@ -662,6 +879,10 @@ mod tests {
     impl AudioBackend for FakeBackend {
         fn snapshot(&self) -> Result<Snapshot> {
             self.calls.borrow_mut().push(Call::Snapshot);
+            if self.failing_snapshots.get() > 0 {
+                self.failing_snapshots.set(self.failing_snapshots.get() - 1);
+                anyhow::bail!("`pw-dump` did not finish within 5000 ms and was killed");
+            }
             let mut pending = self.pending.borrow_mut();
             let mut state = self.state.borrow_mut();
             pending.retain_mut(|(kind, node, left)| {
@@ -696,6 +917,9 @@ mod tests {
             self.calls
                 .borrow_mut()
                 .push(Call::SetProfile(device_id, profile_index));
+            if self.failing_profile == Some(profile_index) {
+                anyhow::bail!("pw-cli: set-param failed");
+            }
             let mut state = self.state.borrow_mut();
             state.sinks.retain(|s| s.device_id != Some(device_id));
             state.sources.retain(|s| s.device_id != Some(device_id));
@@ -952,6 +1176,7 @@ mod tests {
     fn test_activate_first_upgrade_only_acts_for_a_better_candidate() {
         // Candidate 1 is the current default; candidate 0 is still unreachable
         let backend = FakeBackend::new(Some(0));
+        backend.set_configured(Endpoint::Sink, IEC);
         let chosen = activate_first(
             &backend,
             &FakeClock::new(),
@@ -965,6 +1190,7 @@ mod tests {
 
         // Now candidate 0 is reachable: it is activated
         let backend = FakeBackend::new(Some(0));
+        backend.set_configured(Endpoint::Sink, "bluez_output.gone");
         let chosen = activate_first(
             &backend,
             &FakeClock::new(),
@@ -1221,11 +1447,199 @@ mod tests {
         );
     }
 
-    #[test_case(None, None, 150, 1_500 ; "unset")]
+    /// B1: a `pw-dump` failure before anything was switched fails the sink half, but
+    /// leaves a microphone riding along untouched (`Ok(None)`): nothing was switched,
+    /// so the source is where it was and pwsw must not forget it
+    #[test]
+    fn test_keep_is_untouched_when_the_snapshot_fails() {
+        let backend = FakeBackend::new(Some(0));
+        backend.failing_snapshots.set(1);
+        let (sink, source) = joint_keep(&backend, &[ANALOG], &[IN_ANALOG]);
+        let err = sink.expect("asked").expect_err("the sink fails");
+        assert!(format!("{err:#}").contains("pw-dump"), "{err:#}");
+        assert!(matches!(source, Some(Ok(None))), "{source:?}");
+        assert_eq!(backend.calls(), vec![Call::Snapshot], "nothing touched");
+
+        // A plain source half (its own job) still reports the failure
+        let backend = FakeBackend::new(Some(0));
+        backend.failing_snapshots.set(1);
+        let (_, source) = joint(&backend, &[ANALOG], &[IN_ANALOG]);
+        assert!(matches!(source, Some(Err(_))), "{source:?}");
+    }
+
+    /// B2: an upgrade check whose fallback is no longer the configured default (the
+    /// user picked another one in `pavucontrol`) touches nothing and reports what the
+    /// default is now, even though a better candidate is reachable
+    #[test]
+    fn test_upgrade_is_skipped_when_the_default_was_changed_elsewhere() {
+        let backend = FakeBackend::new(Some(0));
+        // The fallback `ANALOG` was applied, the user chose the digital output since
+        backend.set_configured(Endpoint::Sink, IEC);
+        let candidates = names(&["bluez_output.back", ANALOG]);
+        backend.state.borrow_mut().sinks.push(Node {
+            id: 900,
+            name: "bluez_output.back".to_string(),
+            description: String::new(),
+            device_id: None,
+            profile_name: None,
+            card_profile_device: None,
+        });
+        let outcome = activate_joint(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(Request {
+                candidates: &candidates,
+                upgrade_from: Some(1),
+                keep: false,
+            }),
+            None,
+        );
+        assert!(matches!(outcome.sink, Some(Ok(None))), "{:?}", outcome.sink);
+        assert_eq!(outcome.elsewhere, [Some(IEC.to_string()), None]);
+        assert_eq!(backend.calls(), vec![Call::Snapshot], "nothing touched");
+
+        // Still on the fallback (by name): the upgrade goes ahead
+        backend.set_configured(Endpoint::Sink, ANALOG);
+        let outcome = activate_joint(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(Request {
+                candidates: &candidates,
+                upgrade_from: Some(1),
+                keep: false,
+            }),
+            None,
+        );
+        assert_eq!(outcome.elsewhere, [None, None]);
+        assert_eq!(chosen(outcome.sink).index, 0);
+    }
+
+    /// B2: a fallback activated under another node name (renamed by `WirePlumber`) is
+    /// still recognised as the configured default
+    #[test]
+    fn test_upgrade_recognises_a_renamed_fallback_as_the_default() {
+        let backend = FakeBackend::new(Some(0));
+        // The digital output is active as `IEC`; pretend `WirePlumber` renamed it
+        backend.state.borrow_mut().sinks[0].name = "renamed.digital".to_string();
+        backend.set_configured(Endpoint::Sink, "renamed.digital");
+        let candidates = names(&["bluez_output.gone", IEC]);
+        let outcome = activate_joint(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(Request {
+                candidates: &candidates,
+                upgrade_from: Some(1),
+                keep: false,
+            }),
+            None,
+        );
+        assert!(matches!(outcome.sink, Some(Ok(None))), "{:?}", outcome.sink);
+        assert_eq!(outcome.elsewhere, [None, None], "not changed elsewhere");
+    }
+
+    /// B3: the default wait (20 polls of 150 ms) covers a card that needs 2.5 s
+    #[test]
+    fn test_default_wait_covers_a_slow_card() {
+        let policy = WaitPolicy::from_values(None, None);
+        assert_eq!(policy.timeout, Duration::from_secs(3));
+        // The node appears on the 17th poll (2.55 s)
+        let backend = FakeBackend::new(Some(16));
+        let act = activate(&backend, &FakeClock::new(), policy, ANALOG).expect("activates");
+        assert_eq!(act.node_name, ANALOG);
+    }
+
+    /// B3: a switch whose node does not appear in time is undone: the card goes back
+    /// to its previous profile (so the old node comes back), nothing is set as
+    /// default, and the error (one line) says so
+    #[test]
+    fn test_timed_out_switch_is_switched_back() {
+        let backend = FakeBackend::new(Some(50));
+        let err = activate(&backend, &FakeClock::new(), POLICY, ANALOG).expect_err("times out");
+        let text = format!("{err:#}");
+        assert!(text.contains("did not appear within 1000 ms"), "{text}");
+        assert!(
+            text.contains("switched it back to profile 'output:iec958-stereo'"),
+            "{text}"
+        );
+        assert!(!text.contains('\n'), "one line: {text:?}");
+        assert_eq!(
+            backend.switches(),
+            vec![Call::SetProfile(43, 1), Call::SetProfile(43, 4)],
+            "switched to the duplex profile, then back to the digital one"
+        );
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetDefault(_))),
+            "the configured default is left alone"
+        );
+    }
+
+    /// B3: when the previous profile cannot be switched back to, the card is left and
+    /// the error says so
+    #[test_case(true, false, "is not available, so the card stays on" ; "previous unavailable")]
+    #[test_case(false, true, "failed (pw-cli: set-param failed), so the card stays on" ; "switch back fails")]
+    fn test_timed_out_switch_that_cannot_be_undone_says_so(
+        unavailable: bool,
+        fails: bool,
+        expected: &str,
+    ) {
+        let mut backend = FakeBackend::new(Some(50));
+        if unavailable {
+            let mut state = backend.state.borrow_mut();
+            let device = state.devices.iter_mut().find(|d| d.id == 43).expect("card");
+            let previous = device
+                .profiles
+                .iter_mut()
+                .find(|p| p.index == 4)
+                .expect("active profile");
+            previous.available = crate::pipewire::model::Availability::No;
+        }
+        if fails {
+            backend.failing_profile = Some(4);
+        }
+        let err = activate(&backend, &FakeClock::new(), POLICY, ANALOG).expect_err("times out");
+        let text = format!("{err:#}");
+        assert!(text.contains(expected), "{text}");
+        let expected_switches = if fails {
+            vec![Call::SetProfile(43, 1), Call::SetProfile(43, 4)]
+        } else {
+            vec![Call::SetProfile(43, 1)]
+        };
+        assert_eq!(backend.switches(), expected_switches);
+    }
+
+    /// B3/B1: the sink's switch on the microphone's card timed out and was undone:
+    /// the microphone riding along is reported untouched (not lost), and no second
+    /// switch is made for it
+    #[test]
+    fn test_keep_is_untouched_when_the_sink_switch_was_undone() {
+        let backend = FakeBackend::new(Some(50));
+        let (sink, source) = joint_keep(&backend, &[ANALOG], &[IN_ANALOG]);
+        let err = sink.expect("asked").expect_err("the sink times out");
+        assert!(format!("{err:#}").contains("switched it back"), "{err:#}");
+        assert!(matches!(source, Some(Ok(None))), "{source:?}");
+        assert_eq!(backend.switches(), vec![
+            Call::SetProfile(43, 1),
+            Call::SetProfile(43, 4)
+        ]);
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetSource(_)))
+        );
+    }
+
+    #[test_case(None, None, 150, 3_000 ; "unset")]
     #[test_case(Some("200"), Some("10"), 200, 2_000 ; "custom")]
     #[test_case(Some("1000"), Some("100"), 1_000, 5_000 ; "total_capped")]
     #[test_case(Some("999999999"), Some("999999999"), 1_000, 5_000 ; "extreme")]
-    #[test_case(Some("x"), Some("-1"), 150, 1_500 ; "invalid")]
+    #[test_case(Some("x"), Some("-1"), 150, 3_000 ; "invalid")]
     #[test_case(Some("0"), Some("0"), 10, 10 ; "tiny")]
     fn test_wait_policy_from_values(
         delay: Option<&str>,

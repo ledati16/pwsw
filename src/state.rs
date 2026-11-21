@@ -11,8 +11,9 @@
 //! the desired candidates with what it last activated (see `daemon`).
 //!
 //! Ordering is deterministic: every window carries a sequence number from a monotonic
-//! counter, assigned when it opens and renewed when it starts matching a rule (after a
-//! title change, or a move to a monitor an `output` rule names), so the "most recent"
+//! counter, assigned when it opens and renewed when it starts matching a rule, or a
+//! different rule than before (after a title change, or a move to a monitor an
+//! `output` rule names), so the "most recent"
 //! window is never decided by clock resolution or `HashMap` order.
 //!
 //! Rules match a window's `app_id`, title and, for `output` rules, the monitors it is on
@@ -68,10 +69,15 @@ struct Window {
     outputs: Vec<String>,
     /// The compositor's minimized flag (from `Opened`, then `Placement`)
     minimized: bool,
-    /// Priority ordering: assigned on open, renewed when the window starts matching
+    /// Priority ordering: assigned on open, renewed when the window starts matching a
+    /// rule (or a different rule than before)
     seq: u64,
     /// The rule this window currently matches, if any
     matched: Option<Match>,
+    /// The rule this window last left (stopped matching, or moved from to another
+    /// rule), as logged at info: coming back to it is logged at debug only, so a title
+    /// that flickers logs one info line per flicker, not two
+    last_rule: Option<usize>,
 }
 
 /// A window's current rule match
@@ -447,6 +453,7 @@ impl State {
             minimized,
             seq,
             matched: None,
+            last_rule: None,
         };
         window.matched = match_window(&self.config, &window);
         if let Some(m) = &window.matched {
@@ -479,18 +486,32 @@ impl State {
         })
     }
 
-    /// Apply `change` to the known window `id` and re-match it: starting to match counts
-    /// as the most recent activity (a new sequence number); keeping its rule keeps the
+    /// Apply `change` to the known window `id` and re-match it: starting to match a
+    /// rule (also a different rule than before, e.g. after a title change) counts as
+    /// the most recent activity (a new sequence number); keeping its rule keeps the
     /// trigger text from when the rule first matched
     fn refresh(&mut self, id: u64, change: impl FnOnce(&mut Window)) -> Option<Departure> {
         let window = self.windows.get_mut(&id)?;
         let previous = window.matched.take();
+        let before = window.clone();
         change(window);
         let window = self.windows.get(&id)?;
         let matched = match_window(&self.config, window);
 
         let mut renew = false;
+        let mut left = None;
         let departure = match (&previous, &matched) {
+            // Back to the rule it just left (e.g. a flickering title): leaving was
+            // logged, and a switch it causes is logged by the loop
+            (None, Some(m)) if window.last_rule == Some(m.rule_index) => {
+                debug!(
+                    "Rule matched again: {} → {}",
+                    window_label(id, window),
+                    self.targets_desc(m.rule_index)
+                );
+                renew = true;
+                None
+            }
             (None, Some(m)) => {
                 info!(
                     "Rule matched: {} → {}",
@@ -502,12 +523,12 @@ impl State {
             }
             (Some(old), None) => {
                 info!(
-                    "Rule unmatched: {} no longer matches (was: '{}', now: outputs=[{}]{})",
+                    "Rule unmatched: {} no longer matches (was: '{}'{})",
                     window_label(id, window),
                     for_log(&old.trigger),
-                    for_log(&window.outputs.join(", ")),
-                    if window.minimized { " minimized" } else { "" }
+                    what_changed(&before, window)
                 );
+                left = Some(old.rule_index);
                 Some(Departure {
                     trigger: old.trigger.clone(),
                     notify: self.rule_notify(old.rule_index),
@@ -515,10 +536,23 @@ impl State {
                 })
             }
             (Some(old), Some(new)) if old.rule_index != new.rule_index => {
-                debug!(
-                    "Rule changed for window {}: rule {} → rule {}",
-                    id, old.rule_index, new.rule_index
-                );
+                if window.last_rule == Some(new.rule_index) {
+                    debug!(
+                        "Rule matched again: {} → {}",
+                        window_label(id, window),
+                        self.targets_desc(new.rule_index)
+                    );
+                } else {
+                    info!(
+                        "Rule matched: {} → {} (another rule than before, → {}{})",
+                        window_label(id, window),
+                        self.targets_desc(new.rule_index),
+                        self.targets_desc(old.rule_index),
+                        what_changed(&before, window)
+                    );
+                    left = Some(old.rule_index);
+                }
+                renew = true;
                 None
             }
             _ => None,
@@ -528,6 +562,9 @@ impl State {
         if let Some(w) = self.windows.get_mut(&id) {
             if let Some(seq) = seq {
                 w.seq = seq;
+            }
+            if left.is_some() {
+                w.last_rule = left;
             }
             w.matched = match (previous, matched) {
                 (Some(old), Some(new)) if old.rule_index == new.rule_index => Some(old),
@@ -540,11 +577,14 @@ impl State {
     fn close(&mut self, id: u64) -> Option<Departure> {
         let mut window = self.windows.remove(&id)?;
         let matched = window.matched.take()?;
-        info!(
-            "Tracked window closed: {} (was: '{}')",
-            window_label(id, &window),
-            for_log(&matched.trigger)
-        );
+        // The trigger is the rule's `desc`, or the title when the rule matched: named
+        // only when it adds something to the label
+        let was = if matched.trigger == window.title {
+            String::new()
+        } else {
+            format!(" (was: '{}')", for_log(&matched.trigger))
+        };
+        info!("Tracked window closed: {}{was}", window_label(id, &window));
         Some(Departure {
             notify: self.rule_notify(matched.rule_index),
             trigger: matched.trigger,
@@ -690,6 +730,40 @@ fn match_window(config: &Config, window: &Window) -> Option<Match> {
     .map(|(rule_index, rule)| Match {
         rule_index,
         trigger: rule.desc.clone().unwrap_or_else(|| window.title.clone()),
+    })
+}
+
+/// What changed between two states of a window, for a rule log line (`; title
+/// changed`, `; now on DP-1`, `; now minimized`); empty when nothing it shows did
+fn what_changed(before: &Window, now: &Window) -> String {
+    let mut parts = Vec::new();
+    if before.app_id != now.app_id {
+        parts.push("app_id changed".to_string());
+    }
+    if before.title != now.title {
+        parts.push("title changed".to_string());
+    }
+    if before.outputs != now.outputs {
+        parts.push(if now.outputs.is_empty() {
+            "now on no monitor".to_string()
+        } else {
+            format!("now on {}", for_log(&now.outputs.join(", ")))
+        });
+    }
+    if before.minimized != now.minimized {
+        parts.push(
+            if now.minimized {
+                "now minimized"
+            } else {
+                "now restored"
+            }
+            .to_string(),
+        );
+    }
+    parts.iter().fold(String::new(), |mut out, p| {
+        out.push_str("; ");
+        out.push_str(p);
+        out
     })
 }
 
@@ -946,6 +1020,38 @@ mod tests {
             Some("Music"),
             "a different rule takes the trigger from the window as it is now"
         );
+    }
+
+    /// B4: a window that starts matching a *different* rule (its title changed) is the
+    /// most recent activity, ahead of a window that started matching before that
+    #[test]
+    fn test_moving_to_another_rule_renews_priority() {
+        let config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("hdmi", "HDMI", false),
+                make_sink("headphones", "Headphones", false),
+                make_sink("usb", "USB", false),
+            ],
+            vec![
+                make_rule("firefox", Some("YouTube"), "hdmi"),
+                make_rule("firefox", None, "headphones"),
+                make_rule("^steam$", None, "usb"),
+            ],
+        );
+        let mut s = state(config);
+        s.apply(opened(1, "firefox", "New Tab"));
+        s.apply(opened(2, "steam", "Steam"));
+        assert_eq!(s.desired_sink().name, "usb");
+        assert_eq!(s.apply(changed(1, "firefox", "Cats - YouTube")), None);
+        let desired = s.desired();
+        assert_eq!(desired.first().name, "hdmi", "the moved window wins");
+        assert_eq!(desired.window.map(|w| w.id), Some(1));
+
+        // Back to its first rule: again the most recent
+        s.apply(changed(2, "steam", "Steam - Library"));
+        s.apply(changed(1, "firefox", "New Tab"));
+        assert_eq!(s.desired_sink().name, "headphones");
     }
 
     /// While a window keeps matching the same rule, title changes neither renew its

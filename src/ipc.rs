@@ -155,6 +155,11 @@ pub enum Response {
         desc: String,
         /// `PipeWire` node name that was made the default
         node_name: String,
+        /// Smart toggle: the requested sink (source) was the default already, so the
+        /// default one was activated instead; its description (absent otherwise, and
+        /// from older daemons)
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        toggled_from: Option<String>,
     },
     /// Answer to [`Request::Pause`], [`Request::Resume`] and [`Request::TogglePause`]
     PauseState {
@@ -252,6 +257,11 @@ pub struct TrackedInfo {
     /// rule has no `source` (absent from older daemons)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<FallbackSink>,
+    /// For the window deciding the daemon's sink: the fallback it settled for, when
+    /// that is what plays instead of `sink_name` (absent otherwise, and from older
+    /// daemons)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_in_use: Option<FallbackSink>,
 }
 
 /// A configured sink (or source) a rule names: a fallback sink, or one of its sources
@@ -1786,6 +1796,10 @@ mod tests {
                     name: "mic".to_string(),
                     desc: "Mic".to_string(),
                 }],
+                fallback_in_use: Some(FallbackSink {
+                    name: "speakers".to_string(),
+                    desc: "Speakers".to_string(),
+                }),
             }),
         };
         let response = Response::Windows {
@@ -1802,6 +1816,10 @@ mod tests {
             let tracked = windows[0].tracked.as_ref().expect("tracked");
             assert_eq!(tracked.fallbacks[0].desc, "Speakers");
             assert_eq!(tracked.sources[0].desc, "Mic");
+            assert_eq!(
+                tracked.fallback_in_use.as_ref().map(|f| f.desc.as_str()),
+                Some("Speakers")
+            );
         } else {
             panic!("Expected Windows variant");
         }
@@ -1813,7 +1831,9 @@ mod tests {
         let tracked: TrackedInfo =
             serde_json::from_str(r#"{"sink_name":"a","sink_desc":"A"}"#).expect("deserialize");
         assert_eq!(tracked.fallbacks, []);
+        assert_eq!(tracked.fallback_in_use, None);
         let json = serde_json::to_string(&tracked).expect("serialize");
         assert!(!json.contains("fallbacks"), "{json}");
+        assert!(!json.contains("fallback_in_use"), "{json}");
     }
 }

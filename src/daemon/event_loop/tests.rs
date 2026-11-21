@@ -24,6 +24,7 @@ use crate::compositor::detected_capabilities;
 use crate::daemon::ipc_handler::{ServerInfo, handle_connection};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::Request;
+use crate::pipewire::Activated;
 use crate::test_utils::fixtures::{
     make_config, make_rule, make_rule_with_fallbacks, make_sink, with_output, with_sources,
 };
@@ -191,7 +192,7 @@ impl FakeSwitcher {
         kind: Endpoint,
         candidates: &[String],
         upgrade_from: Option<usize>,
-    ) -> Result<Option<(usize, String)>> {
+    ) -> worker::HalfResult {
         let absent = self.absent.lock().expect("lock").clone();
         let reachable = |c: &String| !absent.contains(c);
         if upgrade_from.is_some() {
@@ -208,12 +209,23 @@ impl FakeSwitcher {
                 anyhow::bail!("fake failure: pw-dump timed out");
             }
         }
-        if let Some(rank) = upgrade_from
-            && !candidates[..rank.min(candidates.len())]
+        if let Some(rank) = upgrade_from {
+            // Like the real check: a default chosen elsewhere since is not upgraded
+            let current = match kind {
+                Endpoint::Sink => self.current.lock().expect("lock").clone(),
+                Endpoint::Source => self.current_source.lock().expect("lock").clone(),
+            };
+            if let Some(current) = current
+                && candidates.get(rank) != Some(&current)
+            {
+                return Ok(Activated::Elsewhere(current));
+            }
+            if !candidates[..rank.min(candidates.len())]
                 .iter()
                 .any(reachable)
-        {
-            return Ok(None);
+            {
+                return Ok(Activated::Unchanged);
+            }
         }
         let mut errors = Vec::new();
         for (index, candidate) in candidates.iter().enumerate() {
@@ -222,7 +234,7 @@ impl FakeSwitcher {
                 continue;
             }
             match self.activate_one(kind, candidate) {
-                Ok(node) => return Ok(Some((index, node))),
+                Ok(node_name) => return Ok(Activated::Switched { index, node_name }),
                 Err(e) => errors.push(format!("{e:#}")),
             }
         }
@@ -233,12 +245,15 @@ impl FakeSwitcher {
     fn keep_half(&self, candidates: &[String]) -> worker::HalfResult {
         self.keeps.lock().expect("lock").push(candidates.to_vec());
         match self.keep_answer.lock().expect("lock").clone() {
-            None => Ok(None),
+            None => Ok(Activated::Unchanged),
             Some(Ok(())) => {
                 let first = &candidates[0];
                 self.source_calls.lock().expect("lock").push(first.clone());
                 *self.current_source.lock().expect("lock") = Some(first.clone());
-                Ok(Some((0, format!("node.{first}"))))
+                Ok(Activated::Switched {
+                    index: 0,
+                    node_name: format!("node.{first}"),
+                })
             }
             Some(Err(message)) => {
                 *self.current_source.lock().expect("lock") = None;
@@ -851,6 +866,14 @@ async fn test_unreachable_first_choice_falls_back_and_says_so() {
         desc: "HDMI".to_string(),
     }]);
     assert_eq!(
+        tracked.fallback_in_use,
+        Some(FallbackSink {
+            name: "hdmi".to_string(),
+            desc: "HDMI".to_string(),
+        }),
+        "the deciding window says which fallback plays"
+    );
+    assert_eq!(
         h.next_notice().await.body,
         "HDMI (fallback) → firefox window"
     );
@@ -1061,6 +1084,44 @@ async fn test_manual_choice_is_not_upgraded_away() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// B2: a sink picked outside pwsw (e.g. `pavucontrol`) while a fallback is applied
+/// stays when the first choice comes back: the upgrade check sees the real default
+/// is not the fallback any more and switches nothing, and no later check fights it
+#[tokio::test(start_paused = true)]
+async fn test_fallback_changed_outside_pwsw_is_not_upgraded_away() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+
+    // The user picks USB in `pavucontrol`, then the headphones come back
+    h.switcher.set_current("usb");
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_applied("usb").await;
+    assert!(!snapshot.fallback);
+    assert_eq!(h.requests()[1], (names(&["headphones", "hdmi"]), Some(1)));
+    assert_eq!(h.calls(), vec!["hdmi"], "nothing switched");
+    assert_eq!(
+        snapshot.active_window, None,
+        "the applied sink is not what the rule wants"
+    );
+
+    // The choice holds: no further upgrade checks
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(3, "zsh").await;
+    let snapshot = h.wait_windows(3).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "the switch and one check");
+    assert_eq!(snapshot.applied.as_deref(), Some("usb"));
+
+    // Until the rules' answer changes
+    h.close(1).await;
+    h.wait_applied("speakers").await;
+    h.stop().await.expect("clean shutdown");
+}
+
 /// A fallback is the rules' answer too: a reload that keeps the list does not switch
 #[tokio::test(start_paused = true)]
 async fn test_fallback_list_is_the_desired_answer_on_reload() {
@@ -1141,7 +1202,10 @@ async fn test_set_sink_updates_applied_and_holds_until_rule_change() {
     let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
 
     let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
-    let Response::SinkSwitched { desc, node_name } = response else {
+    let Response::SinkSwitched {
+        desc, node_name, ..
+    } = response
+    else {
         panic!("expected SinkSwitched, got {response:?}");
     };
     assert_eq!((desc.as_str(), node_name.as_str()), ("HDMI", "node.hdmi"));
@@ -1305,8 +1369,9 @@ async fn test_smart_toggle_uses_real_default() {
     h.switcher.set_current("hdmi"); // changed outside pwsw
     let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
     assert!(
-        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "Speakers"),
-        "toggles back to the default: {response:?}"
+        matches!(&response, Response::SinkSwitched { desc, toggled_from, .. }
+            if desc == "Speakers" && toggled_from.as_deref() == Some("HDMI")),
+        "toggles back to the default, and says so: {response:?}"
     );
     assert_eq!(h.calls(), vec!["speakers"]);
 
@@ -2475,7 +2540,7 @@ async fn test_manual_set_source_holds_until_the_source_answer_changes() {
         .switch(ManualSwitch::SetSource("Arctis Mic".to_string()))
         .await;
     assert!(
-        matches!(&response, Response::SinkSwitched { desc, node_name }
+        matches!(&response, Response::SinkSwitched { desc, node_name, .. }
             if desc == "Arctis Mic" && node_name == "node.mic.arctis"),
         "{response:?}"
     );
@@ -2826,8 +2891,38 @@ async fn test_reload_adding_output_rules_on_ext_warns() {
             warns,
             "{compositor:?}: {text}"
         );
+        // The notification does not claim the new rules simply work
+        let reloaded = h
+            .notices()
+            .into_iter()
+            .find(|n| n.summary == "Configuration Reloaded")
+            .expect("reload notification");
+        assert_eq!(
+            reloaded.body.contains("restarted"),
+            warns,
+            "{compositor:?}: {}",
+            reloaded.body
+        );
         h.stop().await.expect("clean shutdown");
     }
+}
+
+/// The "Reload Failed" notification is one line: where the error is, and where to
+/// read it in full
+#[test]
+fn test_reload_failed_body() {
+    let parse = "Failed to parse config: /home/u/.config/pwsw/config.toml\nTOML parse error \
+                 at line 64, column 9\n   |\n64 | [[rules]\n   |         ^\nunclosed array \
+                 table, expected `]`\n";
+    assert_eq!(
+        reload_failed_body(parse),
+        "Failed to parse config: /home/u/.config/pwsw/config.toml: TOML parse error at line \
+         64, column 9 - run pwsw validate for details"
+    );
+    assert_eq!(
+        reload_failed_body("Rule 2 refers to unknown sink 'TV'\nAvailable: 'Speakers'"),
+        "Rule 2 refers to unknown sink 'TV' - run pwsw validate for details"
+    );
 }
 
 #[test]
@@ -2835,18 +2930,45 @@ fn test_output_rules_warning() {
     let ext_auto = compositor_on(EXT, ProtocolPreference::Auto);
     let ext_only = compositor_on(EXT, ProtocolPreference::PreferWlr);
     let wlr = compositor_on(WLR, ProtocolPreference::PreferWlr);
-    assert_eq!(output_rules_warning(ext_auto, false), None);
-    assert_eq!(output_rules_warning(wlr, true), None);
-    assert_eq!(output_rules_warning(wlr, false), None);
-    let restart = output_rules_warning(ext_auto, true).expect("warns");
-    assert!(restart.contains("restart pwsw"), "{restart}");
-    let never = output_rules_warning(ext_only, true).expect("warns");
+    let direct = Some(DaemonManager::Direct);
+    assert_eq!(output_rules_warning(ext_auto, false, direct), None);
+    assert_eq!(output_rules_warning(wlr, true, direct), None);
+    assert_eq!(output_rules_warning(wlr, false, direct), None);
+
+    // The restart hint fits how the daemon runs
+    let restart = output_rules_warning(ext_auto, true, direct).expect("warns");
+    assert!(restart.log.contains("restart pwsw"), "{}", restart.log);
     assert!(
-        never.contains("need wlr-foreign-toplevel-management"),
-        "{never}"
+        restart.log.contains("pwsw shutdown, then pwsw daemon"),
+        "{}",
+        restart.log
     );
-    assert!(never.contains("only offers ext"), "{never}");
-    assert!(never.contains("will never match"), "{never}");
+    assert!(!restart.log.contains("systemctl"), "{}", restart.log);
+    assert!(restart.notice.contains("restarted"), "{}", restart.notice);
+    let systemd =
+        output_rules_warning(ext_auto, true, Some(DaemonManager::Systemd)).expect("warns");
+    assert!(
+        systemd.log.contains("systemctl --user restart pwsw"),
+        "{}",
+        systemd.log
+    );
+    assert!(!systemd.log.contains("pwsw shutdown"), "{}", systemd.log);
+    let unknown = output_rules_warning(ext_auto, true, None).expect("warns");
+    assert!(
+        unknown.log.contains("systemctl") && unknown.log.contains("pwsw shutdown"),
+        "{}",
+        unknown.log
+    );
+
+    let never = output_rules_warning(ext_only, true, direct).expect("warns");
+    assert!(
+        never.log.contains("need wlr-foreign-toplevel-management"),
+        "{}",
+        never.log
+    );
+    assert!(never.log.contains("only offers ext"), "{}", never.log);
+    assert!(never.log.contains("will never match"), "{}", never.log);
+    assert!(never.notice.contains("cannot match"), "{}", never.notice);
 }
 
 /// `Status` names the backend and whether monitor info is available

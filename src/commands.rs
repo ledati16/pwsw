@@ -275,6 +275,7 @@ pub enum Direction {
 /// Returns an error if the sink reference is invalid, the daemon reports a failure,
 /// or local sink activation fails.
 pub async fn set_sink(config: &Config, sink_ref: &str) -> Result<()> {
+    warn_positional(config, Endpoint::Sink, sink_ref);
     if ipc::is_daemon_running().await {
         return switch_via_daemon(Request::SetSink {
             sink: sink_ref.to_string(),
@@ -295,6 +296,7 @@ pub async fn set_sink(config: &Config, sink_ref: &str) -> Result<()> {
 /// Returns an error if no sources are configured, the reference names no configured
 /// source, the daemon reports a failure, or local activation fails.
 pub async fn set_source(config: &Config, source_ref: &str) -> Result<()> {
+    warn_positional(config, Endpoint::Source, source_ref);
     if ipc::is_daemon_running().await {
         return switch_via_daemon(Request::SetSource {
             source: source_ref.to_string(),
@@ -331,8 +333,13 @@ pub async fn cycle(config: &Config, direction: Direction) -> Result<()> {
 /// Send a manual switch request to the daemon and print the outcome
 async fn switch_via_daemon(request: Request) -> Result<()> {
     match ipc::send_request(request).await? {
-        Response::SinkSwitched { desc, .. } => {
-            crate::outln!("{} {}", "Switched to:".success(), desc.as_str().bold());
+        Response::SinkSwitched {
+            desc, toggled_from, ..
+        } => {
+            match toggled_from {
+                Some(from) => crate::outln!("{}", toggled_back_line(&from, &desc)),
+                None => crate::outln!("{} {}", "Switched to:".success(), desc.as_str().bold()),
+            }
             Ok(())
         }
         Response::Ok { message } => {
@@ -341,6 +348,51 @@ async fn switch_via_daemon(request: Request) -> Result<()> {
         }
         Response::Error { message } => anyhow::bail!("{message}"),
         other => Err(unexpected_response(&other)),
+    }
+}
+
+/// The line for a smart toggle: `Headset was already active: toggled back to Speakers`
+fn toggled_back_line(from: &str, to: &str) -> String {
+    format!(
+        "{} was already active: {} {}",
+        from.bold(),
+        "toggled back to".success(),
+        to.bold()
+    )
+}
+
+/// The deprecation warning for a `set-sink`/`set-source` reference by position (it
+/// silently means another entry once the list is reordered); `None` for other
+/// references
+fn positional_warning(config: &Config, kind: Endpoint, r: &str) -> Option<String> {
+    let position = r.trim().parse::<usize>().ok()?;
+    let entry = config.endpoints(kind).get(position.checked_sub(1)?)?;
+    let command = match kind {
+        Endpoint::Sink => "set-sink",
+        Endpoint::Source => "set-source",
+    };
+    Some(format!(
+        "{command} {position} refers to a {} by position, which is deprecated (positions \
+         change when entries are reordered); use its description instead: {:?}",
+        kind.human_noun(),
+        entry.desc
+    ))
+}
+
+/// Print the deprecation warning for a positional reference, if it is one (stderr)
+fn warn_positional(config: &Config, kind: Endpoint, r: &str) {
+    if let Some(warning) = positional_warning(config, kind, r) {
+        crate::errln!("{} {warning}", "warning:".warning().to_stderr());
+    }
+}
+
+/// `pwsw <args>` for the config in use (with `--config <path>` when it is not the
+/// default one), for hints
+#[must_use]
+pub fn config_command(args: &str) -> String {
+    match Config::get_config_path() {
+        Ok(path) => crate::config::pwsw_command(&path, args),
+        Err(_) => format!("pwsw {args}"),
     }
 }
 
@@ -378,8 +430,9 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
     }
 
     let probe = Probe::from_snapshot(&PipeWire::dump()?, config);
-    let target = match manual::plan(config, request, &probe) {
-        Ok(ManualTarget::Switch(target)) => target,
+    let (target, toggled_from) = match manual::plan(config, request, &probe) {
+        Ok(ManualTarget::Switch(target)) => (target, None),
+        Ok(ManualTarget::ToggleBack { from, to }) => (to, Some(from)),
         Ok(ManualTarget::Done(message)) => {
             crate::outln!("{message}");
             return Ok(());
@@ -390,11 +443,14 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
     let kind = request.kind();
     info!("Switching to: {}", target.desc);
     PipeWire::activate(kind, &target.name)?;
-    crate::outln!(
-        "{} {}",
-        "Switched to:".success(),
-        target.desc.as_str().bold()
-    );
+    match toggled_from {
+        Some(from) => crate::outln!("{}", toggled_back_line(&from.desc, &target.desc)),
+        None => crate::outln!(
+            "{} {}",
+            "Switched to:".success(),
+            target.desc.as_str().bold()
+        ),
+    }
 
     if config.settings.notify_manual {
         let (title, icon) = match kind {
@@ -603,7 +659,12 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     crate::outln!("{}", "-".repeat(12));
     match &current_sink {
         Some((_, description)) => {
-            crate::outln!("{} {}", "Current:".dim(), description.as_str().bold());
+            crate::outln!(
+                "{} {}{}",
+                "Current:".dim(),
+                description.as_str().bold(),
+                outside_note(description, &daemon, Endpoint::Sink)
+            );
         }
         None => crate::outln!(
             "{} {}",
@@ -614,7 +675,12 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     if sources_configured {
         match &current_source {
             Some((_, description)) => {
-                crate::outln!("{} {}", "Mic:".dim(), description.as_str().bold());
+                crate::outln!(
+                    "{} {}{}",
+                    "Mic:".dim(),
+                    description.as_str().bold(),
+                    outside_note(description, &daemon, Endpoint::Source)
+                );
             }
             None => crate::outln!("{} {}", "Mic:".dim(), "unknown".dim()),
         }
@@ -663,7 +729,12 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             );
         }
         if let Some(rule) = &daemon.active_window {
-            crate::outln!("{} {}", "Active Rule:".dim(), rule.as_str().technical());
+            // It holds the deciding window's title: untrusted text
+            crate::outln!(
+                "{} {}",
+                "Active Rule:".dim(),
+                active_rule_text(rule).technical()
+            );
         }
         if let Some(source) = &daemon.daemon_source {
             let fallback = if daemon.daemon_source_fallback == Some(true) {
@@ -693,6 +764,29 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     }
 
     healthy
+}
+
+/// `pwsw status`'s `Active Rule:` value: the deciding window's trigger (its title when
+/// the rule has no `desc`) escaped and shortened like other window text
+fn active_rule_text(rule: &str) -> String {
+    term(rule).into_owned()
+}
+
+/// ` (changed outside pwsw)` when a running daemon applied another `kind` than the
+/// real `PipeWire` default (`description`); empty otherwise
+fn outside_note(description: &str, daemon: &DaemonStatus, kind: Endpoint) -> String {
+    let applied = match kind {
+        Endpoint::Sink => daemon.daemon_sink.as_deref(),
+        Endpoint::Source => daemon.daemon_source.as_deref(),
+    };
+    if daemon.running
+        && daemon.error.is_none()
+        && applied.is_some_and(|applied| applied != description)
+    {
+        format!(" {}", "(changed outside pwsw)".warning())
+    } else {
+        String::new()
+    }
 }
 
 /// Gracefully shutdown the daemon
@@ -821,7 +915,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                                 "    {} {}: {}",
                                 "→".success(),
                                 "sink".dim(),
-                                track_info.sink_desc.as_str().bold()
+                                rule_sink_text(track_info)
                             );
                             print_fallbacks(track_info, "    ");
                             print_sources(track_info, "    ");
@@ -853,6 +947,19 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
             anyhow::bail!("{message}");
         }
         other => Err(unexpected_response(&other)),
+    }
+}
+
+/// A tracked window's rule sink, and for the window deciding the daemon's sink the
+/// fallback that plays instead (`BT Headphones (fallback in use: Headset)`)
+fn rule_sink_text(tracked: &ipc::TrackedInfo) -> String {
+    let sink = tracked.sink_desc.as_str().bold().to_string();
+    match &tracked.fallback_in_use {
+        Some(fallback) => format!(
+            "{sink} {}",
+            format!("(fallback in use: {})", fallback.desc).warning()
+        ),
+        None => sink,
     }
 }
 
@@ -1028,7 +1135,7 @@ pub async fn test_rule(
                     crate::outln!(
                         "   {}: {}",
                         "current rule's sink".dim(),
-                        tracked.sink_desc.as_str().bold()
+                        rule_sink_text(tracked)
                     );
                     print_fallbacks(tracked, "   ");
                     print_sources(tracked, "   ");
@@ -1095,6 +1202,75 @@ mod tests {
         assert_eq!(term("Firefox"), "Firefox");
         let title = term("evil\ntitle\u{1b}]0;x\u{7}");
         assert!(!title.chars().any(char::is_control), "{title:?}");
+    }
+
+    /// B5: the deciding window's title in `Active Rule:` never reaches the terminal
+    /// raw (escape sequences, BEL, bidi overrides) and is shortened
+    #[test]
+    fn test_active_rule_text_is_sanitised() {
+        let shown = active_rule_text(&format!(
+            "Evil\u{1b}[31mRED\u{7} \u{202e}Title {}: TV",
+            "x".repeat(400)
+        ));
+        assert!(
+            !shown.contains('\u{1b}') && !shown.contains('\u{7}') && !shown.contains('\u{202e}'),
+            "{shown:?}"
+        );
+        // Cut after 200 characters (escapes spelled out count extra)
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(shown.chars().count() < 240, "{}", shown.chars().count());
+        assert_eq!(
+            active_rule_text("Voice chat: Headset"),
+            "Voice chat: Headset"
+        );
+    }
+
+    /// `pwsw status` marks a default that differs from what the daemon applied
+    #[test]
+    fn test_outside_note() {
+        let daemon = DaemonStatus {
+            running: true,
+            daemon_sink: Some("TV".to_string()),
+            ..DaemonStatus::default()
+        };
+        assert_eq!(
+            outside_note("Speakers", &daemon, Endpoint::Sink),
+            " (changed outside pwsw)"
+        );
+        assert_eq!(outside_note("TV", &daemon, Endpoint::Sink), "");
+        assert_eq!(
+            outside_note("Desk Mic", &daemon, Endpoint::Source),
+            "",
+            "unknown applied source"
+        );
+        assert_eq!(
+            outside_note("Speakers", &DaemonStatus::default(), Endpoint::Sink),
+            "",
+            "no daemon"
+        );
+    }
+
+    #[test]
+    fn test_positional_warning() {
+        use crate::test_utils::fixtures::{make_config, make_sink};
+        let config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("hdmi", "HDMI", false),
+            ],
+            vec![],
+        );
+        let warning = positional_warning(&config, Endpoint::Sink, "2").expect("warns");
+        assert!(warning.contains("set-sink 2"), "{warning}");
+        assert!(warning.contains("deprecated"), "{warning}");
+        assert!(warning.contains("\"HDMI\""), "{warning}");
+        assert_eq!(positional_warning(&config, Endpoint::Sink, "HDMI"), None);
+        assert_eq!(
+            positional_warning(&config, Endpoint::Sink, "9"),
+            None,
+            "no entry there: the unknown-sink error says enough"
+        );
+        assert_eq!(positional_warning(&config, Endpoint::Source, "1"), None);
     }
 
     /// `test-rule --output` explains an empty result when the daemon has no monitor

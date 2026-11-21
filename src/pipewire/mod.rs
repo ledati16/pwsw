@@ -148,10 +148,19 @@ pub struct ConfiguredSinkJson {
 /// `PipeWire` interface for audio control
 pub struct PipeWire;
 
-/// What one activation half did: the index of the candidate made default and its
-/// node name, `None` when an upgrade check (or a [`JobHalf::keep`] half) changed
-/// nothing
-pub type Activated = Option<(usize, String)>;
+/// What one activation half did
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Activated {
+    /// Candidate `index` is the default now, as node `node_name`
+    Switched { index: usize, node_name: String },
+    /// Nothing was touched: an upgrade check found nothing better, or a
+    /// [`JobHalf::keep`] half was not affected by the sink's activation
+    Unchanged,
+    /// An upgrade check touched nothing because the configured default is not the
+    /// fallback it was asked to improve on (someone chose another one outside pwsw):
+    /// the default as the user sees it now
+    Elsewhere(String),
+}
 
 /// One half (sink or source) of an activation job ([`PipeWire::activate_joint`])
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -372,10 +381,15 @@ impl PipeWire {
             Endpoint::Sink => Self::activate_joint(request, None),
             Endpoint::Source => Self::activate_joint(None, request),
         };
-        sink.or(source)
+        match sink
+            .or(source)
             .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no result")))?
-            .map(|(_, node_name)| node_name)
-            .ok_or_else(|| anyhow::anyhow!("Internal error: nothing activated"))
+        {
+            Activated::Switched { node_name, .. } => Ok(node_name),
+            Activated::Unchanged | Activated::Elsewhere(_) => {
+                Err(anyhow::anyhow!("Internal error: nothing activated"))
+            }
+        }
     }
 
     /// Activate a job: the first reachable of the sink candidates and the first
@@ -392,8 +406,10 @@ impl PipeWire {
     /// [`JobHalf::keep`]).
     ///
     /// Returns each half's result: the index of the activated candidate and the node
-    /// made default, `Ok(None)` when an upgrade check found nothing better, or why no
-    /// candidate could be activated (see [`PipeWire::activate`] for the causes).
+    /// made default, [`Activated::Unchanged`] when an upgrade check found nothing
+    /// better, [`Activated::Elsewhere`] when it was skipped because the default was
+    /// changed outside pwsw, or why no candidate could be activated (see
+    /// [`PipeWire::activate`] for the causes).
     #[must_use]
     pub fn activate_joint(
         sink: Option<JobHalf<'_>>,
@@ -416,30 +432,63 @@ impl PipeWire {
             sink.map(request),
             source.map(request),
         );
-        let report = |kind: Endpoint, result: Option<Result<Option<activate::Chosen>>>| {
+        let switches = |result: &Option<Result<Option<activate::Chosen>>>| match result {
+            Some(Ok(Some(chosen))) => chosen.activation.profile_switch.clone(),
+            _ => None,
+        };
+        // One joint switch (the sink and the source on one card, one profile) is
+        // logged once
+        let sink_switch = switches(&outcome.sink);
+        let card_profile = |sw: &resolve::ProfileSwitch| (sw.device_id, sw.profile_index);
+        let joint = sink_switch.as_ref().map(card_profile).is_some()
+            && sink_switch.as_ref().map(card_profile)
+                == switches(&outcome.source).as_ref().map(card_profile);
+        let node = |result: &Option<Result<Option<activate::Chosen>>>| match result {
+            Some(Ok(Some(chosen))) => chosen.activation.node_name.clone(),
+            _ => String::new(),
+        };
+        if joint && let Some(switch) = &sink_switch {
+            info!(
+                "Switched {} to profile {} and set default sink {} and source {}",
+                switch.device_name,
+                switch.profile_name,
+                node(&outcome.sink),
+                node(&outcome.source)
+            );
+        }
+        let [sink_elsewhere, source_elsewhere] = outcome.elsewhere;
+        let report = |kind: Endpoint,
+                      result: Option<Result<Option<activate::Chosen>>>,
+                      elsewhere: Option<String>| {
             result.map(|r| {
-                r.map(|chosen| {
-                    chosen.map(|chosen| {
+                r.map(|chosen| match chosen {
+                    Some(chosen) => {
                         let activation = chosen.activation;
-                        if let Some(switch) = &activation.profile_switch {
-                            info!(
+                        match &activation.profile_switch {
+                            Some(_) if joint => {}
+                            Some(switch) => info!(
                                 "Switched {} to profile {} and set default {} {}",
                                 switch.device_name,
                                 switch.profile_name,
                                 kind.noun(),
                                 activation.node_name
-                            );
-                        } else {
-                            debug!("Set default {} {}", kind.noun(), activation.node_name);
+                            ),
+                            None => {
+                                debug!("Set default {} {}", kind.noun(), activation.node_name);
+                            }
                         }
-                        (chosen.index, activation.node_name)
-                    })
+                        Activated::Switched {
+                            index: chosen.index,
+                            node_name: activation.node_name,
+                        }
+                    }
+                    None => elsewhere.map_or(Activated::Unchanged, Activated::Elsewhere),
                 })
             })
         };
         (
-            report(Endpoint::Sink, outcome.sink),
-            report(Endpoint::Source, outcome.source),
+            report(Endpoint::Sink, outcome.sink, sink_elsewhere),
+            report(Endpoint::Source, outcome.source, source_elsewhere),
         )
     }
 }
