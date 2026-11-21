@@ -152,8 +152,12 @@ drops queued `Changed` and cancels a not-yet-delivered `Opened`. Surviving event
 first-queued order (priority depends on it). IDs are a monotonic counter, windows are
 keyed by `ObjectId`; closed handles are destroyed; `Changed` is emitted only when
 `app_id` or title changed. `finished` or a dead connection ends the thread with an error,
-so the daemon exits non-zero and systemd restarts it. `ext` is preferred over `wlr`;
-window control requests are never used.
+so the daemon exits non-zero and systemd restarts it. `ext` is preferred over `wlr`
+(`ProtocolPreference::Auto`); `PreferWlr` picks `wlr` when available, because only `wlr`
+reports which monitors a window is on and whether it is minimized: `WindowEvent::Placement`
+(sorted connector names from `wl_output` v4, emitted on `done` only when changed; coalesces
+in place like `Changed`, dropped by `Closed`; never emitted by `ext`). Window control
+requests are never used.
 
 **TUI.** Render does no I/O: everything drawn comes from `App`. The background worker
 (`tui/worker.rs`) polls daemon status every 1 s and `pw-dump` every 2 s (only while a

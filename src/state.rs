@@ -259,6 +259,8 @@ impl State {
             WindowEvent::Opened { id, app_id, title }
             | WindowEvent::Changed { id, app_id, title } => self.upsert(id, app_id, title),
             WindowEvent::Closed { id } => self.close(id),
+            // Monitor placement is not used by rules yet
+            WindowEvent::Placement { .. } => None,
         }
     }
 

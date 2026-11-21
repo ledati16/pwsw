@@ -3,8 +3,12 @@
 //! Provides window event streams from Wayland compositors using standard protocols:
 //! - `ext-foreign-toplevel-list-v1` (Standard, preferred)
 //! - `wlr-foreign-toplevel-management` (Legacy/wlroots-specific: Sway, Hyprland, etc.)
+//!
+//! Only `wlr` reports which monitors a window is on ([`WindowEvent::Placement`]); the
+//! daemon asks for it with [`ProtocolPreference::PreferWlr`].
 
 mod ext_toplevel;
+mod output;
 mod tracker;
 mod wlr_toplevel;
 
@@ -20,13 +24,84 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, EventQueue, QueueHandle};
 
-/// Supported window management protocols
+/// Supported window management protocols (the toplevel backend in use)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Protocol {
-    /// ext-foreign-toplevel-list-v1 (Standard)
+pub enum Backend {
+    /// `ext-foreign-toplevel-list-v1` (Standard; no placement information)
     Ext,
-    /// wlr-foreign-toplevel-management (Legacy/wlroots)
+    /// `wlr-foreign-toplevel-management` (Legacy/wlroots; reports placement)
     Wlr,
+}
+
+impl Backend {
+    /// The Wayland interface name of this protocol's global
+    #[must_use]
+    pub const fn interface(self) -> &'static str {
+        match self {
+            Self::Ext => ext_toplevel::INTERFACE,
+            Self::Wlr => wlr_toplevel::INTERFACE,
+        }
+    }
+
+    /// Whether windows tracked with this backend get [`WindowEvent::Placement`] events
+    #[must_use]
+    pub const fn reports_placement(self) -> bool {
+        matches!(self, Self::Wlr)
+    }
+}
+
+/// Which toplevel protocol to bind when the compositor advertises both
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProtocolPreference {
+    /// `ext` if advertised, else `wlr` (the default)
+    #[default]
+    Auto,
+    /// `wlr` if advertised, else `ext`: for callers that need
+    /// [`WindowEvent::Placement`] (monitor names, minimized state)
+    PreferWlr,
+}
+
+/// What the compositor connection provides, as chosen at spawn time
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capabilities {
+    backend: Backend,
+}
+
+impl Capabilities {
+    /// The toplevel backend in use
+    #[must_use]
+    pub const fn backend(self) -> Backend {
+        self.backend
+    }
+
+    /// Whether [`WindowEvent::Placement`] events are reported (monitor info available)
+    #[must_use]
+    pub const fn monitor_info(self) -> bool {
+        self.backend.reports_placement()
+    }
+
+    /// One line for `doctor` / `list-windows`, e.g. `monitor info: available (wlr)`
+    #[must_use]
+    pub const fn monitor_info_summary(self) -> &'static str {
+        match self.backend {
+            Backend::Wlr => "monitor info: available (wlr)",
+            Backend::Ext => "monitor info: unavailable (ext)",
+        }
+    }
+}
+
+/// What a connection would provide, given the advertised global interface names and a
+/// preference (the same choice the spawn functions make); `None` if no supported
+/// toplevel protocol is advertised
+///
+/// With a `probe_protocols` result, pass the `advertised` interfaces: under
+/// [`ProtocolPreference::PreferWlr`] this says whether monitor info can be had at all.
+#[must_use]
+pub fn detected_capabilities<'a>(
+    interfaces: impl IntoIterator<Item = &'a str>,
+    preference: ProtocolPreference,
+) -> Option<Capabilities> {
+    choose_protocol(interfaces, preference).map(|backend| Capabilities { backend })
 }
 
 /// Window event from a compositor
@@ -43,6 +118,21 @@ pub enum WindowEvent {
         id: u64,
         app_id: String,
         title: String,
+    },
+    /// A window's placement changed: the monitors it is on, and whether it is minimized
+    ///
+    /// Only the `wlr` backend reports placement ([`Backend::reports_placement`]). Sent
+    /// after the window's `Opened` once it is on any output or minimized, then whenever
+    /// that changes (on the compositor's `done`, or right away when an output it is on is
+    /// removed). A window that was never placed anywhere sends none.
+    Placement {
+        id: u64,
+        /// Connector names (`HDMI-A-1`, `DP-2`), sorted and deduplicated. An output
+        /// without a name (`wl_output` older than version 4) appears as
+        /// `output-<registry global name>`.
+        outputs: Vec<String>,
+        /// The compositor's `minimized` state flag
+        minimized: bool,
     },
     /// A window was closed
     Closed { id: u64 },
@@ -72,12 +162,24 @@ const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// - No supported window management protocol is available (see
 ///   [`spawn_compositor_thread_on`])
 pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
+    spawn_compositor_thread_with_preference(ProtocolPreference::Auto).map(|(rx, _)| rx)
+}
+
+/// Like [`spawn_compositor_thread`], choosing the protocol by `preference` and also
+/// returning what the chosen backend provides
+///
+/// # Errors
+///
+/// As [`spawn_compositor_thread`].
+pub fn spawn_compositor_thread_with_preference(
+    preference: ProtocolPreference,
+) -> Result<(mpsc::Receiver<WindowEvent>, Capabilities)> {
     let conn = Connection::connect_to_env()
         .context("Failed to connect to Wayland display. Is a Wayland compositor running?")?;
 
     info!("Connected to Wayland display");
 
-    spawn_compositor_thread_on(conn)
+    spawn_compositor_thread_on_with_preference(conn, preference)
 }
 
 /// Like [`spawn_compositor_thread`], but uses an already-established Wayland connection.
@@ -93,6 +195,8 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 /// 1. `ext-foreign-toplevel-list-v1` (Standard, preferred when both are advertised)
 /// 2. `wlr-foreign-toplevel-management` (Legacy/wlroots)
 ///
+/// [`spawn_compositor_thread_on_with_preference`] can prefer `wlr` instead.
+///
 /// GNOME/Mutter and KDE Plasma 6 expose neither and are not supported.
 ///
 /// # Event Semantics
@@ -102,13 +206,21 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 /// - `Opened` is sent on a window's first `done`; `Changed` only when its `app_id` or
 ///   title differ from what was last sent (focus/maximise-only updates are dropped).
 ///   A window closed before its first `done` produces no events at all.
+/// - `Placement` (`wlr` only) follows the window's `Opened` when it is on any output or
+///   minimized, then comes only when its sorted output names or minimized flag change.
+///   With `wlr`, `wl_output` globals are bound (and rebound on hotplug); when one is
+///   removed, windows on it get a `Placement` without it.
 /// - The Wayland thread never blocks on the daemon. Events go to an in-memory outbox
 ///   and a forwarder thread moves them into the bounded channel. While the daemon lags,
-///   the outbox coalesces per window: a newer `Changed` replaces an undelivered one, and
-///   `Closed` cancels an undelivered `Opened` (both are dropped) or an undelivered
-///   `Changed`. No event is ever lost that would leave the daemon with a stale view:
-///   the daemon always ends up with each window's latest state, never sees `Changed`
-///   after `Closed`, and every `Opened` it sees is followed by that window's `Closed`.
+///   the outbox coalesces per window: a newer `Changed` replaces an undelivered one (in
+///   its queue position), a newer `Placement` likewise replaces an undelivered
+///   `Placement`, and `Closed` cancels an undelivered `Opened` (both are dropped) or an
+///   undelivered `Changed`/`Placement`. Surviving events keep the order in which they
+///   were first queued. No event is ever lost that would leave the daemon with a stale
+///   view: the daemon always ends up with each window's latest state, never sees
+///   `Changed` or `Placement` before `Opened` or after `Closed`, and every `Opened` it
+///   sees is followed by that window's `Closed`. `Changed` and `Placement` coalesce
+///   independently, so their relative order carries no meaning.
 ///
 /// # Channel Closure
 ///
@@ -127,6 +239,19 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 /// it fails, the compositor does not answer the registry roundtrip within 10 seconds, or
 /// a thread cannot be spawned.
 pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<WindowEvent>> {
+    spawn_compositor_thread_on_with_preference(conn, ProtocolPreference::Auto).map(|(rx, _)| rx)
+}
+
+/// Like [`spawn_compositor_thread_on`], choosing the protocol by `preference` and also
+/// returning what the chosen backend provides
+///
+/// # Errors
+///
+/// As [`spawn_compositor_thread_on`].
+pub fn spawn_compositor_thread_on_with_preference(
+    conn: Connection,
+    preference: ProtocolPreference,
+) -> Result<(mpsc::Receiver<WindowEvent>, Capabilities)> {
     let (tx, rx) = mpsc::channel(WINDOW_EVENT_CHANNEL_CAPACITY);
     let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
     let outbox = Arc::new(EventOutbox::new());
@@ -135,7 +260,7 @@ pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<Win
     let tx_probe = tx.clone();
     std::thread::Builder::new()
         .name("pwsw-wayland".into())
-        .spawn(move || wayland_thread(&conn, &thread_outbox, &tx_probe, &ready_tx))
+        .spawn(move || wayland_thread(&conn, preference, &thread_outbox, &tx_probe, &ready_tx))
         .context("Failed to spawn Wayland thread")?;
 
     let protocol = match ready_rx.recv_timeout(SETUP_TIMEOUT) {
@@ -148,14 +273,14 @@ pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<Win
             eyre::bail!("Wayland thread exited during protocol detection")
         }
     };
-    info!("Using {protocol:?} protocol");
+    info!("Using {protocol:?} protocol ({preference:?} preference)");
 
     std::thread::Builder::new()
         .name("pwsw-wayland-fwd".into())
         .spawn(move || tracker::forward_events(&outbox, &tx))
         .context("Failed to spawn window event forwarder thread")?;
 
-    Ok(rx)
+    Ok((rx, Capabilities { backend: protocol }))
 }
 
 /// Body of the Wayland thread: run the event loop, log how it ended, then close the
@@ -164,11 +289,12 @@ pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<Win
 /// There is no unwinding to handle: release builds abort on panic.
 fn wayland_thread(
     conn: &Connection,
+    preference: ProtocolPreference,
     outbox: &Arc<EventOutbox>,
     tx_probe: &mpsc::Sender<WindowEvent>,
-    ready: &SyncSender<Result<Protocol>>,
+    ready: &SyncSender<Result<Backend>>,
 ) {
-    match run_wayland(conn, Arc::clone(outbox), tx_probe, ready) {
+    match run_wayland(conn, preference, Arc::clone(outbox), tx_probe, ready) {
         Ok(()) => info!("Wayland thread stopped"),
         Err(e) => error!("Wayland event loop ended: {e:#}"),
     }
@@ -182,17 +308,18 @@ fn wayland_thread(
 /// returned to [`spawn_compositor_thread_on`] through `ready` instead.
 fn run_wayland(
     conn: &Connection,
+    preference: ProtocolPreference,
     outbox: Arc<EventOutbox>,
     tx_probe: &mpsc::Sender<WindowEvent>,
-    ready: &SyncSender<Result<Protocol>>,
+    ready: &SyncSender<Result<Backend>>,
 ) -> Result<()> {
-    let mut queue = match setup(conn) {
-        Ok((queue, protocol)) => {
+    let (mut queue, mut tracker) = match setup(conn, preference, outbox) {
+        Ok((queue, tracker, protocol)) => {
             if ready.send(Ok(protocol)).is_err() {
                 debug!("Nobody waiting for Wayland setup, stopping");
                 return Ok(());
             }
-            queue
+            (queue, tracker)
         }
         Err(e) => {
             // The caller reports the error; nothing more to do here
@@ -201,7 +328,6 @@ fn run_wayland(
         }
     };
 
-    let mut tracker = WindowTracker::new(outbox);
     loop {
         // Flushes our requests (handle destroys), waits for and dispatches events.
         // Returns an error when the connection is gone, so this never spins.
@@ -222,7 +348,14 @@ fn run_wayland(
 }
 
 /// Enumerate globals (one roundtrip), pick a protocol and bind it
-fn setup(conn: &Connection) -> Result<(EventQueue<WindowTracker>, Protocol)> {
+///
+/// For `wlr`, the `wl_output` globals are bound first, so the compositor knows them
+/// before it announces toplevels (whose `output_enter` events refer to them).
+fn setup(
+    conn: &Connection,
+    preference: ProtocolPreference,
+    outbox: Arc<EventOutbox>,
+) -> Result<(EventQueue<WindowTracker>, WindowTracker, Backend)> {
     let (globals, queue) = registry_queue_init::<WindowTracker>(conn)
         .context("Failed to initialize Wayland registry")?;
     let qh: QueueHandle<WindowTracker> = queue.handle();
@@ -234,7 +367,7 @@ fn setup(conn: &Connection) -> Result<(EventQueue<WindowTracker>, Protocol)> {
                 global.interface, global.version
             );
         }
-        choose_protocol(list.iter().map(|g| g.interface.as_str()))
+        choose_protocol(list.iter().map(|g| g.interface.as_str()), preference)
     });
 
     let Some(protocol) = protocol else {
@@ -251,18 +384,32 @@ fn setup(conn: &Connection) -> Result<(EventQueue<WindowTracker>, Protocol)> {
         );
     };
 
+    let mut tracker = WindowTracker::new(outbox, protocol.reports_placement());
+    if tracker.tracks_outputs() {
+        let outputs: Vec<(u32, u32)> = globals.contents().with_list(|list| {
+            list.iter()
+                .filter(|g| g.interface == output::INTERFACE)
+                .map(|g| (g.name, g.version))
+                .collect()
+        });
+        for (global, version) in outputs {
+            let proxy = output::bind(globals.registry(), global, version, &qh);
+            tracker.output_added(proxy, global);
+        }
+    }
+
     // Dropping the bound proxy does not destroy the protocol object; events keep flowing
     match protocol {
-        Protocol::Ext => {
+        Backend::Ext => {
             ext_toplevel::bind(&globals, &qh)?;
         }
-        Protocol::Wlr => {
+        Backend::Wlr => {
             wlr_toplevel::bind(&globals, &qh)?;
         }
     }
     debug!("Bound {protocol:?} toplevel protocol");
 
-    Ok((queue, protocol))
+    Ok((queue, tracker, protocol))
 }
 
 /// A toplevel protocol global the compositor advertises (see [`probe_protocols`])
@@ -278,16 +425,6 @@ pub(crate) struct AdvertisedGlobal {
 pub(crate) struct ProtocolProbe {
     pub(crate) advertised: Vec<AdvertisedGlobal>,
     pub(crate) chosen: Option<&'static str>,
-}
-
-impl Protocol {
-    /// The Wayland interface name of this protocol's global
-    const fn interface(self) -> &'static str {
-        match self {
-            Self::Ext => ext_toplevel::INTERFACE,
-            Self::Wlr => wlr_toplevel::INTERFACE,
-        }
-    }
 }
 
 /// Registry state of [`probe_protocols`] (it binds nothing)
@@ -347,37 +484,57 @@ fn probe_on_env() -> Result<ProtocolProbe> {
                     version: g.version,
                 })
                 .collect(),
-            chosen: choose_protocol(list.iter().map(|g| g.interface.as_str()))
-                .map(Protocol::interface),
+            chosen: choose_protocol(
+                list.iter().map(|g| g.interface.as_str()),
+                ProtocolPreference::Auto,
+            )
+            .map(Backend::interface),
         }
     }))
 }
 
-/// Pick the preferred protocol among the advertised global interface names
-fn choose_protocol<'a>(interfaces: impl IntoIterator<Item = &'a str>) -> Option<Protocol> {
-    let mut best = None;
+/// Pick a protocol among the advertised global interface names
+fn choose_protocol<'a>(
+    interfaces: impl IntoIterator<Item = &'a str>,
+    preference: ProtocolPreference,
+) -> Option<Backend> {
+    let (mut ext, mut wlr) = (false, false);
     for interface in interfaces {
-        if interface == ext_toplevel::INTERFACE {
-            return Some(Protocol::Ext);
-        }
-        if interface == wlr_toplevel::INTERFACE {
-            best = Some(Protocol::Wlr);
-        }
+        ext |= interface == ext_toplevel::INTERFACE;
+        wlr |= interface == wlr_toplevel::INTERFACE;
     }
-    best
+    match (preference, ext, wlr) {
+        (ProtocolPreference::Auto, true, _) | (ProtocolPreference::PreferWlr, true, false) => {
+            Some(Backend::Ext)
+        }
+        (_, _, true) => Some(Backend::Wlr),
+        (_, false, false) => None,
+    }
 }
 
 impl wayland_client::Dispatch<wl_registry::WlRegistry, GlobalListContents> for WindowTracker {
     fn event(
-        _state: &mut Self,
-        _proxy: &wl_registry::WlRegistry,
-        _event: wl_registry::Event,
+        state: &mut Self,
+        proxy: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
         _data: &GlobalListContents,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
-        // Global add/remove after startup is irrelevant: the bound protocol global is
-        // never removed by compositors while they run.
+        // Only outputs come and go while compositors run (monitor hotplug); the bound
+        // toplevel protocol global is never removed.
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } if interface == output::INTERFACE && state.tracks_outputs() => {
+                let output = output::bind(proxy, name, version, qh);
+                state.output_added(output, name);
+            }
+            wl_registry::Event::GlobalRemove { name } => state.output_global_removed(name),
+            _ => {}
+        }
     }
 }
 
@@ -386,15 +543,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_choose_protocol_prefers_ext() {
+    fn test_choose_protocol_auto_prefers_ext() {
+        let auto = ProtocolPreference::Auto;
         let wlr = wlr_toplevel::INTERFACE;
         let ext = ext_toplevel::INTERFACE;
         assert_eq!(
-            choose_protocol(["wl_output", wlr, ext]),
-            Some(Protocol::Ext)
+            choose_protocol(["wl_output", wlr, ext], auto),
+            Some(Backend::Ext)
         );
-        assert_eq!(choose_protocol([ext, wlr]), Some(Protocol::Ext));
-        assert_eq!(choose_protocol([wlr]), Some(Protocol::Wlr));
-        assert_eq!(choose_protocol(["wl_seat"]), None);
+        assert_eq!(choose_protocol([ext, wlr], auto), Some(Backend::Ext));
+        assert_eq!(choose_protocol([wlr], auto), Some(Backend::Wlr));
+        assert_eq!(choose_protocol(["wl_seat"], auto), None);
+        assert_eq!(ProtocolPreference::default(), auto);
+    }
+
+    #[test]
+    fn test_choose_protocol_prefer_wlr() {
+        let prefer = ProtocolPreference::PreferWlr;
+        let wlr = wlr_toplevel::INTERFACE;
+        let ext = ext_toplevel::INTERFACE;
+        assert_eq!(
+            choose_protocol(["wl_output", ext, wlr], prefer),
+            Some(Backend::Wlr)
+        );
+        assert_eq!(choose_protocol([ext], prefer), Some(Backend::Ext));
+        assert_eq!(choose_protocol([wlr], prefer), Some(Backend::Wlr));
+        assert_eq!(choose_protocol(["wl_seat"], prefer), None);
+    }
+
+    #[test]
+    fn test_detected_capabilities() {
+        let both = [ext_toplevel::INTERFACE, wlr_toplevel::INTERFACE];
+        let auto = detected_capabilities(both, ProtocolPreference::Auto).expect("ext");
+        assert_eq!(auto.backend(), Backend::Ext);
+        assert!(!auto.monitor_info());
+        assert_eq!(
+            auto.monitor_info_summary(),
+            "monitor info: unavailable (ext)"
+        );
+
+        let wlr = detected_capabilities(both, ProtocolPreference::PreferWlr).expect("wlr");
+        assert_eq!(wlr.backend(), Backend::Wlr);
+        assert!(wlr.monitor_info());
+        assert_eq!(wlr.monitor_info_summary(), "monitor info: available (wlr)");
+
+        let ext_only = [ext_toplevel::INTERFACE];
+        assert!(
+            !detected_capabilities(ext_only, ProtocolPreference::PreferWlr)
+                .expect("ext")
+                .monitor_info()
+        );
+        assert_eq!(
+            detected_capabilities(["wl_seat"], ProtocolPreference::PreferWlr),
+            None
+        );
     }
 }

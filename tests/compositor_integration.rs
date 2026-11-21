@@ -2,7 +2,12 @@
 //!
 //! Each test runs its own mock compositor on a private socket, so tests are independent
 //! and run in parallel. Synchronisation uses notices from the mock (bind, handle
-//! creation/destruction) and event receipt with timeouts, never fixed sleeps.
+//! creation/destruction, output binds) and event receipt with timeouts, never fixed
+//! sleeps.
+//!
+//! The mock can advertise `wl_output` globals (with connector names from version 4) and
+//! sends `output_enter` / `output_leave` / `state` on `wlr` handles, for the
+//! `WindowEvent::Placement` tests.
 
 use std::collections::HashMap;
 use std::sync::mpsc as std_mpsc;
@@ -10,7 +15,10 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use pretty_assertions::assert_eq;
-use pwsw::compositor::{WindowEvent, spawn_compositor_thread_on};
+use pwsw::compositor::{
+    Backend, Capabilities, ProtocolPreference, WindowEvent, spawn_compositor_thread_on,
+    spawn_compositor_thread_on_with_preference,
+};
 use rstest::rstest;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::mpsc::error::TryRecvError;
@@ -26,7 +34,8 @@ use wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_h
 use wayland_protocols_wlr::foreign_toplevel::v1::server::zwlr_foreign_toplevel_manager_v1::{
     self, ZwlrForeignToplevelManagerV1,
 };
-use wayland_server::backend::ClientId;
+use wayland_server::backend::{ClientId, GlobalId};
+use wayland_server::protocol::wl_output::{self, WlOutput};
 use wayland_server::{
     Client, DataInit, Dispatch, Display, DisplayHandle, GlobalDispatch, ListeningSocket, New,
     Resource,
@@ -37,6 +46,10 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 const EXT: &str = "ext_foreign_toplevel_list_v1";
 const WLR: &str = "zwlr_foreign_toplevel_manager_v1";
+
+/// `zwlr_foreign_toplevel_handle_v1.state` values
+const STATE_MINIMIZED: u32 = 1;
+const STATE_ACTIVATED: u32 = 2;
 
 // --- Mock Compositor Infrastructure ---
 
@@ -58,12 +71,31 @@ impl ProtocolMode {
 }
 
 enum ServerCommand {
-    /// Announce a window; `done: false` withholds the initial `done`
+    /// Announce a window; `done: false` withholds the initial `done`. wlr: enters
+    /// `outputs` before that `done`.
     CreateWindow {
         id: u32,
         title: String,
         app_id: String,
+        outputs: Vec<String>,
         done: bool,
+    },
+    /// wlr: `output_leave` for `leave`, `output_enter` for `enter`, then `state` (if
+    /// given), then a single `done`; ext: bare `done`
+    Place {
+        id: u32,
+        enter: Vec<String>,
+        leave: Vec<String>,
+        state: Option<Vec<u32>>,
+    },
+    /// Advertise a new `wl_output` global (monitor plugged in)
+    AddOutput {
+        name: String,
+        version: u32,
+    },
+    /// Remove a `wl_output` global (monitor unplugged), without any `output_leave`
+    RemoveOutput {
+        name: String,
     },
     /// Apply all `(title, app_id)` steps, then send a single `done`
     UpdateWindow {
@@ -91,8 +123,35 @@ enum ServerCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Notice {
     Bound(&'static str),
-    HandleCreated { window: u32, protocol_id: u32 },
-    HandleDestroyed { window: u32, protocol_id: u32 },
+    HandleCreated {
+        window: u32,
+        protocol_id: u32,
+    },
+    HandleDestroyed {
+        window: u32,
+        protocol_id: u32,
+    },
+    /// A client bound the `wl_output` global with this name
+    OutputBound(String),
+    /// A client released its `wl_output` object for this name
+    OutputReleased(String),
+}
+
+/// A `wl_output` global of the mock: connector name and advertised version
+#[derive(Clone)]
+struct OutputSpec {
+    name: String,
+    version: u32,
+}
+
+fn outputs(specs: &[(&str, u32)]) -> Vec<OutputSpec> {
+    specs
+        .iter()
+        .map(|(name, version)| OutputSpec {
+            name: (*name).to_string(),
+            version: *version,
+        })
+        .collect()
 }
 
 struct MockCompositor {
@@ -102,11 +161,17 @@ struct MockCompositor {
     /// Notices already received but not yet consumed by a `wait_notice`
     seen: Vec<Notice>,
     server_thread: Option<thread::JoinHandle<()>>,
+    /// Outputs advertised from the start (the client binds them with `wlr`)
+    initial_outputs: Vec<String>,
     _temp_dir: tempfile::TempDir,
 }
 
 impl MockCompositor {
     fn new(mode: ProtocolMode) -> Self {
+        Self::with_outputs(mode, Vec::new())
+    }
+
+    fn with_outputs(mode: ProtocolMode, initial: Vec<OutputSpec>) -> Self {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let socket_path = temp_dir.path().join("wayland-test-0");
 
@@ -114,9 +179,17 @@ impl MockCompositor {
         let (notice_tx, notice_rx) = std_mpsc::channel();
         let (ready_tx, ready_rx) = std_mpsc::channel();
         let socket_path_clone = socket_path.clone();
+        let initial_outputs = initial.iter().map(|o| o.name.clone()).collect();
 
         let server_thread = thread::spawn(move || {
-            run_server(mode, &socket_path_clone, &cmd_rx, notice_tx, &ready_tx);
+            run_server(
+                mode,
+                &initial,
+                &socket_path_clone,
+                &cmd_rx,
+                notice_tx,
+                &ready_tx,
+            );
         });
         ready_rx
             .recv_timeout(TIMEOUT)
@@ -128,6 +201,7 @@ impl MockCompositor {
             notice_rx,
             seen: Vec::new(),
             server_thread: Some(server_thread),
+            initial_outputs,
             _temp_dir: temp_dir,
         }
     }
@@ -146,9 +220,30 @@ impl MockCompositor {
     /// Spawn the `pwsw` compositor thread on this mock and wait until it has bound
     fn spawn_client(&mut self, mode: ProtocolMode) -> Receiver<WindowEvent> {
         let rx = spawn_compositor_thread_on(self.connect()).expect("spawn compositor thread");
-        let expected = mode.expected_interface();
-        self.wait_notice(|n| *n == Notice::Bound(expected));
+        self.wait_bound(mode.expected_interface());
         rx
+    }
+
+    /// Spawn with an explicit protocol preference, waiting until `expected` is bound
+    fn spawn_client_with(
+        &mut self,
+        preference: ProtocolPreference,
+        expected: &'static str,
+    ) -> (Receiver<WindowEvent>, Capabilities) {
+        let spawned = spawn_compositor_thread_on_with_preference(self.connect(), preference)
+            .expect("spawn compositor thread");
+        self.wait_bound(expected);
+        spawned
+    }
+
+    /// Wait until the client bound `interface` (and, for `wlr`, the initial outputs)
+    fn wait_bound(&mut self, interface: &'static str) {
+        self.wait_notice(|n| *n == Notice::Bound(interface));
+        if interface == WLR {
+            for name in self.initial_outputs.clone() {
+                self.wait_notice(|n| *n == Notice::OutputBound(name.clone()));
+            }
+        }
     }
 
     fn send(&self, cmd: ServerCommand) {
@@ -156,11 +251,26 @@ impl MockCompositor {
     }
 
     fn create_window(&self, id: u32, title: &str, app_id: &str) {
+        self.create_window_on(id, title, app_id, &[]);
+    }
+
+    fn create_window_on(&self, id: u32, title: &str, app_id: &str, outputs: &[&str]) {
         self.send(ServerCommand::CreateWindow {
             id,
             title: title.into(),
             app_id: app_id.into(),
+            outputs: strings(outputs),
             done: true,
+        });
+    }
+
+    /// Leave `leave`, enter `enter`, set `state` (if any), then one `done`
+    fn place(&self, id: u32, enter: &[&str], leave: &[&str], state: Option<&[u32]>) {
+        self.send(ServerCommand::Place {
+            id,
+            enter: strings(enter),
+            leave: strings(leave),
+            state: state.map(<[u32]>::to_vec),
         });
     }
 
@@ -208,10 +318,22 @@ impl MockCompositor {
     }
 }
 
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| (*s).to_string()).collect()
+}
+
 // --- Server State & Logic ---
+
+/// A `wl_output` global of the mock and every client's object for it
+struct MockOutput {
+    name: String,
+    global: GlobalId,
+    resources: Vec<WlOutput>,
+}
 
 struct ServerState {
     notices: std_mpsc::Sender<Notice>,
+    outputs: Vec<MockOutput>,
     // Track all bound manager resources (one per client bind)
     wlr_managers: Vec<ZwlrForeignToplevelManagerV1>,
     ext_lists: Vec<ExtForeignToplevelListV1>,
@@ -238,12 +360,64 @@ impl ServerState {
         let _ = self.notices.send(notice);
     }
 
+    /// `client`'s live object for the output named `name` (none if it did not bind it)
+    fn output_for(&self, name: &str, client: Option<Client>) -> Option<WlOutput> {
+        let client = client?.id();
+        self.outputs
+            .iter()
+            .filter(|o| o.name == name)
+            .flat_map(|o| o.resources.iter())
+            .find(|r| r.is_alive() && r.client().is_some_and(|c| c.id() == client))
+            .cloned()
+    }
+
+    fn add_output(&mut self, dh: &DisplayHandle, spec: &OutputSpec) {
+        let global = dh.create_global::<Self, WlOutput, String>(spec.version, spec.name.clone());
+        self.outputs.push(MockOutput {
+            name: spec.name.clone(),
+            global,
+            resources: Vec::new(),
+        });
+    }
+
+    fn remove_output(&mut self, dh: &DisplayHandle, name: &str) {
+        self.outputs.retain(|o| {
+            if o.name == name {
+                dh.remove_global::<Self>(o.global.clone());
+            }
+            o.name != name
+        });
+    }
+
+    fn place_window(&self, id: u32, enter: &[String], leave: &[String], state: Option<&[u32]>) {
+        for (_, handle) in self.wlr_handles.iter().filter(|(w, _)| *w == id) {
+            for name in leave {
+                if let Some(output) = self.output_for(name, handle.client()) {
+                    handle.output_leave(&output);
+                }
+            }
+            for name in enter {
+                if let Some(output) = self.output_for(name, handle.client()) {
+                    handle.output_enter(&output);
+                }
+            }
+            if let Some(flags) = state {
+                handle.state(flags.iter().flat_map(|f| f.to_ne_bytes()).collect());
+            }
+            handle.done();
+        }
+        for (_, handle) in self.ext_handles.iter().filter(|(w, _)| *w == id) {
+            handle.done();
+        }
+    }
+
     fn create_window(
         &mut self,
         dh: &DisplayHandle,
         id: u32,
         title: &str,
         app_id: &str,
+        outputs: &[String],
         done: bool,
     ) {
         for manager in &self.wlr_managers {
@@ -258,6 +432,11 @@ impl ServerState {
             manager.toplevel(&handle);
             handle.title(title.into());
             handle.app_id(app_id.into());
+            for name in outputs {
+                if let Some(output) = self.output_for(name, handle.client()) {
+                    handle.output_enter(&output);
+                }
+            }
             if done {
                 handle.done();
             }
@@ -369,6 +548,7 @@ fn flush_paced(display: &mut Display<ServerState>, clients: &[ClientId]) -> bool
 
 fn run_server(
     mode: ProtocolMode,
+    initial_outputs: &[OutputSpec],
     socket_path: &std::path::Path,
     cmd_rx: &std_mpsc::Receiver<ServerCommand>,
     notices: std_mpsc::Sender<Notice>,
@@ -379,6 +559,7 @@ fn run_server(
 
     let mut state = ServerState {
         notices,
+        outputs: Vec::new(),
         wlr_managers: Vec::new(),
         ext_lists: Vec::new(),
         wlr_handles: Vec::new(),
@@ -390,6 +571,9 @@ fn run_server(
     }
     if matches!(mode, ProtocolMode::Ext | ProtocolMode::Both) {
         dh.create_global::<ServerState, ExtForeignToplevelListV1, _>(1, ());
+    }
+    for spec in initial_outputs {
+        state.add_output(&dh, spec);
     }
 
     let listener = ListeningSocket::bind(socket_path).expect("bind mock socket");
@@ -403,8 +587,19 @@ fn run_server(
                     id,
                     title,
                     app_id,
+                    outputs,
                     done,
-                } => state.create_window(&dh, id, &title, &app_id, done),
+                } => state.create_window(&dh, id, &title, &app_id, &outputs, done),
+                ServerCommand::Place {
+                    id,
+                    enter,
+                    leave,
+                    state: flags,
+                } => state.place_window(id, &enter, &leave, flags.as_deref()),
+                ServerCommand::AddOutput { name, version } => {
+                    state.add_output(&dh, &OutputSpec { name, version });
+                }
+                ServerCommand::RemoveOutput { name } => state.remove_output(&dh, &name),
                 ServerCommand::UpdateWindow { id, steps } => state.update_window(id, &steps),
                 ServerCommand::StateOnlyUpdate { id } => state.state_only_update(id),
                 ServerCommand::Burst { ids, rounds } => {
@@ -539,6 +734,45 @@ impl Dispatch<ExtForeignToplevelHandleV1, u32> for ServerState {
     }
 }
 
+impl GlobalDispatch<WlOutput, String> for ServerState {
+    fn bind(
+        state: &mut Self,
+        _handle: &DisplayHandle,
+        _client: &Client,
+        resource: New<WlOutput>,
+        name: &String,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        let output = data_init.init(resource, name.clone());
+        if output.version() >= 4 {
+            output.name(name.clone());
+        }
+        if output.version() >= 2 {
+            output.done();
+        }
+        if let Some(mock) = state.outputs.iter_mut().find(|o| o.name == *name) {
+            mock.resources.push(output);
+        }
+        state.notify(Notice::OutputBound(name.clone()));
+    }
+}
+
+impl Dispatch<WlOutput, String> for ServerState {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        _resource: &WlOutput,
+        request: wl_output::Request,
+        name: &String,
+        _dhandle: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if matches!(request, wl_output::Request::Release) {
+            state.notify(Notice::OutputReleased(name.clone()));
+        }
+    }
+}
+
 struct ClientData;
 impl wayland_server::backend::ClientData for ClientData {
     fn initialized(&self, _client_id: wayland_server::backend::ClientId) {}
@@ -609,6 +843,25 @@ fn expect_closed(rx: &mut Receiver<WindowEvent>, want_id: u64) {
     }
 }
 
+fn expect_placement(
+    rx: &mut Receiver<WindowEvent>,
+    want_id: u64,
+    want_outputs: &[&str],
+    want_minimized: bool,
+) {
+    match recv(rx) {
+        WindowEvent::Placement {
+            id,
+            outputs,
+            minimized,
+        } => assert_eq!(
+            (id, outputs, minimized),
+            (want_id, strings(want_outputs), want_minimized)
+        ),
+        other => panic!("expected Placement({want_id}, {want_outputs:?}), got {other:?}"),
+    }
+}
+
 fn expect_channel_closed(rx: &mut Receiver<WindowEvent>) {
     match recv_within(rx, TIMEOUT) {
         Recv::Closed => {}
@@ -646,7 +899,9 @@ fn test_backend_lifecycle_and_handle_destroy(#[case] mode: ProtocolMode) {
 #[test]
 fn test_priority_selection_binds_only_ext() {
     let mut mock = MockCompositor::new(ProtocolMode::Both);
-    let mut rx = mock.spawn_client(ProtocolMode::Both);
+    let (mut rx, caps) = mock.spawn_client_with(ProtocolPreference::Auto, EXT);
+    assert_eq!(caps.backend(), Backend::Ext);
+    assert!(!caps.monitor_info());
 
     // The mock reports windows on every bound manager, so additionally check that the
     // window arrives exactly once and that no wlr manager was ever bound.
@@ -753,6 +1008,7 @@ fn test_closed_before_first_done_is_silent(#[case] mode: ProtocolMode) {
         id: 1,
         title: "transient".into(),
         app_id: "transient_app".into(),
+        outputs: Vec::new(),
         done: false,
     });
     mock.close_window(1);
@@ -883,6 +1139,9 @@ fn test_burst_with_slow_consumer(#[case] mode: ProtocolMode) {
                     .unwrap_or_else(|| panic!("Changed for unknown/closed window {id}"));
                 *entry = (app_id, title);
             }
+            WindowEvent::Placement { id, .. } => {
+                panic!("no window was placed on an output, got Placement for {id}");
+            }
             WindowEvent::Closed { id } => {
                 assert!(
                     model.remove(&id).is_some(),
@@ -927,6 +1186,181 @@ fn test_burst_with_slow_consumer(#[case] mode: ProtocolMode) {
     assert!(
         received < total_updates / 10,
         "expected coalescing, but the consumer received {received} events"
+    );
+
+    mock.stop();
+}
+
+// --- Placement (monitor) tests ---
+
+/// Window opens on one monitor, moves to another (leave + enter before one `done`),
+/// spans both, is minimized and restored; a state-only change emits nothing
+#[test]
+fn test_wlr_placement_follows_outputs_and_minimized() {
+    let mut mock =
+        MockCompositor::with_outputs(ProtocolMode::Wlr, outputs(&[("HDMI-A-1", 4), ("DP-1", 4)]));
+    let mut rx = mock.spawn_client(ProtocolMode::Wlr);
+
+    mock.create_window_on(1, "title", "app", &["HDMI-A-1"]);
+    let id = expect_opened(&mut rx, "app", "title");
+    expect_placement(&mut rx, id, &["HDMI-A-1"], false);
+
+    // Moved: one Placement for the whole batch, nothing for the intermediate state
+    mock.place(1, &["DP-1"], &["HDMI-A-1"], None);
+    expect_placement(&mut rx, id, &["DP-1"], false);
+
+    // Spans both: names sorted
+    mock.place(1, &["HDMI-A-1"], &[], None);
+    expect_placement(&mut rx, id, &["DP-1", "HDMI-A-1"], false);
+
+    mock.place(1, &[], &[], Some(&[STATE_MINIMIZED]));
+    expect_placement(&mut rx, id, &["DP-1", "HDMI-A-1"], true);
+    mock.place(1, &[], &[], Some(&[STATE_ACTIVATED]));
+    expect_placement(&mut rx, id, &["DP-1", "HDMI-A-1"], false);
+
+    // Same placement again (activated, re-entering an output it is on): no event; the
+    // next event is the close
+    mock.send(ServerCommand::StateOnlyUpdate { id: 1 });
+    mock.place(1, &["DP-1"], &[], Some(&[STATE_ACTIVATED]));
+    mock.close_window(1);
+    expect_closed(&mut rx, id);
+
+    mock.stop();
+}
+
+/// A window that opens minimized on no output still reports its placement once; one on
+/// no output and not minimized reports none
+#[test]
+fn test_wlr_placement_after_opened_only_when_placed() {
+    let mut mock = MockCompositor::with_outputs(ProtocolMode::Wlr, outputs(&[("DP-1", 4)]));
+    let mut rx = mock.spawn_client(ProtocolMode::Wlr);
+
+    mock.create_window(1, "nowhere", "app");
+    let nowhere = expect_opened(&mut rx, "app", "nowhere");
+    mock.create_window(2, "hidden", "app");
+    let hidden = expect_opened(&mut rx, "app", "hidden");
+    mock.place(2, &[], &[], Some(&[STATE_MINIMIZED]));
+    expect_placement(&mut rx, hidden, &[], true);
+
+    mock.close_window(1);
+    expect_closed(&mut rx, nowhere);
+    mock.close_window(2);
+    expect_closed(&mut rx, hidden);
+
+    mock.stop();
+}
+
+/// Monitor unplugged (`global_remove` without `output_leave`): windows on it get a
+/// `Placement` without it, and the client releases its `wl_output`. A monitor plugged in
+/// later is bound and reported by name.
+#[test]
+fn test_wlr_output_hotplug() {
+    let mut mock =
+        MockCompositor::with_outputs(ProtocolMode::Wlr, outputs(&[("HDMI-A-1", 4), ("DP-1", 4)]));
+    let mut rx = mock.spawn_client(ProtocolMode::Wlr);
+
+    mock.create_window_on(1, "both", "app", &["HDMI-A-1", "DP-1"]);
+    let id = expect_opened(&mut rx, "app", "both");
+    expect_placement(&mut rx, id, &["DP-1", "HDMI-A-1"], false);
+    mock.create_window_on(2, "elsewhere", "app", &["HDMI-A-1"]);
+    let other = expect_opened(&mut rx, "app", "elsewhere");
+    expect_placement(&mut rx, other, &["HDMI-A-1"], false);
+
+    mock.send(ServerCommand::RemoveOutput {
+        name: "DP-1".into(),
+    });
+    // Only the window that was on it changes
+    expect_placement(&mut rx, id, &["HDMI-A-1"], false);
+    mock.wait_notice(|n| *n == Notice::OutputReleased("DP-1".into()));
+
+    mock.send(ServerCommand::AddOutput {
+        name: "DP-2".into(),
+        version: 4,
+    });
+    mock.wait_notice(|n| *n == Notice::OutputBound("DP-2".into()));
+    mock.place(1, &["DP-2"], &[], None);
+    expect_placement(&mut rx, id, &["DP-2", "HDMI-A-1"], false);
+
+    mock.close_window(2);
+    expect_closed(&mut rx, other);
+
+    mock.stop();
+}
+
+/// `wl_output` before version 4 has no `name` event: a stable fallback label is used
+#[test]
+fn test_wlr_output_without_name_gets_fallback_label() {
+    let mut mock = MockCompositor::with_outputs(ProtocolMode::Wlr, outputs(&[("unnamed", 3)]));
+    let mut rx = mock.spawn_client(ProtocolMode::Wlr);
+
+    mock.create_window_on(1, "title", "app", &["unnamed"]);
+    let id = expect_opened(&mut rx, "app", "title");
+    let first = match recv(&mut rx) {
+        WindowEvent::Placement {
+            id: got,
+            outputs,
+            minimized: false,
+        } if got == id && outputs.len() == 1 => outputs[0].clone(),
+        other => panic!("expected one fallback-labelled output, got {other:?}"),
+    };
+    let global = first
+        .strip_prefix("output-")
+        .unwrap_or_else(|| panic!("unexpected label {first:?}"));
+    assert!(global.parse::<u32>().is_ok(), "label {first:?}");
+
+    // The label is stable: leaving and re-entering reports the same one
+    mock.place(1, &[], &["unnamed"], None);
+    expect_placement(&mut rx, id, &[], false);
+    mock.place(1, &["unnamed"], &[], None);
+    expect_placement(&mut rx, id, &[first.as_str()], false);
+
+    mock.stop();
+}
+
+/// `ext` has no placement information: no `wl_output` is bound and no `Placement` sent
+#[test]
+fn test_ext_backend_reports_no_placement() {
+    let mut mock = MockCompositor::with_outputs(ProtocolMode::Ext, outputs(&[("HDMI-A-1", 4)]));
+    let (mut rx, caps) = mock.spawn_client_with(ProtocolPreference::PreferWlr, EXT);
+    assert_eq!(caps.backend(), Backend::Ext);
+    assert!(!caps.monitor_info());
+
+    mock.create_window_on(1, "title", "app", &["HDMI-A-1"]);
+    let id = expect_opened(&mut rx, "app", "title");
+    mock.place(1, &["HDMI-A-1"], &[], Some(&[STATE_MINIMIZED]));
+    mock.close_window(1);
+    expect_closed(&mut rx, id);
+    mock.wait_notice(|n| matches!(n, Notice::HandleDestroyed { window: 1, .. }));
+
+    let notices = mock.all_pending_notices();
+    assert!(
+        !notices.iter().any(|n| matches!(n, Notice::OutputBound(_))),
+        "ext backend must not bind outputs: {notices:?}"
+    );
+
+    mock.stop();
+}
+
+/// `PreferWlr` binds wlr when both are advertised (and gets placement); `Auto` keeps ext
+#[test]
+fn test_prefer_wlr_picks_wlr_when_both_advertised() {
+    let mut mock = MockCompositor::with_outputs(ProtocolMode::Both, outputs(&[("DP-1", 4)]));
+    let (mut rx, caps) = mock.spawn_client_with(ProtocolPreference::PreferWlr, WLR);
+    assert_eq!(caps.backend(), Backend::Wlr);
+    assert!(caps.monitor_info());
+
+    // Reported exactly once (the mock reports windows on every bound manager/list)
+    mock.create_window_on(1, "title", "app", &["DP-1"]);
+    let id = expect_opened(&mut rx, "app", "title");
+    expect_placement(&mut rx, id, &["DP-1"], false);
+    mock.close_window(1);
+    expect_closed(&mut rx, id);
+    mock.wait_notice(|n| matches!(n, Notice::HandleDestroyed { window: 1, .. }));
+
+    let notices = mock.all_pending_notices();
+    assert!(
+        !notices.contains(&Notice::Bound(EXT)),
+        "ext list must not be bound with PreferWlr: {notices:?}"
     );
 
     mock.stop();

@@ -3,6 +3,11 @@
 //! The standard protocol for listing toplevel windows. It provides read-only access to
 //! window metadata (title, `app_id`). Protocol events are translated into calls on the
 //! shared [`WindowTracker`].
+//!
+//! The protocol carries no placement information (outputs, minimized state), so this
+//! backend never produces [`WindowEvent::Placement`](super::WindowEvent::Placement); use
+//! [`ProtocolPreference::PreferWlr`](super::ProtocolPreference::PreferWlr) where that is
+//! needed and the compositor offers `wlr` too.
 
 use color_eyre::eyre::{Context, Result};
 use tracing::error;
