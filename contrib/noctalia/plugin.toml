@@ -1,0 +1,21 @@
+# Noctalia v5 plugin for pwsw: shows the audio output pwsw's rules chose, live.
+# See README.md in this directory.
+id          = "pwsw/pwsw"
+name        = "PWSW"
+version     = "0.7.0"
+plugin_api  = 24 # argv form of noctalia.runAsync
+author      = "pwsw contributors"
+license     = "MIT"
+description = "Audio output and microphone chosen by pwsw; click to cycle sinks, right click to pause"
+tags        = ["audio", "pipewire"]
+dependencies = ["pwsw"]
+
+# Runs `pwsw status --watch --json` and shares each update with the widget
+[[service]]
+id    = "stream"
+entry = "service.luau"
+
+# The bar widget
+[[widget]]
+id    = "status"
+entry = "widget.luau"

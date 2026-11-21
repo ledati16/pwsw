@@ -37,7 +37,7 @@ that binary.
 | `src/test_utils.rs` | Test fixtures (`make_config`, `make_sink`, `make_rule`) |
 | `build.rs` | Man pages from `man/*.md` (`mandown`) into `OUT_DIR`; `PWSW_VERSION` (`<version>+<hash>[-dirty]`) |
 | `tests/` | CLI smoke tests (sandboxed binary), config integration, mock-compositor tests, `pw-dump` fixtures |
-| `contrib/` | `PKGBUILD`, systemd user unit, desktop entry, icons |
+| `contrib/` | `PKGBUILD`, systemd user unit, desktop entry, icons, `noctalia/` bar plugin |
 | `docs/` | Local planning notes, gitignored; never commit or rely on it |
 
 ## Architecture you must not break

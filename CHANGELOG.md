@@ -79,8 +79,8 @@ the daemon switches less eagerly than before.
   STREAM). It keeps running while the daemon is down (one `stopped` line, then
   reconnects with backoff) and exits quietly on `SIGINT`/`SIGTERM` or a closed pipe.
   Without `--json` it prints `Headphones · Mic: Headset Mic · paused`. The daemon serves
-  up to 16 followers and drops one that stops reading. The README shows Waybar,
-  Quickshell and eww setups.
+  up to 16 followers and drops one that stops reading. A Noctalia plugin is in
+  `contrib/noctalia/`; the README shows Waybar, Quickshell and eww setups.
 - **Fallback sinks per rule**: `sink = ["BT Headphones", "Headphones"]` uses the first
   sink that can be activated right now, and the next one if activating it fails. When a
   fallback was used, the next window event or reload switches up once an earlier sink

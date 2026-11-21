@@ -185,6 +185,7 @@ plus structured ones (stable schema: STATUS STREAM in `man pwsw`):
 
 `class` is `active`, `fallback`, `paused` or `stopped`. Hooking it up:
 
+- **Noctalia**: a ready-made plugin is in [`contrib/noctalia/`](contrib/noctalia/).
 - **Waybar**: a `custom` module with `"exec": "pwsw status --watch --json"`,
   `"return-type": "json"` and `"escape": true` (sink names are not Pango markup); for
   example `"on-click": "pwsw next-sink"`, `"on-click-right": "pwsw toggle-pause"`, and
