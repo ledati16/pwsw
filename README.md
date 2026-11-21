@@ -211,8 +211,7 @@ else does: changing the default based on which windows are open and where.
 
 **Is it safe?** The IPC socket is private to your user, window titles and device names
 are treated as untrusted (escaped in logs, terminals and notifications), config saves
-are atomic with mode `0600`, and the systemd unit is sandboxed. Report security problems
-privately as described in [SECURITY.md](SECURITY.md).
+are atomic with mode `0600`, and the systemd unit is sandboxed.
 
 ## About the code
 
@@ -227,10 +226,9 @@ and its test suite (about 800 tests) runs fully sandboxed and is checked never t
 your real config. Conventions are in [CLAUDE.md](CLAUDE.md).
 
 It works well and contains nothing malicious, but treat it as a personal tool: please
-don't package it for distributions without a proper review. Questions, bug reports and
-reviews are welcome in [Discussions](https://github.com/ledati16/pwsw/discussions)
-(for a bug, include `pwsw --version` and `pwsw doctor` output); if you want to take it
-further, fork and rename it (a link back is appreciated).
+don't package it for distributions without a proper review. It is provided as is,
+without support: there is no issue tracker and no promise of fixes. If you want to take
+it further, fork and rename it (a link back is appreciated).
 
 Similar in spirit to [SoundSwitch](https://github.com/Belphemur/SoundSwitch), but for
 Wayland and PipeWire.

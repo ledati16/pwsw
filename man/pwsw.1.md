@@ -297,7 +297,7 @@ If the configuration file changed on disk since the TUI loaded it, saving asks w
 :   Invalid command-line usage.
 
 # BUGS
-Report bugs in GitHub Discussions: <https://github.com/ledati16/pwsw/discussions>. Include the output of **pwsw --version** and **pwsw doctor**, your compositor, and the relevant lines of *daemon.log* (window titles appear there; remove anything private). Report security problems privately instead, as described in *SECURITY.md* in the repository.
+**pwsw** is provided as is, without support; there is no bug tracker. **pwsw doctor** diagnoses most setup problems.
 
 # SEE ALSO
 **pwsw**(5), **pw-dump**(1), **pw-metadata**(1), **pw-cli**(1)

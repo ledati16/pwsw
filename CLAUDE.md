@@ -293,7 +293,7 @@ captured child output. `get_app_icon` accepts only plain icon names.
 - **User docs** live in `README.md`, `man/pwsw.1.md`, `man/pwsw.5.md`, `CHANGELOG.md`
   and the `contrib/` READMEs; update them with any behaviour change. The STATUS JSON and
   STATUS STREAM schemas in pwsw(1) are a contract: only add fields. `MAINTENANCE.md` is
-  the maintainer's checklist, `SECURITY.md` the reporting policy.
+  the maintainer's checklist.
 
 ## Testing rules
 
