@@ -11,7 +11,8 @@ use super::keymap::Context;
 use super::preview::LivePreview;
 use super::screens::list::FormEditor;
 use super::screens::{DashboardScreen, HelpScroll, RulesScreen, SettingsScreen, SinksScreen};
-use crate::config::{Config, ConfigModifiedOnDisk};
+use crate::config::{Config, ConfigModifiedOnDisk, Endpoint};
+use crate::pipewire::{ActiveSink, ProfileSink};
 
 /// Longest paste accepted into a text field (characters).
 const MAX_PASTE_CHARS: usize = 4096;
@@ -110,12 +111,15 @@ pub(crate) struct Status {
 
 /// Messages sent from background worker to UI
 pub enum AppUpdate {
-    /// Full sink data including active and profile sinks
+    /// Sinks and sources of one `PipeWire` snapshot: the nodes present and those a
+    /// profile switch would create (sources without monitors)
     ///
     /// Sent by the background worker with each `PipeWire` snapshot.
     SinksData {
-        active: Vec<crate::pipewire::ActiveSink>,
-        profiles: Vec<crate::pipewire::ProfileSink>,
+        active: Vec<ActiveSink>,
+        profiles: Vec<ProfileSink>,
+        sources: Vec<ActiveSink>,
+        profile_sources: Vec<ProfileSink>,
     },
     /// `PipeWire` is unavailable (pw-dump failed)
     ///
@@ -245,8 +249,12 @@ pub struct App {
     pub(crate) dashboard_screen: DashboardScreen,
     /// Settings screen state
     pub(crate) settings_screen: SettingsScreen,
-    /// Sinks screen state
+    /// Sinks screen state (its list of sinks)
     pub(crate) sinks_screen: SinksScreen,
+    /// State of the Sinks screen's list of sources (mics)
+    pub(crate) sources_screen: SinksScreen,
+    /// Which list the Sinks screen shows (`i` switches)
+    pub(crate) endpoint_view: Endpoint,
     /// Rules screen state
     pub(crate) rules_screen: RulesScreen,
     /// Whether config has unsaved changes
@@ -263,7 +271,8 @@ pub struct App {
     daemon_state_seen: bool,
     /// Cached window list for live preview (updated by background worker)
     pub(crate) windows: Vec<crate::ipc::WindowInfo>,
-    /// Bumped whenever `windows` changes `app_id`/title content (drives preview recompute)
+    /// Bumped whenever `windows` changes what rules match on (`app_id`, title,
+    /// monitors, minimized; drives preview recompute)
     windows_generation: u64,
     /// Whether the daemon's rule-driven switching is paused (as last reported by it)
     pub(crate) daemon_paused: bool,
@@ -283,9 +292,13 @@ pub struct App {
     /// Whether a config reload sent to the background worker has not reported back yet
     pub(crate) reload_pending: bool,
     /// Cached full active sinks with descriptions
-    pub(crate) active_sink_list: Vec<crate::pipewire::ActiveSink>,
+    pub(crate) active_sink_list: Vec<ActiveSink>,
     /// Cached profile sinks for sink selector
-    pub(crate) profile_sink_list: Vec<crate::pipewire::ProfileSink>,
+    pub(crate) profile_sink_list: Vec<ProfileSink>,
+    /// Sources present in the last snapshot (monitors excluded)
+    pub(crate) active_source_list: Vec<ActiveSink>,
+    /// Sources a profile switch would create
+    pub(crate) profile_source_list: Vec<ProfileSink>,
     /// Whether `PipeWire` is available (last poll succeeded)
     pub(crate) pipewire_available: bool,
     /// Daemon log lines (tailed from log file)
@@ -351,6 +364,8 @@ impl App {
             dashboard_screen,
             settings_screen,
             sinks_screen,
+            sources_screen: SinksScreen::new(),
+            endpoint_view: Endpoint::Sink,
             rules_screen,
             config_dirty: false,
             show_help: false,
@@ -362,6 +377,8 @@ impl App {
             windows_generation: 0,
             active_sink_list: Vec::new(),
             profile_sink_list: Vec::new(),
+            active_source_list: Vec::new(),
+            profile_source_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
             daemon_paused: false,
             pause_pending: false,
@@ -395,12 +412,43 @@ impl App {
         self.clear_status();
     }
 
+    /// The state of the list the Sinks screen shows (sinks or sources)
+    pub(crate) const fn endpoint_screen(&self) -> &SinksScreen {
+        match self.endpoint_view {
+            Endpoint::Sink => &self.sinks_screen,
+            Endpoint::Source => &self.sources_screen,
+        }
+    }
+
+    /// [`Self::endpoint_screen`], mutable
+    pub(crate) const fn endpoint_screen_mut(&mut self) -> &mut SinksScreen {
+        match self.endpoint_view {
+            Endpoint::Sink => &mut self.sinks_screen,
+            Endpoint::Source => &mut self.sources_screen,
+        }
+    }
+
+    /// The `PipeWire` nodes of `kind` from the last snapshot: present ones, and
+    /// those a profile switch would create
+    pub(crate) fn endpoint_lists(&self, kind: Endpoint) -> (&[ActiveSink], &[ProfileSink]) {
+        match kind {
+            Endpoint::Sink => (&self.active_sink_list, &self.profile_sink_list),
+            Endpoint::Source => (&self.active_source_list, &self.profile_source_list),
+        }
+    }
+
+    /// Switch the Sinks screen between its list of sinks and of sources
+    pub(crate) fn toggle_endpoint_view(&mut self) {
+        self.endpoint_view = super::screens::sinks::other(self.endpoint_view);
+        self.clear_status();
+    }
+
     /// Check if any text input field is currently focused
     pub(crate) fn is_input_focused(&self) -> bool {
         match self.current_screen {
             Screen::Dashboard => false,
             Screen::Settings => self.settings_screen.delay_input.is_some(),
-            Screen::Sinks => self.sinks_screen.text_focused(),
+            Screen::Sinks => self.endpoint_screen().text_focused(),
             Screen::Rules => self.rules_screen.text_focused(),
         }
     }
@@ -412,7 +460,7 @@ impl App {
             return None;
         }
         match self.current_screen {
-            Screen::Sinks => self.sinks_screen.editor.focused_input_mut(),
+            Screen::Sinks => self.endpoint_screen_mut().editor.focused_input_mut(),
             Screen::Rules => self.rules_screen.editor.focused_input_mut(),
             Screen::Settings => self.settings_screen.delay_input.as_mut(),
             Screen::Dashboard => None,
@@ -507,7 +555,7 @@ impl App {
         let screen = self.current_screen;
         let modal = match screen {
             Screen::Dashboard => None,
-            Screen::Sinks => self.sinks_screen.context(screen),
+            Screen::Sinks => self.endpoint_screen().context(screen),
             Screen::Rules => self.rules_screen.context(screen),
             Screen::Settings if self.settings_screen.delay_input.is_some() => {
                 Some(Context::Editor(screen))
@@ -616,8 +664,11 @@ impl App {
         }
         let editor = &self.rules_screen.editor;
         self.preview.refresh(
-            editor.app_id_pattern.value(),
-            editor.title_pattern.value(),
+            &super::preview::Patterns {
+                app_id: editor.app_id_pattern.value(),
+                title: editor.title_pattern.value(),
+                output: editor.output_pattern.value(),
+            },
             &self.windows,
             self.windows_generation,
         );
@@ -767,6 +818,7 @@ impl App {
         self.config = config;
         self.config_dirty = false;
         self.sinks_screen = SinksScreen::new();
+        self.sources_screen = SinksScreen::new();
         self.rules_screen = RulesScreen::new();
         self.confirm_quit = false;
         self.dirty = true;
@@ -775,9 +827,16 @@ impl App {
     /// Process a background update message
     pub(crate) fn handle_update(&mut self, update: AppUpdate) {
         match update {
-            AppUpdate::SinksData { active, profiles } => {
+            AppUpdate::SinksData {
+                active,
+                profiles,
+                sources,
+                profile_sources,
+            } => {
                 self.active_sink_list = active;
                 self.profile_sink_list = profiles;
+                self.active_source_list = sources;
+                self.profile_source_list = profile_sources;
                 self.pipewire_available = true;
                 self.dirty = true;
             }
@@ -798,11 +857,14 @@ impl App {
                 }
                 self.daemon_state_seen = true;
                 self.daemon_running = running;
+                // Everything a rule matches on (the preview depends on it)
                 let changed = windows.len() != self.windows.len()
-                    || windows
-                        .iter()
-                        .zip(&self.windows)
-                        .any(|(a, b)| a.app_id != b.app_id || a.title != b.title);
+                    || windows.iter().zip(&self.windows).any(|(a, b)| {
+                        a.app_id != b.app_id
+                            || a.title != b.title
+                            || a.outputs != b.outputs
+                            || a.minimized != b.minimized
+                    });
                 if changed {
                     self.windows_generation = self.windows_generation.wrapping_add(1);
                 }

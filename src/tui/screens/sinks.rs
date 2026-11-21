@@ -1,4 +1,5 @@
-//! Sinks screen - Manage audio output sinks
+//! Sinks screen - Manage the audio outputs (sinks) and inputs (sources, shown as
+//! "mics"); `i` switches between the two lists, which share every view and form.
 
 use std::borrow::Cow;
 
@@ -8,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, ListItem, ListState, Row};
 use tui_input::Input;
 
-use crate::config::SinkConfig;
+use crate::config::{Endpoint, SinkConfig};
 use crate::pipewire::{ActiveSink, ProfileSink};
 use crate::tui::screens::list::{
     FormEditor, ListMode, ListScreen, open_editor_dialog, optional, render_delete_dialog,
@@ -20,6 +21,38 @@ use crate::tui::widgets::{
     pick_list_rect, picker_lines, render_form, render_pick_list, render_text_dialog, rounded_block,
     text_width, truncate_node_name,
 };
+
+/// "sink" / "mic": what one entry of the `kind` list is called in the TUI
+pub(crate) const fn noun(kind: Endpoint) -> &'static str {
+    match kind {
+        Endpoint::Sink => "sink",
+        Endpoint::Source => "mic",
+    }
+}
+
+/// "Sink" / "Mic"
+pub(crate) const fn title(kind: Endpoint) -> &'static str {
+    match kind {
+        Endpoint::Sink => "Sink",
+        Endpoint::Source => "Mic",
+    }
+}
+
+/// "Sinks" / "Mics"
+pub(crate) const fn plural(kind: Endpoint) -> &'static str {
+    match kind {
+        Endpoint::Sink => "Sinks",
+        Endpoint::Source => "Mics",
+    }
+}
+
+/// The other list of the screen (what `i` switches to)
+pub(crate) const fn other(kind: Endpoint) -> Endpoint {
+    match kind {
+        Endpoint::Sink => Endpoint::Source,
+        Endpoint::Source => Endpoint::Sink,
+    }
+}
 
 /// Field of the sink editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -189,7 +222,11 @@ impl SinksScreen {
 }
 
 /// Context for rendering the sinks screen (bundles related parameters)
+///
+/// Everything is of the list shown (`kind`): the configured sinks or sources, the
+/// state of that list, and the `PipeWire` nodes of that direction.
 pub struct SinksRenderContext<'a> {
+    pub kind: Endpoint,
     pub sinks: &'a [SinkConfig],
     pub screen_state: &'a mut SinksScreen,
     pub active_sink_list: &'a [ActiveSink],
@@ -197,10 +234,10 @@ pub struct SinksRenderContext<'a> {
     pub pipewire_available: bool,
 }
 
-/// Where a configured sink stands in the last `PipeWire` snapshot
+/// Where a configured sink (or source) stands in the last `PipeWire` snapshot
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SinkState {
-    /// It is the current default sink: audio plays here now
+    /// It is the current default sink (source): audio plays (is recorded) here now
     Playing,
     /// The node exists
     Present,
@@ -221,8 +258,10 @@ impl SinkState {
         }
     }
 
-    pub(crate) const fn label(self) -> &'static str {
+    /// How the state reads in a list of `kind` entries
+    pub(crate) const fn label(self, kind: Endpoint) -> &'static str {
         match self {
+            Self::Playing if matches!(kind, Endpoint::Source) => "● in use",
             Self::Playing => "▶ playing",
             Self::Present => "present",
             Self::ViaProfile => "via profile",
@@ -246,7 +285,7 @@ impl SinkState {
 }
 
 /// Marker of the fallback sink in the table
-pub(crate) const FALLBACK_MARKER: &str = "★ fallback";
+pub(crate) const FALLBACK_MARKER: &str = "★ default";
 
 /// Render the sinks screen
 pub fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
@@ -257,14 +296,14 @@ pub fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext)
     match ctx.screen_state.mode {
         ListMode::List => {}
         ListMode::AddEdit => {
-            render_editor(frame, area, ctx.screen_state);
+            render_editor(frame, area, ctx.kind, ctx.screen_state);
             if ctx.screen_state.confirm_discard {
-                render_discard_dialog(frame, area, "sink");
+                render_discard_dialog(frame, area, noun(ctx.kind));
             }
         }
         ListMode::Delete => {
             if let Some(sink) = ctx.sinks.get(ctx.screen_state.selected) {
-                render_delete_dialog(frame, area, "Sink", &[
+                render_delete_dialog(frame, area, title(ctx.kind), &[
                     ("Description", &sink.desc, false),
                     ("Node", &sink.name, false),
                 ]);
@@ -273,6 +312,7 @@ pub fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext)
         ListMode::SelectSink => render_sink_selector(
             frame,
             area,
+            ctx.kind,
             ctx.active_sink_list,
             ctx.profile_sink_list,
             &mut ctx.screen_state.editor,
@@ -306,32 +346,30 @@ fn render_list(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
         rest
     };
 
+    let kind = ctx.kind;
+    let name = Span::styled(format!(" {} ", plural(kind)), theme::bold());
     let title = if sinks.is_empty() {
-        Line::from(Span::styled(" Sinks ", theme::bold()))
+        Line::from(name)
     } else {
         Line::from(vec![
-            Span::styled(" Sinks ", theme::bold()),
+            name,
             Span::styled(
                 format!("· {} configured · {present} present ", sinks.len()),
                 theme::dim(),
             ),
         ])
     };
-    let block = rounded_block().title(title);
+    // The other list, one key away
+    let switch = Line::from(vec![
+        Span::styled("i", theme::key()),
+        Span::raw(format!(" {} ", plural(other(kind)).to_lowercase())),
+    ]);
+    let block = rounded_block()
+        .title(title)
+        .title_top(switch.alignment(ratatui::layout::Alignment::Right));
 
     if sinks.is_empty() {
-        let lines = vec![
-            Line::from(Span::styled("No sinks yet", theme::bold())),
-            Line::from(""),
-            Line::from(vec![
-                Span::raw("Press "),
-                Span::styled("a", theme::key()),
-                Span::raw(", then "),
-                Span::styled("Space", theme::key()),
-                Span::raw(" to pick an output from PipeWire"),
-            ]),
-        ];
-        render_empty(frame, area, block, lines);
+        render_empty(frame, area, block, empty_lines(kind));
         return;
     }
 
@@ -355,7 +393,7 @@ fn render_list(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
                     truncate_node_name(&sink.name, cols[1]).into_owned(),
                     theme::dim(),
                 )),
-                Cell::from(Span::styled(state.label(), state.style())),
+                Cell::from(Span::styled(state.label(kind), state.style())),
                 if sink.default {
                     Cell::from(Span::styled(FALLBACK_MARKER, theme::accent()))
                 } else {
@@ -376,14 +414,52 @@ fn render_list(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
     );
 }
 
-/// The icon name a sink without one gets automatically
-fn auto_icon(desc: &str) -> String {
-    crate::notification::get_sink_icon(&SinkConfig {
+/// The guidance shown while the `kind` list is empty
+fn empty_lines(kind: Endpoint) -> Vec<Line<'static>> {
+    let pick = |what: &'static str| {
+        Line::from(vec![
+            Span::raw("Press "),
+            Span::styled("a", theme::key()),
+            Span::raw(", then "),
+            Span::styled("Space", theme::key()),
+            Span::raw(format!(" to pick {what} from PipeWire")),
+        ])
+    };
+    match kind {
+        Endpoint::Sink => vec![
+            Line::from(Span::styled("No sinks yet", theme::bold())),
+            Line::from(""),
+            pick("an output"),
+        ],
+        Endpoint::Source => vec![
+            Line::from(Span::styled("No mics yet", theme::bold())),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Without mics pwsw never touches the microphone.",
+                theme::dim(),
+            )),
+            Line::from(Span::styled(
+                "Add some to let rules choose the input too.",
+                theme::dim(),
+            )),
+            Line::from(""),
+            pick("an input"),
+        ],
+    }
+}
+
+/// The icon name a sink (source) without one gets automatically
+fn auto_icon(kind: Endpoint, desc: &str) -> String {
+    let entry = SinkConfig {
         name: String::new(),
         desc: desc.to_string(),
         icon: None,
         default: false,
-    })
+    };
+    match kind {
+        Endpoint::Sink => crate::notification::get_sink_icon(&entry),
+        Endpoint::Source => crate::notification::get_source_icon(&entry),
+    }
 }
 
 /// Render the sink details dialog
@@ -391,33 +467,39 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, ctx: &SinksRenderContext)
     let Some(sink) = ctx.sinks.get(ctx.screen_state.selected) else {
         return;
     };
+    let kind = ctx.kind;
     let state = SinkState::of(&sink.name, ctx.active_sink_list, ctx.profile_sink_list);
-    let auto = format!("(auto: {})", auto_icon(&sink.desc));
+    let auto = format!("(auto: {})", auto_icon(kind, &sink.desc));
     let (icon, icon_auto) = sink
         .icon
         .as_deref()
         .map_or((auto.as_str(), true), |i| (i, false));
-    let fallback = if sink.default {
-        "yes · used when no rule matches"
-    } else {
-        "no"
+    let fallback = match (sink.default, kind) {
+        (true, Endpoint::Sink) => "yes · used when no rule matches",
+        (true, Endpoint::Source) => "yes · used when no rule chooses a mic",
+        (false, _) => "no",
     };
     let lines = detail_lines(&[
         ("Node", &sink.name, false),
         ("Description", &sink.desc, false),
         ("Icon", icon, icon_auto),
-        ("Fallback", fallback, false),
-        ("State", state.label(), false),
+        ("Default", fallback, false),
+        ("State", state.label(kind), false),
     ]);
-    render_text_dialog(frame, area, "Sink Details", lines, &[("Enter", "close")]);
+    let heading = format!("{} Details", title(kind));
+    render_text_dialog(frame, area, &heading, lines, &[("Enter", "close")]);
 }
 
 /// Render the add/edit form
-fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
+fn render_editor(frame: &mut Frame, area: Rect, kind: Endpoint, screen_state: &SinksScreen) {
     let editor = &screen_state.editor;
     let focused = |field| editor.focused_field == field && !screen_state.confirm_discard;
     let hint = |field, text| focused(field).then(|| Span::styled(text, theme::dim()));
-    let auto = format!("(auto: {})", auto_icon(editor.desc.value()));
+    let auto = format!("(auto: {})", auto_icon(kind, editor.desc.value()));
+    let fallback = match kind {
+        Endpoint::Sink => "used when no rule matches",
+        Endpoint::Source => "used when no rule chooses a mic",
+    };
 
     let fields = [
         FormField {
@@ -448,16 +530,16 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
             focused: focused(SinkField::Icon),
         },
         FormField {
-            label: "Fallback",
-            value: FieldValue::Fixed(checkbox(editor.default, "used when no rule matches")),
+            label: "Default",
+            value: FieldValue::Fixed(checkbox(editor.default, fallback)),
             trailing: hint(SinkField::Default, "␣ toggle"),
             focused: focused(SinkField::Default),
         },
     ];
 
     let width = (form_width(&fields, 52) + 4).min(MAX_DIALOG_WIDTH);
-    let title = screen_state.editor_title("Sink");
-    let inner = open_editor_dialog(frame, area, &title, width, 4 + 2);
+    let heading = screen_state.editor_title(title(kind));
+    let inner = open_editor_dialog(frame, area, &heading, width, 4 + 2);
     render_form(frame, inner, &fields);
 }
 
@@ -465,12 +547,16 @@ fn render_editor(frame: &mut Frame, area: Rect, screen_state: &SinksScreen) {
 fn render_sink_selector(
     frame: &mut Frame,
     area: Rect,
+    kind: Endpoint,
     active_sinks: &[ActiveSink],
     profile_sinks: &[ProfileSink],
     editor: &mut SinkEditor,
 ) {
-    const ACTIVE_HEADER: &str = "Sinks in PipeWire";
     const PROFILE_HEADER: &str = "After a profile switch";
+    let active_header = match kind {
+        Endpoint::Sink => "Sinks in PipeWire",
+        Endpoint::Source => "Inputs in PipeWire",
+    };
 
     let entries: Vec<(&str, &str)> = active_sinks
         .iter()
@@ -484,7 +570,7 @@ fn render_sink_selector(
     let widest = entries
         .iter()
         .map(|(d, n)| text_width(d) + 2 + text_width(n))
-        .chain([text_width(PROFILE_HEADER)])
+        .chain([text_width(PROFILE_HEADER), text_width(active_header)])
         .max()
         .unwrap_or(0);
     let rows = 1
@@ -498,7 +584,7 @@ fn render_sink_selector(
 
     let heading = |text: &'static str| ListItem::new(Line::from(Span::styled(text, theme::bold())));
     let mut lines = picker_lines(&entries, content_width).into_iter();
-    let mut items: Vec<ListItem> = vec![heading(ACTIVE_HEADER)];
+    let mut items: Vec<ListItem> = vec![heading(active_header)];
     items.extend(lines.by_ref().take(active_sinks.len()).map(ListItem::new));
     if !profile_sinks.is_empty() {
         items.push(ListItem::new(Line::from("")));

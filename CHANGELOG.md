@@ -103,8 +103,10 @@ the daemon switches less eagerly than before.
   `daemon.monitor_info` in `status --json`), `validate` notes the `wlr` requirement,
   `pwsw test-rule --output REGEX` tests an `output` condition against open windows
   (alone or with an `app_id`/title pattern) and `pwsw doctor` reports whether monitor
-  rules are available. The TUI keeps a rule's
-  `output` when the rule is edited (it does not edit it yet).
+  rules are available. In the TUI the rule editor has an **Output** field (App ID may
+  then stay empty, shown as *any app*; the monitors seen are listed and the live
+  preview matches like the daemon), the rules table shows such rules as
+  `any app on HDMI-A-1`, and the Windows view has a *Monitor* column.
 - **Microphone (source) switching**: an optional `[[sources]]` list (same keys as
   `[[sinks]]`, exactly one `default`) and a rule key `source = "Headset Mic"` (or a
   fallback list, like `sink`) make the default input follow the rules too. The
@@ -119,8 +121,11 @@ the daemon switches less eagerly than before.
   SOURCES* section (and `*_sources` JSON fields); `status` shows the input, `status
   --json` adds `current_source`, `sources_configured`, `pipewire.current_source`,
   `daemon.daemon_source` and `daemon.daemon_source_fallback`; `list-windows` and
-  `test-rule` show a rule's sources; the systemd status reads `Sink: X · Mic: Y`. The
-  IPC protocol is now version 2 (restart the daemon after upgrading).
+  `test-rule` show a rule's sources; the systemd status reads `Sink: X · Mic: Y`. In the
+  TUI `i` on the Sinks screen switches to a mic list that works like the sink list,
+  the rule editor has an optional **Mics** field picked like **Sinks**, the rules table
+  gains a *Mic* column and the Dashboard shows the current mic. The IPC protocol is
+  now version 2 (restart the daemon after upgrading).
 - **Pause / resume**: `pwsw pause`, `pwsw resume` and `pwsw toggle-pause` stop and
   restart rule-driven switching. While paused the daemon keeps tracking windows and
   reloading the config, and manual switches still work; resuming switches at once if the

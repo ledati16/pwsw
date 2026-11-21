@@ -264,6 +264,8 @@ pub struct DashboardRenderContext<'a> {
     pub windows: &'a [WindowInfo],
     /// Active sinks from the last `PipeWire` snapshot (one has `is_default`)
     pub active_sinks: &'a [crate::pipewire::ActiveSink],
+    /// Active sources from the same snapshot (one has `is_default`)
+    pub active_sources: &'a [crate::pipewire::ActiveSink],
     /// Whether the last `PipeWire` snapshot succeeded
     pub pipewire_available: bool,
 }
@@ -381,8 +383,28 @@ fn render_daemon_card(
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// "Playing on" card: the current default sink from the last `PipeWire`
-/// snapshot (no I/O here) and what is configured
+/// The current mic for the "Playing on" card: `Mic  Headset Mic` (the configured
+/// description, else what `PipeWire` calls it)
+fn mic_line(ctx: &DashboardRenderContext, width: usize) -> Line<'static> {
+    const LABEL: &str = "Mic ";
+    let room = width.saturating_sub(text_width(LABEL));
+    let value = match ctx.active_sources.iter().find(|s| s.is_default) {
+        Some(active) => match ctx.config.sources.iter().find(|s| s.name == active.name) {
+            Some(configured) => Span::styled(
+                ellipsize(&configured.desc, room).into_owned(),
+                theme::bold(),
+            ),
+            None => Span::raw(ellipsize(&active.description, room).into_owned()),
+        },
+        None if !ctx.pipewire_available => Span::styled("unknown", theme::dim()),
+        None => Span::styled("none", theme::dim()),
+    };
+    Line::from(vec![Span::styled(LABEL, theme::dim()), value])
+}
+
+/// "Playing on" card: the current default sink (and, with mics configured, the
+/// current mic) from the last `PipeWire` snapshot (no I/O here) and what is
+/// configured
 fn render_sink_card(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
     let block = rounded_block()
         .padding(Padding::horizontal(1))
@@ -434,11 +456,27 @@ fn render_sink_card(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext)
         .iter()
         .filter(|s| ctx.active_sinks.iter().any(|a| a.name == s.name))
         .count();
-    let summary = format!(
-        "{} · {present} present · {}",
-        count(config.sinks.len(), "sink", "sinks"),
-        count(config.rules.len(), "rule", "rules"),
-    );
+    let with_mics = !config.sources.is_empty();
+    let summary = if with_mics {
+        format!(
+            "{} · {} · {}",
+            count(config.sinks.len(), "sink", "sinks"),
+            count(config.sources.len(), "mic", "mics"),
+            count(config.rules.len(), "rule", "rules"),
+        )
+    } else {
+        format!(
+            "{} · {present} present · {}",
+            count(config.sinks.len(), "sink", "sinks"),
+            count(config.rules.len(), "rule", "rules"),
+        )
+    };
+    // With mics the node name makes way for the current mic
+    let second = if with_mics {
+        mic_line(ctx, width)
+    } else {
+        second
+    };
     let lines = vec![
         first,
         second,
@@ -460,34 +498,86 @@ pub(crate) fn windows_in_display_order(
         .chain(windows.iter().filter(|w| w.tracked.is_none()))
 }
 
-/// Columns of the window table: marker, app ID, title, sink
-const WINDOW_COLUMNS: [Constraint; 4] = [
-    Constraint::Length(1),
-    Constraint::Fill(2),
-    Constraint::Fill(3),
-    Constraint::Fill(2),
-];
+/// Narrowest window table (inside its border) that still shows the Monitor column
+const MONITOR_MIN_TABLE_WIDTH: u16 = 70;
+/// Widest the Monitor column gets
+const MONITOR_MAX_WIDTH: usize = 16;
 
-/// One row of the window table, cells cut to `cols`
+/// The monitors a window is on (`HDMI-A-1,DP-2`), `—` when unknown (the `ext`
+/// backend), with ` (min)` while it is minimized
+fn monitor_text(win: &WindowInfo) -> String {
+    let mut text = if win.outputs.is_empty() {
+        "—".to_string()
+    } else {
+        win.outputs.join(",")
+    };
+    if win.minimized {
+        text.push_str(" (min)");
+    }
+    text
+}
+
+/// Columns of the window table: marker, app ID, title, monitor (only when
+/// `monitor` is `Some(width)`), sink
+fn window_columns(monitor: Option<u16>) -> Vec<Constraint> {
+    let mut columns = vec![
+        Constraint::Length(1),
+        Constraint::Fill(2),
+        Constraint::Fill(3),
+    ];
+    columns.extend(monitor.map(Constraint::Length));
+    columns.push(Constraint::Fill(2));
+    columns
+}
+
+/// Width of the Monitor column for `windows` in a table `width` columns wide;
+/// `None` (the column is left out) when the table is narrow
+fn monitor_column(windows: &[WindowInfo], width: u16) -> Option<u16> {
+    if width < MONITOR_MIN_TABLE_WIDTH {
+        return None;
+    }
+    let widest = windows
+        .iter()
+        .map(|w| text_width(&monitor_text(w)))
+        .chain([text_width("Monitor")])
+        .max()
+        .unwrap_or(0)
+        .min(MONITOR_MAX_WIDTH);
+    u16::try_from(widest).ok()
+}
+
+/// One row of the window table, cells cut to `cols` (with a Monitor column when
+/// `cols` has five)
 fn window_row<'a>(win: &'a WindowInfo, cols: &[usize]) -> Row<'a> {
     let cut = |text: &str, col: usize| ellipsize(text, cols[col]).into_owned();
-    match &win.tracked {
-        Some(tracked) => Row::new(vec![
+    let with_monitor = cols.len() == 5;
+    let sink_col = cols.len() - 1;
+    let mut cells = match &win.tracked {
+        Some(_) => vec![
             Cell::from(Span::styled("●", theme::success())),
             Cell::from(Span::styled(cut(&win.app_id, 1), theme::bold())),
             Cell::from(cut(&win.title, 2)),
-            Cell::from(Span::styled(
-                cut(&format!("→ {}", tracked.sink_desc), 3),
-                theme::accent(),
-            )),
-        ]),
-        None => Row::new(vec![
+        ],
+        None => vec![
             Cell::from(Span::styled("○", theme::dim())),
             Cell::from(cut(&win.app_id, 1)),
             Cell::from(Span::styled(cut(&win.title, 2), theme::dim())),
-            Cell::from(""),
-        ]),
+        ],
+    };
+    if with_monitor {
+        cells.push(Cell::from(Span::styled(
+            cut(&monitor_text(win), 3),
+            theme::dim(),
+        )));
     }
+    cells.push(match &win.tracked {
+        Some(tracked) => Cell::from(Span::styled(
+            cut(&format!("→ {}", tracked.sink_desc), sink_col),
+            theme::accent(),
+        )),
+        None => Cell::from(""),
+    });
+    Row::new(cells)
 }
 
 /// Render the window table (bottom section when the view is Windows)
@@ -541,7 +631,8 @@ fn render_window_tracking(
         return;
     }
 
-    let cols = column_widths(&WINDOW_COLUMNS, inner.width, 0);
+    let columns = window_columns(monitor_column(windows, inner.width));
+    let cols = column_widths(&columns, inner.width, 0);
     // Matched windows first, then the rest
     let rows: Vec<Row> = windows_in_display_order(windows)
         .enumerate()
@@ -556,8 +647,13 @@ fn render_window_tracking(
             }
         })
         .collect();
-    let table = Table::new(rows, WINDOW_COLUMNS)
-        .header(Row::new(vec!["", "App ID", "Title", "Sink"]).style(theme::bold()))
+    let header = if columns.len() == 5 {
+        vec!["", "App ID", "Title", "Monitor", "Sink"]
+    } else {
+        vec!["", "App ID", "Title", "Sink"]
+    };
+    let table = Table::new(rows, columns)
+        .header(Row::new(header).style(theme::bold()))
         .block(block);
     frame.render_widget(table, area);
     render_scrollbar(frame, area, 1, total, start);

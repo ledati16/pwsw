@@ -9,13 +9,17 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::style::Color;
 
+use crate::config::Endpoint;
 use crate::ipc::{TrackedInfo, WindowInfo};
 use crate::pipewire::{ActiveSink, ProfileSink};
-use crate::test_utils::fixtures::{make_config, make_rule, make_sink, make_sink_with_icon};
+use crate::test_utils::fixtures::{
+    make_config, make_rule, make_sink, make_sink_with_icon, with_output, with_sources,
+};
 use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
 use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::BINDINGS;
 use crate::tui::screens::list::ListMode;
+use crate::tui::screens::rules::RuleField;
 use crate::tui::screens::settings::SettingItem;
 use crate::tui::screens::sinks::{SinkField, selector_names};
 use crate::tui::{render_ui, theme};
@@ -121,6 +125,8 @@ fn fixture() -> App {
             profile_name: "output:hdmi-stereo".to_string(),
             profile_index: 5,
         }],
+        sources: Vec::new(),
+        profile_sources: Vec::new(),
     });
     app.handle_update(AppUpdate::DaemonState {
         running: true,
@@ -145,6 +151,86 @@ fn fixture() -> App {
             .to_string(),
     ]));
     app
+}
+
+const HEADSET_MIC: &str = "alsa_input.usb-Logitech_Headset-00.mono-fallback";
+const WEBCAM_MIC: &str = "alsa_input.usb-Webcam_C920-02.analog-stereo";
+const BUILTIN_MIC: &str = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+
+/// The fixture with three mics (in use, present, via profile), an output-only
+/// rule (4), a rule with an output and two mics (5), and windows on monitors
+fn with_mics_and_monitors(app: &mut App) {
+    app.config.sources = vec![
+        make_sink(HEADSET_MIC, "Headset Mic", true),
+        make_sink(WEBCAM_MIC, "Webcam Mic", false),
+        make_sink(BUILTIN_MIC, "Built-in Mic", false),
+    ];
+    app.config.rules.push(with_output(
+        make_rule("", None, "HDMI / DisplayPort"),
+        "^HDMI-A-1$",
+    ));
+    app.config.rules.push(with_output(
+        with_sources(
+            make_rule("^discord$", None, "Built-in Audio Analog Stereo"),
+            &["Headset Mic", "Webcam Mic"],
+        ),
+        "^DP-",
+    ));
+    let sinks = app.active_sink_list.clone();
+    app.handle_update(AppUpdate::SinksData {
+        active: sinks,
+        profiles: Vec::new(),
+        sources: vec![
+            ActiveSink {
+                name: HEADSET_MIC.to_string(),
+                description: "Logitech Headset Mono".to_string(),
+                is_default: true,
+            },
+            ActiveSink {
+                name: WEBCAM_MIC.to_string(),
+                description: "HD Pro Webcam C920".to_string(),
+                is_default: false,
+            },
+        ],
+        profile_sources: vec![ProfileSink {
+            predicted_name: BUILTIN_MIC.to_string(),
+            description: "Built-in Audio Analog Stereo".to_string(),
+            device_name: "alsa_card.pci-0000_00_1f.3".to_string(),
+            device_id: 41,
+            profile_name: "output:analog-stereo+input:analog-stereo".to_string(),
+            profile_index: 3,
+        }],
+    });
+    let placed = |mut w: WindowInfo, outputs: &[&str], minimized: bool| {
+        w.outputs = outputs.iter().map(|o| (*o).to_string()).collect();
+        w.minimized = minimized;
+        w
+    };
+    app.handle_update(AppUpdate::DaemonState {
+        running: true,
+        windows: vec![
+            placed(
+                window("firefox", "Rust Book — Mozilla Firefox", Some(SONY_DESC)),
+                &["DP-2"],
+                false,
+            ),
+            placed(
+                window("mpv", "big_buck_bunny.mkv", Some("HDMI / DisplayPort")),
+                &["HDMI-A-1"],
+                false,
+            ),
+            placed(
+                window("discord", "#general", Some("Built-in Audio Analog Stereo")),
+                &["DP-2", "HDMI-A-1"],
+                false,
+            ),
+            placed(window("kitty", "~/src/pwsw", None), &["DP-2"], true),
+            window("org.gnome.Nautilus", "Downloads", None),
+        ],
+        unit_installed: true,
+        service_enabled: Some(true),
+        paused: false,
+    });
 }
 
 type Setup = fn(&mut App);
@@ -242,6 +328,82 @@ fn states() -> Vec<(&'static str, Setup)> {
             app.show_help = true;
         }),
         ("conflict", |app| app.save_conflict = true),
+        ("mics", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+        }),
+        ("mic add", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+            app.sources_screen.start_add();
+        }),
+        ("mic node picker", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+            app.sources_screen.start_add();
+            let names = selector_names(&app.active_source_list, &app.profile_source_list)
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            app.sources_screen.open_selector(&names);
+        }),
+        ("mic details", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+            app.sources_screen.start_inspect();
+        }),
+        ("mic delete", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+            app.sources_screen.selected = 2;
+            app.sources_screen.start_delete();
+        }),
+        ("no mics", |app| {
+            app.current_screen = Screen::Sinks;
+            app.endpoint_view = Endpoint::Source;
+        }),
+        ("rules with mics and outputs", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Rules;
+        }),
+        ("rule edit with mics and output", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Rules;
+            app.rules_screen.selected = 4;
+            app.rules_screen.start_edit(&app.config.rules);
+            app.rules_screen.editor.focused_field = RuleField::Output;
+        }),
+        ("rule mic picker", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Rules;
+            app.rules_screen.selected = 4;
+            app.rules_screen.start_edit(&app.config.rules);
+            app.rules_screen
+                .open_picker(Endpoint::Source, &app.config.sources);
+        }),
+        ("rule details output only", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Rules;
+            app.rules_screen.selected = 3;
+            app.rules_screen.start_inspect();
+        }),
+        ("rule details with mics", |app| {
+            with_mics_and_monitors(app);
+            app.current_screen = Screen::Rules;
+            app.rules_screen.selected = 4;
+            app.rules_screen.start_inspect();
+        }),
+        ("dashboard with mics", |app| with_mics_and_monitors(app)),
+        ("dashboard windows on monitors", |app| {
+            with_mics_and_monitors(app);
+            app.dashboard_screen.toggle_view();
+        }),
         ("no sinks", |app| {
             app.config.rules.clear();
             app.config.sinks.clear();
@@ -433,7 +595,7 @@ fn test_sink_form_shows_every_field_at_80x24() {
         "{screen}"
     );
     assert!(
-        rows[row_with("Fallback")].contains("[ ] used when no rule matches"),
+        rows[row_with("Default")].contains("[ ] used when no rule matches"),
         "{screen}"
     );
     assert!(screen.contains("Enter save · Esc cancel"), "{screen}");
@@ -742,13 +904,13 @@ fn test_sinks_table_marks_states_and_never_prints_icon_names() {
         assert!(row("Sony WH-1000XM4").contains("▶ playing"), "{screen}");
         let builtin = row("Built-in Audio");
         assert!(builtin.contains("present"), "{screen}");
-        assert!(builtin.contains("★ fallback"), "{screen}");
+        assert!(builtin.contains("★ default"), "{screen}");
         assert!(
             row("HDMI / DisplayPort").contains("via profile"),
             "{screen}"
         );
         assert!(row("USB DAC").contains("missing"), "{screen}");
-        assert_eq!(screen.matches("★ fallback").count(), 1, "{screen}");
+        assert_eq!(screen.matches("★ default").count(), 1, "{screen}");
         for icon in ["audio-speakers", "video-display", "audio-headphones"] {
             assert!(
                 !screen.contains(icon),
@@ -940,6 +1102,8 @@ fn test_dashboard_shows_default_sink_from_snapshot() {
             is_default: true,
         }],
         profiles: Vec::new(),
+        sources: Vec::new(),
+        profile_sources: Vec::new(),
     });
     let screen = draw(&mut app);
     assert!(screen.contains("Test Headphones"), "{screen}");
@@ -956,6 +1120,8 @@ fn test_dashboard_shows_unconfigured_default_sink_by_pipewire_name() {
             is_default: true,
         }],
         profiles: Vec::new(),
+        sources: Vec::new(),
+        profile_sources: Vec::new(),
     });
     let screen = draw(&mut app);
     assert!(
@@ -1320,5 +1486,256 @@ fn test_settings_show_the_switch_delay_and_its_editor() {
     assert!(
         screen.contains("Default: 0 (switch immediately)"),
         "{screen}"
+    );
+}
+
+// ============================================================================
+// Mics (sources) and Output rules
+// ============================================================================
+
+/// The row containing `text` (panics with the screen if none)
+fn row_with<'a>(rows: &'a [String], text: &str) -> &'a str {
+    rows.iter()
+        .find(|r| r.contains(text))
+        .unwrap_or_else(|| panic!("no row with {text:?}:\n{}", rows.join("\n")))
+}
+
+#[test]
+fn test_mics_list_marks_states_at_every_size() {
+    for (width, height) in [(80, 24), (120, 40), (60, 16)] {
+        let rows = draw_rows(&mut state("mics"), width, height);
+        let screen = rows.join("\n");
+        assert!(
+            screen.contains("Mics · 3 configured · 2 present"),
+            "{screen}"
+        );
+        assert!(
+            row_with(&rows, "i sinks").contains('╭'),
+            "switch hint in the title"
+        );
+        let headset = row_with(&rows, "Headset Mic");
+        assert!(headset.contains("● in use"), "{screen}");
+        assert!(headset.contains("★ default"), "{screen}");
+        assert!(
+            row_with(&rows, "Webcam Mic").contains("present"),
+            "{screen}"
+        );
+        assert!(
+            row_with(&rows, "Built-in Mic").contains("via profile"),
+            "{screen}"
+        );
+        assert!(
+            rows[height as usize - 1].contains("i sinks/mics"),
+            "{screen}"
+        );
+        // The sinks are not shown in the mic list
+        assert!(!screen.contains("Sony"), "{screen}");
+    }
+    // The sinks list offers the mics the same way
+    let rows = draw_rows(&mut state("sinks"), 80, 24);
+    assert!(row_with(&rows, "i mics").contains('╭'));
+}
+
+#[test]
+fn test_empty_mics_list_explains_what_mics_are_for() {
+    let rows = draw_rows(&mut state("no mics"), 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("No mics yet"), "{screen}");
+    assert!(screen.contains("never touches the microphone"), "{screen}");
+    assert!(
+        screen.contains("to pick an input from PipeWire"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn test_mic_dialogs_name_mics() {
+    let screen = draw_rows(&mut state("mic add"), 80, 24).join("\n");
+    assert!(screen.contains("Add Mic"), "{screen}");
+    assert!(
+        screen.contains("used when no rule chooses a mic"),
+        "{screen}"
+    );
+    let screen = draw_rows(&mut state("mic node picker"), 80, 24).join("\n");
+    assert!(screen.contains("Inputs in PipeWire"), "{screen}");
+    assert!(screen.contains("HD Pro Webcam C920"), "{screen}");
+    assert!(screen.contains("After a profile switch"), "{screen}");
+    let screen = draw_rows(&mut state("mic details"), 80, 24).join("\n");
+    assert!(screen.contains("Mic Details"), "{screen}");
+    assert!(screen.contains("● in use"), "{screen}");
+    let screen = draw_rows(&mut state("mic delete"), 80, 24).join("\n");
+    assert!(screen.contains("Delete this mic?"), "{screen}");
+    assert!(screen.contains("Built-in Mic"), "{screen}");
+}
+
+#[test]
+fn test_rule_form_shows_output_and_mics_at_80x24() {
+    let mut app = state("rule edit with mics and output");
+    let rows = draw_rows(&mut app, 80, 24);
+    let screen = rows.join("\n");
+    assert!(row_with(&rows, "▌Output").contains("^DP-"), "{screen}");
+    assert!(row_with(&rows, "▌Output").contains('✓'), "{screen}");
+    assert!(
+        row_with(&rows, "Mics ").contains("Headset Mic → Webcam Mic"),
+        "{screen}"
+    );
+    assert!(
+        row_with(&rows, "Monitors: ").contains("DP-2, HDMI-A-1"),
+        "{screen}"
+    );
+    // discord is on DP-2: the preview matches it and shows its monitors
+    assert!(screen.contains("Matching windows (1)"), "{screen}");
+    assert!(
+        screen.contains("discord | #general · DP-2,HDMI-A-1"),
+        "{screen}"
+    );
+
+    // An invalid Output is marked and explained
+    app.rules_screen.editor.output_pattern = tui_input::Input::new("(".to_string());
+    let screen = draw_rows(&mut app, 80, 24).join("\n");
+    assert!(screen.contains("✗ invalid"), "{screen}");
+    assert!(screen.contains("Invalid output regex"), "{screen}");
+
+    // Without an App ID the field reads "any app" while Output is set
+    app.rules_screen.editor.output_pattern = tui_input::Input::new("^DP-".to_string());
+    app.rules_screen.editor.app_id_pattern = tui_input::Input::default();
+    let rows = draw_rows(&mut app, 80, 24);
+    assert!(row_with(&rows, "App ID ").contains("any app"));
+    // firefox and discord are on DP-2; kitty is minimized there
+    assert!(rows.join("\n").contains("Matching windows (2)"));
+}
+
+#[test]
+fn test_rule_form_without_mics_says_to_configure_them() {
+    let rows = draw_rows(&mut state("rule edit"), 80, 24);
+    assert!(
+        row_with(&rows, "Mics ").contains("configure mics first"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(row_with(&rows, "Output ").contains("any monitor"));
+    // The daemon reports no monitors (the fixture's windows have none)
+    assert!(row_with(&rows, "Monitors: ").contains("none reported"));
+}
+
+#[test]
+fn test_rule_mic_picker_numbers_the_chosen_mics() {
+    let rows = draw_rows(&mut state("rule mic picker"), 80, 24);
+    let screen = rows.join("\n");
+    assert!(screen.contains("Choose Mics (in order)"), "{screen}");
+    let line_of = |text: &str| {
+        rows.iter()
+            .position(|r| r.contains(text) && r.contains("alsa_input"))
+            .unwrap_or_else(|| panic!("{text}\n{screen}"))
+    };
+    assert!(
+        [
+            line_of("1 Headset Mic"),
+            line_of("2 Webcam Mic"),
+            line_of("  Built-in Mic")
+        ]
+        .is_sorted(),
+        "{screen}"
+    );
+}
+
+#[test]
+fn test_rules_table_shows_output_rules_and_mics() {
+    for (width, height) in [(80, 24), (120, 40)] {
+        let rows = draw_rows(&mut state("rules with mics and outputs"), width, height);
+        let screen = rows.join("\n");
+        let header = row_with(&rows, "Window");
+        assert!(header.contains("Mic"), "{screen}");
+        // The output-only rule: no empty App ID
+        let output_only = row_with(&rows, "│  4   ");
+        assert!(output_only.contains("any app on HDMI-A-1"), "{screen}");
+        let discord = row_with(&rows, "^discord$");
+        assert!(discord.contains("on ^DP-"), "{screen}");
+        assert!(discord.contains("Headset"), "{screen}");
+        assert_eq!(header.contains("Description"), width >= 100, "{screen}");
+        assert!(row_with(&rows, "firefox").contains('—'), "no mic: {screen}");
+    }
+    // Without mics in any rule there is no Mic column
+    let rows = draw_rows(&mut state("rules"), 80, 24);
+    assert!(!row_with(&rows, "Window").contains("Mic"));
+}
+
+#[test]
+fn test_rule_details_list_every_condition_and_target() {
+    let screen = draw_rows(&mut state("rule details output only"), 80, 24).join("\n");
+    for text in [
+        "App ID       any app",
+        "Output       ^HDMI-A-1$",
+        "Sink         HDMI / DisplayPort",
+        "Mic          none · the mic is left alone",
+    ] {
+        assert!(screen.contains(text), "{text}\n{screen}");
+    }
+    let screen = draw_rows(&mut state("rule details with mics"), 80, 24).join("\n");
+    for text in [
+        "App ID       ^discord$",
+        "Output       ^DP-",
+        "Mics         Headset Mic",
+        "→ Webcam Mic",
+    ] {
+        assert!(screen.contains(text), "{text}\n{screen}");
+    }
+}
+
+#[test]
+fn test_windows_view_shows_monitors_and_drops_them_when_narrow() {
+    let rows = draw_rows(&mut state("dashboard windows on monitors"), 120, 40);
+    let screen = rows.join("\n");
+    assert!(row_with(&rows, "App ID").contains("Monitor"), "{screen}");
+    assert!(row_with(&rows, "mpv").contains("HDMI-A-1"), "{screen}");
+    assert!(
+        row_with(&rows, "discord").contains("DP-2,HDMI-A-1"),
+        "{screen}"
+    );
+    assert!(row_with(&rows, "kitty").contains("DP-2 (min)"), "{screen}");
+    assert!(row_with(&rows, "Nautilus").contains('—'), "{screen}");
+
+    let rows = draw_rows(&mut state("dashboard windows on monitors"), 80, 24);
+    assert!(row_with(&rows, "App ID").contains("Monitor"));
+    let rows = draw_rows(&mut state("dashboard windows on monitors"), 60, 16);
+    let header = row_with(&rows, "App ID");
+    assert!(
+        !header.contains("Monitor"),
+        "dropped first:\n{}",
+        rows.join("\n")
+    );
+    assert!(header.contains("Sink"));
+}
+
+#[test]
+fn test_dashboard_shows_the_current_mic_when_mics_are_configured() {
+    let rows = draw_rows(&mut state("dashboard with mics"), 80, 24);
+    let screen = rows.join("\n");
+    assert!(row_with(&rows, "Mic Headset Mic").contains('│'), "{screen}");
+    assert!(screen.contains("4 sinks · 3 mics · 5 rules"), "{screen}");
+    // Without mics the card shows the sink's node name instead
+    let screen = draw_rows(&mut state("dashboard"), 80, 24).join("\n");
+    assert!(!screen.contains("Mic "), "{screen}");
+}
+
+/// Not an assertion: prints the 80x24 mic and output screens for review
+/// (`cargo test print_80x24_mic -- --nocapture`)
+#[test]
+fn test_print_80x24_mic_screens() {
+    for name in [
+        "mics",
+        "no mics",
+        "rule edit with mics and output",
+        "rules with mics and outputs",
+        "dashboard windows on monitors",
+        "dashboard with mics",
+    ] {
+        let rows = draw_rows(&mut state(name), 80, 24);
+        println!("--- {name} ---\n{}", rows.join("\n"));
+    }
+    let rows = draw_rows(&mut state("rule edit with mics and output"), 60, 16);
+    println!(
+        "--- rule edit with mics and output (60x16) ---\n{}",
+        rows.join("\n")
     );
 }

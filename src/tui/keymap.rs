@@ -26,7 +26,7 @@ pub(crate) enum Context {
     DashboardView(DashboardView),
     /// The add/edit dialog of a screen
     Editor(Screen),
-    /// A selection list opened from a screen (node, target sink, log level)
+    /// A selection list opened from a screen (node, target sinks or mics, log level)
     Dropdown(Screen),
     /// The delete confirmation and details dialogs of a screen
     Dialog(Screen),
@@ -277,38 +277,48 @@ pub(crate) static BINDINGS: &[Binding] = &[
     ),
     b(
         Context::List(Screen::Sinks),
+        "i",
+        "Switch between the sinks (outputs) and the mics (inputs, PipeWire sources); \
+         without mics pwsw never touches the microphone",
+        &[(KeyCode::Char('i'), NONE)],
+    )
+    .hint("i", "sinks/mics", 3),
+    b(
+        Context::List(Screen::Sinks),
         "Shift+↑/↓",
-        "Move sink up/down",
+        "Move sink (mic) up/down",
         SHIFT_UP_DOWN,
     )
     .hint("Shift+↑/↓", "move", 6),
-    b(Context::List(Screen::Sinks), "a", "Add new sink", &[(
-        KeyCode::Char('a'),
-        NONE,
-    )])
-    .hint("a", "add", 1),
-    b(Context::List(Screen::Sinks), "e", "Edit selected sink", &[
-        (KeyCode::Char('e'), NONE),
+    b(Context::List(Screen::Sinks), "a", "Add new sink (mic)", &[
+        (KeyCode::Char('a'), NONE),
     ])
+    .hint("a", "add", 1),
+    b(
+        Context::List(Screen::Sinks),
+        "e",
+        "Edit selected sink (mic)",
+        &[(KeyCode::Char('e'), NONE)],
+    )
     .hint("e", "edit", 2),
     b(
         Context::List(Screen::Sinks),
         "x",
-        "Delete selected sink",
+        "Delete selected sink (mic); refused while a rule uses it",
         &[(KeyCode::Char('x'), NONE)],
     )
     .hint("x", "delete", 4),
     b(
         Context::List(Screen::Sinks),
         "Space",
-        "Make selected sink the fallback (used when no rule matches)",
+        "Make selected sink (mic) the default (used when no rule chooses one)",
         SPACE,
     )
-    .hint("Space", "fallback", 5),
+    .hint("Space", "default", 5),
     b(
         Context::List(Screen::Sinks),
         "Enter",
-        "Show sink details",
+        "Show sink (mic) details",
         ENTER,
     )
     .hint("Enter", "details", 7),
@@ -322,11 +332,17 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Editor(Screen::Sinks),
         "Space",
-        "On Node: pick from PipeWire nodes · on Fallback: toggle",
+        "On Node: pick from PipeWire nodes · on Default: toggle",
         SPACE,
     )
     .hint("Space", "pick/toggle", 3),
-    b(Context::Editor(Screen::Sinks), "Enter", "Save sink", ENTER).hint("Enter", "save", 1),
+    b(
+        Context::Editor(Screen::Sinks),
+        "Enter",
+        "Save sink (mic)",
+        ENTER,
+    )
+    .hint("Enter", "save", 1),
     b(
         Context::Editor(Screen::Sinks),
         "Esc",
@@ -430,7 +446,7 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Editor(Screen::Rules),
         "Space",
-        "On Sinks: choose the sinks and their order · on Notify: cycle default/on/off",
+        "On Sinks / Mics: choose them and their order · on Notify: cycle default/on/off",
         SPACE,
     )
     .hint("Space", "choose", 3),
@@ -452,21 +468,24 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Dropdown(Screen::Rules),
         "Space",
-        "Add the highlighted sink at the end of the order, or remove it (the next one moves up)",
+        "Add the highlighted sink (mic) at the end of the order, or remove it (the next one moves \
+         up)",
         SPACE,
     )
     .hint("Space", "pick", 3),
     b(
         Context::Dropdown(Screen::Rules),
         "Shift+↑/↓",
-        "Move the highlighted chosen sink earlier/later (the first is tried first, the rest are fallbacks)",
+        "Move the highlighted chosen sink (mic) earlier/later (the first is tried first, the rest \
+         are fallbacks)",
         SHIFT_UP_DOWN,
     )
     .hint("Shift+↑/↓", "order", 4),
     b(
         Context::Dropdown(Screen::Rules),
         "Enter",
-        "Use the chosen sinks (none chosen: the highlighted one)",
+        "Use the chosen sinks (none chosen: the highlighted one) or mics (none chosen: the rule \
+         leaves the mic alone)",
         ENTER,
     )
     .hint("Enter", "done", 1),
@@ -702,4 +721,5 @@ pub(crate) static REGEX_EXAMPLES: &[(&str, &str)] = &[
     ("^(mpv|vlc)$", "Match mpv OR vlc"),
     (".*", "Match all windows"),
     ("(?i)discord", "Case-insensitive"),
+    ("^HDMI-", "As Output: windows on any HDMI monitor"),
 ];

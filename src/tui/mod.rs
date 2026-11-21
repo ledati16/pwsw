@@ -21,6 +21,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior};
 
+use crate::config;
 use crate::tui::app::{AppUpdate, BgCommand, StatusKind};
 
 mod app;
@@ -306,20 +307,39 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
                 daemon_logs: &app.daemon_log_lines,
                 windows: &app.windows,
                 active_sinks: &app.active_sink_list,
+                active_sources: &app.active_source_list,
                 pipewire_available: app.pipewire_available,
             };
             render_dashboard(frame, main_area, &mut ctx);
         }
-        Screen::Sinks => render_sinks(frame, main_area, &mut SinksRenderContext {
-            sinks: &app.config.sinks,
-            screen_state: &mut app.sinks_screen,
-            active_sink_list: &app.active_sink_list,
-            profile_sink_list: &app.profile_sink_list,
-            pipewire_available: app.pipewire_available,
-        }),
+        Screen::Sinks => {
+            let kind = app.endpoint_view;
+            let (screen_state, active, profiles) = match kind {
+                config::Endpoint::Sink => (
+                    &mut app.sinks_screen,
+                    &app.active_sink_list,
+                    &app.profile_sink_list,
+                ),
+                config::Endpoint::Source => (
+                    &mut app.sources_screen,
+                    &app.active_source_list,
+                    &app.profile_source_list,
+                ),
+            };
+            render_sinks(frame, main_area, &mut SinksRenderContext {
+                kind,
+                sinks: app.config.endpoints(kind),
+                screen_state,
+                active_sink_list: active,
+                profile_sink_list: profiles,
+                pipewire_available: app.pipewire_available,
+            });
+        }
         Screen::Rules => render_rules(frame, main_area, &mut RulesRenderContext {
             rules: &app.config.rules,
             sinks: &app.config.sinks,
+            sources: &app.config.sources,
+            windows: &app.windows,
             screen_state: &mut app.rules_screen,
             preview: app.preview.view(),
             daemon_running: app.daemon_running,

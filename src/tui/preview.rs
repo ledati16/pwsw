@@ -1,6 +1,8 @@
 //! Live preview for the rule editor: which tracked windows the patterns match.
 //!
-//! Matching is synchronous. `regex` guarantees linear-time matching, the window
+//! The patterns are matched exactly as the daemon matches a rule
+//! ([`Rule::matches`]: `app_id`, title, and monitors of a window that is not
+//! minimized). Matching is synchronous. `regex` guarantees linear-time matching, the window
 //! list is small, and the result is recomputed only when the pattern text or the
 //! window list changes — never per frame. Compiled patterns are cached by their
 //! text so typing back and forth does not recompile.
@@ -42,6 +44,14 @@ impl RegexCache {
     }
 }
 
+/// The patterns of the rule editor (an empty one is not set)
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Patterns<'a> {
+    pub(crate) app_id: &'a str,
+    pub(crate) title: &'a str,
+    pub(crate) output: &'a str,
+}
+
 /// What the preview shows for the current patterns.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct PreviewView {
@@ -49,7 +59,10 @@ pub(crate) struct PreviewView {
     pub(crate) app_error: Option<String>,
     /// Compile error of the title pattern
     pub(crate) title_error: Option<String>,
-    /// First [`MAX_SHOWN`] matches as "`app_id` | title"
+    /// Compile error of the output pattern
+    pub(crate) output_error: Option<String>,
+    /// First [`MAX_SHOWN`] matches as "`app_id` | title" (with " · monitors" when
+    /// an output pattern is set)
     pub(crate) shown: Vec<String>,
     /// Total number of matching windows
     pub(crate) total: usize,
@@ -60,6 +73,7 @@ pub(crate) struct PreviewView {
 struct PreviewKey {
     app_pattern: String,
     title_pattern: String,
+    output_pattern: String,
     windows_generation: u64,
 }
 
@@ -76,51 +90,67 @@ impl LivePreview {
     /// the last call. Returns whether it was recomputed.
     ///
     /// `windows_generation` must change whenever `windows` changes content.
-    /// An empty `title_pattern` means "any title".
+    /// An empty pattern is a condition the rule does not set; with neither an
+    /// `app_id` nor an output pattern nothing matches (the rule is incomplete).
     pub(crate) fn refresh(
         &mut self,
-        app_pattern: &str,
-        title_pattern: &str,
+        patterns: &Patterns,
         windows: &[WindowInfo],
         windows_generation: u64,
     ) -> bool {
         if self.key.as_ref().is_some_and(|k| {
             k.windows_generation == windows_generation
-                && k.app_pattern == app_pattern
-                && k.title_pattern == title_pattern
+                && k.app_pattern == patterns.app_id
+                && k.title_pattern == patterns.title
+                && k.output_pattern == patterns.output
         }) {
             return false;
         }
 
-        let app_re = if app_pattern.is_empty() {
-            Ok(None)
-        } else {
-            self.cache.get(app_pattern).map(Some)
+        let mut compile = |pattern: &str| {
+            if pattern.is_empty() {
+                Ok(None)
+            } else {
+                self.cache.get(pattern).map(Some)
+            }
         };
-        let title_re = if title_pattern.is_empty() {
-            Ok(None)
-        } else {
-            self.cache.get(title_pattern).map(Some)
-        };
+        let app_re = compile(patterns.app_id);
+        let title_re = compile(patterns.title);
+        let output_re = compile(patterns.output);
 
-        self.view = match (app_re, title_re) {
-            (Ok(Some(app)), Ok(title)) => {
-                let (shown, total) = match_windows(&app, title.as_ref(), windows, MAX_SHOWN);
-                PreviewView {
-                    shown,
-                    total,
-                    ..PreviewView::default()
+        self.view = match (app_re, title_re, output_re) {
+            (Ok(None), _, Ok(None)) => PreviewView::default(),
+            (Ok(app), Ok(title), Ok(output)) => {
+                // A rule without `app_id` holds the empty pattern (never consulted)
+                match app.map_or_else(|| self.cache.get(""), Ok) {
+                    Ok(app_regex) => {
+                        let shows_outputs = output.is_some();
+                        let rule = preview_rule(app_regex, patterns, title, output);
+                        let (shown, total) =
+                            match_windows(&rule, shows_outputs, windows, MAX_SHOWN);
+                        PreviewView {
+                            shown,
+                            total,
+                            ..PreviewView::default()
+                        }
+                    }
+                    Err(e) => PreviewView {
+                        app_error: Some(e),
+                        ..PreviewView::default()
+                    },
                 }
             }
-            (app, title) => PreviewView {
+            (app, title, output) => PreviewView {
                 app_error: app.err(),
                 title_error: title.err(),
+                output_error: output.err(),
                 ..PreviewView::default()
             },
         };
         self.key = Some(PreviewKey {
-            app_pattern: app_pattern.to_string(),
-            title_pattern: title_pattern.to_string(),
+            app_pattern: patterns.app_id.to_string(),
+            title_pattern: patterns.title.to_string(),
+            output_pattern: patterns.output.to_string(),
             windows_generation,
         });
         true
@@ -138,14 +168,28 @@ impl LivePreview {
     }
 }
 
-/// Whether `window` matches an `app_id` pattern and an optional title pattern
-/// (`None`: any title), the way the daemon matches rules.
-pub(crate) fn window_matches(
-    app_re: &Regex,
-    title_re: Option<&Regex>,
-    window: &WindowInfo,
-) -> bool {
-    app_re.is_match(&window.app_id) && title_re.is_none_or(|r| r.is_match(&window.title))
+/// A rule with the given conditions (no targets), to match windows with
+/// [`Rule::matches`] exactly as the daemon does
+fn preview_rule(
+    app_id_regex: Regex,
+    patterns: &Patterns,
+    title_regex: Option<Regex>,
+    output_regex: Option<Regex>,
+) -> Rule {
+    let set = |pattern: &str| (!pattern.is_empty()).then(|| pattern.to_string());
+    Rule {
+        app_id_regex,
+        title_regex,
+        output_regex,
+        sink_ref: String::new(),
+        fallback_refs: Vec::new(),
+        source_refs: Vec::new(),
+        desc: None,
+        notify: None,
+        app_id_pattern: patterns.app_id.to_string(),
+        title_pattern: set(patterns.title),
+        output_pattern: set(patterns.output),
+    }
 }
 
 /// Index of the first rule (in config order) that matches `window`, the rule
@@ -162,23 +206,29 @@ pub(crate) fn first_matching_rule(rules: &[Rule], window: &WindowInfo) -> Option
     })
 }
 
-/// Match windows against compiled patterns.
+/// Match windows against `rule`.
 ///
-/// Returns up to `max_shown` formatted "`app_id` | title" strings and the total
-/// number of matches.
+/// Returns up to `max_shown` formatted "`app_id` | title" strings (followed by
+/// " · " and the window's monitors with `show_outputs`) and the total number of
+/// matches.
 fn match_windows(
-    app_re: &Regex,
-    title_re: Option<&Regex>,
+    rule: &Rule,
+    show_outputs: bool,
     windows: &[WindowInfo],
     max_shown: usize,
 ) -> (Vec<String>, usize) {
     let mut shown = Vec::new();
     let mut total = 0usize;
     for w in windows {
-        if window_matches(app_re, title_re, w) {
+        if rule.matches(&w.app_id, &w.title, &w.outputs, w.minimized) {
             total += 1;
             if shown.len() < max_shown {
-                shown.push(format!("{} | {}", w.app_id, w.title));
+                let mut line = format!("{} | {}", w.app_id, w.title);
+                if show_outputs {
+                    line.push_str(" · ");
+                    line.push_str(&w.outputs.join(","));
+                }
+                shown.push(line);
             }
         }
     }
@@ -216,6 +266,14 @@ mod tests {
         }
     }
 
+    fn pat<'a>(app_id: &'a str, title: &'a str) -> Patterns<'a> {
+        Patterns {
+            app_id,
+            title,
+            output: "",
+        }
+    }
+
     fn windows() -> Vec<WindowInfo> {
         vec![
             window("firefox", "Firefox Browser"),
@@ -227,11 +285,11 @@ mod tests {
     #[test]
     fn test_matches_app_and_title() {
         let mut preview = LivePreview::default();
-        preview.refresh("firefox", "", &windows(), 0);
+        preview.refresh(&pat("firefox", ""), &windows(), 0);
         assert_eq!(preview.view().total, 2);
         assert_eq!(preview.view().shown[0], "firefox | Firefox Browser");
 
-        preview.refresh("firefox", "Private", &windows(), 0);
+        preview.refresh(&pat("firefox", "Private"), &windows(), 0);
         assert_eq!(preview.view().shown, vec![
             "firefox | Private Browsing".to_string()
         ]);
@@ -243,25 +301,25 @@ mod tests {
         let wins = windows();
         let mut preview = LivePreview::default();
 
-        assert!(preview.refresh("fire", "", &wins, 0));
+        assert!(preview.refresh(&pat("fire", ""), &wins, 0));
         assert_eq!(preview.compilations(), 1);
 
         // Same inputs (e.g. every frame): nothing recomputed or compiled
         for _ in 0..10 {
-            assert!(!preview.refresh("fire", "", &wins, 0));
+            assert!(!preview.refresh(&pat("fire", ""), &wins, 0));
         }
         assert_eq!(preview.compilations(), 1);
 
         // Pattern change: recompute + one compilation
-        assert!(preview.refresh("firef", "", &wins, 0));
+        assert!(preview.refresh(&pat("firef", ""), &wins, 0));
         assert_eq!(preview.compilations(), 2);
 
         // Going back to an earlier pattern hits the cache
-        assert!(preview.refresh("fire", "", &wins, 0));
+        assert!(preview.refresh(&pat("fire", ""), &wins, 0));
         assert_eq!(preview.compilations(), 2);
 
         // Window list change: recompute, no compilation
-        assert!(preview.refresh("fire", "", &wins[..1], 1));
+        assert!(preview.refresh(&pat("fire", ""), &wins[..1], 1));
         assert_eq!(preview.view().total, 1);
         assert_eq!(preview.compilations(), 2);
     }
@@ -269,7 +327,7 @@ mod tests {
     #[test]
     fn test_invalid_title_regex_is_reported() {
         let mut preview = LivePreview::default();
-        preview.refresh("firefox", "(unclosed", &windows(), 0);
+        preview.refresh(&pat("firefox", "(unclosed"), &windows(), 0);
         let view = preview.view();
         assert!(view.app_error.is_none());
         assert!(view.title_error.is_some(), "title error surfaced");
@@ -279,7 +337,7 @@ mod tests {
     #[test]
     fn test_invalid_app_regex_is_reported() {
         let mut preview = LivePreview::default();
-        preview.refresh("(", "", &windows(), 0);
+        preview.refresh(&pat("(", ""), &windows(), 0);
         assert!(preview.view().app_error.is_some());
         assert!(preview.view().title_error.is_none());
     }
@@ -287,7 +345,7 @@ mod tests {
     #[test]
     fn test_empty_app_pattern_matches_nothing() {
         let mut preview = LivePreview::default();
-        preview.refresh("", "", &windows(), 0);
+        preview.refresh(&pat("", ""), &windows(), 0);
         assert_eq!(preview.view(), &PreviewView::default());
         assert_eq!(preview.compilations(), 0);
     }
@@ -296,7 +354,7 @@ mod tests {
     fn test_shown_is_capped_total_is_not() {
         let wins: Vec<_> = (0..12).map(|i| window("app", &format!("w{i}"))).collect();
         let mut preview = LivePreview::default();
-        preview.refresh("app", "", &wins, 0);
+        preview.refresh(&pat("app", ""), &wins, 0);
         assert_eq!(preview.view().shown.len(), MAX_SHOWN);
         assert_eq!(preview.view().total, 12);
     }
@@ -340,6 +398,48 @@ mod output_rule_tests {
             matched_on: None,
             tracked: None,
         }
+    }
+
+    /// The preview matches like the daemon: an output pattern needs the window on a
+    /// matching monitor and not minimized, with or without an app ID
+    #[test]
+    fn test_preview_matches_outputs_like_the_daemon() {
+        let windows = vec![
+            window_on("mpv", &["HDMI-A-1"], false),
+            window_on("mpv", &["DP-1"], false),
+            window_on("firefox", &["HDMI-A-1", "DP-1"], false),
+            window_on("kitty", &["HDMI-A-1"], true),
+            window_on("foot", &[], false),
+        ];
+        let mut preview = LivePreview::default();
+        let output_only = Patterns {
+            app_id: "",
+            title: "",
+            output: "^HDMI-",
+        };
+        preview.refresh(&output_only, &windows, 0);
+        assert_eq!(preview.view().total, 2);
+        assert_eq!(preview.view().shown, [
+            "mpv |  · HDMI-A-1",
+            "firefox |  · HDMI-A-1,DP-1"
+        ]);
+        let both = Patterns {
+            app_id: "^mpv$",
+            ..output_only
+        };
+        preview.refresh(&both, &windows, 0);
+        assert_eq!(preview.view().total, 1);
+        let bad = Patterns {
+            output: "(",
+            ..both
+        };
+        preview.refresh(&bad, &windows, 0);
+        assert!(preview.view().output_error.is_some());
+        assert_eq!(preview.view().total, 0);
+        // The window list changing its monitors only (same generation bump the app does)
+        let moved = vec![window_on("mpv", &["DP-1"], false)];
+        preview.refresh(&both, &moved, 1);
+        assert_eq!(preview.view().total, 0);
     }
 
     #[test]

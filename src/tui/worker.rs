@@ -70,7 +70,7 @@ where
 pub(crate) trait Backend: Send + Sync + 'static {
     /// Poll daemon status and windows; yields [`AppUpdate::DaemonState`].
     fn daemon_state(&self) -> impl Future<Output = AppUpdate> + Send;
-    /// Take a `PipeWire` snapshot; yields [`AppUpdate::SinksData`] or
+    /// Take a `PipeWire` snapshot (sinks and sources); yields [`AppUpdate::SinksData`] or
     /// [`AppUpdate::PipeWireUnavailable`].
     fn sinks_snapshot(&self) -> impl Future<Output = AppUpdate> + Send;
     /// Run a daemon control action, returning a message for the status line.
@@ -137,9 +137,17 @@ impl Backend for System {
 
         match detached(PipeWire::dump).await {
             Ok(Ok(snapshot)) => {
+                // Sinks and sources from the same snapshot (one `pw-dump`)
                 let active = PipeWire::get_active_sinks(&snapshot);
                 let profiles = PipeWire::get_profile_sinks(&snapshot, &active);
-                AppUpdate::SinksData { active, profiles }
+                let sources = PipeWire::get_active(&snapshot, crate::config::Endpoint::Source);
+                let profile_sources = PipeWire::get_profile_sources(&snapshot, &sources);
+                AppUpdate::SinksData {
+                    active,
+                    profiles,
+                    sources,
+                    profile_sources,
+                }
             }
             Ok(Err(e)) | Err(e) => {
                 debug!("PipeWire snapshot failed: {e:#}");

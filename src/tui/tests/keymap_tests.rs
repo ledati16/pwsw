@@ -13,10 +13,10 @@ use ratatui::backend::TestBackend;
 use tempfile::TempDir;
 use tui_input::Input;
 
-use crate::config::Config;
+use crate::config::{Config, Endpoint};
 use crate::ipc::WindowInfo;
 use crate::pipewire::{ActiveSink, ProfileSink};
-use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+use crate::test_utils::fixtures::{make_config, make_rule, make_sink, with_sources};
 use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
 use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::{BINDINGS, Context};
@@ -39,7 +39,7 @@ fn draw(app: &mut App) {
 /// and a status message.
 fn base(dir: &Path) -> App {
     let path = dir.join("config.toml");
-    make_config(
+    let mut config = make_config(
         vec![
             make_sink("s1", "Sink One", true),
             make_sink("s2", "Sink Two", false),
@@ -47,12 +47,15 @@ fn base(dir: &Path) -> App {
         ],
         vec![
             make_rule("a", None, "Sink One"),
-            make_rule("b", Some("t"), "Sink Two"),
+            with_sources(make_rule("b", Some("t"), "Sink Two"), &["Mic One"]),
             make_rule("c", None, "Sink Three"),
         ],
-    )
-    .save_to(&path)
-    .expect("write config");
+    );
+    config.sources = vec![
+        make_sink("m1", "Mic One", true),
+        make_sink("m2", "Mic Two", false),
+    ];
+    config.save_to(&path).expect("write config");
     let config = Config::load_from_path(&path).expect("load config");
     let mut app = App::new(config, path);
     app.config.settings.notify_rules.toggle();
@@ -95,6 +98,8 @@ fn base(dir: &Path) -> App {
             profile_index: 1,
             profile_name: "p".to_string(),
         }],
+        sources: vec![active("m1"), active("m2")],
+        profile_sources: Vec::new(),
     });
     // An info message: it expires by time, so no key press clears it as a side effect
     app.set_status(StatusKind::Info, "status");
@@ -139,29 +144,38 @@ fn setups(context: Context) -> Vec<Setup> {
         }
         Context::DashboardView(view) => out.extend(dashboard_setups(view)),
         Context::List(screen) => {
-            for selected in [0, 1] {
-                out.push(Box::new(move |app: &mut App| {
-                    app.current_screen = screen;
-                    app.sinks_screen.selected = selected;
-                    app.rules_screen.selected = selected;
-                    app.settings_screen.selected = selected;
-                    app.settings_screen.desc_scroll = u16::try_from(selected).unwrap_or(0);
-                }));
+            for view in Endpoint::ALL {
+                for selected in [0, 1] {
+                    out.push(Box::new(move |app: &mut App| {
+                        app.current_screen = screen;
+                        app.endpoint_view = view;
+                        app.sinks_screen.selected = selected;
+                        app.sources_screen.selected = selected;
+                        app.rules_screen.selected = selected;
+                        app.settings_screen.selected = selected;
+                        app.settings_screen.desc_scroll = u16::try_from(selected).unwrap_or(0);
+                    }));
+                }
             }
         }
         Context::Editor(Screen::Sinks) => {
-            for field in [
-                SinkField::Name,
-                SinkField::Desc,
-                SinkField::Icon,
-                SinkField::Default,
-            ] {
-                out.push(Box::new(move |app: &mut App| {
-                    app.current_screen = Screen::Sinks;
-                    app.sinks_screen.selected = 1;
-                    app.sinks_screen.start_edit(&app.config.sinks);
-                    app.sinks_screen.editor.focused_field = field;
-                }));
+            for view in Endpoint::ALL {
+                for field in [
+                    SinkField::Name,
+                    SinkField::Desc,
+                    SinkField::Icon,
+                    SinkField::Default,
+                ] {
+                    out.push(Box::new(move |app: &mut App| {
+                        app.current_screen = Screen::Sinks;
+                        app.endpoint_view = view;
+                        let entries = app.config.endpoints(view).to_vec();
+                        let screen = app.endpoint_screen_mut();
+                        screen.selected = 1;
+                        screen.start_edit(&entries);
+                        screen.editor.focused_field = field;
+                    }));
+                }
             }
         }
         Context::Editor(Screen::Settings) => {
@@ -177,7 +191,9 @@ fn setups(context: Context) -> Vec<Setup> {
             for field in [
                 RuleField::AppId,
                 RuleField::Title,
+                RuleField::Output,
                 RuleField::Sinks,
+                RuleField::Mics,
                 RuleField::Desc,
                 RuleField::Notify,
             ] {
@@ -190,31 +206,44 @@ fn setups(context: Context) -> Vec<Setup> {
             }
         }
         Context::Dropdown(Screen::Sinks) => {
-            for down in [false, true] {
-                out.push(Box::new(move |app: &mut App| {
-                    app.current_screen = Screen::Sinks;
-                    app.sinks_screen.start_add();
-                    let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
-                    app.sinks_screen.open_selector(&names);
-                    if down {
-                        app.sinks_screen.move_selector(&names, true);
-                    }
-                }));
+            for view in Endpoint::ALL {
+                for down in [false, true] {
+                    out.push(Box::new(move |app: &mut App| {
+                        app.current_screen = Screen::Sinks;
+                        app.endpoint_view = view;
+                        let (active, profiles) = app.endpoint_lists(view);
+                        let names: Vec<String> = selector_names(active, profiles)
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect();
+                        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                        let screen = app.endpoint_screen_mut();
+                        screen.start_add();
+                        screen.open_selector(&names);
+                        if down {
+                            screen.move_selector(&names, true);
+                        }
+                    }));
+                }
             }
         }
         Context::Dropdown(Screen::Rules) => {
-            // Nothing chosen yet, and two sinks chosen
-            for chosen in [false, true] {
-                for index in [0, 1] {
-                    out.push(Box::new(move |app: &mut App| {
-                        app.current_screen = Screen::Rules;
-                        app.rules_screen.start_add();
-                        app.rules_screen.open_sink_selector(&app.config.sinks);
-                        if chosen {
-                            app.rules_screen.editor.picked = vec![2, 0];
-                        }
-                        app.rules_screen.editor.sink_dropdown_index = index;
-                    }));
+            // The sink and the mic picker; nothing chosen yet, and two chosen
+            for kind in Endpoint::ALL {
+                for chosen in [false, true] {
+                    for index in [0, 1] {
+                        out.push(Box::new(move |app: &mut App| {
+                            app.current_screen = Screen::Rules;
+                            app.rules_screen.selected = 1;
+                            app.rules_screen.start_edit(&app.config.rules);
+                            let entries = app.config.endpoints(kind).to_vec();
+                            app.rules_screen.open_picker(kind, &entries);
+                            if chosen {
+                                app.rules_screen.editor.picked = vec![1, 0];
+                            }
+                            app.rules_screen.editor.sink_dropdown_index = index;
+                        }));
+                    }
                 }
             }
         }
@@ -284,7 +313,12 @@ fn setups(context: Context) -> Vec<Setup> {
                     }
                 }));
             }
-            for field in [RuleField::AppId, RuleField::Title, RuleField::Desc] {
+            for field in [
+                RuleField::AppId,
+                RuleField::Title,
+                RuleField::Output,
+                RuleField::Desc,
+            ] {
                 out.push(Box::new(move |app: &mut App| {
                     app.current_screen = Screen::Rules;
                     app.rules_screen.start_add();
@@ -314,8 +348,9 @@ fn setups(context: Context) -> Vec<Setup> {
 /// Everything a key press could observably change.
 fn fingerprint(app: &App) -> String {
     format!(
-        "{:?}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{:?}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         app.current_screen,
+        app.endpoint_view,
         app.should_quit,
         app.show_help,
         app.confirm_quit,
@@ -324,8 +359,10 @@ fn fingerprint(app: &App) -> String {
         app.status_message(),
         app.config.settings,
         app.config.sinks,
+        app.config.sources,
         app.config.rules,
         app.sinks_screen,
+        app.sources_screen,
         app.rules_screen,
         app.settings_screen,
         app.dashboard_screen,

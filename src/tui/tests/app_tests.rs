@@ -802,3 +802,258 @@ fn test_switch_delay_out_of_range_is_refused_with_a_message() {
         5000
     );
 }
+
+// ============================================================================
+// Mics (sources) and Output rules
+// ============================================================================
+
+fn shift(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::SHIFT)
+}
+
+/// Type `text` into the focused field, key by key
+fn type_text(app: &mut App, text: &str) {
+    for c in text.chars() {
+        simulate_key_event(app, key(KeyCode::Char(c)));
+    }
+}
+
+fn press_all(app: &mut App, keys: &[KeyEvent]) {
+    for &k in keys {
+        simulate_key_event(app, k);
+    }
+}
+
+fn source_snapshot(sources: &[(&str, &str, bool)]) -> AppUpdate {
+    AppUpdate::SinksData {
+        active: Vec::new(),
+        profiles: Vec::new(),
+        sources: sources
+            .iter()
+            .map(|&(name, desc, is_default)| crate::pipewire::ActiveSink {
+                name: name.to_string(),
+                description: desc.to_string(),
+                is_default,
+            })
+            .collect(),
+        profile_sources: Vec::new(),
+    }
+}
+
+/// Adding, picking, reordering, making the fallback, editing and deleting mics on
+/// the Sinks screen's mic list, a rule choosing one, then saving: the file holds
+/// exactly what the TUI shows.
+#[test]
+fn test_mics_are_managed_through_the_sinks_screen_and_saved() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, path) = file_app(&dir);
+    app.handle_update(source_snapshot(&[("alsa_input.b", "Mic B", false)]));
+    press_all(&mut app, &[
+        key(KeyCode::Char('2')),
+        key(KeyCode::Char('i')),
+    ]);
+    assert_eq!(app.endpoint_view, crate::config::Endpoint::Source);
+
+    // Typed in
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    type_text(&mut app, "alsa_input.a");
+    simulate_key_event(&mut app, key(KeyCode::Down));
+    type_text(&mut app, "Mic A");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.sources_screen.mode, ListMode::List);
+    assert_eq!(app.config.sources.len(), 1);
+    assert!(
+        app.config.sources[0].default,
+        "the first mic is the default"
+    );
+    assert!(app.config.sinks.len() == 2, "sinks untouched");
+
+    // Picked from PipeWire's inputs
+    press_all(&mut app, &[
+        key(KeyCode::Char('a')),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Enter),
+    ]);
+    assert_eq!(app.sources_screen.editor.name.value(), "alsa_input.b");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.sources[1].desc, "Mic B");
+
+    // Reorder and make Mic B the fallback
+    press_all(&mut app, &[
+        key(KeyCode::Down),
+        shift(KeyCode::Up),
+        key(KeyCode::Char(' ')),
+    ]);
+    assert_eq!(app.sources_screen.selected, 0);
+    assert_eq!(app.config.sources[0].desc, "Mic B");
+    assert!(app.config.sources[0].default && !app.config.sources[1].default);
+
+    // A rule chooses Mic B (Rules → edit → Mics → pick → apply → save)
+    press_all(&mut app, &[
+        key(KeyCode::Char('3')),
+        key(KeyCode::Char('e')),
+    ]);
+    while app.rules_screen.editor.focused_field != RuleField::Mics {
+        simulate_key_event(&mut app, key(KeyCode::Down));
+    }
+    press_all(&mut app, &[
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Char(' ')),
+        key(KeyCode::Enter),
+        key(KeyCode::Enter),
+    ]);
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    assert_eq!(app.config.rules[0].source_refs, ["Mic B"]);
+    assert_eq!(app.config.rules[0].sink_ref, "Sink One", "sink kept");
+
+    // Renaming Mic B keeps the rule pointing at it
+    press_all(&mut app, &[
+        key(KeyCode::Char('2')),
+        key(KeyCode::Char('e')),
+        key(KeyCode::Down),
+        ctrl('u'),
+    ]);
+    type_text(&mut app, "Headset");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.sources[0].desc, "Headset");
+    assert_eq!(app.config.rules[0].source_refs, ["Headset"]);
+
+    // A mic a rule uses cannot be deleted; the other one can
+    press_all(&mut app, &[key(KeyCode::Char('x')), key(KeyCode::Enter)]);
+    assert_eq!(app.config.sources.len(), 2, "refused");
+    assert!(app.status_message().is_some(), "says why");
+    press_all(&mut app, &[
+        key(KeyCode::Down),
+        key(KeyCode::Char('x')),
+        key(KeyCode::Enter),
+    ]);
+    assert_eq!(app.config.sources.len(), 1);
+    assert_eq!(app.config.sources[0].desc, "Headset");
+
+    // i goes back to the sinks, whose list is unchanged
+    simulate_key_event(&mut app, key(KeyCode::Char('i')));
+    assert_eq!(app.endpoint_view, crate::config::Endpoint::Sink);
+
+    simulate_key_event(&mut app, ctrl('s'));
+    assert!(!app.config_dirty, "{:?}", app.status_message());
+    let on_disk = Config::load_from_path(&path).expect("reload");
+    assert_eq!(on_disk, app.config);
+    assert_eq!(on_disk.rules[0].source_refs, ["Headset"]);
+}
+
+/// An output-only rule is made, saved and edited through the form: App ID may
+/// stay empty only while Output is set
+#[test]
+fn test_rule_form_edits_output_and_app_id_is_optional_only_with_it() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, path) = file_app(&dir);
+    press_all(&mut app, &[
+        key(KeyCode::Char('3')),
+        key(KeyCode::Char('a')),
+    ]);
+    let focus = |app: &mut App, field: RuleField| {
+        while app.rules_screen.editor.focused_field != field {
+            simulate_key_event(app, key(KeyCode::Down));
+        }
+    };
+    // Sinks chosen but no App ID and no Output: refused, the form stays open
+    focus(&mut app, RuleField::Sinks);
+    press_all(&mut app, &[key(KeyCode::Char(' ')), key(KeyCode::Enter)]);
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
+    assert_eq!(
+        app.status_message(),
+        Some(crate::tui::screens::rules::APP_ID_REQUIRED)
+    );
+
+    // With an Output it saves
+    press_all(&mut app, &[key(KeyCode::Up)]);
+    assert_eq!(app.rules_screen.editor.focused_field, RuleField::Output);
+    type_text(&mut app, "^HDMI-A-1$");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.rules_screen.mode, ListMode::List);
+    let rule = &app.config.rules[1];
+    assert!(!rule.has_app_id());
+    assert_eq!(rule.output_pattern.as_deref(), Some("^HDMI-A-1$"));
+    assert_eq!(rule.sink_ref, "Sink One");
+
+    // Editing keeps it; clearing Output again needs an App ID
+    press_all(&mut app, &[key(KeyCode::Down), key(KeyCode::Char('e'))]);
+    assert_eq!(app.rules_screen.editor.output_pattern.value(), "^HDMI-A-1$");
+    focus(&mut app, RuleField::Output);
+    simulate_key_event(&mut app, ctrl('u'));
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit, "refused");
+    type_text(&mut app, "^DP-");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.rules[1].output_pattern.as_deref(), Some("^DP-"));
+
+    simulate_key_event(&mut app, ctrl('s'));
+    let on_disk = Config::load_from_path(&path).expect("reload");
+    assert_eq!(on_disk, app.config);
+    assert!(!on_disk.rules[1].has_app_id());
+}
+
+/// Without configured mics the Mics field only says so
+#[test]
+fn test_mics_field_without_mics_says_to_configure_them() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, _path) = file_app(&dir);
+    press_all(&mut app, &[
+        key(KeyCode::Char('3')),
+        key(KeyCode::Char('e')),
+    ]);
+    while app.rules_screen.editor.focused_field != RuleField::Mics {
+        simulate_key_event(&mut app, key(KeyCode::Down));
+    }
+    simulate_key_event(&mut app, key(KeyCode::Char(' ')));
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit, "no picker");
+    assert!(
+        app.status_message().is_some_and(|m| m.contains("No mics")),
+        "{:?}",
+        app.status_message()
+    );
+}
+
+/// The live preview matches the Output pattern like the daemon (monitors, not
+/// minimized) and follows windows moving between monitors
+#[test]
+fn test_rule_preview_uses_output_matching() {
+    let on = |id: u64, app_id: &str, outputs: &[&str], minimized: bool| {
+        let mut w = window(id, app_id, "t", false);
+        w.outputs = outputs.iter().map(|o| (*o).to_string()).collect();
+        w.minimized = minimized;
+        w
+    };
+    let mut app = windows_app(two_sinks(), vec![], vec![
+        on(1, "mpv", &["HDMI-A-1"], false),
+        on(2, "firefox", &["DP-2"], false),
+        on(3, "kitty", &["HDMI-A-1"], true),
+    ]);
+    app.goto_screen(Screen::Rules);
+    app.rules_screen.start_add();
+    app.rules_screen.editor.output_pattern = tui_input::Input::new("^HDMI-".to_string());
+    app.refresh_preview();
+    assert_eq!(app.preview.view().total, 1, "{:?}", app.preview.view());
+    assert_eq!(app.preview.view().shown, ["mpv | t · HDMI-A-1"]);
+
+    // firefox moves onto the HDMI monitor: the preview follows
+    app.handle_update(AppUpdate::DaemonState {
+        running: true,
+        windows: vec![
+            on(1, "mpv", &["HDMI-A-1"], false),
+            on(2, "firefox", &["HDMI-A-1"], false),
+            on(3, "kitty", &["HDMI-A-1"], true),
+        ],
+        unit_installed: false,
+        service_enabled: None,
+        paused: false,
+    });
+    app.refresh_preview();
+    assert_eq!(app.preview.view().total, 2);
+
+    // With an App ID too, both must match
+    app.rules_screen.editor.app_id_pattern = tui_input::Input::new("^firefox$".to_string());
+    app.refresh_preview();
+    assert_eq!(app.preview.view().total, 1);
+}

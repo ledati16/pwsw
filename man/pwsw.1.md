@@ -176,7 +176,7 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 **Dashboard**
 :   `←/→`: Select daemon action (Start/Stop/Restart; Enable/Disable when the systemd unit is installed)
 :   `Enter`: Run the selected action
-:   `w`: Toggle between Logs and Windows view
+:   `w`: Toggle between Logs and Windows view (the Windows view shows each window's *Monitor*, `—` when the compositor protocol does not report it, `(min)` while minimized; left out on narrow terminals)
 :   `↑/↓`, `PgUp/PgDn`, `Home/End`: Scroll the log (`End` returns to live view), or select a window in the Windows view
 :   `n` (Windows view): New rule for the selected window, its app ID escaped and anchored so it matches that app ID only; the Sinks field is focused (preselected when there is only one sink) and the window's title is shown to copy from. If a rule already matches the window, that rule opens for editing instead
 
@@ -185,18 +185,20 @@ The most important keys are listed below. Press `?` or `F1` within the TUI for t
 :   `Shift+↑/↓`: Move the selected item (rule order is the priority with *match_by_index*)
 :   `a` / `e` / `x`: Add / edit / delete
 :   `Enter`: Show details
-:   `Space` (Sinks): Make the selected sink the fallback (used when no rule matches)
+:   `i` (Sinks): Switch between the sinks (outputs) and the mics (inputs, the `[[sources]]` list); the mic list works exactly like the sink list, its node list offers PipeWire's inputs (monitors left out). Without mics pwsw never touches the microphone
+:   `Space` (Sinks): Make the selected sink (mic) the default (used when no rule chooses one)
 
 **Editors**
 :   `↑/↓`, `Tab` / `Shift+Tab`: Switch field
-:   `Space`: Open the node list (sink *Node*) or the sink picker (rule *Sinks*); toggle or cycle on/off fields
+:   `Space`: Open the node list (sink or mic *Node*) or the picker (rule *Sinks* / *Mics*); toggle or cycle on/off fields
 :   `Enter`: Apply the edit (written to the file with `Ctrl+S`)
 :   `Esc`: Cancel editing / close a list
+:   The rule editor's *Output* field is an optional regex on the monitors' connector names (the monitors the daemon reports are listed below the form); with an *Output* the *App ID* may stay empty (any app). *Mics* is optional too: without one the rule leaves the microphone alone. The live preview matches like the daemon, monitors and minimized windows included
 
-**Rule sink picker** (a rule's *Sinks*: the first is tried first, the rest are fallbacks in order)
-:   `Space`: Add the highlighted sink at the end of the order, or remove it (the next one moves up)
-:   `Shift+↑/↓`: Move the highlighted chosen sink earlier / later
-:   `Enter`: Use the chosen sinks (with none chosen, the highlighted one); `Esc`: back without changes
+**Rule sink and mic pickers** (a rule's *Sinks* or *Mics*: the first is tried first, the rest are fallbacks in order)
+:   `Space`: Add the highlighted entry at the end of the order, or remove it (the next one moves up)
+:   `Shift+↑/↓`: Move the highlighted chosen entry earlier / later
+:   `Enter`: Use the chosen entries (with no sink chosen, the highlighted sink; with no mic chosen, the rule has none); `Esc`: back without changes
 
 **Settings**
 :   `↑/↓`: Navigate

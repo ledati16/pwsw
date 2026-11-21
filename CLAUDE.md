@@ -320,11 +320,5 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 - Default-sink changes made outside pwsw are not tracked; pwsw re-reads the real default
   only for manual operations (`set-sink`, `next-sink`, `prev-sink`).
 - The daemon needs at least one configured sink to start.
-- The TUI does not show or edit `[[sources]]`, rule `source` or rule `output` yet (its rule
-  editor keeps both when a rule is edited). Its rules table shows an output-only rule
-  with an empty App ID, and its preview/"edit the matching rule" (`tui/preview.rs`
-  `first_matching_rule`) ignores `output`, so it treats an output-only rule as matching
-  every window.
-- `test-rule` matches `app_id` and title only, not monitors.
 - The code was written by LLMs and overhauled through an orchestrated multi-agent review;
   no human Rust expert has reviewed it. Validate changes thoroughly.

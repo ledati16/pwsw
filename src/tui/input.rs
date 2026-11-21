@@ -10,7 +10,9 @@ use super::screens::dashboard::DashboardView;
 use super::screens::list::{FormEditor, ListMode, ListScreen};
 use super::screens::rules::RuleField;
 use super::screens::settings::{LOG_LEVELS, parse_switch_delay};
-use super::screens::sinks::{SinkField, selector_names};
+use super::screens::sinks::{SinkField, SinksScreen, noun, selector_names, title};
+use crate::config::{Config, Endpoint, SinkConfig};
+use crate::pipewire::{ActiveSink, ProfileSink};
 
 /// Handle a single input event and update app state
 ///
@@ -50,7 +52,7 @@ pub fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event:
 fn is_modal_active(app: &App) -> bool {
     // Check screen-specific modals
     match app.current_screen {
-        Screen::Sinks => app.sinks_screen.mode != ListMode::List,
+        Screen::Sinks => app.endpoint_screen().mode != ListMode::List,
         Screen::Rules => app.rules_screen.mode != ListMode::List,
         Screen::Settings => app.settings_screen.dialog_open(),
         Screen::Dashboard => false,
@@ -438,7 +440,7 @@ fn moved(app: &mut App, result: color_eyre::Result<()>, what: &str, to: usize) {
     match result {
         Ok(()) => {
             match app.current_screen {
-                Screen::Sinks => app.sinks_screen.selected = to,
+                Screen::Sinks => app.endpoint_screen_mut().selected = to,
                 Screen::Rules => app.rules_screen.selected = to,
                 Screen::Dashboard | Screen::Settings => {}
             }
@@ -504,30 +506,110 @@ fn type_key<E: FormEditor>(editor: &mut E, key: KeyEvent) {
     }
 }
 
-/// Handle sinks screen input
+/// The config change behind each sink (source) operation of the Sinks screen:
+/// the `Config` method for `kind` (they keep every invariant)
+mod endpoint_ops {
+    use color_eyre::eyre::Result;
+
+    use super::{Config, Endpoint, SinkConfig};
+
+    pub(super) fn add(config: &mut Config, kind: Endpoint, entry: SinkConfig) -> Result<()> {
+        match kind {
+            Endpoint::Sink => config.add_sink(entry),
+            Endpoint::Source => config.add_source(entry),
+        }
+    }
+
+    pub(super) fn update(
+        config: &mut Config,
+        kind: Endpoint,
+        index: usize,
+        entry: SinkConfig,
+    ) -> Result<()> {
+        match kind {
+            Endpoint::Sink => config.update_sink(index, entry),
+            Endpoint::Source => config.update_source(index, entry),
+        }
+    }
+
+    pub(super) fn set_default(config: &mut Config, kind: Endpoint, index: usize) -> Result<()> {
+        match kind {
+            Endpoint::Sink => config.set_default_sink(index),
+            Endpoint::Source => config.set_default_source(index),
+        }
+    }
+
+    pub(super) fn remove(config: &mut Config, kind: Endpoint, index: usize) -> Result<()> {
+        match kind {
+            Endpoint::Sink => config.remove_sink(index),
+            Endpoint::Source => config.remove_source(index),
+        }
+    }
+
+    pub(super) fn move_to(
+        config: &mut Config,
+        kind: Endpoint,
+        from: usize,
+        to: usize,
+    ) -> Result<()> {
+        match kind {
+            Endpoint::Sink => config.move_sink(from, to),
+            Endpoint::Source => config.move_source(from, to),
+        }
+    }
+}
+
+/// The state of the list the Sinks screen shows and that list's `PipeWire`
+/// nodes (present ones, and those a profile switch creates), borrowed apart
+fn endpoint_parts(app: &mut App) -> (&mut SinksScreen, &[ActiveSink], &[ProfileSink]) {
+    match app.endpoint_view {
+        Endpoint::Sink => (
+            &mut app.sinks_screen,
+            &app.active_sink_list,
+            &app.profile_sink_list,
+        ),
+        Endpoint::Source => (
+            &mut app.sources_screen,
+            &app.active_source_list,
+            &app.profile_source_list,
+        ),
+    }
+}
+
+/// Handle sinks screen input (its list of sinks or of sources, whichever is shown)
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
-    match list_keys(&mut app.sinks_screen, &app.config.sinks, key) {
+    let kind = app.endpoint_view;
+    let screen = match kind {
+        Endpoint::Sink => &mut app.sinks_screen,
+        Endpoint::Source => &mut app.sources_screen,
+    };
+    match list_keys(screen, app.config.endpoints(kind), key) {
         ListKey::Done => {}
         ListKey::Move { from, to } => {
-            let result = app.config.move_sink(from, to);
-            moved(app, result, "sink", to);
+            let result = endpoint_ops::move_to(&mut app.config, kind, from, to);
+            moved(app, result, noun(kind), to);
         }
         ListKey::Delete(index) => {
             // Refuses (with the referencing rules named) if any rule uses it
-            let result = app.config.remove_sink(index);
-            app.sinks_screen.clamp_selection(app.config.sinks.len());
-            changed(app, result, "Sink deleted");
+            let result = endpoint_ops::remove(&mut app.config, kind, index);
+            let len = app.config.endpoints(kind).len();
+            app.endpoint_screen_mut().clamp_selection(len);
+            changed(app, result, &format!("{} deleted", title(kind)));
         }
-        ListKey::Unhandled => match app.sinks_screen.mode {
-            // Space: make the selected sink the fallback
+        ListKey::Unhandled => match app.endpoint_screen().mode {
+            // i: the other list (sinks ↔ mics)
+            ListMode::List if key.code == KeyCode::Char('i') && key.modifiers.is_empty() => {
+                app.toggle_endpoint_view();
+            }
+            // Space: make the selected entry the fallback
             ListMode::List if key.code == KeyCode::Char(' ') && key.modifiers.is_empty() => {
-                let idx = app.sinks_screen.selected;
-                if idx < app.config.sinks.len() {
-                    match app.config.set_default_sink(idx) {
+                let idx = app.endpoint_screen().selected;
+                if idx < app.config.endpoints(kind).len() {
+                    match endpoint_ops::set_default(&mut app.config, kind, idx) {
                         Ok(()) => app.mark_dirty(),
                         Err(e) => app.set_status(
                             StatusKind::Error,
-                            format!("Cannot make it the fallback: {e}"),
+                            format!("Cannot make it the default: {e}"),
                         ),
                     }
                 }
@@ -536,12 +618,14 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
             ListMode::SelectSink => match key.code {
                 KeyCode::Up | KeyCode::Down => {
                     // The lists are replaced by every poll: move by node name
-                    let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
-                    app.sinks_screen
-                        .move_selector(&names, key.code == KeyCode::Down);
+                    let (screen, active, profiles) = endpoint_parts(app);
+                    screen.move_selector(
+                        &selector_names(active, profiles),
+                        key.code == KeyCode::Down,
+                    );
                 }
                 KeyCode::Char(' ') | KeyCode::Enter => pick_selected_node(app),
-                KeyCode::Esc => app.sinks_screen.mode = ListMode::AddEdit,
+                KeyCode::Esc => app.endpoint_screen_mut().mode = ListMode::AddEdit,
                 _ => {}
             },
             _ => {}
@@ -549,22 +633,22 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Fill the sink editor from the node highlighted in the node selector.
+/// Fill the sink (source) editor from the node highlighted in the node selector.
 ///
 /// The node is looked up by name in the current lists, so a list refresh while
 /// the selector was open cannot substitute a different node.
 fn pick_selected_node(app: &mut App) {
-    let Some(node) = app.sinks_screen.editor.selector_node.clone() else {
+    let Some(node) = app.endpoint_screen().editor.selector_node.clone() else {
         app.set_status(StatusKind::Warning, "No node selected");
         return;
     };
-    let found = app
-        .active_sink_list
+    let (active, profiles) = app.endpoint_lists(app.endpoint_view);
+    let found = active
         .iter()
         .find(|s| s.name == node)
         .map(|s| s.description.clone())
         .or_else(|| {
-            app.profile_sink_list
+            profiles
                 .iter()
                 .find(|s| s.predicted_name == node)
                 .map(|s| s.description.clone())
@@ -576,37 +660,43 @@ fn pick_selected_node(app: &mut App) {
         );
         return;
     };
-    app.sinks_screen.editor.name = Input::new(node);
-    app.sinks_screen.editor.desc = Input::new(description);
-    app.sinks_screen.mode = ListMode::AddEdit;
+    let screen = app.endpoint_screen_mut();
+    screen.editor.name = Input::new(node);
+    screen.editor.desc = Input::new(description);
+    screen.mode = ListMode::AddEdit;
 }
 
-/// Handle sink editor input (add/edit modal)
+/// Handle sink (source) editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
-    if form_keys(&mut app.sinks_screen, key) {
+    let kind = app.endpoint_view;
+    let (screen, active, profiles) = endpoint_parts(app);
+    if form_keys(screen, key) {
         return;
     }
-    let editor = &mut app.sinks_screen.editor;
+    let editing_index = screen.editing_index;
+    let editor = &mut screen.editor;
     match (key.code, editor.focused_field) {
         (KeyCode::Char(' '), SinkField::Name) => {
-            let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
-            app.sinks_screen.open_selector(&names);
+            screen.open_selector(&selector_names(active, profiles));
         }
         (KeyCode::Char(' '), SinkField::Default) => editor.default.toggle(),
         (KeyCode::Char(' '), _) => type_key(editor, key),
         (KeyCode::Enter, _) => {
-            let sink = match editor.to_sink() {
-                Ok(sink) => sink,
+            let entry = match editor.to_sink() {
+                Ok(entry) => entry,
                 Err(e) => return app.set_status(StatusKind::Warning, e),
             };
             // The config methods keep the invariants: exactly one default (the first
-            // sink added becomes it), unique names/descs, and rules following renames.
-            let (result, done) = match app.sinks_screen.editing_index {
-                Some(idx) => (app.config.update_sink(idx, sink), "Sink updated"),
-                None => (app.config.add_sink(sink), "Sink added"),
+            // one added becomes it), unique names/descs, and rules following renames.
+            let (result, done) = match editing_index {
+                Some(idx) => (
+                    endpoint_ops::update(&mut app.config, kind, idx, entry),
+                    "updated",
+                ),
+                None => (endpoint_ops::add(&mut app.config, kind, entry), "added"),
             };
-            if changed(app, result, done) {
-                app.sinks_screen.cancel();
+            if changed(app, result, &format!("{} {done}", title(kind))) {
+                app.endpoint_screen_mut().cancel();
             }
         }
         _ => {}
@@ -643,18 +733,19 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle the sink picker of the rule editor: Space adds/removes the
-/// highlighted sink, Shift+↑/↓ reorders the chosen ones, Enter applies, Esc
+/// Handle the sink (or mic) picker of the rule editor: Space adds/removes the
+/// highlighted entry, Shift+↑/↓ reorders the chosen ones, Enter applies, Esc
 /// goes back without changes
 fn handle_rule_sink_picker_input(app: &mut App, key: KeyEvent) {
-    let count = app.config.sinks.len();
     let editor = &mut app.rules_screen.editor;
+    let entries = app.config.endpoints(editor.picker_kind());
+    let count = entries.len();
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     match key.code {
         KeyCode::Up | KeyCode::Down if shift => editor.picker_reorder(key.code == KeyCode::Down),
         KeyCode::Up | KeyCode::Down => editor.picker_move(key.code == KeyCode::Down, count),
         KeyCode::Char(' ') => editor.picker_toggle(count),
-        KeyCode::Enter => match editor.apply_picks(&app.config.sinks) {
+        KeyCode::Enter => match editor.apply_picks(entries) {
             Ok(()) => app.rules_screen.mode = ListMode::AddEdit,
             Err(e) => app.set_status(StatusKind::Warning, e),
         },
@@ -672,6 +763,16 @@ fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
     match (key.code, editor.focused_field) {
         (KeyCode::Char(' '), RuleField::Sinks) => {
             app.rules_screen.open_sink_selector(&app.config.sinks);
+        }
+        (KeyCode::Char(' '), RuleField::Mics) if app.config.sources.is_empty() => {
+            app.set_status(
+                StatusKind::Warning,
+                "No mics configured: add them first (2 Sinks → i → a)",
+            );
+        }
+        (KeyCode::Char(' '), RuleField::Mics) => {
+            app.rules_screen
+                .open_picker(Endpoint::Source, &app.config.sources);
         }
         (KeyCode::Char(' '), RuleField::Notify) => editor.cycle_notify(),
         (KeyCode::Char(' '), _) => type_key(editor, key),
