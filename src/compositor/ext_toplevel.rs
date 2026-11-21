@@ -1,71 +1,42 @@
-//! ext-foreign-toplevel-list-v1 protocol implementation
+//! `ext-foreign-toplevel-list-v1` protocol backend
 //!
-//! This is the standard protocol for listing toplevel windows.
-//! It provides read-only access to window metadata (title, `app_id`).
-
-use std::collections::HashMap;
+//! The standard protocol for listing toplevel windows. It provides read-only access to
+//! window metadata (title, `app_id`). Protocol events are translated into calls on the
+//! shared [`WindowTracker`].
 
 use color_eyre::eyre::{Context, Result};
-use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::{wl_output, wl_registry};
+use tracing::error;
+use wayland_client::globals::GlobalList;
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
-use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
-    ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_handle_v1::{
+    self, ExtForeignToplevelHandleV1,
+};
+use wayland_protocols::ext::foreign_toplevel_list::v1::client::ext_foreign_toplevel_list_v1::{
+    self, ExtForeignToplevelListV1,
 };
 
-use super::WindowEvent;
-use crate::sanitize::for_log;
+use super::tracker::WindowTracker;
 
-/// State for handling toplevel windows via ext-foreign-toplevel-list
-pub struct ExtToplevelState {
-    /// Channel to send window events back to tokio runtime
-    tx: mpsc::Sender<WindowEvent>,
-    /// Toplevels being tracked (handle `object_id` -> window state)
-    toplevels: HashMap<u32, ToplevelWindow>,
+/// Wayland interface name of the global this backend binds
+pub(super) const INTERFACE: &str = "ext_foreign_toplevel_list_v1";
+
+/// Bind the `ext_foreign_toplevel_list_v1` global
+///
+/// # Errors
+/// Returns an error if the global is missing or advertised at an unsupported version.
+pub(super) fn bind(
+    globals: &GlobalList,
+    qh: &QueueHandle<WindowTracker>,
+) -> Result<ExtForeignToplevelListV1> {
+    globals
+        .bind(qh, 1..=1, ())
+        .context("Failed to bind `ext_foreign_toplevel_list_v1`")
 }
 
-/// A single toplevel window being tracked
-#[derive(Debug, Default)]
-struct ToplevelWindow {
-    /// Unique ID for this window (derived from Wayland object ID)
-    id: u64,
-    /// Application ID (e.g., "firefox", "steam")
-    app_id: String,
-    /// Window title
-    title: String,
-    /// Whether we've received initial data (waiting for first 'done' event)
-    done_received: bool,
-}
-
-impl ExtToplevelState {
-    pub fn new(tx: mpsc::Sender<WindowEvent>) -> Self {
-        Self {
-            tx,
-            toplevels: HashMap::new(),
-        }
-    }
-
-    /// Send a window event to the daemon
-    fn send_event(&self, event: WindowEvent) {
-        // Use blocking_send since we're in a dedicated thread (not async context)
-        // This will block if the channel is full, which is intentional to apply backpressure
-        match self.tx.blocking_send(event) {
-            Ok(()) => {}
-            Err(e) => {
-                // Channel closed means daemon shut down
-                warn!("Failed to send window event (receiver dropped): {}", e);
-            }
-        }
-    }
-}
-
-// Implement Dispatch for the foreign toplevel list manager
-impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for ExtToplevelState {
+impl Dispatch<ExtForeignToplevelListV1, ()> for WindowTracker {
     fn event(
         state: &mut Self,
-        _proxy: &ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+        proxy: &ExtForeignToplevelListV1,
         event: ext_foreign_toplevel_list_v1::Event,
         _data: &(),
         _conn: &Connection,
@@ -74,34 +45,26 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, ()> for Ex
         use ext_foreign_toplevel_list_v1::Event;
 
         match event {
-            Event::Toplevel { toplevel } => {
-                // New window handle received
-                let id = toplevel.id().protocol_id();
-                trace!("New ext-toplevel handle: {}", id);
-
-                // Register this handle
-                state.toplevels.insert(id, ToplevelWindow {
-                    id: u64::from(id),
-                    ..Default::default()
-                });
-            }
+            Event::Toplevel { toplevel } => state.handle_created(toplevel.id()),
             Event::Finished => {
-                debug!("Ext-toplevel list finished");
+                error!("Compositor finished the `ext_foreign_toplevel_list_v1` object");
+                // The protocol asks the client to destroy the list after `finished`
+                proxy.destroy();
+                state.set_finished();
             }
             _ => {}
         }
     }
 
-    wayland_client::event_created_child!(ExtToplevelState, ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, [
-        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ())
+    wayland_client::event_created_child!(WindowTracker, ExtForeignToplevelListV1, [
+        ext_foreign_toplevel_list_v1::EVT_TOPLEVEL_OPCODE => (ExtForeignToplevelHandleV1, ())
     ]);
 }
 
-// Implement Dispatch for individual toplevel handles
-impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> for ExtToplevelState {
+impl Dispatch<ExtForeignToplevelHandleV1, ()> for WindowTracker {
     fn event(
         state: &mut Self,
-        proxy: &ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
+        proxy: &ExtForeignToplevelHandleV1,
         event: ext_foreign_toplevel_handle_v1::Event,
         _data: &(),
         _conn: &Connection,
@@ -109,124 +72,19 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
     ) {
         use ext_foreign_toplevel_handle_v1::Event;
 
-        let handle_id = proxy.id().protocol_id();
-
+        let key = proxy.id();
         match event {
-            Event::Title { title } => {
-                trace!("Toplevel {} title: {}", handle_id, for_log(&title));
-                if let Some(window) = state.toplevels.get_mut(&handle_id) {
-                    window.title = title;
-                }
-            }
-            Event::AppId { app_id } => {
-                trace!("Toplevel {} app_id: {}", handle_id, for_log(&app_id));
-                if let Some(window) = state.toplevels.get_mut(&handle_id) {
-                    window.app_id = app_id;
-                }
-            }
-            Event::Done => {
-                // All properties have been sent (or updated), emit event
-                if let Some(window) = state.toplevels.get_mut(&handle_id) {
-                    if window.done_received {
-                        // Subsequent done events = window changed
-                        let id = window.id;
-                        let app_id = window.app_id.clone();
-                        let title = window.title.clone();
-                        trace!(
-                            "Window changed: id={}, app_id='{}', title='{}'",
-                            id,
-                            for_log(&app_id),
-                            for_log(&title)
-                        );
-                        state.send_event(WindowEvent::Changed { id, app_id, title });
-                    } else {
-                        // First done event = window opened
-                        window.done_received = true;
-                        let id = window.id;
-                        let app_id = window.app_id.clone();
-                        let title = window.title.clone();
-                        debug!(
-                            "Window opened: id={}, app_id='{}', title='{}'",
-                            id,
-                            for_log(&app_id),
-                            for_log(&title)
-                        );
-                        state.send_event(WindowEvent::Opened { id, app_id, title });
-                    }
-                }
-            }
+            Event::Title { title } => state.set_title(&key, title),
+            Event::AppId { app_id } => state.set_app_id(&key, app_id),
+            Event::Done => state.done(&key),
             Event::Closed => {
-                if let Some(window) = state.toplevels.remove(&handle_id) {
-                    if window.done_received {
-                        debug!("Window closed: id={}", window.id);
-                        state.send_event(WindowEvent::Closed { id: window.id });
-                    } else {
-                        debug!(
-                            "Window {} closed before initial done event, not emitting Closed",
-                            handle_id
-                        );
-                    }
-                }
+                state.closed(&key);
+                // The protocol requires the client to destroy the handle after `closed`;
+                // `wayland-client` does not destroy proxies on drop.
+                proxy.destroy();
             }
+            // `identifier` (and future events) are not needed
             _ => {}
-        }
-    }
-}
-
-// Stub implementations for registry and output
-impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for ExtToplevelState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wl_registry::WlRegistry,
-        _event: wl_registry::Event,
-        _data: &GlobalListContents,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-impl Dispatch<wl_output::WlOutput, ()> for ExtToplevelState {
-    fn event(
-        _state: &mut Self,
-        _proxy: &wl_output::WlOutput,
-        _event: wl_output::Event,
-        _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-    ) {
-    }
-}
-
-/// Run the `Wayland` event loop for `ext-foreign-toplevel-list-v1`
-pub fn run_event_loop(conn: &Connection, tx: mpsc::Sender<WindowEvent>) -> Result<()> {
-    let (globals, mut event_queue) = registry_queue_init::<ExtToplevelState>(conn)
-        .context("Failed to initialize Wayland registry")?;
-
-    let qh = event_queue.handle();
-
-    // Bind to the ext foreign toplevel list protocol
-    // Version 1 is the current version
-    let _list: ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1 = globals
-        .bind(&qh, 1..=1, ())
-        .context("ext_foreign_toplevel_list_v1 protocol not available")?;
-
-    debug!("Successfully bound to ext-foreign-toplevel-list-v1 protocol");
-
-    let mut state = ExtToplevelState::new(tx);
-
-    loop {
-        match event_queue.blocking_dispatch(&mut state) {
-            Ok(_) => {
-                if state.tx.is_closed() {
-                    debug!("Event receiver dropped, shutting down Wayland thread");
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                debug!("Wayland event dispatch ended: {}", e);
-                return Err(e).context("Wayland event dispatch failed");
-            }
         }
     }
 }

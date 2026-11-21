@@ -107,4 +107,4 @@ too_many_lines = "allow"
 # needless_raw_string_hashes, doc_markdown - kept as local #[allow] attributes
 # (defensive: built 0.9 output does not currently trigger them)
 # Total suppressed by this table: 20 (3 + 17). Local allows elsewhere: 2 in
-# src/lib.rs (above) and 1 needless_pass_by_value in tests/compositor_integration.rs.
+# src/lib.rs (above).
