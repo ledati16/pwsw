@@ -147,7 +147,8 @@ inside it.
   `Activated::Elsewhere` and the loop adopts the observed default like a manual probe
   (`applied_for` = None, no more upgrade checks), or `Activated::Adopted` when that
   default is one of the rule's candidates before the fallback (it serves the list:
-  `applied_for` = the candidates, `applied_fallback` unless it is the first).
+  `applied_for` = the candidates; `applied_fallback` = false, so, like any choice made
+  outside pwsw, it is not upgraded away from until the rules' answer changes).
 - `activate.rs` runs over the `AudioBackend` and `Clock` traits so the whole flow is
   tested with fakes; put new logic there or in `resolve.rs`, not in `cli.rs`.
 

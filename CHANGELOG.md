@@ -57,8 +57,9 @@ maintenance mode.
   preferred. pwsw waits up to 3 s for the new node (was 750 ms). If it does not appear,
   the card is switched back to its previous profile, so a failed switch leaves the audio
   where it was. The retries of a failed rule-driven switch (after 2 s and 5 s) wait up
-  to 5 s, so a card too slow for the first attempt usually makes it then; for very slow
-  devices, raise `PROFILE_SWITCH_DELAY_MS`.
+  to 5 s, so a card too slow for the first attempt usually makes it then. To make first
+  attempts and manual switches wait longer too (up to 5 s), raise
+  `PROFILE_SWITCH_DELAY_MS`.
 - **A choice made outside pwsw is respected by fallbacks too:** when a rule settled
   for a fallback and you pick another output (e.g. in pavucontrol), pwsw no longer
   moves you to the rule's first choice when it becomes available.

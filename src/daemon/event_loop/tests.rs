@@ -1261,6 +1261,48 @@ async fn test_outside_choice_of_the_rules_first_choice_is_adopted() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// An outside choice of one of the rule's own candidates that is not its first choice
+/// is the user's choice: once adopted, pwsw does not move them up to the first choice
+/// when it becomes available (until the rules' answer changes)
+#[tokio::test(start_paused = true)]
+async fn test_outside_choice_of_a_lower_candidate_is_not_upgraded_away() {
+    // Logs the same lines as `test_adopted_outside_choice_is_logged_as_already_on`;
+    // a subscriber here keeps the shared call-site interest cache consistent
+    let _logs = LogCapture::at(tracing::Level::INFO);
+    let mut config = base_config();
+    config.rules[2] =
+        make_rule_with_fallbacks("firefox", None, &["Headphones", "Speakers", "HDMI"]);
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones", "speakers"]);
+    let h = start(config, switcher, Some("usb"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+
+    // The speakers come back and the user picks them in `pavucontrol`: adopted
+    h.switcher.set_current("speakers");
+    h.switcher.set_absent(&["headphones"]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_applied("speakers").await;
+    assert!(
+        !snapshot.fallback,
+        "the user's choice, not a fallback pwsw settled for"
+    );
+
+    // The headphones (the rule's first choice) come back: the user's choice stays
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(3, "zsh").await;
+    let snapshot = h.wait_windows(3).await;
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+    assert!(
+        !h.calls().iter().any(|c| c == "headphones"),
+        "never moved to the first choice: {:?}",
+        h.calls()
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
 /// A fallback is the rules' answer too: a reload that keeps the list does not switch
 #[tokio::test(start_paused = true)]
 async fn test_fallback_list_is_the_desired_answer_on_reload() {
@@ -2860,9 +2902,13 @@ impl LogCapture {
             .with_ansi(false)
             .with_max_level(level)
             .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        // Call sites cache whether anyone listens; one first hit on another test's
+        // thread (no subscriber there) could leave a call site disabled for this one
+        tracing::callsite::rebuild_interest_cache();
         Self {
             buffer,
-            _guard: tracing::subscriber::set_default(subscriber),
+            _guard: guard,
         }
     }
 

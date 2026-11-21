@@ -1499,7 +1499,9 @@ impl Daemon {
             }
             Outcome::Adopted { index } => {
                 // The default chosen outside pwsw is one of the rule's own candidates,
-                // higher in its list than the applied fallback: it serves the list
+                // higher in its list than the applied fallback: it serves the list, and
+                // as the user's choice it is not upgraded away from (like any choice
+                // made outside pwsw) until the rules' answer changes
                 let message = tried.get(index).map_or_else(
                     || format!("Already on a higher-priority {noun} (chosen outside pwsw)"),
                     |name| {
@@ -1514,7 +1516,7 @@ impl Daemon {
                     let lane = self.lane_mut(kind);
                     lane.applied = Some(name.clone());
                     lane.applied_for = Some(tried.clone());
-                    lane.applied_fallback = index > 0;
+                    lane.applied_fallback = false;
                 }
                 Response::Ok { message }
             }
