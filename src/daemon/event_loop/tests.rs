@@ -105,6 +105,11 @@ struct FakeSwitcher {
     /// was elsewhere), `Some(Ok(()))` sets the first candidate again, `Some(Err(m))`
     /// reports it lost
     keep_answer: Mutex<Option<std::result::Result<(), String>>>,
+    /// Hold upgrade checks on the gate (announced on `started` as `"upgrade"`), even
+    /// one that switches nothing
+    hold_upgrades: std::sync::atomic::AtomicBool,
+    /// Fail this many upgrade checks outright (like a `pw-dump` that timed out)
+    fail_upgrades: AtomicUsize,
 }
 
 impl FakeSwitcher {
@@ -189,6 +194,20 @@ impl FakeSwitcher {
     ) -> Result<Option<(usize, String)>> {
         let absent = self.absent.lock().expect("lock").clone();
         let reachable = |c: &String| !absent.contains(c);
+        if upgrade_from.is_some() {
+            if self.hold_upgrades.load(Ordering::SeqCst) {
+                if let Some(tx) = &*self.started.lock().expect("lock") {
+                    let _ = tx.send("upgrade".to_string());
+                }
+                if let Some(gate) = &*self.gate.lock().expect("lock") {
+                    let _ = gate.recv_timeout(WAIT);
+                }
+            }
+            if self.fail_upgrades.load(Ordering::SeqCst) > 0 {
+                self.fail_upgrades.fetch_sub(1, Ordering::SeqCst);
+                anyhow::bail!("fake failure: pw-dump timed out");
+            }
+        }
         if let Some(rank) = upgrade_from
             && !candidates[..rank.min(candidates.len())]
                 .iter()
@@ -823,7 +842,7 @@ async fn test_unreachable_first_choice_falls_back_and_says_so() {
     assert_eq!(h.requests(), vec![(names(&["headphones", "hdmi"]), None)]);
     assert_eq!(
         snapshot.active_window.as_deref(),
-        Some("firefox window: hdmi (fallback)")
+        Some("firefox window: HDMI (fallback)")
     );
     let tracked = snapshot.windows[0].tracked.as_ref().expect("tracked");
     assert_eq!(tracked.sink_name, "headphones");
@@ -2857,6 +2876,331 @@ async fn test_status_reports_backend_and_monitor_info() {
         };
         assert_eq!((backend.as_deref(), monitor_info), expected);
     }
+    h.stop().await.expect("clean shutdown");
+}
+
+// ------------------------------------------- what a rule's fallback serves, upgrades
+
+/// A flicker within the settle delay while a rule's fallback is applied: the change
+/// back to that rule's candidates is served by the fallback (it is what they settled
+/// for), so the wait is cancelled and nothing is activated or announced again
+#[tokio::test(start_paused = true)]
+async fn test_settle_flicker_back_to_an_applied_fallback_switches_nothing() {
+    let mut config = fallback_config();
+    config.settings.switch_delay_ms = 300;
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(config, switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(
+        h.next_notice().await.body,
+        "HDMI (fallback) → firefox window"
+    );
+
+    // A splash window of another rule, gone within the delay
+    h.open(2, "mpv").await;
+    assert_eq!(h.wait_windows(2).await.settling, Some(names(&["usb"])));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.close(2).await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(
+        snapshot.settling, None,
+        "the fallback serves firefox's rule"
+    );
+    assert!(snapshot.fallback);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.jobs_submitted, 1);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    let notices = h.notices();
+    assert!(notices.is_empty(), "no second announcement: {notices:?}");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Another rule wanting the applied fallback as its first choice comes and goes: the
+/// fallback serves the first rule again (nothing re-activated), still counts as a
+/// fallback, and a later event's upgrade check finds the first choice
+#[tokio::test(start_paused = true)]
+async fn test_applied_fallback_stays_served_and_upgradable_across_another_rule() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+
+    h.open(2, "steam").await;
+    let snapshot = h.wait_windows(2).await;
+    assert!(!snapshot.fallback, "HDMI is steam's first choice");
+    h.close(2).await;
+    let snapshot = h.wait_windows(1).await;
+    assert!(!snapshot.sink_in_flight, "nothing re-activated");
+    assert!(snapshot.fallback, "HDMI is firefox's fallback again");
+    assert_eq!(h.calls(), vec!["hdmi"]);
+
+    h.switcher.set_absent(&[]);
+    h.open(3, "zsh").await;
+    h.wait_applied("headphones").await;
+    assert_eq!(
+        h.requests().last(),
+        Some(&(names(&["headphones", "hdmi"]), Some(1)))
+    );
+    assert_eq!(h.calls(), vec!["hdmi", "headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Resuming while a rule's fallback is applied for the rules' current answer: it is
+/// served already, nothing is activated
+#[tokio::test(start_paused = true)]
+async fn test_resume_on_an_applied_fallback_switches_nothing() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    h.pause().await;
+    h.resume().await;
+    let snapshot = h.snapshot().await;
+    assert!(!snapshot.sink_in_flight);
+    assert_eq!(snapshot.jobs_submitted, 1);
+    assert!(snapshot.fallback);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// An upgrade check is running when `set-sink` names the sink that is the real
+/// default already: the request answers "Already on" and switches nothing, and the
+/// upgrade check it queued behind is not resumed as a rule switch (which would move
+/// the audio back to the fallback)
+#[tokio::test(start_paused = true)]
+async fn test_noop_manual_switch_over_an_upgrade_check_switches_nothing() {
+    let (fake, gate, mut started) = FakeSwitcher::gated();
+    fake.set_absent(&["headphones"]);
+    let h = start(fallback_config(), fake, Some("speakers"));
+    h.open(1, "firefox").await;
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("hdmi")
+    );
+    gate.send(()).expect("gate");
+    h.wait_applied("hdmi").await;
+
+    // The user picks the speakers in pavucontrol; a window event starts an upgrade
+    h.switcher.set_current("speakers");
+    h.switcher.hold_upgrades.store(true, Ordering::SeqCst);
+    h.open(2, "zsh").await;
+    assert_eq!(
+        within("upgrade check start", started.recv())
+            .await
+            .as_deref(),
+        Some("upgrade")
+    );
+    let reply = queue_switch(&h, ManualSwitch::Set("Speakers".to_string())).await;
+    drop(gate);
+    let response = within("switch reply", reply).await.expect("reply");
+    assert!(
+        matches!(&response, Response::Ok { message } if message == "Already on: Speakers"),
+        "{response:?}"
+    );
+    // Settled in the step that answered
+    let snapshot = h.snapshot().await;
+    assert!(!snapshot.sink_in_flight, "nothing resumed");
+    assert_eq!(
+        snapshot.jobs_submitted, 3,
+        "the rule switch, the upgrade check, the manual request"
+    );
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    assert_eq!(
+        h.switcher.current.lock().expect("lock").as_deref(),
+        Some("speakers")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// An upgrade check that fails (e.g. `pw-dump` timed out) is not retried as a rule
+/// switch, which would re-activate the fallback over what the user picked since; the
+/// next event checks again
+#[tokio::test(start_paused = true)]
+async fn test_failed_upgrade_check_is_not_retried_as_a_switch() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    h.switcher.set_current("speakers");
+    h.switcher.fail_upgrades.store(1, Ordering::SeqCst);
+    h.open(2, "zsh").await;
+    h.wait_for("the upgrade check's result", |s, _| {
+        s.jobs_submitted == 2 && !s.sink_in_flight
+    })
+    .await;
+
+    // Long past every retry backoff
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.jobs_submitted, 2, "no retry");
+    assert!(snapshot.fallback);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    assert_eq!(
+        h.switcher.current.lock().expect("lock").as_deref(),
+        Some("speakers")
+    );
+
+    h.open(3, "zsh").await;
+    h.wait_for("the next upgrade check", |s, _| {
+        s.jobs_submitted == 3 && !s.sink_in_flight
+    })
+    .await;
+    let candidates = names(&["headphones", "hdmi"]);
+    assert_eq!(h.requests(), vec![
+        (candidates.clone(), None),
+        (candidates.clone(), Some(1)),
+        (candidates, Some(1)),
+    ]);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+// ------------------------------------------------------------- sources and reloads
+
+/// Speakers, desk mic (default) and headset mic, no rules
+const SOURCES_ONLY_CONFIG: &str = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\n\
+    default = true\n\n\
+    [[sources]]\nname = \"mic.desk\"\ndesc = \"Desk Mic\"\ndefault = true\n\n\
+    [[sources]]\nname = \"mic.headset\"\ndesc = \"Headset Mic\"\n";
+
+/// Sources enabled by a reload (none at startup): the default source startup saw is
+/// not trusted, since nothing tracked it since, so the lane switches to its answer
+#[tokio::test(start_paused = true)]
+async fn test_sources_enabled_by_reload_switch_to_their_answer() {
+    let h = start(
+        base_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.wait_windows(0).await;
+    // Meanwhile the user picked another microphone in pavucontrol
+    h.switcher.set_current_source("mic.headset");
+    std::fs::write(&h.config_path, SOURCES_ONLY_CONFIG).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_source("mic.desk").await;
+    assert_eq!(h.source_calls(), vec!["mic.desk"]);
+    assert_eq!(
+        h.switcher.current_source.lock().expect("lock").as_deref(),
+        Some("mic.desk")
+    );
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers · Mic: Desk Mic")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Sources removed by a reload and added back: what the lane had applied is
+/// forgotten while nothing tracked it, so the re-enabled lane switches to its answer
+#[tokio::test(start_paused = true)]
+async fn test_sources_removed_and_added_back_switch_to_their_answer() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.wait_windows(0).await;
+    let without = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\ndefault = true\n";
+    std::fs::write(&h.config_path, without).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_for("sources gone", |s, _| !s.sources_configured)
+        .await;
+
+    h.switcher.set_current_source("mic.headset");
+    std::fs::write(&h.config_path, SOURCES_ONLY_CONFIG).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_source("mic.desk").await;
+    assert_eq!(h.source_calls(), vec!["mic.desk"]);
+    assert_eq!(
+        h.switcher.current_source.lock().expect("lock").as_deref(),
+        Some("mic.desk")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A manual sink request with nothing to do while sources are configured: the
+/// microphone's half that rode along (`keep`) is answered without an activation (no
+/// `pw-dump` for a source nothing touched)
+#[tokio::test(start_paused = true)]
+async fn test_noop_manual_sink_switch_activates_nothing_for_the_source() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    let response = h.switch(ManualSwitch::Set("Speakers".to_string())).await;
+    assert!(
+        matches!(&response, Response::Ok { message } if message == "Already on: Speakers"),
+        "{response:?}"
+    );
+    let snapshot = h.wait_for("both halves in", |s, _| !s.sink_in_flight).await;
+    assert_eq!(snapshot.jobs_submitted, 2, "the request and its keep half");
+    assert_eq!(snapshot.applied_source.as_deref(), Some("mic.desk"));
+    assert_eq!(h.halves(), Vec::new(), "no activation");
+    assert_eq!(
+        h.switcher.keeps.lock().expect("lock").clone(),
+        Vec::<Vec<String>>::new()
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A joint sink + microphone switch publishes one status line, not one per half (the
+/// new sink with the old microphone in between)
+#[tokio::test(start_paused = true)]
+async fn test_joint_switch_publishes_the_status_once() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "discord").await;
+    h.wait_source("mic.headset").await;
+    h.wait_applied("headphones").await;
+    assert_eq!(h.halves(), vec![(true, true)], "one joint activation");
+    assert_eq!(h.statuses(), vec![
+        "Sink: Speakers · Mic: Desk Mic".to_string(),
+        "Sink: Headphones · Mic: Headset Mic".to_string(),
+    ]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// `status` names the deciding window only while the applied sink is what its rule
+/// wants (not while a manual choice holds, nor paused on another sink), and names
+/// the sink by its configured description
+#[tokio::test(start_paused = true)]
+async fn test_status_active_window_follows_the_applied_sink() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert_eq!(
+        snapshot.active_window.as_deref(),
+        Some("firefox window: Headphones")
+    );
+
+    h.pause().await;
+    h.open(2, "steam").await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.desired, "hdmi");
+    assert_eq!(snapshot.active_window, None, "paused on firefox's sink");
+    h.resume().await;
+    let snapshot = h.wait_applied("hdmi").await;
+    assert_eq!(
+        snapshot.active_window.as_deref(),
+        Some("steam window: HDMI")
+    );
+
+    h.switch(ManualSwitch::Set("Speakers".to_string())).await;
+    let snapshot = h.wait_applied("speakers").await;
+    assert!(snapshot.manual_override);
+    assert_eq!(snapshot.active_window, None, "a manual choice holds");
     h.stop().await.expect("clean shutdown");
 }
 

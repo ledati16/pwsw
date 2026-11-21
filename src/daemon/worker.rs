@@ -141,6 +141,9 @@ pub(crate) struct JobResult {
     /// The real default the probe saw before acting (manual jobs only)
     pub observed: Option<String>,
     pub outcome: Outcome,
+    /// Another result of the same run follows (the other half of a joint
+    /// activation), so the loop can publish the status once for the whole run
+    pub more: bool,
 }
 
 /// Capacity of the result channel back to the main loop
@@ -185,6 +188,7 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
             tried: Vec::new(),
             observed,
             outcome,
+            more: false,
         })
     };
     match target {
@@ -292,7 +296,28 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
             Prepared::Finished(result) => results.push(result),
         }
     }
-    if halves.iter().all(Option::is_none) {
+    // Nothing to activate, or only a source riding along with a sink job that
+    // finished without activating anything (a manual request with nothing to do): the
+    // source was not touched, so no snapshot is needed to say so
+    if halves.iter().flatten().all(|ready| ready.keep) {
+        for (kind, slot) in [Endpoint::Sink, Endpoint::Source].into_iter().zip(halves) {
+            if let Some(Ready {
+                generation,
+                tried,
+                observed,
+                ..
+            }) = slot
+            {
+                results.push(JobResult {
+                    generation,
+                    kind,
+                    tried,
+                    observed,
+                    outcome: Outcome::Unchanged,
+                    more: false,
+                });
+            }
+        }
         return results;
     }
     let (sink, source) = switcher.activate(half(halves[0].as_ref()), half(halves[1].as_ref()));
@@ -311,6 +336,7 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
                 tried,
                 observed,
                 outcome,
+                more: false,
             });
         }
     }
@@ -384,10 +410,13 @@ async fn run<S: SinkSwitcher>(
                         tried,
                         observed: None,
                         outcome: Outcome::Failed(format!("activation task failed: {e}")),
+                        more: false,
                     })
                     .collect()
             });
-        for result in finished {
+        let last = finished.len().saturating_sub(1);
+        for (i, mut result) in finished.into_iter().enumerate() {
+            result.more = i < last;
             if results.send(result).await.is_err() {
                 return;
             }

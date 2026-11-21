@@ -82,7 +82,11 @@ the candidate list changed. A rule job activates the first reachable candidate a
 one snapshot (`pipewire::activate::activate_first`), trying the next reachable one if
 that activation fails; when it settled for a fallback, the next window event or reload
 (at most every `UPGRADE_CHECK_INTERVAL`, 2 s, never polled, never over a manual choice)
-submits an *upgrade* job that switches only if an earlier candidate is reachable.
+submits an *upgrade* job that switches only if an earlier candidate is reachable. An
+applied fallback still *serves* the list it was activated for (`Lane::applied_for`), so
+the rules returning to that list switch nothing; a failed upgrade check is never retried
+and a superseded one is never resumed (either would be a full rule switch over whatever
+the user picked since).
 
 **Pause and settle delay.** `Pause`/`Resume`/`TogglePause` set an in-memory `paused`
 flag (a restart starts unpaused): windows, reloads and manual requests keep working, but

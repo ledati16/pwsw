@@ -110,7 +110,10 @@ impl Notifier {
         let Some(tx) = &self.tx else { return };
         match tx.try_send(notice) {
             Ok(()) => {}
-            Err(TrySendError::Full(n)) => debug!("Notification queue full, dropping: {}", n.body),
+            Err(TrySendError::Full(n)) => debug!(
+                "Notification queue full, dropping: {}",
+                crate::sanitize::for_log(&n.body)
+            ),
             Err(TrySendError::Disconnected(_)) => debug!("Notification thread gone"),
         }
     }

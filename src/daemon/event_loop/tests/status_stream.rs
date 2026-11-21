@@ -62,18 +62,6 @@ impl Subscriber {
         }
     }
 
-    /// Read updates until one satisfies `cond` (the halves of a joint switch may
-    /// arrive as two updates)
-    async fn update_until(&mut self, cond: impl Fn(&StatusUpdate) -> bool) -> StatusUpdate {
-        for _ in 0..4 {
-            let update = self.update().await;
-            if cond(&update) {
-                return update;
-            }
-        }
-        panic!("no matching status update");
-    }
-
     /// Whether the daemon ended the connection (no further message, end of stream)
     async fn assert_closed(mut self) {
         let mut rest = Vec::new();
@@ -199,9 +187,8 @@ async fn test_subscribe_reports_the_source() {
 
     h.open(1, "discord").await;
     h.wait_source("mic.headset").await;
-    let update = sub
-        .update_until(|u| u.source.as_ref().is_some_and(|s| s.node == "mic.headset"))
-        .await;
+    // One update for the joint switch, with both halves in
+    let update = sub.update().await;
     assert_eq!(
         update.sink,
         Some(applied(

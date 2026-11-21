@@ -59,7 +59,9 @@ const DEFAULT_MAX_POLLS: u64 = 10;
 /// Bounds for `PROFILE_SWITCH_DELAY_MS`.
 const MIN_POLL_INTERVAL_MS: u64 = 10;
 const MAX_POLL_INTERVAL_MS: u64 = 1_000;
-/// Hard cap on the total wait (interval × polls) of one activation.
+/// Hard cap on the total sleep (interval × polls) of one activation's post-switch
+/// wait. It caps the sleeps only: each poll's `pw-dump` can add up to its own timeout
+/// (`PW_DUMP_TIMEOUT`).
 ///
 /// This does not bound how long an `IPC` client waits: a manual switch queued behind
 /// an in-flight activation waits for both. The daemon's guard is its 8 s "switch in

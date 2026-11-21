@@ -67,7 +67,7 @@ use crate::config::{Config, ConfigNotFound, Endpoint, SinkConfig};
 use crate::ipc::{EndpointStatus, FallbackSink, Response, RuleWindow, TrackedInfo, WindowInfo};
 pub(crate) use crate::manual::ManualSwitch;
 use crate::notification::{get_app_icon, get_sink_icon, get_source_icon};
-use crate::state::{Departure, State};
+use crate::state::{Departure, State, Winner};
 
 /// Quiet period after the last config-file event before reloading (trailing edge)
 pub(crate) const RELOAD_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -161,7 +161,8 @@ pub(crate) struct Snapshot {
     pub desired: String,
     /// Whether `applied` is a lower-priority candidate a rule settled for
     pub fallback: bool,
-    /// "trigger: sink" of the window deciding the desired sink
+    /// "trigger: sink desc" of the window deciding the applied sink (`None` while a
+    /// manual choice holds or the applied sink is not what that window's rule wants)
     pub active_window: Option<String>,
     /// Windows matching a rule
     pub tracked_windows: usize,
@@ -338,6 +339,11 @@ struct Lane {
     applied: Option<String>,
     /// `applied` is a lower-priority candidate a rule-driven switch settled for
     applied_fallback: bool,
+    /// The rules' candidate list `applied` was activated for (by a rule-driven job);
+    /// `None` when it came from elsewhere (a manual choice, the default seen by a
+    /// probe or at startup). While the rules want that list again, `applied` serves
+    /// it even when it is one of its fallbacks.
+    applied_for: Option<Vec<String>>,
     /// When the last upgrade check was submitted (see [`UPGRADE_CHECK_INTERVAL`])
     last_upgrade_check: Option<Instant>,
     /// The rules' candidates at the last reconcile; a change marks a rule-driven
@@ -363,8 +369,13 @@ struct Lane {
 
 impl Lane {
     /// Forget the rules' answer (the lane has none any more: sources were removed)
+    ///
+    /// The applied value is forgotten too: nothing tracks the default while the lane
+    /// is inactive, so the first answer after it is enabled again is switched to.
     fn deactivate(&mut self) {
         self.last_desired = None;
+        self.applied = None;
+        self.applied_for = None;
         self.applied_fallback = false;
         self.manual_override = false;
         self.stalled = false;
@@ -469,9 +480,15 @@ impl Daemon {
     }
 
     /// The current default source, if known (queried at startup)
+    ///
+    /// Ignored when the startup config has no `[[sources]]`: nothing tracks the
+    /// default source then, so a lane enabled by a later reload starts unknown (and
+    /// switches to its first answer) instead of trusting what startup saw.
     #[must_use]
     pub(crate) fn with_applied_source(mut self, source: Option<String>) -> Self {
-        self.lane_mut(Endpoint::Source).applied = source;
+        if !self.state.config().sources.is_empty() {
+            self.lane_mut(Endpoint::Source).applied = source;
+        }
         self
     }
 
@@ -731,7 +748,8 @@ impl Daemon {
 
     /// Whether the `kind` default is, or is about to be, what `candidates` asks for:
     /// a pending rule-driven job serves that list, or (nothing pending) `applied` is
-    /// its first choice
+    /// its first choice or was activated for that very list (a fallback it settled
+    /// for; upgrade checks look for better)
     fn serves(&self, kind: Endpoint, candidates: &[String]) -> bool {
         let lane = self.lane(kind);
         match &lane.submitted {
@@ -742,7 +760,11 @@ impl Daemon {
             }) => pending == candidates,
             // A manual job: its target is not chosen yet
             Some(_) => false,
-            None => lane.applied.as_deref() == candidates.first().map(String::as_str),
+            None => {
+                lane.applied.is_some()
+                    && (lane.applied_for.as_deref() == Some(candidates)
+                        || lane.applied.as_deref() == candidates.first().map(String::as_str))
+            }
         }
     }
 
@@ -884,9 +906,9 @@ impl Daemon {
 
     /// Take `names` as the rules' new answer for `kind` (it changed, or `resume` hands
     /// control back to the rules): what held for the old answer (manual choice,
-    /// retries, a settle wait) is dropped, and unless the default already is (or is
-    /// about to be) `names`' first choice, a switch is submitted, after `delay` if
-    /// given
+    /// retries, a settle wait) is dropped, and unless the default already serves (or
+    /// is about to serve) `names` (see [`Daemon::serves`]), a switch is submitted,
+    /// after `delay` if given
     ///
     /// Returns whether a job was submitted now.
     fn adopt(
@@ -914,8 +936,10 @@ impl Daemon {
             }
             let lane = self.lane_mut(kind);
             if lane.submitted.is_none() {
-                // The applied value is the new list's first choice
-                lane.applied_fallback = false;
+                // The applied value is the new list's first choice, or the fallback
+                // that list settled for (upgrade checks go on looking for better)
+                lane.applied_fallback =
+                    lane.applied.as_deref() != names.first().map(String::as_str);
             }
             return false;
         }
@@ -1164,6 +1188,7 @@ impl Daemon {
     fn on_result(&mut self, result: JobResult) {
         let kind = result.kind;
         let noun = kind.noun();
+        let more = result.more;
         let is_latest = self
             .lane(kind)
             .submitted
@@ -1185,6 +1210,7 @@ impl Daemon {
             );
             let lane = self.lane_mut(kind);
             lane.applied = Some(observed);
+            lane.applied_for = None;
             lane.applied_fallback = false;
         }
 
@@ -1202,6 +1228,23 @@ impl Daemon {
                     "{what} is now {desc}{} ({node_name})",
                     if fallback { " (fallback)" } else { "" }
                 );
+                // The candidate list the new value serves: a rule-driven job's (a stale
+                // result too: a manual job's single target is its own first choice),
+                // nothing for a manual choice; a `keep` that set the same value again
+                // changes nothing
+                let applied_for = match &submitted {
+                    Some(Submitted {
+                        origin: Origin::Manual { .. },
+                        ..
+                    }) => None,
+                    Some(Submitted {
+                        origin: Origin::Keep,
+                        ..
+                    }) if self.lane(kind).applied.as_deref() == Some(name.as_str()) => {
+                        self.lane(kind).applied_for.clone()
+                    }
+                    _ => Some(tried.clone()),
+                };
                 let notice = match &submitted {
                     Some(Submitted {
                         origin: origin @ (Origin::Rule | Origin::Upgrade),
@@ -1247,6 +1290,7 @@ impl Daemon {
                 }
                 let lane = self.lane_mut(kind);
                 lane.applied = Some(name);
+                lane.applied_for = applied_for;
                 lane.applied_fallback = fallback;
                 if fallback {
                     desc.push_str(" (fallback)");
@@ -1308,11 +1352,18 @@ impl Daemon {
                 error!("{message}");
                 match submitted {
                     Some(Submitted {
-                        origin: Origin::Rule | Origin::Upgrade,
+                        origin: Origin::Rule,
                         candidates: Some(candidates),
                         notice,
                         ..
                     }) => self.schedule_retry(kind, candidates, notice),
+                    // The applied fallback stays; the next window event or reload
+                    // checks again (rate-limited by `UPGRADE_CHECK_INTERVAL`). A retry
+                    // would be a full rule switch, over whatever the user picked since.
+                    Some(Submitted {
+                        origin: Origin::Upgrade,
+                        ..
+                    }) => debug!("Upgrade check failed; staying on the applied {noun}"),
                     manual @ Some(Submitted {
                         origin: Origin::Manual { .. },
                         ..
@@ -1322,7 +1373,10 @@ impl Daemon {
                 Response::Error { message }
             }
         };
-        self.publish_status();
+        // A joint run publishes once, with both halves in (not new sink, old mic)
+        if !more {
+            self.publish_status();
+        }
         self.answer(kind, result.generation, &response);
     }
 
@@ -1338,6 +1392,7 @@ impl Daemon {
         let following = !self.paused;
         let lane = self.lane_mut(kind);
         lane.applied = None;
+        lane.applied_for = None;
         lane.applied_fallback = false;
         if following && !lane.manual_override && lane.last_desired.as_deref() == Some(tried) {
             lane.stalled = true;
@@ -1370,7 +1425,7 @@ impl Daemon {
             && !self.paused
             && lane.submitted.is_none()
             && lane.last_desired.as_ref() == Some(&superseded.candidates)
-            && lane.applied.as_deref() != superseded.candidates.first().map(String::as_str)
+            && !self.serves(kind, &superseded.candidates)
         {
             if let Some(at) = superseded.settle_at.filter(|at| *at > Instant::now()) {
                 debug!(
@@ -1494,7 +1549,9 @@ impl Daemon {
         lane.manual_override = true;
         // A rule job not yet settled is replaced (if queued) or may still fail (if
         // running), and a switch waiting for the settle delay is newer still: remember
-        // it, so a manual request that switches nothing resumes it
+        // it, so a manual request that switches nothing resumes it. An upgrade check
+        // is not: the fallback it would improve on is applied already, and resuming it
+        // as a rule job would switch unconditionally (the next event checks again).
         if let Some(settle) = lane.settle.take() {
             lane.superseded = Some(Superseded {
                 candidates: settle.candidates,
@@ -1502,7 +1559,7 @@ impl Daemon {
                 settle_at: Some(settle.at),
             });
         } else if let Some(Submitted {
-            origin: Origin::Rule | Origin::Upgrade,
+            origin: Origin::Rule,
             candidates: Some(candidates),
             notice,
             ..
@@ -1562,36 +1619,41 @@ impl Daemon {
         text
     }
 
+    /// The window whose rule decides the applied `kind`, when the applied value is
+    /// what that rule wants (not a manual choice, or a default found at startup or
+    /// left while paused that the rules differ from)
+    fn deciding_window(&self, kind: Endpoint) -> Option<Winner<'_>> {
+        let lane = self.lane(kind);
+        let node = lane.applied.as_deref()?;
+        self.state
+            .desired_for(kind)
+            .filter(|d| !lane.manual_override && d.candidates.iter().any(|c| c.name == node))
+            .and_then(|d| d.window)
+    }
+
     /// What the status stream reports for `kind` (`None` while its default is unknown)
     fn live_endpoint(&self, kind: Endpoint) -> Option<EndpointStatus> {
         let lane = self.lane(kind);
         let node = lane.applied.clone()?;
-        // The deciding window, when the applied value is what its rule wants (not a
-        // manual choice or a default found at startup that the rules differ from).
         // No title: it changes with every browser tab (a new stream line each time)
         // and would put page titles into status bars.
-        let window = self
-            .state
-            .desired_for(kind)
-            .filter(|d| !lane.manual_override && d.candidates.iter().any(|c| c.name == node))
-            .and_then(|d| d.window)
-            .map(|w| {
-                let rule_index = w.rule_index + 1;
-                let desc = self
-                    .state
-                    .config()
-                    .rules
-                    .get(w.rule_index)
-                    .and_then(|r| r.desc.as_deref());
-                RuleWindow {
-                    app_id: crate::sanitize::for_log(w.app_id).into_owned(),
-                    rule: desc.map_or_else(
-                        || format!("#{rule_index}"),
-                        |d| crate::sanitize::for_log(d).into_owned(),
-                    ),
-                    rule_index,
-                }
-            });
+        let window = self.deciding_window(kind).map(|w| {
+            let rule_index = w.rule_index + 1;
+            let desc = self
+                .state
+                .config()
+                .rules
+                .get(w.rule_index)
+                .and_then(|r| r.desc.as_deref());
+            RuleWindow {
+                app_id: crate::sanitize::for_log(w.app_id).into_owned(),
+                rule: desc.map_or_else(
+                    || format!("#{rule_index}"),
+                    |d| crate::sanitize::for_log(d).into_owned(),
+                ),
+                rule_index,
+            }
+        });
         Some(EndpointStatus {
             desc: self.endpoint_desc(kind, &node),
             fallback: lane.applied_fallback,
@@ -1635,17 +1697,17 @@ impl Daemon {
     }
 
     fn snapshot(&self) -> Snapshot {
-        let desired = self.state.desired();
         let sink = self.lane(Endpoint::Sink);
         let source = self.lane(Endpoint::Source);
-        // Name the candidate actually in use when it is the rules' fallback
-        let deciding_sink = match (
-            self.applied_fallback_rank(Endpoint::Sink),
-            sink.applied.as_deref(),
-        ) {
-            (Some(_), Some(applied)) => format!("{applied} (fallback)"),
-            _ => desired.first().name.clone(),
-        };
+        // Like the status stream: only while the applied sink is what the deciding
+        // window's rule wants, named by its configured description
+        let active_window = self.deciding_window(Endpoint::Sink).and_then(|w| {
+            let mut desc = self.endpoint_desc(Endpoint::Sink, sink.applied.as_deref()?);
+            if self.applied_fallback_rank(Endpoint::Sink).is_some() {
+                desc.push_str(" (fallback)");
+            }
+            Some(format!("{}: {desc}", w.trigger))
+        });
         let config = self.state.config();
         let sources_configured = !config.sources.is_empty();
         let fallbacks = |entries: &[&SinkConfig]| -> Vec<FallbackSink> {
@@ -1661,11 +1723,9 @@ impl Daemon {
             config: Arc::clone(config),
             applied: sink.applied.clone(),
             #[cfg(test)]
-            desired: desired.first().name.clone(),
+            desired: self.state.desired().first().name.clone(),
             fallback: sink.applied_fallback,
-            active_window: desired
-                .window
-                .map(|w| format!("{}: {deciding_sink}", w.trigger)),
+            active_window,
             tracked_windows: self.state.tracked_count(),
             windows: self
                 .state
