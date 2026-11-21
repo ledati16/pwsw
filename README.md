@@ -118,8 +118,8 @@ pwsw next-sink
 pwsw prev-sink
 ```
 - `set-sink`: Switch to sink by desc, name, or position (1, 2, 3...)
-- `next-sink`: Cycle to next configured sink (wraps around)
-- `prev-sink`: Cycle to previous configured sink (wraps around)
+- `next-sink`: Cycle to next configured sink (wraps around, skipping sinks that cannot be activated right now)
+- `prev-sink`: Cycle to previous configured sink (likewise)
 
 Go through the daemon when it runs, otherwise switch directly (no daemon needed). Useful for keybindings.
 
@@ -152,7 +152,7 @@ log_level = "info"
 ```
 
 **Options:**
-- `default_on_startup`: Switch to default sink on daemon start (default: false)
+- `default_on_startup`: Switch to the rules' sink on daemon start (default: false: the current sink stays until the rules' answer changes)
 - `set_smart_toggle`: Toggle back to default if target sink is already active
 - `notify_manual`: Desktop notifications for manual switches
 - `notify_rules`: Desktop notifications for rule-triggered switches

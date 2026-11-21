@@ -159,19 +159,76 @@ impl State {
     /// invariant described on [`State`].
     pub fn reconfigure(&mut self, config: Arc<Config>) -> Result<()> {
         let (default_sink, rule_sinks) = index_config(&config)?;
+        let before = self.match_sinks();
         self.config = config;
         self.default_sink = default_sink;
         self.rule_sinks = rule_sinks;
-        self.reevaluate();
+        self.rematch(&before);
         Ok(())
     }
 
     /// Recompute every window's rule match in one pass, keeping sequence numbers
+    ///
+    /// Logs windows that start or stop matching, or whose match now leads to another
+    /// sink, like window events do.
     pub fn reevaluate(&mut self) {
+        let before = self.match_sinks();
+        self.rematch(&before);
+    }
+
+    /// For each matching window, its trigger and the name of the sink it points at
+    fn match_sinks(&self) -> HashMap<u64, (String, String)> {
+        self.windows
+            .iter()
+            .filter_map(|(id, w)| {
+                let m = w.matched.as_ref()?;
+                Some((
+                    *id,
+                    (m.trigger.clone(), self.rule_sink(m.rule_index).name.clone()),
+                ))
+            })
+            .collect()
+    }
+
+    /// Re-match every window against the current config, logging what changed since
+    /// `before` (from [`Self::match_sinks`]); windows are visited oldest first, so the
+    /// log reads the same every time
+    fn rematch(&mut self, before: &HashMap<u64, (String, String)>) {
         debug!("Re-evaluating all windows against current rules");
-        let config = Arc::clone(&self.config);
-        for window in self.windows.values_mut() {
-            window.matched = match_window(&config, &window.app_id, &window.title);
+        let mut order: Vec<(u64, u64)> = self.windows.iter().map(|(id, w)| (w.seq, *id)).collect();
+        order.sort_unstable();
+        for (_, id) in order {
+            let Some(window) = self.windows.get(&id) else {
+                continue;
+            };
+            let matched = match_window(&self.config, &window.app_id, &window.title);
+            match (before.get(&id), &matched) {
+                (None, Some(m)) => info!(
+                    "Rule matched: '{}' → {}",
+                    for_log(&window.app_id),
+                    self.rule_sink(m.rule_index).desc
+                ),
+                (Some((trigger, _)), None) => info!(
+                    "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' title='{}')",
+                    id,
+                    for_log(trigger),
+                    for_log(&window.app_id),
+                    for_log(&window.title)
+                ),
+                (Some((_, old_sink)), Some(m))
+                    if *old_sink != self.rule_sink(m.rule_index).name =>
+                {
+                    info!(
+                        "Rule matched: '{}' → {}",
+                        for_log(&window.app_id),
+                        self.rule_sink(m.rule_index).desc
+                    );
+                }
+                _ => {}
+            }
+            if let Some(window) = self.windows.get_mut(&id) {
+                window.matched = matched;
+            }
         }
     }
 
@@ -684,6 +741,73 @@ mod tests {
             assert_eq!(s.desired().window.map(|w| w.id), Some(11));
             assert_eq!(s.desired_sink().name, "hdmi");
         }
+    }
+
+    /// Capture what `f` logs at `INFO` and above (this thread only), without `ANSI`
+    fn capture_info_logs(f: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buffer {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("lock").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buffer.0.lock().expect("lock").clone();
+        String::from_utf8(bytes).expect("utf-8 logs")
+    }
+
+    /// A reload that makes an open window match (or stop matching, or point at another
+    /// sink) says so, like a window event would; untrusted text is sanitised
+    #[test]
+    fn test_reconfigure_logs_matches_and_unmatches() {
+        let sinks = vec![
+            make_sink("speakers", "Speakers", true),
+            make_sink("headphones", "Headphones", false),
+            make_sink("hdmi", "HDMI", false),
+        ];
+        let mut s = state(make_config(sinks.clone(), vec![
+            make_rule("^steam$", None, "hdmi"),
+            make_rule("^mpv$", None, "hdmi"),
+        ]));
+        s.apply(opened(1, "steam", "Steam"));
+        s.apply(opened(2, "mpv", "video"));
+        s.apply(opened(3, "fire\nfox", "Browser"));
+
+        let config = make_config(sinks, vec![
+            make_rule("^mpv$", None, "headphones"),
+            make_rule("^fire", None, "headphones"),
+        ]);
+        let logs = capture_info_logs(|| {
+            s.reconfigure(Arc::new(config.clone()))
+                .expect("valid config");
+        });
+        let lines: Vec<&str> = logs
+            .lines()
+            .filter_map(|l| l.find("Rule ").map(|i| &l[i..]))
+            .collect();
+        assert_eq!(lines, vec![
+            "Rule unmatched: window 1 no longer matches (was: 'Steam', now: app_id='steam' title='Steam')",
+            "Rule matched: 'mpv' → Headphones",
+            "Rule matched: 'fire\\nfox' → Headphones",
+        ]);
+
+        // Nothing changed: nothing logged
+        let logs = capture_info_logs(|| {
+            s.reconfigure(Arc::new(config)).expect("valid config");
+        });
+        assert!(!logs.contains("Rule "), "{logs}");
     }
 
     #[test]

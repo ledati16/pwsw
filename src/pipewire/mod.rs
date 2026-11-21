@@ -196,6 +196,18 @@ impl PipeWire {
             .ok_or_else(|| eyre::eyre!("No default sink found in PipeWire metadata"))
     }
 
+    /// Check whether a configured sink could be made the default right now
+    ///
+    /// Decided by the same resolver activation uses: the node exists, or an available
+    /// profile of a matching ALSA card provides it. Nothing is changed.
+    ///
+    /// # Errors
+    /// Returns why the sink cannot be activated (not found, or every profile
+    /// providing it is marked unavailable).
+    pub fn check_reachable(snapshot: &Snapshot, sink_name: &str) -> Result<()> {
+        resolve::resolve(snapshot, sink_name).map(|_| ())
+    }
+
     /// Activate a sink by its configured node name, switching profiles if necessary
     ///
     /// Activations are serialised process-wide; the snapshot and the decision are
@@ -225,4 +237,10 @@ impl PipeWire {
         }
         Ok(activation.node_name)
     }
+}
+
+/// Parse `pw-dump` output (for tests outside this module)
+#[cfg(test)]
+pub(crate) fn parse_snapshot(json: &[u8]) -> Result<Snapshot> {
+    parse::parse_dump(json)
 }

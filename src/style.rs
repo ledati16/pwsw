@@ -15,10 +15,73 @@
 
 use std::ffi::OsStr;
 use std::fmt;
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Write as _};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::style::{Attribute, Color, ContentStyle, StyledContent};
+
+// ============================================================================
+// Writing output without panicking
+// ============================================================================
+
+/// Print a line to stdout like `println!`, but never panic (see [`write_stdout`])
+#[macro_export]
+macro_rules! outln {
+    () => {
+        $crate::style::write_stdout(::std::format_args!("\n"))
+    };
+    ($($arg:tt)*) => {
+        $crate::style::write_stdout(::std::format_args!("{}\n", ::std::format_args!($($arg)*)))
+    };
+}
+
+/// Print a line to stderr like `eprintln!`, but never panic (see [`write_stderr`])
+#[macro_export]
+macro_rules! errln {
+    () => {
+        $crate::style::write_stderr(::std::format_args!("\n"))
+    };
+    ($($arg:tt)*) => {
+        $crate::style::write_stderr(::std::format_args!("{}\n", ::std::format_args!($($arg)*)))
+    };
+}
+
+/// Write to stdout; never panics
+///
+/// `println!` panics when stdout is a pipe whose reader went away
+/// (`pwsw completions bash | head -1`), and with `panic = "abort"` that is a
+/// `SIGABRT` and a core dump. Here a vanished reader ends the process quietly with
+/// status 0, since nothing more can be delivered; any other write error is reported
+/// on stderr and ends the process with status 1.
+pub fn write_stdout(args: fmt::Arguments<'_>) {
+    let result = std::io::stdout().lock().write_fmt(args);
+    stdout_written(result);
+}
+
+/// Write raw bytes to stdout and flush; never panics (see [`write_stdout`])
+pub fn write_stdout_bytes(bytes: &[u8]) {
+    let mut out = std::io::stdout().lock();
+    let result = out.write_all(bytes).and_then(|()| out.flush());
+    stdout_written(result);
+}
+
+fn stdout_written(result: std::io::Result<()>) {
+    match result {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => {
+            write_stderr(format_args!("error: cannot write to stdout: {e}\n"));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Write to stderr; never panics
+///
+/// Errors are ignored: stderr is where they would be reported.
+pub fn write_stderr(args: fmt::Arguments<'_>) {
+    let _ = std::io::stderr().lock().write_fmt(args);
+}
 
 // ============================================================================
 // Colour decision

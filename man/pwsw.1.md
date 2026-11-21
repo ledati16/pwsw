@@ -11,6 +11,8 @@ pwsw - PipeWire Switcher daemon and client
 
 It can also be used as a command-line client to query the daemon status, list windows, and manually switch sinks.
 
+The daemon switches when the sink its rules want *changes* (a matching window opens, closes or changes title, or a reload changes the rules). It does not fight other programs: a default sink changed elsewhere (e.g. with **pavucontrol**, or by WirePlumber) stays until the rules' answer changes again. A manual switch holds the same way. A failed rule-driven switch is retried after 2 s and 5 s, then once more on the next window event or reload. Under systemd the daemon reports the current sink as its status line (**systemctl --user status pwsw**).
+
 ## COMMANDS
 **daemon** [*OPTIONS*]
 :   Start the PWSW daemon.
@@ -44,13 +46,13 @@ It can also be used as a command-line client to query the daemon status, list wi
 :   Write the commented default configuration file. Refuses if a file already exists; with **--force** it is replaced and the old file kept as *config.toml.bak*. **pwsw tui** also creates this file on first run; no other command does.
 
 **set-sink** *SINK*
-:   Set audio output by description, node name, or 1-indexed position (e.g., "1", "2"). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
+:   Set audio output by description, node name, or 1-indexed position (e.g., "1", "2"). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink; "already active" means the current PipeWire default. The sink is always attempted, and its error reported, even if it cannot be activated right now. A failed switch leaves the audio where it was. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
 
 **next-sink**
-:   Cycle to the next configured sink (wraps around). Through the daemon when it runs, like **set-sink**.
+:   Cycle to the next configured sink after the current PipeWire default (wraps around), skipping sinks that cannot be activated right now (e.g. an HDMI output whose display is off). If no other sink can be activated, says why and changes nothing. Through the daemon when it runs, like **set-sink**.
 
 **prev-sink**
-:   Cycle to the previous configured sink (wraps around). Through the daemon when it runs, like **set-sink**.
+:   Like **next-sink**, in the other direction.
 
 **shutdown**
 :   Gracefully stop the running daemon.
@@ -59,7 +61,7 @@ It can also be used as a command-line client to query the daemon status, list wi
 :   Print a completion script for *SHELL* (**bash**, **zsh**, **fish**, **elvish** or **powershell**) to stdout, e.g. **pwsw completions bash > ~/.local/share/bash-completion/completions/pwsw**. Packages install them for bash, zsh and fish.
 
 ## CONFIGURATION CHANGES
-The daemon watches its configuration file and applies changes automatically when the file is saved (also on **SIGHUP**). An invalid file is rejected and the previous configuration stays in effect; the error is logged and, with *notify_manual* enabled, shown as a notification. Restarting the daemon is only needed after upgrading **pwsw**: **pwsw status** reports a daemon that speaks a different IPC protocol, and a daemon that does not understand a newer client's request answers with its version and a hint to restart it.
+The daemon watches its configuration file and applies changes automatically when the file is saved (also on **SIGHUP**). If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. An invalid file is rejected and the previous configuration stays in effect; the error is logged and, with *notify_manual* enabled, shown as a notification. Restarting the daemon is only needed after upgrading **pwsw**: **pwsw status** reports a daemon that speaks a different IPC protocol, and a daemon that does not understand a newer client's request answers with its version and a hint to restart it.
 
 ## STATUS JSON
 **pwsw status --json** prints one object. Fields that cannot be determined are *null*, never missing:

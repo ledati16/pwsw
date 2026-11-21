@@ -24,6 +24,7 @@ pub mod daemon;
 pub mod daemon_manager;
 pub mod ipc;
 pub mod logging;
+pub mod manual;
 pub mod notification;
 pub mod pipewire;
 pub mod sanitize;

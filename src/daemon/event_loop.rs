@@ -1,15 +1,21 @@
 //! The daemon's event loop
 //!
 //! Inputs (window events, `IPC` commands, config-file changes, signals) update the
-//! [`State`] reducer; after each one the loop *reconciles*: if the sink the rules want
-//! differs from what pwsw last applied, it submits an activation to the worker and
-//! moves on. Results come back as just another input, so the loop never waits on
-//! `PipeWire` and keeps answering `IPC`, signals and window events during a slow
-//! profile switch.
+//! [`State`] reducer; after each one the loop *reconciles*: when the sink the rules
+//! want *changes*, it submits an activation to the worker and moves on. Results come
+//! back as just another input, so the loop never waits on `PipeWire` and keeps
+//! answering `IPC`, signals and window events during a slow profile switch.
 //!
-//! `applied` is pwsw's own view of the default sink: what it last activated (or found
-//! at startup). Changes made outside pwsw (e.g. `pavucontrol`) are not tracked; the
-//! next rule-driven change, or a manual `set-sink`, applies again.
+//! Switching only on a change of the rules' answer means pwsw never fights the user:
+//! a default changed outside pwsw (e.g. `pavucontrol`, a `WirePlumber` auto-switch)
+//! stays until the rules want something else. At startup the rules' answer is the
+//! baseline; with `default_on_startup` it is activated, otherwise nothing happens
+//! until it changes. A failed rule-driven activation is retried with backoff, then
+//! once more on the next event or reload.
+//!
+//! `applied` is pwsw's view of the default sink: what it last activated, found at
+//! startup, or saw when a manual request probed `PipeWire`. Manual requests are
+//! decided by the worker against the real default (see [`crate::manual`]).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,17 +27,18 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use super::notifier::{Notice, NoticeKind, Notifier};
-use super::worker::{self, Job, JobResult, SinkSwitcher};
+use super::worker::{self, Job, JobResult, Outcome, SinkSwitcher, Target};
 use crate::compositor::WindowEvent;
-use crate::config::{Config, ConfigNotFound, SinkConfig};
+use crate::config::{Config, ConfigNotFound};
 use crate::ipc::{Response, TrackedInfo, WindowInfo};
+pub(crate) use crate::manual::ManualSwitch;
 use crate::notification::{get_app_icon, get_sink_icon};
 use crate::state::{Departure, State};
 
 /// Quiet period after the last config-file event before reloading (trailing edge)
 pub(crate) const RELOAD_DEBOUNCE: Duration = Duration::from_millis(300);
-/// Delays before retrying a failed rule-driven activation; then give up until the
-/// next window event or reload
+/// Delays before retrying a failed rule-driven activation; then one more attempt on
+/// the next window event or reload
 pub(crate) const RETRY_BACKOFF: [Duration; 2] = [Duration::from_secs(2), Duration::from_secs(5)];
 
 /// Notification title for sink switches
@@ -46,14 +53,6 @@ pub(crate) enum Signal {
     Terminate,
     /// `SIGHUP`: reload the config now
     Hangup,
-}
-
-/// A manual switch request (`set-sink`, `next-sink`, `prev-sink`)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ManualSwitch {
-    Set(String),
-    Next,
-    Prev,
 }
 
 /// A request from an `IPC` connection to the loop
@@ -84,6 +83,9 @@ pub(crate) struct Snapshot {
     pub tracked_windows: usize,
     /// All open windows (sorted by id), with tracking info for matching ones
     pub windows: Vec<WindowInfo>,
+    /// Whether a manual choice currently holds
+    #[cfg(test)]
+    pub manual_override: bool,
 }
 
 /// Everything the loop listens to
@@ -96,6 +98,10 @@ pub(crate) struct Inputs {
 
 /// Callback that applies a config `log_level`
 pub(crate) type LevelSetter = Box<dyn Fn(&str) + Send>;
+/// Callback that observes each new `STATUS=` text
+pub(crate) type StatusHook = Box<dyn Fn(&str) + Send>;
+/// Callback run after every reload attempt
+pub(crate) type ReloadHook = Box<dyn FnMut() + Send>;
 
 /// Side effects that only make sense in a real daemon
 #[derive(Default)]
@@ -104,20 +110,29 @@ pub(crate) struct Hooks {
     pub systemd: bool,
     /// Re-apply the config's `log_level` after a reload
     pub set_log_level: Option<LevelSetter>,
+    /// Observe the status line (also sent as `STATUS=` when `systemd` is set)
+    pub status: Option<StatusHook>,
+    /// After each reload attempt (e.g. re-resolve a symlinked config for the watcher)
+    pub after_reload: Option<ReloadHook>,
 }
 
 /// Who asked for an activation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Origin {
     Rule,
-    Manual,
+    /// `restore_override`: the override state to return to if the request switches
+    /// nothing (it failed, or there was nothing to do)
+    Manual {
+        restore_override: bool,
+    },
 }
 
 /// The latest job handed to the worker, until its result arrives
 #[derive(Debug)]
 struct Submitted {
     generation: u64,
-    sink: String,
+    /// The sink the job activates, when known up front (rule-driven jobs)
+    sink: Option<String>,
     origin: Origin,
     notice: Option<Notice>,
 }
@@ -144,6 +159,10 @@ pub(crate) struct Daemon {
     last_desired: Option<String>,
     /// A manual switch holds until the desired sink changes
     manual_override: bool,
+    /// The rules' sink failed and retries ran out: try once more on the next event
+    stalled: bool,
+    /// Last status line published
+    status: Option<String>,
     next_generation: u64,
     submitted: Option<Submitted>,
     retry: Option<Retry>,
@@ -176,6 +195,8 @@ impl Daemon {
             applied,
             last_desired: None,
             manual_override: false,
+            stalled: false,
+            status: None,
             next_generation: 0,
             submitted: None,
             retry: None,
@@ -211,7 +232,7 @@ impl Daemon {
                     Command::Query(reply) => {
                         let _ = reply.send(self.snapshot());
                     }
-                    Command::Switch { request, reply } => self.on_manual(&request, reply),
+                    Command::Switch { request, reply } => self.on_manual(request, reply),
                     Command::Shutdown => {
                         info!("Shutting down (IPC request)");
                         break Ok(());
@@ -259,7 +280,8 @@ impl Daemon {
         result
     }
 
-    /// Startup: optionally switch to the default sink (failures retry with backoff)
+    /// Startup: take the rules' answer as the baseline and, with
+    /// `default_on_startup`, activate it (failures retry with backoff)
     fn start(&mut self) {
         let desired = self.state.desired_sink();
         let (name, desc) = (desired.name.clone(), desired.desc.clone());
@@ -267,16 +289,18 @@ impl Daemon {
         if self.state.config().settings.default_on_startup && self.applied.as_deref() != Some(&name)
         {
             info!("Switching to default sink: {desc}");
-            self.submit(name, Origin::Rule, None);
+            self.submit(name, None);
         }
+        self.publish_status();
     }
 
-    /// What the default sink is (or is about to be): the pending job, else `applied`
+    /// What the default sink is (or is about to be): the pending job's sink, else
+    /// `applied`; `None` while a manual job whose sink is not chosen yet runs
     fn target(&self) -> Option<&str> {
-        self.submitted
-            .as_ref()
-            .map(|s| s.sink.as_str())
-            .or(self.applied.as_deref())
+        match &self.submitted {
+            Some(submitted) => submitted.sink.as_deref(),
+            None => self.applied.as_deref(),
+        }
     }
 
     fn sink_desc(&self, name: &str) -> String {
@@ -288,7 +312,7 @@ impl Daemon {
             .map_or_else(|| name.to_string(), |s| s.desc.clone())
     }
 
-    /// Bring the default sink in line with the rules, if they changed their mind
+    /// Switch when the rules changed their mind (or a stalled target gets another try)
     fn reconcile(&mut self, departure: Option<&Departure>) {
         let name = self.state.desired_sink().name.clone();
         if self.last_desired.as_deref() != Some(name.as_str()) {
@@ -299,13 +323,29 @@ impl Daemon {
             self.last_desired = Some(name.clone());
             self.manual_override = false;
             self.retry = None;
-        }
-        if self.manual_override || self.retry.is_some() || self.target() == Some(name.as_str()) {
+            self.stalled = false;
+            self.retries = 0;
+            if self.target() != Some(name.as_str()) {
+                let notice = self.rule_notice(departure);
+                self.submit(name, notice);
+                return;
+            }
+        } else if self.stalled
+            && !self.manual_override
+            && self.submitted.is_none()
+            && self.retry.is_none()
+        {
+            info!("Trying {} again", self.sink_desc(&name));
+            self.stalled = false;
+            self.retries = 0;
+            let notice = self.rule_notice(departure);
+            self.submit(name, notice);
             return;
         }
-        let notice = self.rule_notice(departure);
-        self.retries = 0;
-        self.submit(name, Origin::Rule, notice);
+        // Nothing to switch: keep the status line current (e.g. a reload renamed it)
+        if self.submitted.is_none() && self.applied.is_some() {
+            self.publish_status();
+        }
     }
 
     /// The notification for a rule-driven switch to the desired sink, if wanted
@@ -337,15 +377,38 @@ impl Daemon {
         })
     }
 
+    /// The notification for a manual switch to `sink`, if wanted
+    fn manual_notice(&self, sink: &str) -> Option<Notice> {
+        let config = self.state.config();
+        if !config.settings.notify_manual {
+            return None;
+        }
+        let sink = config.sinks.iter().find(|s| s.name == sink)?;
+        Some(Notice {
+            kind: NoticeKind::Switch,
+            summary: SWITCH_TITLE.to_string(),
+            body: sink.desc.clone(),
+            icon: Some(get_sink_icon(sink)),
+        })
+    }
+
+    /// Submit a rule-driven activation of `sink`
+    fn submit(&mut self, sink: String, notice: Option<Notice>) -> u64 {
+        info!("Switching: {} ({sink})", self.sink_desc(&sink));
+        self.submit_job(Target::Sink(sink.clone()), Some(sink), Origin::Rule, notice)
+    }
+
     /// Hand a job to the worker (replacing any not yet started) and return its generation
-    fn submit(&mut self, sink: String, origin: Origin, notice: Option<Notice>) -> u64 {
+    fn submit_job(
+        &mut self,
+        target: Target,
+        sink: Option<String>,
+        origin: Origin,
+        notice: Option<Notice>,
+    ) -> u64 {
         self.next_generation += 1;
         let generation = self.next_generation;
-        info!("Switching: {} ({sink})", self.sink_desc(&sink));
-        self.jobs.send_replace(Some(Job {
-            generation,
-            sink: sink.clone(),
-        }));
+        self.jobs.send_replace(Some(Job { generation, target }));
         self.submitted = Some(Submitted {
             generation,
             sink,
@@ -365,66 +428,118 @@ impl Daemon {
         } else {
             None
         };
-        let desc = self.sink_desc(&result.sink);
 
-        let response = match result.outcome {
-            Ok(node_name) => {
+        // A manual request looked at the real default first: that is the truth now
+        if let Some(observed) = result.observed
+            && self.applied.as_deref() != Some(observed.as_str())
+        {
+            debug!(
+                "Default sink is {observed} (last known: {})",
+                self.applied.as_deref().unwrap_or("unknown")
+            );
+            self.applied = Some(observed);
+        }
+
+        let response = match (result.outcome, result.sink) {
+            (Outcome::Activated(node_name), Some(sink)) => {
+                let desc = self.sink_desc(&sink);
                 info!("Audio output is now {desc} ({node_name})");
-                self.applied = Some(result.sink);
-                if let Some(notice) = submitted.and_then(|s| s.notice) {
+                let notice = match &submitted {
+                    Some(Submitted {
+                        origin: Origin::Rule,
+                        notice,
+                        ..
+                    }) => {
+                        self.stalled = false;
+                        notice.clone()
+                    }
+                    Some(Submitted {
+                        origin: Origin::Manual { .. },
+                        ..
+                    }) => self.manual_notice(&sink),
+                    None => None,
+                };
+                if let Some(notice) = notice {
                     self.notifier.send(notice);
                 }
-                self.sd_notify(&[sd_notify::NotifyState::Status(&format!("Sink: {desc}"))]);
+                self.applied = Some(sink);
                 Response::SinkSwitched { desc, node_name }
             }
-            Err(message) => {
-                error!("Failed to switch to {desc}: {message}");
-                let mut manual_failed = false;
-                if let Some(submitted) = submitted {
-                    match submitted.origin {
-                        Origin::Rule => self.schedule_retry(submitted),
-                        Origin::Manual => manual_failed = true,
+            (Outcome::Activated(node_name), None) => {
+                // Not produced by the worker; keep the loop consistent anyway
+                warn!("Activation result without a sink (node {node_name})");
+                Response::Error {
+                    message: "Internal error: activation result without a sink".to_string(),
+                }
+            }
+            (Outcome::Done(message), _) => {
+                info!("{message}");
+                self.settle_manual(submitted.as_ref());
+                Response::Ok { message }
+            }
+            (Outcome::Failed(message), sink) => {
+                let message = match &sink {
+                    Some(sink) => {
+                        format!(
+                            "Failed to activate sink '{}': {message}",
+                            self.sink_desc(sink)
+                        )
                     }
-                }
-                let response = Response::Error {
-                    message: format!("Failed to activate sink '{desc}': {message}"),
+                    None => message,
                 };
-                if manual_failed {
-                    // The override never took effect: let the rules decide again
-                    self.answer(result.generation, &response);
-                    self.manual_override = false;
-                    self.reconcile(None);
-                    return;
+                error!("{message}");
+                match submitted {
+                    Some(Submitted {
+                        origin: Origin::Rule,
+                        notice,
+                        ..
+                    }) => {
+                        if let Some(sink) = sink {
+                            self.schedule_retry(sink, notice);
+                        }
+                    }
+                    manual @ Some(_) => self.settle_manual(manual.as_ref()),
+                    None => {}
                 }
-                response
+                Response::Error { message }
             }
         };
+        self.publish_status();
         self.answer(result.generation, &response);
     }
 
-    fn schedule_retry(&mut self, failed: Submitted) {
-        if self.manual_override || self.last_desired.as_deref() != Some(failed.sink.as_str()) {
+    /// A manual request that switched nothing: audio stays where it was, and so does
+    /// the override state from before the request
+    fn settle_manual(&mut self, submitted: Option<&Submitted>) {
+        if let Some(Submitted {
+            origin: Origin::Manual { restore_override },
+            ..
+        }) = submitted
+        {
+            self.manual_override = *restore_override;
+        }
+    }
+
+    fn schedule_retry(&mut self, sink: String, notice: Option<Notice>) {
+        if self.manual_override || self.last_desired.as_deref() != Some(sink.as_str()) {
             return;
         }
         if let Some(delay) = RETRY_BACKOFF.get(self.retries) {
             self.retries += 1;
             warn!(
-                "Retrying {} in {}s (attempt {} of {})",
-                failed.sink,
+                "Retrying {sink} in {}s (attempt {} of {})",
                 delay.as_secs(),
                 self.retries + 1,
                 RETRY_BACKOFF.len() + 1
             );
             self.retry = Some(Retry {
-                sink: failed.sink,
+                sink,
                 at: Instant::now() + *delay,
-                notice: failed.notice,
+                notice,
             });
         } else {
-            warn!(
-                "Giving up on {} until the next window event or reload",
-                failed.sink
-            );
+            warn!("Giving up on {sink} until the next window event or reload");
+            self.stalled = true;
         }
     }
 
@@ -438,7 +553,7 @@ impl Daemon {
         {
             return;
         }
-        self.submit(retry.sink, Origin::Rule, retry.notice);
+        self.submit(retry.sink, retry.notice);
     }
 
     /// Reply to every `IPC` request settled by the job of `generation`
@@ -461,33 +576,64 @@ impl Daemon {
         }
     }
 
-    fn on_manual(&mut self, request: &ManualSwitch, reply: oneshot::Sender<Response>) {
+    /// A manual request: answered at once if the config alone decides it, otherwise
+    /// handed to the worker, which decides against the real default sink
+    fn on_manual(&mut self, request: ManualSwitch, reply: oneshot::Sender<Response>) {
         let config = Arc::clone(self.state.config());
-        let default = self.state.default_sink().clone();
-        let current = self.target().map(str::to_owned);
-        let target = match resolve_manual(&config, &default, request, current.as_deref()) {
-            Ok(ManualTarget::Switch(sink)) => sink,
-            Ok(ManualTarget::Done(message)) => {
-                let _ = reply.send(Response::Ok { message });
-                return;
-            }
-            Err(message) => {
-                let _ = reply.send(Response::Error { message });
-                return;
-            }
-        };
+        if let Some(answer) = crate::manual::answer_without_pipewire(&config, &request) {
+            let _ = reply.send(match answer {
+                Ok(message) => Response::Ok { message },
+                Err(message) => Response::Error { message },
+            });
+            return;
+        }
 
-        info!("Manual switch requested: {}", target.desc);
+        info!("Manual switch requested: {request:?}");
+        // Coalesced manual requests share the state from before the first of them
+        let restore_override = match &self.submitted {
+            Some(Submitted {
+                origin: Origin::Manual { restore_override },
+                ..
+            }) => *restore_override,
+            _ => self.manual_override,
+        };
         self.manual_override = true;
-        self.retry = None;
-        let notice = config.settings.notify_manual.then(|| Notice {
-            kind: NoticeKind::Switch,
-            summary: SWITCH_TITLE.to_string(),
-            body: target.desc.clone(),
-            icon: Some(get_sink_icon(target)),
-        });
-        let generation = self.submit(target.name.clone(), Origin::Manual, notice);
+        // A pending rule retry becomes a stall: if this request switches nothing,
+        // the rules' sink gets its next try on the next event
+        if self.retry.take().is_some() {
+            self.stalled = true;
+        }
+        let generation = self.submit_job(
+            Target::Manual { request, config },
+            None,
+            Origin::Manual { restore_override },
+            None,
+        );
         self.replies.push((generation, reply));
+    }
+
+    /// The status line for the sink pwsw believes is the default
+    fn status_text(&self) -> String {
+        match self.applied.as_deref() {
+            Some(name) => match self.state.config().sinks.iter().find(|s| s.name == name) {
+                Some(sink) => format!("Sink: {}", sink.desc),
+                None => format!("Sink: {name} (not in config)"),
+            },
+            None => "Sink: unknown".to_string(),
+        }
+    }
+
+    /// Publish the status line (`STATUS=` for systemd) if it changed
+    fn publish_status(&mut self) {
+        let text = self.status_text();
+        if self.status.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        self.sd_notify(&[sd_notify::NotifyState::Status(&text)]);
+        if let Some(hook) = &self.hooks.status {
+            hook(&text);
+        }
+        self.status = Some(text);
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -515,6 +661,8 @@ impl Daemon {
                     }),
                 })
                 .collect(),
+            #[cfg(test)]
+            manual_override: self.manual_override,
         }
     }
 
@@ -575,6 +723,9 @@ impl Daemon {
             }
         }
 
+        if let Some(after_reload) = &mut self.hooks.after_reload {
+            after_reload();
+        }
         self.sd_notify(&[sd_notify::NotifyState::Ready]);
     }
 
@@ -600,65 +751,6 @@ async fn sleep_until(at: Option<Instant>) {
     match at {
         Some(at) => tokio::time::sleep_until(at).await,
         None => std::future::pending().await,
-    }
-}
-
-/// Where a manual request leads
-#[derive(Debug, PartialEq, Eq)]
-enum ManualTarget<'a> {
-    /// Switch to this sink
-    Switch(&'a SinkConfig),
-    /// Nothing to do; reply with this message
-    Done(String),
-}
-
-/// Resolve a manual request against the config and the current sink (pure)
-fn resolve_manual<'a>(
-    config: &'a Config,
-    default: &'a SinkConfig,
-    request: &ManualSwitch,
-    current: Option<&str>,
-) -> std::result::Result<ManualTarget<'a>, String> {
-    match request {
-        ManualSwitch::Set(sink_ref) => {
-            let Some(target) = config.resolve_sink(sink_ref) else {
-                let available: Vec<String> = config
-                    .sinks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
-                    .collect();
-                return Err(format!(
-                    "Unknown sink '{sink_ref}'. Available: [{}]",
-                    available.join(", ")
-                ));
-            };
-            if config.settings.set_smart_toggle && current == Some(target.name.as_str()) {
-                if target.name == default.name {
-                    return Ok(ManualTarget::Done(format!("Already on: {}", default.desc)));
-                }
-                return Ok(ManualTarget::Switch(default));
-            }
-            Ok(ManualTarget::Switch(target))
-        }
-        ManualSwitch::Next | ManualSwitch::Prev => {
-            let count = config.sinks.len();
-            if count < 2 {
-                return Ok(ManualTarget::Done(
-                    "Only one sink configured, nothing to cycle".to_string(),
-                ));
-            }
-            let index = current
-                .and_then(|name| config.sinks.iter().position(|s| s.name == name))
-                .or_else(|| config.sinks.iter().position(|s| s.name == default.name))
-                .unwrap_or(0);
-            let next = if *request == ManualSwitch::Next {
-                (index + 1) % count
-            } else {
-                (index + count - 1) % count
-            };
-            Ok(ManualTarget::Switch(&config.sinks[next]))
-        }
     }
 }
 

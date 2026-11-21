@@ -659,35 +659,35 @@ impl Config {
 
     /// Print the "created default config / next steps" message to stderr.
     pub fn print_init_guidance(path: &Path) {
-        eprintln!(
+        crate::errln!(
             "{} {}",
             "✓".success().to_stderr(),
             format!("Created default config at: {}", path.display())
                 .success()
                 .to_stderr()
         );
-        eprintln!();
-        eprintln!("{}", "Next steps:".header().to_stderr());
-        eprintln!(
+        crate::errln!();
+        crate::errln!("{}", "Next steps:".header().to_stderr());
+        crate::errln!(
             "  Run {} for interactive setup (recommended)",
             "pwsw tui".technical().to_stderr()
         );
-        eprintln!();
-        eprintln!("  Or configure manually:");
-        eprintln!(
+        crate::errln!();
+        crate::errln!("  Or configure manually:");
+        crate::errln!(
             "    {}  - discover audio outputs",
             "pwsw list-sinks".technical().to_stderr()
         );
-        eprintln!("    Edit config file - add sinks and rules");
-        eprintln!(
+        crate::errln!("    Edit config file - add sinks and rules");
+        crate::errln!(
             "    {}    - check config",
             "pwsw validate".technical().to_stderr()
         );
-        eprintln!(
+        crate::errln!(
             "    {}      - start the daemon",
             "pwsw daemon".technical().to_stderr()
         );
-        eprintln!();
+        crate::errln!();
     }
 
     // ------------------------------------------------------------------------
@@ -1463,37 +1463,37 @@ impl Config {
 
     /// Print a human-readable summary of the configuration
     pub fn print_summary(&self) {
-        println!("{} {}\n", "✓".success(), "Configuration valid".success());
+        crate::outln!("{} {}\n", "✓".success(), "Configuration valid".success());
 
-        println!("{}", "Settings:".header());
-        println!(
+        crate::outln!("{}", "Settings:".header());
+        crate::outln!(
             "  {}: {}",
             "default_on_startup".dim(),
             self.settings.default_on_startup
         );
-        println!(
+        crate::outln!(
             "  {}: {}",
             "set_smart_toggle".dim(),
             self.settings.set_smart_toggle
         );
-        println!(
+        crate::outln!(
             "  {}: {}",
             "notify_manual".dim(),
             self.settings.notify_manual
         );
-        println!("  {}: {}", "notify_rules".dim(), self.settings.notify_rules);
-        println!(
+        crate::outln!("  {}: {}", "notify_rules".dim(), self.settings.notify_rules);
+        crate::outln!(
             "  {}: {}",
             "match_by_index".dim(),
             self.settings.match_by_index
         );
-        println!(
+        crate::outln!(
             "  {}: {}",
             "log_level".dim(),
             self.settings.log_level.as_str().technical()
         );
 
-        println!(
+        crate::outln!(
             "\n{} ({}):",
             "Sinks".header(),
             self.sinks.len().to_string().technical()
@@ -1507,35 +1507,35 @@ impl Config {
             } else {
                 String::new()
             };
-            println!(
+            crate::outln!(
                 "  {}. {}{}",
                 (i + 1).to_string().dim(),
                 sink.desc.as_str().bold(),
                 marker
             );
-            println!("     {}: {}", "name".dim(), sink.name);
+            crate::outln!("     {}: {}", "name".dim(), sink.name);
             if let Some(ref icon) = sink.icon {
-                println!("     {}: {}", "icon".dim(), icon.as_str().technical());
+                crate::outln!("     {}: {}", "icon".dim(), icon.as_str().technical());
             }
         }
 
         if self.rules.is_empty() {
-            println!("\n{}", "No rules configured.".dim());
+            crate::outln!("\n{}", "No rules configured.".dim());
         } else {
-            println!(
+            crate::outln!(
                 "\n{} ({}):",
                 "Rules".header(),
                 self.rules.len().to_string().technical()
             );
             for (i, rule) in self.rules.iter().enumerate() {
-                println!(
+                crate::outln!(
                     "  {}. {}: {}",
                     (i + 1).to_string().dim(),
                     "app_id".dim(),
                     rule.app_id_pattern.as_str().technical()
                 );
                 if let Some(ref title) = rule.title_pattern {
-                    println!("     {}: {}", "title".dim(), title.as_str().technical());
+                    crate::outln!("     {}: {}", "title".dim(), title.as_str().technical());
                 }
                 let effective_notify = rule.notify.unwrap_or(self.settings.notify_rules);
                 let source = if rule.notify.is_some() {
@@ -1543,7 +1543,7 @@ impl Config {
                 } else {
                     "default"
                 };
-                println!(
+                crate::outln!(
                     "     {}: {} ({}: {} - {})",
                     "sink".dim(),
                     rule.sink_ref.as_str().bold(),
@@ -1555,7 +1555,7 @@ impl Config {
         }
 
         if let Ok(path) = Self::get_config_path() {
-            println!("\n{} {}", "Config:".dim(), path.display());
+            crate::outln!("\n{} {}", "Config:".dim(), path.display());
         }
     }
 

@@ -14,10 +14,10 @@ When the TUI saves the file, comments and formatting are preserved (comments abo
 The **[settings]** section controls global daemon behavior.
 
 **default_on_startup** (boolean, default: false)
-:   Whether to switch to the default sink when the daemon starts.
+:   Whether to switch to the default sink when the daemon starts. If false, the current sink stays until the rules want a different sink (e.g. a matching window opens; windows already open when the daemon starts count as opening).
 
 **set_smart_toggle** (boolean)
-:   If true, calling `set-sink` on a sink that is already active will toggle back to the default sink.
+:   If true, calling `set-sink` on a sink that is already the PipeWire default will toggle back to the default sink.
     
     *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers").
 

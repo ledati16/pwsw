@@ -11,12 +11,12 @@ mod notifier;
 mod worker;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use self::event_loop::{Daemon, Hooks, Inputs, Signal};
 use self::ipc_handler::ServerInfo;
@@ -148,19 +148,19 @@ async fn spawn_background_daemon() -> Result<()> {
         })?;
 
     let pid = child.id();
-    println!("Starting daemon (PID: {})...", pid.to_string().technical());
+    crate::outln!("Starting daemon (PID: {})...", pid.to_string().technical());
 
     for _attempt in 1..=MAX_ATTEMPTS {
         tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
 
         if ipc::is_daemon_running().await {
-            println!(
+            crate::outln!(
                 "{} {}",
                 "✓".success(),
                 "Daemon started successfully".success()
             );
-            println!("Use {} to check daemon status", "pwsw status".technical());
-            println!("Use {} to stop the daemon", "pwsw shutdown".technical());
+            crate::outln!("Use {} to check daemon status", "pwsw status".technical());
+            crate::outln!("Use {} to stop the daemon", "pwsw shutdown".technical());
             return Ok(());
         }
 
@@ -317,7 +317,7 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     // Config hot-reload: the loop debounces these events
     let config_path = Config::get_config_path()?;
     let (config_tx, config_rx) = mpsc::unbounded_channel();
-    let _watcher = watch_config(&config_path, config_tx)?;
+    let mut config_watch = ConfigWatch::start(&config_path, config_tx)?;
 
     let signals = forward_signals()?;
 
@@ -334,6 +334,9 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     let hooks = Hooks {
         systemd: true,
         set_log_level: Some(Box::new(logging.level_setter())),
+        status: None,
+        // The config symlink may have been pointed elsewhere
+        after_reload: Some(Box::new(move || config_watch.refresh())),
     };
     let daemon = Daemon::new(
         state,
@@ -369,28 +372,91 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
     result
 }
 
-/// Watch the config file's directory and send `()` for changes to the file itself
-fn watch_config(
-    config_path: &Path,
-    tx: mpsc::UnboundedSender<()>,
-) -> Result<notify::RecommendedWatcher> {
-    let config_dir = config_path.parent().unwrap_or(config_path).to_path_buf();
-    let path = config_path.to_path_buf();
-    let mut watcher =
-        notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
-            Ok(event) => {
-                if (event.kind.is_modify() || event.kind.is_create())
-                    && event.paths.iter().any(|p| p == &path)
-                {
-                    let _ = tx.send(());
+/// Watches the config file for hot-reload, following a file-level symlink
+///
+/// Dotfile managers (`stow --no-folding`, `chezmoi`) make the config a symlink into
+/// another directory. Editors and the `TUI` write the symlink's target, which produces
+/// events only in the target's directory, so that directory is watched too and events
+/// for either path count. [`ConfigWatch::refresh`] re-resolves the target (the symlink
+/// may have been pointed elsewhere).
+struct ConfigWatch {
+    watcher: notify::RecommendedWatcher,
+    config_path: PathBuf,
+    /// Paths whose events mean "the config changed", shared with the event callback
+    targets: Arc<Mutex<Vec<PathBuf>>>,
+    /// Directories currently watched
+    watched: Vec<PathBuf>,
+}
+
+impl ConfigWatch {
+    /// Start watching; each relevant event sends `()` on `tx`
+    ///
+    /// # Errors
+    /// Returns an error if the watcher cannot be created. A directory that cannot be
+    /// watched only logs a warning (hot-reload is then unavailable for it).
+    fn start(config_path: &Path, tx: mpsc::UnboundedSender<()>) -> Result<Self> {
+        let targets: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+        let matching = Arc::clone(&targets);
+        let watcher =
+            notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+                Ok(event) => {
+                    if !(event.kind.is_modify() || event.kind.is_create()) {
+                        return;
+                    }
+                    let targets = matching.lock().unwrap_or_else(PoisonError::into_inner);
+                    if event.paths.iter().any(|p| targets.contains(p)) {
+                        let _ = tx.send(());
+                    }
                 }
-            }
-            Err(e) => error!("Config watch error: {e:?}"),
-        })?;
-    if let Err(e) = watcher.watch(&config_dir, RecursiveMode::NonRecursive) {
-        warn!("Failed to watch config directory for hot-reload: {e}");
+                Err(e) => error!("Config watch error: {e:?}"),
+            })?;
+        let mut watch = Self {
+            watcher,
+            config_path: config_path.to_path_buf(),
+            targets,
+            watched: Vec::new(),
+        };
+        watch.refresh();
+        Ok(watch)
     }
-    Ok(watcher)
+
+    /// Re-resolve the config's symlink target and watch the directories it needs
+    fn refresh(&mut self) {
+        let mut paths = vec![self.config_path.clone()];
+        if let Ok(target) = std::fs::canonicalize(&self.config_path)
+            && target != self.config_path
+        {
+            debug!("Config is a symlink to {}", target.display());
+            paths.push(target);
+        }
+        let mut needed: Vec<PathBuf> = Vec::new();
+        for dir in paths.iter().filter_map(|p| p.parent()) {
+            if !needed.iter().any(|d| d == dir) {
+                needed.push(dir.to_path_buf());
+            }
+        }
+
+        for dir in std::mem::take(&mut self.watched) {
+            if needed.contains(&dir) {
+                self.watched.push(dir);
+            } else if let Err(e) = self.watcher.unwatch(&dir) {
+                debug!("Failed to stop watching {}: {e}", dir.display());
+            }
+        }
+        for dir in needed {
+            if self.watched.contains(&dir) {
+                continue;
+            }
+            match self.watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => self.watched.push(dir),
+                Err(e) => warn!(
+                    "Failed to watch {} for config hot-reload: {e}",
+                    dir.display()
+                ),
+            }
+        }
+        *self.targets.lock().unwrap_or_else(PoisonError::into_inner) = paths;
+    }
 }
 
 /// Install `SIGINT`/`SIGTERM`/`SIGHUP` handlers once and forward them to the loop
@@ -417,4 +483,90 @@ fn forward_signals() -> Result<mpsc::Receiver<Signal>> {
         }
     });
     Ok(rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::fs::symlink;
+    use std::time::Duration;
+
+    use super::*;
+
+    /// Upper bound for one watcher event to arrive
+    const EVENT_WAIT: Duration = Duration::from_secs(10);
+
+    async fn expect_event(rx: &mut mpsc::UnboundedReceiver<()>, what: &str) {
+        let got = tokio::time::timeout(EVENT_WAIT, rx.recv()).await;
+        assert!(
+            matches!(got, Ok(Some(()))),
+            "no config event after {what} within {EVENT_WAIT:?}"
+        );
+    }
+
+    /// Let stray events arrive, then drop them
+    async fn drain(rx: &mut mpsc::UnboundedReceiver<()>) {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        while rx.try_recv().is_ok() {}
+    }
+
+    /// A file-level symlinked config (`stow --no-folding`, `chezmoi`) is reloaded when
+    /// its target is written, also after the symlink is pointed elsewhere
+    #[tokio::test]
+    async fn test_symlinked_config_target_changes_are_seen() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // Canonical, so only the symlink under test differs from its target
+        let base = root.path().canonicalize().expect("canonical tempdir");
+        let (link_dir, a, b) = (
+            base.join("config"),
+            base.join("dotfiles-a"),
+            base.join("dotfiles-b"),
+        );
+        for dir in [&link_dir, &a, &b] {
+            std::fs::create_dir(dir).expect("mkdir");
+        }
+        let (target_a, target_b) = (a.join("config.toml"), b.join("config.toml"));
+        std::fs::write(&target_a, "# a\n").expect("write");
+        std::fs::write(&target_b, "# b\n").expect("write");
+        let config_path = link_dir.join("config.toml");
+        symlink(&target_a, &config_path).expect("symlink");
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut watch = ConfigWatch::start(&config_path, tx).expect("watcher");
+        drain(&mut rx).await;
+
+        std::fs::write(&target_a, "# a, edited\n").expect("write");
+        expect_event(&mut rx, "editing the symlink target").await;
+        drain(&mut rx).await;
+
+        // Point the symlink at another file (atomically, like `ln -sf` via rename)
+        let tmp_link = link_dir.join(".config.toml.tmp");
+        symlink(&target_b, &tmp_link).expect("symlink");
+        std::fs::rename(&tmp_link, &config_path).expect("retarget");
+        expect_event(&mut rx, "retargeting the symlink").await;
+        watch.refresh();
+        drain(&mut rx).await;
+
+        std::fs::write(&target_b, "# b, edited\n").expect("write");
+        expect_event(&mut rx, "editing the new symlink target").await;
+        assert_eq!(
+            watch.watched,
+            vec![link_dir.clone(), b.clone()],
+            "the old target's directory is no longer watched"
+        );
+    }
+
+    /// A plain config file still reloads on change
+    #[tokio::test]
+    async fn test_plain_config_changes_are_seen() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let base = root.path().canonicalize().expect("canonical tempdir");
+        let config_path = base.join("config.toml");
+        std::fs::write(&config_path, "# v1\n").expect("write");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let watch = ConfigWatch::start(&config_path, tx).expect("watcher");
+        drain(&mut rx).await;
+        std::fs::write(&config_path, "# v2\n").expect("write");
+        expect_event(&mut rx, "editing the config").await;
+        assert_eq!(watch.watched, vec![base]);
+    }
 }

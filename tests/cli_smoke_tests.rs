@@ -95,7 +95,12 @@ impl Sandbox {
 
     /// A `pwsw` command with a cleared, sandboxed environment.
     fn cmd(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_pwsw"));
+        self.cmd_for(env!("CARGO_BIN_EXE_pwsw"))
+    }
+
+    /// Any program (e.g. `sh` wrapping `pwsw`) with the same sandboxed environment.
+    fn cmd_for(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = Command::new(program);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.dir("home"))
@@ -349,6 +354,140 @@ fn cli_completions_print_a_script() {
     }
     let output = run(sb.cmd().args(["completions", "tcsh"]));
     assert_exit(&output, 2);
+}
+
+/// Run `cmd` (with stdout and stderr already set up by the caller) to completion,
+/// failing after [`RUN_TIMEOUT`]
+fn wait_status(cmd: &mut Command) -> std::process::ExitStatus {
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("failed to run pwsw");
+    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    loop {
+        if let Some(status) = child.try_wait().expect("wait for pwsw") {
+            return status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("pwsw did not exit within {RUN_TIMEOUT:?}: {cmd:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The process exited by itself with `code`: not killed by a signal (`SIGABRT` from
+/// a panic under `panic = "abort"`), and not a panic exit (101) in test builds
+fn assert_clean_exit(status: std::process::ExitStatus, code: i32, what: &str) {
+    use std::os::unix::process::ExitStatusExt;
+    assert_eq!(
+        status.signal(),
+        None,
+        "{what}: killed by signal {:?}",
+        status.signal()
+    );
+    assert_eq!(status.code(), Some(code), "{what}: unexpected exit status");
+}
+
+/// A pipe whose reading end is already closed: every write to it fails with `EPIPE`
+fn broken_pipe() -> Stdio {
+    let (reader, writer) = std::io::pipe().expect("pipe");
+    drop(reader);
+    Stdio::from(writer)
+}
+
+/// Shell snippet that closes stderr, then runs `$0` with the remaining arguments
+const CLOSE_STDERR: &str = "exec 2>&-; exec \"$0\" \"$@\"";
+
+#[test]
+fn cli_survives_closed_stderr() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("config.toml", VALID_CONFIG);
+    for (args, code) in [
+        (vec!["validate"], 1), // no config: the error goes to the closed stderr
+        (vec!["nosuchcmd"], 2),
+    ] {
+        let status = wait_status(
+            sb.cmd_for("sh")
+                .args(["-c", CLOSE_STDERR, env!("CARGO_BIN_EXE_pwsw")])
+                .args(&args)
+                .stdout(Stdio::null()),
+        );
+        assert_clean_exit(status, code, &format!("pwsw {args:?} with stderr closed"));
+    }
+    // Success output to stdout, warnings and errors to a closed stderr
+    let status = wait_status(
+        sb.cmd_for("sh")
+            .args(["-c", CLOSE_STDERR, env!("CARGO_BIN_EXE_pwsw"), "--config"])
+            .arg(&config)
+            .arg("validate")
+            .stdout(Stdio::null()),
+    );
+    assert_clean_exit(status, 0, "pwsw validate (valid) with stderr closed");
+}
+
+#[test]
+fn cli_survives_broken_pipes() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("config.toml", VALID_CONFIG);
+
+    // Nobody reads stdout at all
+    let status = wait_status(
+        sb.cmd()
+            .args(["completions", "bash"])
+            .stdout(broken_pipe())
+            .stderr(Stdio::null()),
+    );
+    assert_clean_exit(status, 0, "completions into a closed pipe");
+    let status = wait_status(
+        sb.cmd()
+            .arg("--config")
+            .arg(&config)
+            .arg("validate")
+            .stdout(broken_pipe())
+            .stderr(Stdio::null()),
+    );
+    assert_clean_exit(status, 0, "validate into a closed pipe");
+
+    // Nobody reads stderr: an error report must not panic either
+    let status = wait_status(
+        sb.cmd()
+            .arg("validate")
+            .stdout(Stdio::null())
+            .stderr(broken_pipe()),
+    );
+    assert_clean_exit(status, 1, "validate error into a closed stderr pipe");
+
+    // `| head -n 1`: the reader goes away after the first line
+    let mut child = sb
+        .cmd()
+        .args(["completions", "bash"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to run pwsw");
+    let mut first = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(child.stdout.take().expect("stdout")),
+        &mut first,
+    )
+    .expect("read first line");
+    assert!(!first.is_empty(), "completions printed nothing");
+    // The reader was dropped above; pwsw may or may not have finished writing by then
+    let deadline = std::time::Instant::now() + RUN_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for pwsw") {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "pwsw did not exit after its reader closed"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_clean_exit(status, 0, "completions | head -n 1");
 }
 
 #[test]

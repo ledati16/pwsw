@@ -209,7 +209,7 @@ impl Write for RotatingFileAppender {
             && let Err(e) = self.rotate(&mut guard)
         {
             // If rotation fails, try to continue with current file but log to stderr
-            eprintln!("Failed to rotate log file: {e}");
+            crate::errln!("Failed to rotate log file: {e}");
         }
 
         // 3. Write to file (re-acquiring in case rotation happened)

@@ -12,6 +12,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 use crate::ipc::{self, Request, Response};
+use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
 use crate::notification::{get_sink_icon, send_notification};
 use crate::pipewire::{
     ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSink,
@@ -94,13 +95,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
             current_default,
         };
 
-        println!("{}", serde_json::to_string_pretty(&output)?);
+        crate::outln!("{}", serde_json::to_string_pretty(&output)?);
     } else {
         // Human-readable output
-        println!("{}", "ACTIVE SINKS:".header());
-        println!("{}", "-".repeat(13));
+        crate::outln!("{}", "ACTIVE SINKS:".header());
+        crate::outln!("{}", "-".repeat(13));
         if active.is_empty() {
-            println!("  {}", "(none)".dim());
+            crate::outln!("  {}", "(none)".dim());
         } else {
             for sink in &active {
                 let marker = if sink.is_default { "* " } else { "  " };
@@ -113,15 +114,15 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                         m.push(']');
                         m
                     });
-                println!("{}{}{}", marker, sink.name.as_str().bold(), configured);
-                println!("    {}", sink.description.as_str().dim());
+                crate::outln!("{}{}{}", marker, sink.name.as_str().bold(), configured);
+                crate::outln!("    {}", sink.description.as_str().dim());
             }
-            println!("\n  {} = current default", "*".dim());
+            crate::outln!("\n  {} = current default", "*".dim());
         }
 
         if !profile.is_empty() {
-            println!("\n{}", "AVAILABLE VIA PROFILE SWITCH:".header());
-            println!("{}", "-".repeat(30));
+            crate::outln!("\n{}", "AVAILABLE VIA PROFILE SWITCH:".header());
+            crate::outln!("{}", "-".repeat(30));
             for sink in &profile {
                 let configured = config
                     .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
@@ -132,13 +133,13 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                         m.push(']');
                         m
                     });
-                println!(
+                crate::outln!(
                     "  {} {}{}",
                     "~".dim(),
                     sink.predicted_name.as_str().bold(),
                     configured
                 );
-                println!(
+                crate::outln!(
                     "    {} (profile: {})",
                     sink.description.as_str().dim(),
                     sink.profile_name.as_str().technical()
@@ -147,8 +148,8 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         }
 
         if let Some(cfg) = config {
-            println!("\n{}", "CONFIGURED SINKS:".header());
-            println!("{}", "-".repeat(17));
+            crate::outln!("\n{}", "CONFIGURED SINKS:".header());
+            crate::outln!("{}", "-".repeat(17));
             for (i, sink) in cfg.sinks.iter().enumerate() {
                 let default_marker = if sink.default {
                     let mut m = String::with_capacity(3 + "DEFAULT".len());
@@ -162,19 +163,19 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
                     "requires_profile_switch" => "profile switch".warning().to_string(),
                     _ => "not found".error().to_string(),
                 };
-                println!(
+                crate::outln!(
                     "  {}. \"{}\"{} - {}",
                     (i + 1).to_string().dim(),
                     sink.desc,
                     default_marker,
                     status
                 );
-                println!("     {}", sink.name.as_str().bold());
+                crate::outln!("     {}", sink.name.as_str().bold());
             }
         }
 
         if let Ok(path) = Config::get_config_path() {
-            println!("\n{} {}", "Config:".dim(), path.display());
+            crate::outln!("\n{} {}", "Config:".dim(), path.display());
         }
     }
 
@@ -229,11 +230,11 @@ pub async fn cycle(config: &Config, direction: Direction) -> Result<()> {
 async fn switch_via_daemon(request: Request) -> Result<()> {
     match ipc::send_request(request).await? {
         Response::SinkSwitched { desc, .. } => {
-            println!("{} {}", "Switched to:".success(), desc.as_str().bold());
+            crate::outln!("{} {}", "Switched to:".success(), desc.as_str().bold());
             Ok(())
         }
         Response::Ok { message } => {
-            println!("{message}");
+            crate::outln!("{message}");
             Ok(())
         }
         Response::Error { message } => eyre::bail!("{message}"),
@@ -265,113 +266,53 @@ fn response_kind(response: &Response) -> &'static str {
 
 /// Set sink with smart toggle support, switching locally (no daemon)
 ///
+/// The smart toggle compares with the real default sink.
+///
 /// # Errors
-/// Returns an error if the sink reference is invalid or sink activation fails.
+/// Returns an error if the sink reference is invalid, `PipeWire` cannot be queried,
+/// or sink activation fails.
 pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
-    let target = config.resolve_sink(sink_ref).ok_or_else(|| {
-        let available: Vec<_> = config
-            .sinks
-            .iter()
-            .enumerate()
-            .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
-            .collect();
-        eyre::eyre!(
-            "Unknown sink '{}'. Available: {}",
-            sink_ref,
-            available.join(", ")
-        )
-    })?;
-
-    let current = PipeWire::get_default_sink_name()?;
-    let default = config
-        .get_default_sink()
-        .ok_or_else(|| eyre::eyre!("No default sink configured"))?;
-
-    if config.settings.set_smart_toggle && current == target.name {
-        if target.name == default.name {
-            println!("Already on: {}", default.desc.as_str().bold());
-            return Ok(());
-        }
-        info!("Toggle → default: {}", default.desc);
-        PipeWire::activate_sink(&default.name)?;
-        println!(
-            "{} {}",
-            "Switched to:".success(),
-            default.desc.as_str().bold()
-        );
-
-        if config.settings.notify_manual {
-            let icon = get_sink_icon(default);
-            if let Err(e) = send_notification("Audio Output", &default.desc, Some(&icon)) {
-                warn!("Notification failed: {}", e);
-            }
-        }
-    } else {
-        info!("Switching to: {}", target.desc);
-        PipeWire::activate_sink(&target.name)?;
-        println!(
-            "{} {}",
-            "Switched to:".success(),
-            target.desc.as_str().bold()
-        );
-
-        if config.settings.notify_manual {
-            let icon = get_sink_icon(target);
-            if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
-                warn!("Notification failed: {}", e);
-            }
-        }
-    }
-
-    Ok(())
+    switch_locally(config, &ManualSwitch::Set(sink_ref.to_string()))
 }
 
 /// Cycle through configured sinks, switching locally (no daemon)
 ///
+/// Starts from the real default sink and skips sinks that cannot be activated right
+/// now, like the daemon does.
+///
 /// # Errors
-/// Returns an error if sink query or activation fails.
+/// Returns an error if `PipeWire` cannot be queried, no other sink can be activated,
+/// or sink activation fails.
 pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
-    // Need at least 2 sinks to cycle
-    if config.sinks.len() < 2 {
-        println!("{}", "Only one sink configured, nothing to cycle".warning());
+    let request = match direction {
+        Direction::Next => ManualSwitch::Next,
+        Direction::Prev => ManualSwitch::Prev,
+    };
+    switch_locally(config, &request)
+}
+
+/// Carry out a manual request without the daemon: probe `PipeWire`, decide with the
+/// daemon's own rules ([`manual::plan`]), activate, print and notify
+fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
+    if let Some(answer) = manual::answer_without_pipewire(config, request) {
+        let message = answer.map_err(|message| eyre::eyre!("{message}"))?;
+        crate::outln!("{}", message.warning());
         return Ok(());
     }
 
-    let current = PipeWire::get_default_sink_name()?;
-
-    // Find current sink's index in config, or start from default
-    let current_index = config
-        .sinks
-        .iter()
-        .position(|s| s.name == current)
-        .unwrap_or_else(|| {
-            // Current sink not in config, find default's index
-            config.sinks.iter().position(|s| s.default).unwrap_or(0)
-        });
-
-    // Calculate next index with wrapping
-    let next_index = match direction {
-        Direction::Next => (current_index + 1) % config.sinks.len(),
-        Direction::Prev => {
-            if current_index == 0 {
-                config.sinks.len() - 1
-            } else {
-                current_index - 1
-            }
+    let probe = Probe::from_snapshot(&PipeWire::dump()?, config);
+    let target = match manual::plan(config, request, &probe) {
+        Ok(ManualTarget::Switch(target)) => target,
+        Ok(ManualTarget::Done(message)) => {
+            crate::outln!("{message}");
+            return Ok(());
         }
+        Err(message) => eyre::bail!("{message}"),
     };
 
-    let target = &config.sinks[next_index];
-
-    // Already on target (shouldn't happen with >= 2 sinks, but be safe)
-    if target.name == current {
-        println!("Already on: {}", target.desc.as_str().bold());
-        return Ok(());
-    }
-
-    info!("Cycling to: {}", target.desc);
+    info!("Switching to: {}", target.desc);
     PipeWire::activate_sink(&target.name)?;
-    println!(
+    crate::outln!(
         "{} {}",
         "Switched to:".success(),
         target.desc.as_str().bold()
@@ -383,7 +324,6 @@ pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
             warn!("Notification failed: {}", e);
         }
     }
-
     Ok(())
 }
 
@@ -516,7 +456,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
         });
         // A `Value` always serializes; fall back to compact output just in case
         let text = serde_json::to_string_pretty(&output).unwrap_or_else(|_| output.to_string());
-        println!("{text}");
+        crate::outln!("{text}");
         return true;
     }
 
@@ -524,53 +464,55 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
         .into_iter()
         .flatten()
     {
-        eprintln!("{} {error}", "error:".error().to_stderr());
+        crate::errln!("{} {error}", "error:".error().to_stderr());
     }
 
-    println!("{}", "Audio Output".header());
-    println!("{}", "-".repeat(12));
+    crate::outln!("{}", "Audio Output".header());
+    crate::outln!("{}", "-".repeat(12));
     match &current_sink {
-        Some((_, description)) => println!("{} {}", "Current:".dim(), description.as_str().bold()),
-        None => println!(
+        Some((_, description)) => {
+            crate::outln!("{} {}", "Current:".dim(), description.as_str().bold());
+        }
+        None => crate::outln!(
             "{} {}",
             "Current:".dim(),
             "unavailable (PipeWire error)".error()
         ),
     }
-    println!();
-    println!("{}", "Daemon".header());
-    println!("{}", "-".repeat(6));
+    crate::outln!();
+    crate::outln!("{}", "Daemon".header());
+    crate::outln!("{}", "-".repeat(6));
 
     if !daemon.running {
-        println!("{} {}", "Status:".dim(), "Not running".error());
-        println!("  Start with: {}", "pwsw daemon".technical());
+        crate::outln!("{} {}", "Status:".dim(), "Not running".error());
+        crate::outln!("  Start with: {}", "pwsw daemon".technical());
     } else if let Some(uptime_secs) = daemon.uptime_secs {
-        println!(
+        crate::outln!(
             "{} {}",
             "Status:".dim(),
             format!("Running (uptime: {})", crate::format_uptime(uptime_secs)).success()
         );
         if let Some(version) = &daemon.version {
-            println!("{} {}", "Version:".dim(), version);
+            crate::outln!("{} {}", "Version:".dim(), version);
         }
         if daemon.error.is_some() {
-            println!(
+            crate::outln!(
                 "  {}",
                 "IPC protocol mismatch: restart the daemon".warning()
             );
         }
         if let Some(rule) = &daemon.active_window {
-            println!("{} {}", "Active Rule:".dim(), rule.as_str().technical());
+            crate::outln!("{} {}", "Active Rule:".dim(), rule.as_str().technical());
         }
         if let Some(tracked) = daemon.tracked_windows {
-            println!(
+            crate::outln!(
                 "{} {}",
                 "Tracked Windows:".dim(),
                 tracked.to_string().technical()
             );
         }
     } else {
-        println!(
+        crate::outln!(
             "{} {}",
             "Status:".dim(),
             "Running, but its status could not be read (see error)".error()
@@ -593,7 +535,7 @@ pub async fn shutdown() -> Result<()> {
 
     match response {
         Response::Ok { message } => {
-            println!("{}", message.success());
+            crate::outln!("{}", message.success());
             Ok(())
         }
         Response::Error { message } => {
@@ -617,9 +559,9 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
     match response {
         Response::Windows { windows } => {
             if json_output {
-                println!("{}", serde_json::to_string_pretty(&windows)?);
+                crate::outln!("{}", serde_json::to_string_pretty(&windows)?);
             } else if windows.is_empty() {
-                println!("{}", "No windows currently open.".dim());
+                crate::outln!("{}", "No windows currently open.".dim());
             } else {
                 let tracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_some()).collect();
                 let untracked: Vec<_> = windows.iter().filter(|w| w.tracked.is_none()).collect();
@@ -630,20 +572,25 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                     tracked.len()
                 );
                 let header_len = header.len();
-                println!("{}", header.header());
-                println!("{}", "-".repeat(header_len));
+                crate::outln!("{}", header.header());
+                crate::outln!("{}", "-".repeat(header_len));
 
                 if !tracked.is_empty() {
-                    println!(
+                    crate::outln!(
                         "\n{} ({}):",
                         "Tracked".success(),
                         tracked.len().to_string().technical()
                     );
                     for window in &tracked {
                         if let Some(ref track_info) = window.tracked {
-                            println!("  {} {}: {}", "•".success(), "app_id".dim(), window.app_id);
-                            println!("    {}: {}", "title".dim(), window.title);
-                            println!(
+                            crate::outln!(
+                                "  {} {}: {}",
+                                "•".success(),
+                                "app_id".dim(),
+                                window.app_id
+                            );
+                            crate::outln!("    {}: {}", "title".dim(), window.title);
+                            crate::outln!(
                                 "    {} {}: {}",
                                 "→".success(),
                                 "sink".dim(),
@@ -654,14 +601,14 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                 }
 
                 if !untracked.is_empty() {
-                    println!(
+                    crate::outln!(
                         "\n{} ({}):",
                         "Untracked".dim(),
                         untracked.len().to_string().technical()
                     );
                     for window in &untracked {
-                        println!("  {} {}: {}", "•".dim(), "app_id".dim(), window.app_id);
-                        println!("    {}: {}", "title".dim(), window.title);
+                        crate::outln!("  {} {}: {}", "•".dim(), "app_id".dim(), window.app_id);
+                        crate::outln!("    {}: {}", "title".dim(), window.title);
                     }
                 }
             }
@@ -691,7 +638,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
     match response {
         Response::RuleMatches { pattern, matches } => {
             if json_output {
-                println!(
+                crate::outln!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "pattern": pattern,
@@ -700,19 +647,19 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                 );
             } else {
                 let pattern_len = pattern.len();
-                println!("Testing pattern: {}", pattern.technical());
-                println!("{}", "=".repeat(16 + pattern_len));
+                crate::outln!("Testing pattern: {}", pattern.technical());
+                crate::outln!("{}", "=".repeat(16 + pattern_len));
                 if matches.is_empty() {
-                    println!("{}", "No matches found.".dim());
+                    crate::outln!("{}", "No matches found.".dim());
                 } else {
-                    println!(
+                    crate::outln!(
                         "{} ({}):",
                         "Matches".header(),
                         matches.len().to_string().technical()
                     );
                     for (i, window) in matches.iter().enumerate() {
                         let matched_on = window.matched_on.as_deref().unwrap_or("unknown");
-                        println!(
+                        crate::outln!(
                             "{}. {}: {}{}",
                             (i + 1).to_string().dim(),
                             "app_id".dim(),
@@ -723,7 +670,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                                 String::new()
                             }
                         );
-                        println!(
+                        crate::outln!(
                             "   {}: {}{}",
                             "title".dim(),
                             window.title,

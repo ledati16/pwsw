@@ -49,7 +49,11 @@ const DEFAULT_MAX_POLLS: u64 = 10;
 /// Bounds for `PROFILE_SWITCH_DELAY_MS`.
 const MIN_POLL_INTERVAL_MS: u64 = 10;
 const MAX_POLL_INTERVAL_MS: u64 = 1_000;
-/// Hard cap on the total wait (interval × polls), well under the 10 s `IPC` client timeout.
+/// Hard cap on the total wait (interval × polls) of one activation.
+///
+/// This does not bound how long an `IPC` client waits: a manual switch queued behind
+/// an in-flight activation waits for both. The daemon's guard is its 8 s "switch in
+/// progress" reply (`SWITCH_REPLY_TIMEOUT`), below the client's 10 s read timeout.
 const MAX_TOTAL_WAIT_MS: u64 = 5_000;
 
 /// How long to wait for the sink node after a profile switch, and how often to look.

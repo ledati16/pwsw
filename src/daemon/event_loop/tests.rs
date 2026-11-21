@@ -65,12 +65,18 @@ async fn within<T>(what: &str, fut: impl Future<Output = T>) -> T {
 
 /// Records calls; can fail a sink N times, signal when an activation starts, and
 /// hold activations until released
+///
+/// Also plays the audio server for manual requests: `current` is the real default
+/// (set by successful activations; [`start`] seeds it with `applied` unless a test set
+/// it), and `unreachable` sinks are reported as unable to activate.
 #[derive(Default)]
 struct FakeSwitcher {
     calls: Mutex<Vec<String>>,
     failures: Mutex<HashMap<String, usize>>,
     started: Mutex<Option<mpsc::UnboundedSender<String>>>,
     gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    current: Mutex<Option<String>>,
+    unreachable: Mutex<Vec<String>>,
 }
 
 impl FakeSwitcher {
@@ -81,6 +87,17 @@ impl FakeSwitcher {
             .expect("lock")
             .insert(sink.to_string(), times);
         fake
+    }
+
+    /// Report `sinks` as unable to activate right now (e.g. a TV that is off)
+    fn unreachable(self, sinks: &[&str]) -> Self {
+        *self.unreachable.lock().expect("lock") = sinks.iter().map(|s| (*s).to_string()).collect();
+        self
+    }
+
+    /// The real default, as an outside program (e.g. `pavucontrol`) would set it
+    fn set_current(&self, sink: &str) {
+        *self.current.lock().expect("lock") = Some(sink.to_string());
     }
 
     /// Hold every activation until `()` is sent (or the sender is dropped, or [`WAIT`])
@@ -115,7 +132,21 @@ impl SinkSwitcher for FakeSwitcher {
             *left -= 1;
             eyre::bail!("fake failure for {sink_name}");
         }
+        *self.current.lock().expect("lock") = Some(sink_name.to_string());
         Ok(format!("node.{sink_name}"))
+    }
+
+    fn probe(&self, config: &Config) -> Result<crate::manual::Probe> {
+        let unreachable = self.unreachable.lock().expect("lock");
+        Ok(crate::manual::Probe {
+            current: self.current.lock().expect("lock").clone(),
+            unreachable: config
+                .sinks
+                .iter()
+                .filter(|s| unreachable.contains(&s.name))
+                .map(|s| (s.name.clone(), format!("{} is off", s.desc)))
+                .collect(),
+        })
     }
 }
 
@@ -146,6 +177,7 @@ struct Harness {
     notices: std::sync::mpsc::Receiver<Notice>,
     switcher: Arc<FakeSwitcher>,
     reloads: Arc<AtomicUsize>,
+    statuses: Arc<Mutex<Vec<String>>>,
     config_path: PathBuf,
     task: JoinHandle<Result<()>>,
     _dir: tempfile::TempDir,
@@ -163,12 +195,24 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
     let (notifier, notices) = Notifier::channel();
     let reloads = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&reloads);
+    let statuses = Arc::new(Mutex::new(Vec::new()));
+    let status_log = Arc::clone(&statuses);
     let hooks = Hooks {
         systemd: false,
         set_log_level: Some(Box::new(move |_: &str| {
             counter.fetch_add(1, Ordering::SeqCst);
         })),
+        status: Some(Box::new(move |text: &str| {
+            status_log.lock().expect("lock").push(text.to_string());
+        })),
+        after_reload: None,
     };
+    {
+        let mut current = switcher.current.lock().expect("lock");
+        if current.is_none() {
+            *current = applied.map(str::to_string);
+        }
+    }
     let switcher = Arc::new(switcher);
     let daemon = Daemon::new(
         State::new(Arc::new(config)).expect("valid config"),
@@ -192,6 +236,7 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
         notices,
         switcher,
         reloads,
+        statuses,
         config_path,
         task,
         _dir: dir,
@@ -246,6 +291,10 @@ impl Harness {
 
     fn calls(&self) -> Vec<String> {
         self.switcher.calls.lock().expect("lock").clone()
+    }
+
+    fn statuses(&self) -> Vec<String> {
+        self.statuses.lock().expect("lock").clone()
     }
 
     fn notices(&self) -> Vec<Notice> {
@@ -326,6 +375,56 @@ async fn test_close_of_unknown_window_switches_nothing() {
     h.open(1, "zsh").await;
     h.wait_windows(1).await;
     assert_eq!(h.calls(), Vec::<String>::new());
+    h.stop().await.expect("clean shutdown");
+}
+
+/// `default_on_startup = false`: the sink found at startup stays until the rules'
+/// answer changes; an unrelated window must not switch to the default
+#[tokio::test(start_paused = true)]
+async fn test_no_default_on_startup_keeps_startup_sink() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("hdmi"));
+    h.open(1, "zsh").await;
+    h.close(1).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.desired, "speakers");
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert_eq!(h.calls(), Vec::<String>::new());
+
+    // A real change of the rules' answer still switches
+    h.open(3, "firefox").await;
+    h.wait_applied("headphones").await;
+    assert_eq!(h.calls(), vec!["headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A default changed outside pwsw is not fought by events that leave the rules'
+/// answer unchanged; the next change of that answer switches again
+#[tokio::test(start_paused = true)]
+async fn test_external_change_is_not_fought() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("headphones").await;
+
+    h.switcher.set_current("usb"); // e.g. pavucontrol
+    h.open(2, "zsh").await;
+    h.event(WindowEvent::Changed {
+        id: 1,
+        app_id: "firefox".to_string(),
+        title: "another page".to_string(),
+    })
+    .await;
+    h.open(3, "zsh").await;
+    h.wait_windows(3).await;
+    assert_eq!(
+        h.calls(),
+        vec!["headphones"],
+        "no switch back to Headphones"
+    );
+
+    h.close(1).await;
+    h.wait_applied("speakers").await;
+    assert_eq!(h.calls(), vec!["headphones", "speakers"]);
     h.stop().await.expect("clean shutdown");
 }
 
@@ -526,71 +625,169 @@ async fn test_set_sink_updates_applied_and_holds_until_rule_change() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// The reported bug: audio on a manually chosen sink, the next manual switch fails
+/// (the TV is off). Audio must stay put, and the earlier manual choice keep holding;
+/// nothing else changes (no window events, the rules want the default throughout).
 #[tokio::test(start_paused = true)]
-async fn test_failed_manual_switch_reports_error_and_rules_resume() {
+async fn test_failed_manual_switch_keeps_audio_and_previous_manual_choice() {
     let h = start(
         base_config(),
         FakeSwitcher::failing("hdmi", 1),
         Some("speakers"),
     );
-    let response = h.switch(ManualSwitch::Set("hdmi".to_string())).await;
+    let response = h.switch(ManualSwitch::Set("Headphones".to_string())).await;
     assert!(
-        matches!(&response, Response::Error { message } if message.contains("fake failure")),
+        matches!(response, Response::SinkSwitched { .. }),
+        "{response:?}"
+    );
+    assert!(h.snapshot().await.manual_override);
+
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(
+        matches!(&response, Response::Error { message }
+            if message.starts_with("Failed to activate sink 'HDMI'")
+                && message.contains("fake failure")),
         "got {response:?}"
     );
-    h.open(1, "firefox").await;
-    h.wait_applied("headphones").await;
+
+    tokio::time::sleep(Duration::from_secs(60)).await; // any retry would have run
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("headphones"));
+    assert!(snapshot.manual_override, "the earlier manual choice holds");
+    assert_eq!(snapshot.desired, "speakers");
+    assert_eq!(h.calls(), vec!["headphones", "hdmi"], "no move to Speakers");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Audio on the rules' sink, a manual switch fails: nothing changes at all
+#[tokio::test(start_paused = true)]
+async fn test_failed_manual_switch_from_rule_target_changes_nothing() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::failing("hdmi", 1),
+        Some("speakers"),
+    );
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(matches!(response, Response::Error { .. }), "{response:?}");
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+    assert!(!snapshot.manual_override, "rules stay in charge");
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    assert_eq!(h.notices(), vec![], "no switch notification for a failure");
     h.stop().await.expect("clean shutdown");
 }
 
 #[tokio::test(start_paused = true)]
-async fn test_next_and_prev_cycle_from_applied() {
+async fn test_next_and_prev_cycle_from_real_default() {
     let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
     h.switch(ManualSwitch::Next).await;
     assert_eq!(h.snapshot().await.applied.as_deref(), Some("hdmi"));
     h.switch(ManualSwitch::Prev).await;
     h.switch(ManualSwitch::Prev).await;
     assert_eq!(h.snapshot().await.applied.as_deref(), Some("usb"));
+
+    // Changed outside pwsw: the cycle starts from there, and pwsw learns of it
+    h.switcher.set_current("headphones");
+    let response = h.switch(ManualSwitch::Next).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "USB"),
+        "{response:?}"
+    );
+    assert_eq!(h.calls(), vec!["hdmi", "speakers", "usb", "usb"]);
     h.stop().await.expect("clean shutdown");
 }
 
-#[test]
-fn test_resolve_manual_smart_toggle_and_errors() {
-    let config = base_config();
-    let default = config.sinks[0].clone();
-    let set = |r: &str| ManualSwitch::Set(r.to_string());
+#[tokio::test(start_paused = true)]
+async fn test_cycle_skips_unreachable_sinks() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::default().unreachable(&["hdmi"]),
+        Some("speakers"),
+    );
+    let response = h.switch(ManualSwitch::Next).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "Headphones"),
+        "{response:?}"
+    );
+    let response = h.switch(ManualSwitch::Prev).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "Speakers"),
+        "{response:?}"
+    );
+    assert_eq!(
+        h.calls(),
+        vec!["headphones", "speakers"],
+        "HDMI never tried"
+    );
+    h.stop().await.expect("clean shutdown");
+}
 
-    // Asking for the current sink toggles back to the default
-    assert_eq!(
-        resolve_manual(&config, &default, &set("HDMI"), Some("hdmi")),
-        Ok(ManualTarget::Switch(&config.sinks[0]))
+#[tokio::test(start_paused = true)]
+async fn test_cycle_with_nothing_reachable_reports_and_stays() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::default().unreachable(&["speakers", "hdmi", "usb"]),
+        Some("headphones"),
     );
-    assert_eq!(
-        resolve_manual(&config, &default, &set("Speakers"), Some("speakers")),
-        Ok(ManualTarget::Done("Already on: Speakers".to_string()))
+    let response = h.switch(ManualSwitch::Next).await;
+    let Response::Error { message } = response else {
+        panic!("expected an error, got {response:?}");
+    };
+    assert!(
+        message.starts_with("No other sink can be activated right now:"),
+        "{message}"
     );
-    assert_eq!(
-        resolve_manual(&config, &default, &set("2"), Some("speakers")),
-        Ok(ManualTarget::Switch(&config.sinks[1]))
-    );
-    assert!(resolve_manual(&config, &default, &set("nope"), None).is_err());
+    assert!(message.contains("HDMI: HDMI is off"), "{message}");
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("headphones"));
+    assert!(!snapshot.manual_override);
+    assert_eq!(h.calls(), Vec::<String>::new());
+    h.stop().await.expect("clean shutdown");
+}
 
-    // Cycling wraps and starts from the default when the current sink is unknown
-    assert_eq!(
-        resolve_manual(&config, &default, &ManualSwitch::Prev, Some("speakers")),
-        Ok(ManualTarget::Switch(&config.sinks[3]))
+/// An explicit `set-sink` still tries an unreachable sink, and reports its error
+#[tokio::test(start_paused = true)]
+async fn test_set_sink_still_tries_unreachable_sink() {
+    let h = start(
+        base_config(),
+        FakeSwitcher::failing("hdmi", 1).unreachable(&["hdmi"]),
+        Some("speakers"),
     );
-    assert_eq!(
-        resolve_manual(&config, &default, &ManualSwitch::Next, Some("elsewhere")),
-        Ok(ManualTarget::Switch(&config.sinks[1]))
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(
+        matches!(&response, Response::Error { message } if message.contains("fake failure")),
+        "{response:?}"
     );
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
 
-    let mut toggle_off = base_config();
-    toggle_off.settings.set_smart_toggle = false;
-    assert_eq!(
-        resolve_manual(&toggle_off, &default, &set("HDMI"), Some("hdmi")),
-        Ok(ManualTarget::Switch(&toggle_off.sinks[1]))
+/// The smart toggle compares with the real default, not pwsw's last activation
+#[tokio::test(start_paused = true)]
+async fn test_smart_toggle_uses_real_default() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.switcher.set_current("hdmi"); // changed outside pwsw
+    let response = h.switch(ManualSwitch::Set("HDMI".to_string())).await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "Speakers"),
+        "toggles back to the default: {response:?}"
     );
+    assert_eq!(h.calls(), vec!["speakers"]);
+
+    let response = h.switch(ManualSwitch::Set("Speakers".to_string())).await;
+    assert!(
+        matches!(&response, Response::Ok { message } if message == "Already on: Speakers"),
+        "{response:?}"
+    );
+    let response = h.switch(ManualSwitch::Set("nope".to_string())).await;
+    assert!(
+        matches!(&response, Response::Error { message } if message.starts_with("Unknown sink")),
+        "{response:?}"
+    );
+    assert_eq!(h.calls(), vec!["speakers"]);
+    h.stop().await.expect("clean shutdown");
 }
 
 /// `set-sink` over a real `IPC` stream: request in, `SinkSwitched` out
@@ -718,6 +915,53 @@ async fn test_status_reports_version_and_protocol() {
     };
     assert_eq!(version, "v9.9.9+test");
     assert_eq!(protocol, crate::ipc::PROTOCOL_VERSION);
+    h.stop().await.expect("clean shutdown");
+}
+
+// ----------------------------------------------------------------------------
+// Status line (`STATUS=`)
+// ----------------------------------------------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn test_status_is_published_at_startup() {
+    for (applied, expected) in [
+        (Some("hdmi"), "Sink: HDMI"),
+        (
+            Some("alsa_output.other"),
+            "Sink: alsa_output.other (not in config)",
+        ),
+        (None, "Sink: unknown"),
+    ] {
+        let h = start(base_config(), FakeSwitcher::default(), applied);
+        let _ = h.snapshot().await; // the loop has started
+        assert_eq!(h.statuses(), vec![expected.to_string()]);
+        h.stop().await.expect("clean shutdown");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_status_follows_switches_and_reloads() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("headphones").await;
+
+    // A reload that renames the current sink needs no switch, but a new status
+    let mut config = base_config();
+    config.sinks[2].desc = "Studio Headphones".to_string();
+    config.rules[2].sink_ref = "Studio Headphones".to_string();
+    config.save_to(&h.config_path).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_for("reload", |s, _| {
+        s.config.sinks[2].desc == "Studio Headphones"
+    })
+    .await;
+
+    assert_eq!(h.statuses(), vec![
+        "Sink: Speakers".to_string(),
+        "Sink: Headphones".to_string(),
+        "Sink: Studio Headphones".to_string(),
+    ]);
+    assert_eq!(h.calls(), vec!["headphones"]);
     h.stop().await.expect("clean shutdown");
 }
 

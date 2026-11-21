@@ -56,9 +56,9 @@ fn install_error_hooks() {
 /// daemon runs in the foreground (logs, systemd): then the full `color-eyre` report.
 fn report_error(err: &eyre::Report, full_report: bool) {
     if full_report || backtrace_requested() {
-        eprintln!("Error: {err:?}");
+        pwsw::errln!("Error: {err:?}");
     } else {
-        eprintln!("{} {err:#}", "error:".error().to_stderr());
+        pwsw::errln!("{} {err:#}", "error:".error().to_stderr());
     }
 }
 
@@ -171,7 +171,7 @@ async fn run(args: Args) -> Result<ExitCode> {
             let config = match Config::load() {
                 Ok(config) => Some(config),
                 Err(e) => {
-                    eprintln!(
+                    pwsw::errln!(
                         "{} {}\n",
                         "⚠".warning().to_stderr(),
                         format!("Config not loaded, configured sinks not shown: {e:#}")
@@ -190,7 +190,7 @@ async fn run(args: Args) -> Result<ExitCode> {
 
             // Warn if no sinks configured (daemon won't start)
             if config.sinks.is_empty() {
-                eprintln!(
+                pwsw::errln!(
                     "{} {}\n",
                     "⚠".warning().to_stderr(),
                     "No sinks configured - daemon will not start"
@@ -229,7 +229,11 @@ async fn run(args: Args) -> Result<ExitCode> {
         }
 
         Some(Command::Completions { shell }) => {
-            clap_complete::generate(shell, &mut Args::command(), "pwsw", &mut std::io::stdout());
+            // Generated in memory: `clap_complete` panics on a failed write (e.g. a
+            // closed pipe), and `write_stdout_bytes` does not
+            let mut script = Vec::new();
+            clap_complete::generate(shell, &mut Args::command(), "pwsw", &mut script);
+            style::write_stdout_bytes(&script);
             Ok(ExitCode::SUCCESS)
         }
 
