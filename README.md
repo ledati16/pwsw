@@ -23,6 +23,8 @@ PipeWire's own command-line tools.
 ## Features
 
 - **Automatic sink switching** from rules that match a window's `app_id` and title (regex)
+- **Fallback sinks**: a rule can list several sinks; the first one available right now
+  wins (e.g. Bluetooth headphones when connected, wired ones otherwise)
 - **Respects your choices**: pwsw switches only when the rules' answer changes, so a sink
   you pick in pavucontrol (or a manual `pwsw set-sink`) stays until a rule wants
   something else
@@ -178,6 +180,10 @@ name = "alsa_output.pci-0000_0c_00.4.analog-stereo"
 desc = "Headphones"
 icon = "audio-headphones"   # optional; otherwise picked from the description
 
+[[sinks]]
+name = "bluez_output.40_ED_98_1C_1D_08.1"
+desc = "BT Headphones"
+
 [[rules]]
 app_id = "^steam$"
 title = "^Steam Big Picture Mode$"   # optional
@@ -188,6 +194,10 @@ notify = false                       # optional per-rule override of notify_rule
 [[rules]]
 app_id = "^mpv$"
 sink = "Headphones"
+
+[[rules]]
+app_id = "^discord$"
+sink = ["BT Headphones", "Headphones"]  # fallbacks: the first one available now wins
 
 [[rules]]
 app_id = ".*"        # any app...

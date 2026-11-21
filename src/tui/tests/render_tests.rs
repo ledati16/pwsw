@@ -70,6 +70,7 @@ fn window(app_id: &str, title: &str, sink: Option<&str>) -> WindowInfo {
         tracked: sink.map(|s| TrackedInfo {
             sink_name: String::new(),
             sink_desc: s.to_string(),
+            fallbacks: Vec::new(),
         }),
     }
 }

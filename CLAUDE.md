@@ -43,8 +43,10 @@ that binary.
 **Decision is pure, acting is asynchronous.** `State::apply` folds `WindowEvent`s into
 the window set; `State::desired()` implements both priority modes (most recent window by
 a monotonic sequence number, renewed when a window starts matching; or lowest rule index
-with `match_by_index`, ties to the most recent), falling back to the default sink. Each
-window is matched by the first rule that matches it. Nothing in `state.rs` does I/O.
+with `match_by_index`, ties to the most recent), falling back to the default sink. Its
+answer is an ordered candidate list: the winning rule's sink and fallbacks
+(`sink = ["A", "B"]`), or the default sink alone. Each window is matched by the first
+rule that matches it. Nothing in `state.rs` does I/O; reachability is the worker's call.
 
 **Switch only when the rules' answer changes.** After every input the event loop
 reconciles: if `desired()` differs from the previous answer (or a switch the rules still
@@ -52,7 +54,12 @@ want failed), it submits a job. It never compares against the real PipeWire defa
 sink chosen in `pavucontrol` or by WirePlumber stays until the rules want something else.
 At startup the answer is the baseline; with `default_on_startup` it is activated. Failed
 rule switches retry after 2 s and 5 s, then once more on the next event or reload. A
-manual switch holds the same way; a failed manual switch changes nothing.
+manual switch holds the same way; a failed manual switch changes nothing. "Changed" means
+the candidate list changed. A rule job activates the first reachable candidate against
+one snapshot (`pipewire::activate::activate_first`), trying the next reachable one if
+that activation fails; when it settled for a fallback, the next window event or reload
+(at most every `UPGRADE_CHECK_INTERVAL`, 2 s, never polled, never over a manual choice)
+submits an *upgrade* job that switches only if an earlier candidate is reachable.
 
 **Never await PipeWire in the `select!`.** The loop submits to the worker
 (`daemon/worker.rs`), which runs activations one at a time in `spawn_blocking`; results
@@ -81,7 +88,14 @@ inside it.
 - All mutations go through `Config` methods (`add_sink`, `update_sink`, `set_default_sink`,
   `remove_sink`, `move_sink`, `add_rule`, `update_rule`, `remove_rule`, `move_rule`). They
   run on a clone, validate, then commit; renames and moves keep rules pointing at the same
-  sink; a sink still referenced by rules cannot be removed. The TUI uses only these.
+  sink; a sink still referenced by rules (as first choice or fallback) cannot be removed.
+  The TUI uses only these.
+- A rule's targets are `Rule::sink_ref` (first choice) plus `Rule::fallback_refs`
+  (`Rule::sink_refs()` yields both, in order); cascades cover every entry. `add_rule` /
+  `update_rule` store all of them as `desc`s and drop a fallback equal to the first
+  choice (the TUI edits only the first choice and passes the old fallbacks along). A rule
+  with one sink saves as a string, one with several as an inline array; unchanged values
+  are left exactly as written.
 - Every save validates and refuses text that does not load back to the identical config.
 - Saves apply values into the loaded `toml_edit` document, so comments and formatting of
   untouched entries survive. Atomic: temp file + fsync + rename next to the resolved

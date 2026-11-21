@@ -340,6 +340,7 @@ struct DaemonStatus {
     protocol: Option<u32>,
     uptime_secs: Option<u64>,
     daemon_sink: Option<String>,
+    daemon_sink_fallback: Option<bool>,
     active_window: Option<String>,
     tracked_windows: Option<usize>,
 }
@@ -361,6 +362,7 @@ impl DaemonStatus {
                 protocol,
                 uptime_secs,
                 current_sink,
+                current_sink_fallback,
                 active_window,
                 tracked_windows,
             }) => Self {
@@ -376,6 +378,7 @@ impl DaemonStatus {
                 version: Some(version),
                 protocol: Some(protocol),
                 uptime_secs: Some(uptime_secs),
+                daemon_sink_fallback: current_sink.as_ref().map(|_| current_sink_fallback),
                 daemon_sink: current_sink,
                 active_window,
                 tracked_windows: Some(tracked_windows),
@@ -395,6 +398,7 @@ impl DaemonStatus {
             "uptime_secs": self.uptime_secs,
             "uptime_human": self.uptime_secs.map(crate::format_uptime),
             "daemon_sink": self.daemon_sink,
+            "daemon_sink_fallback": self.daemon_sink_fallback,
             "active_window": self.active_window,
             "tracked_windows": self.tracked_windows,
         })
@@ -596,6 +600,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                                 "sink".dim(),
                                 track_info.sink_desc.as_str().bold()
                             );
+                            print_fallbacks(track_info, "    ");
                         }
                     }
                 }
@@ -619,6 +624,19 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
         }
         other => Err(unexpected_response(&other)),
     }
+}
+
+/// Print a tracked window's fallback sinks (in priority order), if its rule has any
+fn print_fallbacks(tracked: &ipc::TrackedInfo, indent: &str) {
+    if tracked.fallbacks.is_empty() {
+        return;
+    }
+    let descs: Vec<&str> = tracked.fallbacks.iter().map(|f| f.desc.as_str()).collect();
+    crate::outln!(
+        "{indent}  {}: {}",
+        "then".dim(),
+        descs.join(", ").as_str().bold()
+    );
 }
 
 /// Test a regex pattern against current windows
@@ -680,6 +698,14 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                                 String::new()
                             }
                         );
+                        if let Some(tracked) = &window.tracked {
+                            crate::outln!(
+                                "   {}: {}",
+                                "current rule's sink".dim(),
+                                tracked.sink_desc.as_str().bold()
+                            );
+                            print_fallbacks(tracked, "   ");
+                        }
                     }
                 }
             }

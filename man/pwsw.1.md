@@ -33,10 +33,10 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 :   List all active and profile-switchable PipeWire sinks.
 
 **list-windows** [*--json*]
-:   List all open windows the daemon sees, split into tracked (matching a rule, with the sink they selected) and untracked ones. Requires a running daemon.
+:   List all open windows the daemon sees, split into tracked (matching a rule, with the sink they selected and its fallback sinks, if any) and untracked ones. Requires a running daemon.
 
 **test-rule** *PATTERN* [*--json*]
-:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field. Requires a running daemon. See **pwsw**(5) for details on regex syntax.
+:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field; for a window that currently matches a rule, also that rule's sinks (with fallbacks). Requires a running daemon. See **pwsw**(5) for details on regex syntax.
 
 **validate**
 :   Validate the configuration file syntax and sink references. Reports a missing file (it does not create one).
@@ -76,6 +76,7 @@ The daemon watches its configuration file and applies changes automatically when
     "uptime_secs": 3600 | null,
     "uptime_human": "1h" | null,
     "daemon_sink": "..." | null,
+    "daemon_sink_fallback": true | false | null,
     "active_window": "..." | null,
     "tracked_windows": 2 | null
   },
@@ -87,7 +88,7 @@ The daemon watches its configuration file and applies changes automatically when
 }
 ```
 
-*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
+*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
 
 ## COMPATIBILITY
 **pwsw** relies on standard Wayland protocols to monitor windows.

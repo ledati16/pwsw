@@ -21,7 +21,7 @@ use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde::de::{self, Deserializer, Visitor};
-use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
+use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, TableLike, Value};
 use tracing::{info, warn};
 
 use crate::style::PwswStyle;
@@ -215,7 +215,13 @@ pub struct Rule {
     pub title_regex: Option<Regex>,
     /// Sink reference: a sink `desc` (what the TUI writes), a node `name`, or a
     /// deprecated 1-based position (`"2"`; an integer `sink = 2` in the file).
+    ///
+    /// The rule's first choice; see [`Rule::fallback_refs`].
     pub sink_ref: String,
+    /// Further sink references to fall back to, in priority order, when the earlier
+    /// ones cannot be activated (`sink = ["A", "B"]` in the file; empty for a plain
+    /// `sink = "A"`). Same reference forms as [`Rule::sink_ref`].
+    pub fallback_refs: Vec<String>,
     pub desc: Option<String>,
     pub notify: Option<bool>,
     // Original patterns for display
@@ -230,8 +236,21 @@ impl PartialEq for Rule {
         self.app_id_pattern == other.app_id_pattern
             && self.title_pattern == other.title_pattern
             && self.sink_ref == other.sink_ref
+            && self.fallback_refs == other.fallback_refs
             && self.desc == other.desc
             && self.notify == other.notify
+    }
+}
+
+impl Rule {
+    /// The rule's sink references in priority order: [`Rule::sink_ref`], then
+    /// [`Rule::fallback_refs`]
+    pub fn sink_refs(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.sink_ref.as_str()).chain(self.fallback_refs.iter().map(String::as_str))
+    }
+
+    fn sink_refs_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        std::iter::once(&mut self.sink_ref).chain(self.fallback_refs.iter_mut())
     }
 }
 
@@ -308,8 +327,8 @@ struct RuleConfigFile {
     app_id: String,
     #[serde(default)]
     title: Option<String>,
-    #[serde(deserialize_with = "deserialize_sink_ref")]
-    sink: String,
+    #[serde(deserialize_with = "deserialize_sink_refs")]
+    sink: Vec<String>,
     #[serde(default)]
     desc: Option<String>,
     #[serde(default)]
@@ -338,37 +357,89 @@ impl Default for SettingsFile {
     }
 }
 
-/// Accept a rule's `sink` as a string (`desc`/`name`/position) or an integer position.
-fn deserialize_sink_ref<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<String, D::Error> {
-    struct SinkRefVisitor;
+/// What a single sink reference may be in the file
+const SINK_REF_EXPECTED: &str = "a sink description, node name, or 1-based position";
 
-    impl Visitor<'_> for SinkRefVisitor {
-        type Value = String;
+/// One sink reference: a string (`desc`/`name`/position) or an integer position.
+struct SinkRef(String);
+
+impl<'de> Deserialize<'de> for SinkRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct SinkRefVisitor;
+
+        impl Visitor<'_> for SinkRefVisitor {
+            type Value = SinkRef;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(SINK_REF_EXPECTED)
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<SinkRef, E> {
+                Ok(SinkRef(v.to_string()))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<SinkRef, E> {
+                Ok(SinkRef(v))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<SinkRef, E> {
+                Ok(SinkRef(v.to_string()))
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<SinkRef, E> {
+                Ok(SinkRef(v.to_string()))
+            }
+        }
+
+        deserializer.deserialize_any(SinkRefVisitor)
+    }
+}
+
+/// Accept a rule's `sink` as one reference or an array of them (in priority order).
+///
+/// An empty array is accepted here and rejected when the rule is built, so the error
+/// names the rule.
+fn deserialize_sink_refs<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error> {
+    struct SinkRefsVisitor;
+
+    impl<'de> Visitor<'de> for SinkRefsVisitor {
+        type Value = Vec<String>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str("a sink description, node name, or 1-based position")
+            write!(f, "{SINK_REF_EXPECTED}, or an array of them")
         }
 
-        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<String, E> {
-            Ok(v.to_string())
+        fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Vec<String>, E> {
+            Ok(vec![v.to_string()])
         }
 
-        fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<String, E> {
-            Ok(v)
+        fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<Vec<String>, E> {
+            Ok(vec![v])
         }
 
-        fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<String, E> {
-            Ok(v.to_string())
+        fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Vec<String>, E> {
+            Ok(vec![v.to_string()])
         }
 
-        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<String, E> {
-            Ok(v.to_string())
+        fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<Vec<String>, E> {
+            Ok(vec![v.to_string()])
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> std::result::Result<Vec<String>, A::Error> {
+            let mut refs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(SinkRef(r)) = seq.next_element()? {
+                refs.push(r);
+            }
+            Ok(refs)
         }
     }
 
-    deserializer.deserialize_any(SinkRefVisitor)
+    deserializer.deserialize_any(SinkRefsVisitor)
 }
 
 /// The 1-based position a sink reference names, if it is positional (`"2"` or `2`).
@@ -428,6 +499,10 @@ log_level = "info"         # error, warn, info, debug, trace
 # title = "^Steam Big Picture"  # Optional: also match window title
 # sink = "HDMI"                 # The sink's desc (or its node name)
 # desc = "Steam Gaming"         # Optional: custom notification text
+#
+# [[rules]]
+# app_id = "^discord$"
+# sink = ["Headphones", "Speakers"]  # Fallbacks: the first one available now wins
 "#;
 
 // ============================================================================
@@ -585,10 +660,18 @@ impl Config {
                 .map(compile_rule_regex)
                 .transpose()
                 .map_err(|e| eyre::eyre!("Rule {}: invalid title regex: {e}", i + 1))?;
+            let mut refs = r.sink.into_iter();
+            let sink_ref = refs.next().ok_or_else(|| {
+                eyre::eyre!(
+                    "Rule {}: `sink` is an empty list; name at least one sink",
+                    i + 1
+                )
+            })?;
             rules.push(Rule {
                 app_id_regex,
                 title_regex,
-                sink_ref: r.sink,
+                sink_ref,
+                fallback_refs: refs.collect(),
                 desc: r.desc,
                 notify: r.notify,
                 app_id_pattern: r.app_id,
@@ -607,7 +690,10 @@ impl Config {
             .rules
             .iter()
             .enumerate()
-            .filter(|(_, r)| positional_ref(&r.sink_ref).is_some())
+            .filter(|(_, r)| {
+                r.sink_refs()
+                    .any(|sink_ref| positional_ref(sink_ref).is_some())
+            })
             .map(|(i, _)| (i + 1).to_string())
             .collect();
         if !positional.is_empty() {
@@ -981,22 +1067,26 @@ impl Config {
     /// at the same sink: any positional reference whose sink moved is rewritten to that
     /// sink's `desc`.
     fn keeping_positional_targets(&mut self, f: impl FnOnce(&mut Self)) {
+        // Every reference of every rule (fallbacks too): its target if positional
         let targets: Vec<Option<(usize, String)>> = self
             .rules
             .iter()
-            .map(|r| {
-                let pos = positional_ref(&r.sink_ref)?;
+            .flat_map(Rule::sink_refs)
+            .map(|sink_ref| {
+                let pos = positional_ref(sink_ref)?;
                 let sink = self.sinks.get(pos.checked_sub(1)?)?;
                 Some((pos - 1, sink.name.clone()))
             })
             .collect();
         f(self);
-        for (rule, target) in self.rules.iter_mut().zip(targets) {
+        let sinks = &self.sinks;
+        let refs = self.rules.iter_mut().flat_map(Rule::sink_refs_mut);
+        for (sink_ref, target) in refs.zip(targets) {
             if let Some((old_index, name)) = target
-                && let Some(new_index) = self.sinks.iter().position(|s| s.name == name)
+                && let Some(new_index) = sinks.iter().position(|s| s.name == name)
                 && new_index != old_index
             {
-                rule.sink_ref.clone_from(&self.sinks[new_index].desc);
+                sink_ref.clone_from(&sinks[new_index].desc);
             }
         }
     }
@@ -1063,11 +1153,11 @@ impl Config {
                 .cloned()
                 .with_context(|| format!("No sink at position {}", index + 1))?;
             c.check_sink_unique(&sink, Some(index))?;
-            for rule in &mut c.rules {
-                if rule.sink_ref == old.desc {
-                    rule.sink_ref.clone_from(&sink.desc);
-                } else if rule.sink_ref == old.name {
-                    rule.sink_ref.clone_from(&sink.name);
+            for sink_ref in c.rules.iter_mut().flat_map(Rule::sink_refs_mut) {
+                if *sink_ref == old.desc {
+                    sink_ref.clone_from(&sink.desc);
+                } else if *sink_ref == old.name {
+                    sink_ref.clone_from(&sink.name);
                 }
             }
             if sink.default {
@@ -1118,7 +1208,10 @@ impl Config {
                 .rules
                 .iter()
                 .enumerate()
-                .filter(|(_, r)| c.resolve_sink_index(&r.sink_ref) == Some(index))
+                .filter(|(_, r)| {
+                    r.sink_refs()
+                        .any(|sink_ref| c.resolve_sink_index(sink_ref) == Some(index))
+                })
                 .map(|(i, r)| format!("{} ({})", i + 1, r.app_id_pattern))
                 .collect();
             if !users.is_empty() {
@@ -1164,41 +1257,50 @@ impl Config {
         })
     }
 
-    /// Rewrite a rule's sink reference to the target sink's `desc`.
-    fn canonicalize_rule_ref(&self, rule: &mut Rule) -> Result<()> {
-        let sink = self
-            .resolve_sink(&rule.sink_ref)
-            .with_context(|| format!("Rule references unknown sink '{}'", rule.sink_ref))?;
-        rule.sink_ref.clone_from(&sink.desc);
+    /// Rewrite each of a rule's sink references to the target sink's `desc`.
+    ///
+    /// A fallback naming the same sink as the first choice is dropped: editing only
+    /// the first choice (as the TUI does) to a sink that was a fallback moves that sink
+    /// to the front. Other duplicates are left for validation to reject.
+    fn canonicalize_rule_refs(&self, rule: &mut Rule) -> Result<()> {
+        for sink_ref in rule.sink_refs_mut() {
+            let sink = self
+                .resolve_sink(sink_ref)
+                .with_context(|| format!("Rule references unknown sink '{sink_ref}'"))?;
+            sink_ref.clone_from(&sink.desc);
+        }
+        let first = rule.sink_ref.clone();
+        rule.fallback_refs.retain(|r| *r != first);
         Ok(())
     }
 
-    /// Append a rule. Its sink reference is stored as the target sink's `desc`.
+    /// Append a rule. Its sink references are stored as the target sinks' `desc`.
     ///
     /// # Errors
-    /// Returns an error (and changes nothing) if the sink reference does not resolve or
-    /// the rule is invalid (e.g. empty `app_id` pattern).
+    /// Returns an error (and changes nothing) if a sink reference does not resolve or
+    /// the rule is invalid (e.g. empty `app_id` pattern, a sink listed twice).
     pub fn add_rule(&mut self, mut rule: Rule) -> Result<()> {
         self.transact(|c| {
-            c.canonicalize_rule_ref(&mut rule)?;
+            c.canonicalize_rule_refs(&mut rule)?;
             c.rules.push(rule);
             c.origin.rule_slots.push(None);
             Ok(())
         })
     }
 
-    /// Replace the rule at `index` (0-based). Its sink reference is stored as the
-    /// target sink's `desc`.
+    /// Replace the rule at `index` (0-based). Its sink references are stored as the
+    /// target sinks' `desc` (see [`Rule::fallback_refs`]; a caller that edits only the
+    /// first choice passes the old rule's fallbacks along).
     ///
     /// # Errors
-    /// Returns an error (and changes nothing) if `index` is out of range, the sink
+    /// Returns an error (and changes nothing) if `index` is out of range, a sink
     /// reference does not resolve, or the rule is invalid.
     pub fn update_rule(&mut self, index: usize, mut rule: Rule) -> Result<()> {
         self.transact(|c| {
             if index >= c.rules.len() {
                 eyre::bail!("No rule at position {}", index + 1);
             }
-            c.canonicalize_rule_ref(&mut rule)?;
+            c.canonicalize_rule_refs(&mut rule)?;
             c.rules[index] = rule;
             Ok(())
         })
@@ -1325,23 +1427,34 @@ impl Config {
                 );
             }
 
-            if rule.sink_ref.trim().is_empty() {
-                eyre::bail!("Rule {} has an empty sink reference", i + 1);
-            }
+            let mut targets = Vec::with_capacity(1 + rule.fallback_refs.len());
+            for sink_ref in rule.sink_refs() {
+                if sink_ref.trim().is_empty() {
+                    eyre::bail!("Rule {} has an empty sink reference", i + 1);
+                }
 
-            if self.resolve_sink(&rule.sink_ref).is_none() {
-                let available: Vec<_> = self
-                    .sinks
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
-                    .collect();
-                eyre::bail!(
-                    "Rule {} references unknown sink '{}'. Available: [{}]",
-                    i + 1,
-                    rule.sink_ref,
-                    available.join(", ")
-                );
+                let Some(target) = self.resolve_sink_index(sink_ref) else {
+                    let available: Vec<_> = self
+                        .sinks
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
+                        .collect();
+                    eyre::bail!(
+                        "Rule {} references unknown sink '{}'. Available: [{}]",
+                        i + 1,
+                        sink_ref,
+                        available.join(", ")
+                    );
+                };
+                if targets.contains(&target) {
+                    eyre::bail!(
+                        "Rule {} lists sink '{}' more than once",
+                        i + 1,
+                        self.sinks[target].desc
+                    );
+                }
+                targets.push(target);
             }
         }
 
@@ -1535,6 +1648,13 @@ impl Config {
                     effective_notify,
                     source.dim()
                 );
+                if !rule.fallback_refs.is_empty() {
+                    crate::outln!(
+                        "     {}: {}",
+                        "fallback".dim(),
+                        rule.fallback_refs.join(", ").as_str().bold()
+                    );
+                }
             }
         }
 
@@ -1553,6 +1673,14 @@ impl Config {
         self.sinks
             .iter()
             .position(|s| s.desc == sink_ref || s.name == sink_ref)
+    }
+
+    /// Resolve every sink reference of `rule`, in priority order, to 0-based sink
+    /// indices; `None` if any does not resolve
+    pub(crate) fn resolve_rule_sinks(&self, rule: &Rule) -> Option<Vec<usize>> {
+        rule.sink_refs()
+            .map(|sink_ref| self.resolve_sink_index(sink_ref))
+            .collect()
     }
 
     /// Resolve a sink reference (by position, desc, or name)
@@ -1776,13 +1904,19 @@ fn apply_sink(table: &mut Table, sink: &SinkConfig) {
 fn apply_rule(table: &mut Table, rule: &Rule) {
     set_value(table, "app_id", rule.app_id_pattern.as_str());
     set_optional(table, "title", rule.title_pattern.as_deref());
-    // Keep an integer position as written if it still says the same thing
-    let unchanged_int = table
+    // Keep the value as written (integer positions, a one-entry array) if it still
+    // says the same thing
+    let refs: Vec<&str> = rule.sink_refs().collect();
+    let unchanged = table
         .get("sink")
-        .and_then(Item::as_integer)
-        .is_some_and(|n| n.to_string() == rule.sink_ref);
-    if !unchanged_int {
-        set_value(table, "sink", rule.sink_ref.as_str());
+        .and_then(Item::as_value)
+        .is_some_and(|v| sink_value_says(v, &refs));
+    if !unchanged {
+        if let [single] = refs.as_slice() {
+            set_value(table, "sink", *single);
+        } else {
+            set_value(table, "sink", refs.iter().copied().collect::<Array>());
+        }
     }
     set_optional(table, "desc", rule.desc.as_deref());
     match rule.notify {
@@ -1790,6 +1924,24 @@ fn apply_rule(table: &mut Table, rule: &Rule) {
         None => {
             table.remove("notify");
         }
+    }
+}
+
+/// Whether a rule's `sink` value in the document names exactly `refs`, in order
+fn sink_value_says(value: &Value, refs: &[&str]) -> bool {
+    fn one(value: &Value, sink_ref: &str) -> bool {
+        match value {
+            Value::String(s) => s.value() == sink_ref,
+            Value::Integer(n) => n.value().to_string() == sink_ref,
+            _ => false,
+        }
+    }
+    match (value, refs) {
+        (Value::Array(array), _) => {
+            array.len() == refs.len() && array.iter().zip(refs).all(|(v, r)| one(v, r))
+        }
+        (_, [single]) => one(value, single),
+        _ => false,
     }
 }
 
@@ -1849,7 +2001,9 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
-    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+    use crate::test_utils::fixtures::{
+        make_config, make_rule, make_rule_with_fallbacks, make_sink,
+    };
 
     // validate() tests
     #[test]
@@ -2751,5 +2905,322 @@ sink = "HDMI"
         assert!(out.starts_with("[settings]\n"), "{out}");
         assert!(out.contains("log_level = \"info\""), "{out}");
         assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    // ------------------------------------------------------------------------
+    // Fallback sinks (`sink = [...]`)
+    // ------------------------------------------------------------------------
+
+    const THREE_SINKS: &str = r#"[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.hdmi"
+desc = "HDMI"
+
+[[sinks]]
+name = "bluez_output.phones"
+desc = "BT Headphones"
+"#;
+
+    fn refs(cfg: &Config, index: usize) -> Vec<&str> {
+        cfg.rules[index].sink_refs().collect()
+    }
+
+    /// Set all sinks of rule `index` through `update_rule`, like a list editor would
+    fn set_sinks(cfg: &mut Config, index: usize, sinks: &[&str]) -> Result<()> {
+        let mut rule = cfg.rules[index].clone();
+        let (first, rest) = sinks.split_first().expect("at least one sink");
+        rule.sink_ref = (*first).to_string();
+        rule.fallback_refs = rest.iter().map(|s| (*s).to_string()).collect();
+        cfg.update_rule(index, rule)
+    }
+
+    #[test]
+    fn test_sink_list_parses_strings_integers_and_single_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{THREE_SINKS}\n[[rules]]\napp_id = \"a\"\nsink = [\"BT Headphones\", \"HDMI\"]\n\n\
+             [[rules]]\napp_id = \"b\"\nsink = [3, \"alsa_output.speakers\"]\n\n[[rules]]\napp_id \
+             = \"c\"\nsink = [\"HDMI\"]\n\n[[rules]]\napp_id = \"d\"\nsink = \"HDMI\"\n"
+        );
+        let path = write(&dir, "c.toml", &contents);
+        let cfg = Config::load_from_path(&path).expect("sink lists load");
+        assert_eq!(refs(&cfg, 0), ["BT Headphones", "HDMI"]);
+        assert_eq!(cfg.rules[0].sink_ref, "BT Headphones", "first choice");
+        assert_eq!(cfg.rules[0].fallback_refs, ["HDMI"]);
+        assert_eq!(refs(&cfg, 1), ["3", "alsa_output.speakers"]);
+        assert_eq!(cfg.resolve_rule_sinks(&cfg.rules[1]), Some(vec![2, 0]));
+        assert_eq!(refs(&cfg, 2), ["HDMI"]);
+        assert_eq!(cfg.rules[2].fallback_refs, [] as [String; 0]);
+        assert_eq!(refs(&cfg, 3), ["HDMI"]);
+    }
+
+    #[rstest]
+    #[case::empty("sink = []", "empty list")]
+    #[case::unknown("sink = [\"HDMI\", \"Nope\"]", "unknown sink 'Nope'")]
+    #[case::unknown_position("sink = [\"HDMI\", 7]", "unknown sink '7'")]
+    #[case::duplicate(
+        "sink = [\"HDMI\", \"alsa_output.hdmi\"]",
+        "lists sink 'HDMI' more than once"
+    )]
+    #[case::duplicate_position("sink = [2, \"HDMI\"]", "more than once")]
+    #[case::empty_entry("sink = [\"HDMI\", \" \"]", "empty sink reference")]
+    #[case::nested(
+        "sink = [[\"HDMI\"]]",
+        "sink description, node name, or 1-based position"
+    )]
+    #[case::boolean_entry("sink = [\"HDMI\", true]", "1-based position")]
+    fn test_sink_list_rejections(#[case] sink: &str, #[case] expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{THREE_SINKS}\n[[rules]]\napp_id = \"a\"\n{sink}\n");
+        let path = write(&dir, "c.toml", &contents);
+        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        assert!(err.contains(expected), "{err}");
+    }
+
+    const WITH_LISTS: &str = r#"[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.hdmi"
+desc = "HDMI"
+
+[[sinks]]
+name = "bluez_output.phones"
+desc = "BT Headphones"
+
+[[rules]]
+app_id = "^discord$"
+sink = ["BT Headphones", 2] # phones first
+
+[[rules]]
+app_id = "^mpv$"
+sink = [ "HDMI" ]
+
+[[rules]]
+app_id = "^steam$"
+sink = "HDMI"
+"#;
+
+    #[test]
+    fn test_save_keeps_lists_and_strings_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_LISTS);
+
+        // An unrelated edit leaves every rule's text alone
+        cfg.settings.log_level = "debug".to_string();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            out.ends_with(&WITH_LISTS[WITH_LISTS.find("[[rules]]").unwrap()..]),
+            "{out}"
+        );
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_save_writes_a_string_for_one_sink_and_an_array_for_several() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        set_sinks(&mut cfg, 0, &["HDMI"]).unwrap();
+        set_sinks(&mut cfg, 2, &["alsa_output.hdmi", "Speakers"]).unwrap();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            out.contains("app_id = \"^discord$\"\nsink = \"HDMI\" # phones first\n"),
+            "single target is a string again, comment kept:\n{out}"
+        );
+        assert!(
+            out.contains("app_id = \"^steam$\"\nsink = [\"HDMI\", \"Speakers\"]\n"),
+            "several targets are an inline array of descs:\n{out}"
+        );
+        let reloaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(reloaded, cfg);
+        assert_eq!(refs(&reloaded, 2), ["HDMI", "Speakers"]);
+
+        // A fresh in-memory config writes lists too
+        let fresh = Config::new(Settings::default(), cfg.sinks.clone(), vec![
+            make_rule_with_fallbacks("x", None, &["BT Headphones", "HDMI"]),
+        ]);
+        let fresh_path = dir.path().join("fresh.toml");
+        fresh.save_to(&fresh_path).unwrap();
+        let out = std::fs::read_to_string(&fresh_path).unwrap();
+        assert!(
+            out.contains("sink = [\"BT Headphones\", \"HDMI\"]"),
+            "{out}"
+        );
+        assert_eq!(Config::load_from_path(&fresh_path).unwrap(), fresh);
+    }
+
+    #[test]
+    fn test_rule_methods_validate_and_canonicalize_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        set_sinks(&mut cfg, 1, &["1", "bluez_output.phones"]).unwrap();
+        assert_eq!(refs(&cfg, 1), ["Speakers", "BT Headphones"]);
+        for bad in [&["Nope"][..], &["HDMI", "Nope"], &["Speakers", "HDMI", "2"]] {
+            assert!(set_sinks(&mut cfg, 1, bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(refs(&cfg, 1), ["Speakers", "BT Headphones"], "unchanged");
+
+        cfg.add_rule(make_rule_with_fallbacks("new", None, &[
+            "3",
+            "alsa_output.hdmi",
+        ]))
+        .unwrap();
+        assert_eq!(refs(&cfg, 3), ["BT Headphones", "HDMI"]);
+        let dup = make_rule_with_fallbacks("dup", None, &["HDMI", "Speakers", "1"]);
+        assert!(cfg.add_rule(dup).is_err());
+        assert_eq!(cfg.rules.len(), 4);
+    }
+
+    #[test]
+    fn test_sink_rename_and_move_cascade_into_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        let mut hdmi = cfg.sinks[1].clone();
+        hdmi.desc = "Television".to_string();
+        cfg.update_sink(1, hdmi).unwrap();
+        // The positional fallback `2` still points at the renamed sink
+        assert_eq!(refs(&cfg, 0), ["BT Headphones", "2"]);
+        assert_eq!(refs(&cfg, 1), ["Television"]);
+
+        let mut phones = cfg.sinks[2].clone();
+        phones.desc = "Headset".to_string();
+        cfg.update_sink(2, phones).unwrap();
+        assert_eq!(refs(&cfg, 0), ["Headset", "2"]);
+
+        // Moving the sinks rewrites the positional fallback so it keeps its target
+        cfg.move_sink(1, 0).unwrap();
+        assert_eq!(refs(&cfg, 0), ["Headset", "Television"]);
+        assert_eq!(cfg.resolve_rule_sinks(&cfg.rules[0]), Some(vec![2, 0]));
+
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            out.contains("sink = [\"Headset\", \"Television\"] # phones first"),
+            "{out}"
+        );
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    #[test]
+    fn test_remove_sink_refused_while_a_fallback_uses_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{THREE_SINKS}\n[[rules]]\napp_id = \"^discord$\"\nsink = [\"HDMI\", \"BT \
+             Headphones\"]\n"
+        );
+        let path = write(&dir, "c.toml", &contents);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        let err = cfg.remove_sink(2).unwrap_err().to_string();
+        assert!(
+            err.contains("Cannot remove sink 'BT Headphones'") && err.contains("1 (^discord$)"),
+            "{err}"
+        );
+        assert_eq!(cfg.sinks.len(), 3);
+        // Once the rule no longer lists it, it can go
+        set_sinks(&mut cfg, 0, &["HDMI"]).unwrap();
+        cfg.remove_sink(2).unwrap();
+        assert_eq!(cfg.sinks.len(), 2);
+    }
+
+    /// What the TUI's rule editor does: it edits the first choice and passes the
+    /// existing rule's fallbacks along to `update_rule`
+    fn tui_edit(cfg: &mut Config, index: usize, edit: impl FnOnce(&mut Rule)) -> Result<()> {
+        let old = &cfg.rules[index];
+        let mut rule = make_rule(
+            &old.app_id_pattern,
+            old.title_pattern.as_deref(),
+            &old.sink_ref,
+        );
+        rule.desc.clone_from(&old.desc);
+        rule.notify = old.notify;
+        rule.fallback_refs.clone_from(&old.fallback_refs);
+        edit(&mut rule);
+        cfg.update_rule(index, rule)
+    }
+
+    #[test]
+    fn test_rule_edits_keep_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_LISTS);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+
+        // Editing the description keeps the fallbacks (stored as descs now)
+        tui_edit(&mut cfg, 0, |r| r.desc = Some("Voice".to_string())).unwrap();
+        assert_eq!(refs(&cfg, 0), ["BT Headphones", "HDMI"]);
+        // Editing the pattern keeps them too
+        tui_edit(&mut cfg, 0, |r| {
+            r.app_id_pattern = "^(discord|vesktop)$".to_string();
+            r.app_id_regex = compile_rule_regex(&r.app_id_pattern).unwrap();
+        })
+        .unwrap();
+        assert_eq!(refs(&cfg, 0), ["BT Headphones", "HDMI"]);
+        // Promoting a fallback to first choice drops it from the fallbacks
+        tui_edit(&mut cfg, 0, |r| r.sink_ref = "alsa_output.hdmi".to_string()).unwrap();
+        assert_eq!(refs(&cfg, 0), ["HDMI"]);
+        set_sinks(&mut cfg, 0, &["BT Headphones", "HDMI"]).unwrap();
+
+        // Fallbacks follow their rule through moves and removals
+        cfg.move_rule(0, 2).unwrap();
+        assert_eq!(cfg.rules[2].app_id_pattern, "^(discord|vesktop)$");
+        assert_eq!(refs(&cfg, 2), ["BT Headphones", "HDMI"]);
+        cfg.remove_rule(0).unwrap();
+        assert_eq!(refs(&cfg, 1), ["BT Headphones", "HDMI"]);
+
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            out.contains(
+                "app_id = \"^(discord|vesktop)$\"\nsink = [\"BT Headphones\", \"HDMI\"] # phones \
+                 first\ndesc = \"Voice\""
+            ),
+            "{out}"
+        );
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    /// Rules with identical patterns keep their own fallbacks through saves, cascades
+    /// and moves
+    #[test]
+    fn test_identical_patterns_keep_their_own_fallbacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!(
+            "{THREE_SINKS}\n[[rules]]\napp_id = \"^mpv$\"\nsink = [\"HDMI\", \"Speakers\"]\n\n\
+             [[rules]]\napp_id = \"^mpv$\"\nsink = [\"BT Headphones\", 2]\n"
+        );
+        let path = write(&dir, "c.toml", &contents);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        assert_eq!(refs(&cfg, 0), ["HDMI", "Speakers"]);
+        assert_eq!(refs(&cfg, 1), ["BT Headphones", "2"]);
+
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
+
+        let mut hdmi = cfg.sinks[1].clone();
+        hdmi.desc = "Television".to_string();
+        cfg.update_sink(1, hdmi).unwrap();
+        cfg.move_sink(1, 2).unwrap();
+        cfg.move_rule(1, 0).unwrap();
+        assert_eq!(refs(&cfg, 0), ["BT Headphones", "Television"]);
+        assert_eq!(refs(&cfg, 1), ["Television", "Speakers"]);
+
+        cfg.save_to(&path).unwrap();
+        let reloaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(reloaded, cfg);
+        assert_eq!(refs(&reloaded, 0), ["BT Headphones", "Television"]);
+        assert_eq!(refs(&reloaded, 1), ["Television", "Speakers"]);
     }
 }

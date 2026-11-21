@@ -70,6 +70,13 @@ the daemon switches less eagerly than before.
 
 ### Added
 
+- **Fallback sinks per rule**: `sink = ["BT Headphones", "Headphones"]` uses the first
+  sink that can be activated right now, and the next one if activating it fails. When a
+  fallback was used, the next window event or reload switches up once an earlier sink
+  is available again (no polling). Status, `STATUS=`, notifications and logs mark a
+  fallback as such; `list-windows` and `test-rule` show a rule's fallbacks; `status
+  --json` has `daemon.daemon_sink_fallback`. A plain string still works and is what
+  single-sink rules are saved as.
 - `pwsw init [--force]`: write the commented default config (`--force` keeps the old
   file as `config.toml.bak`).
 - `--config PATH` and the `PWSW_CONFIG` environment variable to use another config file.

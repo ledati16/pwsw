@@ -69,10 +69,23 @@ pub(crate) mod fixtures {
             title_regex: title
                 .map(|t| compile_rule_regex(t).expect("Invalid title regex in test fixture")),
             sink_ref: sink_ref.to_string(),
+            fallback_refs: Vec::new(),
             desc: None,
             notify: None,
             app_id_pattern: app_id.to_string(),
             title_pattern: title.map(String::from),
         }
+    }
+
+    /// Like [`make_rule`], with fallback sinks: `sinks[0]` first, then the rest in order.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `sinks` is empty or a regex pattern is invalid.
+    pub fn make_rule_with_fallbacks(app_id: &str, title: Option<&str>, sinks: &[&str]) -> Rule {
+        let (first, rest) = sinks.split_first().expect("at least one sink");
+        let mut rule = make_rule(app_id, title, first);
+        rule.fallback_refs = rest.iter().map(|s| (*s).to_string()).collect();
+        rule
     }
 }

@@ -1,9 +1,11 @@
 //! Window-tracking state for the daemon
 //!
 //! A pure reducer: [`State::apply`] folds compositor [`WindowEvent`]s into the set of
-//! open windows and their rule matches, and [`State::desired`] answers which sink the
-//! rules want right now. Nothing here talks to `PipeWire` or sends notifications; the
-//! daemon reconciles the desired sink with what it last activated (see `daemon`).
+//! open windows and their rule matches, and [`State::desired`] answers which sinks the
+//! rules want right now, in priority order (a rule may list fallbacks). Nothing here
+//! talks to `PipeWire` or sends notifications: which candidate can actually be
+//! activated is decided by the daemon's activation worker, and the daemon reconciles
+//! the desired candidates with what it last activated (see `daemon`).
 //!
 //! Ordering is deterministic: every window carries a sequence number from a monotonic
 //! counter, assigned when it opens and renewed when it starts matching a rule, so the
@@ -22,13 +24,14 @@ use crate::sanitize::for_log;
 /// Window-tracking state for daemon mode
 ///
 /// Invariant (checked by [`State::new`] and [`State::reconfigure`]): the config has at
-/// least one sink, a default sink, and every rule resolves to a sink.
+/// least one sink, a default sink, and every sink reference of every rule resolves.
 pub struct State {
     config: Arc<Config>,
     /// Index into `config.sinks` of the default sink
     default_sink: usize,
-    /// For each rule (same index), the index into `config.sinks` it resolves to
-    rule_sinks: Vec<usize>,
+    /// For each rule (same index), the indices into `config.sinks` of its candidates
+    /// in priority order (never empty)
+    rule_sinks: Vec<Vec<usize>>,
     /// Every open window the compositor told us about, matched or not
     windows: HashMap<u64, Window>,
     /// Next sequence number to hand out (monotonic, never reused)
@@ -54,13 +57,29 @@ struct Match {
     trigger: String,
 }
 
-/// The sink the rules currently want, and the window that decided it
-#[derive(Debug, Clone, Copy)]
+/// The sinks the rules currently want, and the window that decided it
+#[derive(Debug, Clone)]
 pub struct Desired<'a> {
-    /// Target sink (the default sink when no window matches)
-    pub sink: &'a SinkConfig,
+    /// Candidate sinks in priority order, never empty: the winning rule's sink and its
+    /// fallbacks, or just the default sink when no window matches. The first one that
+    /// can be activated is the one to use; that is for the activation worker to find.
+    pub sinks: Vec<&'a SinkConfig>,
     /// The matching window that won, or `None` when falling back to the default
     pub window: Option<Winner<'a>>,
+}
+
+impl<'a> Desired<'a> {
+    /// The first choice
+    #[must_use]
+    pub fn first(&self) -> &'a SinkConfig {
+        self.sinks[0]
+    }
+
+    /// The candidates' node names, in priority order
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.sinks.iter().map(|s| s.name.clone()).collect()
+    }
 }
 
 /// The matching window that determines the desired sink
@@ -93,12 +112,13 @@ pub struct WindowView<'a> {
     pub id: u64,
     pub app_id: &'a str,
     pub title: &'a str,
-    /// The sink this window's rule points at, if it matches one
-    pub sink: Option<&'a SinkConfig>,
+    /// The sinks this window's rule points at in priority order (its sink, then its
+    /// fallbacks); empty if it matches no rule
+    pub sinks: Vec<&'a SinkConfig>,
 }
 
-/// Check the state invariant and index the config: (default sink, sink of each rule)
-fn index_config(config: &Config) -> Result<(usize, Vec<usize>)> {
+/// Check the state invariant and index the config: (default sink, sinks of each rule)
+fn index_config(config: &Config) -> Result<(usize, Vec<Vec<usize>>)> {
     if config.sinks.is_empty() {
         eyre::bail!("No sinks configured");
     }
@@ -111,11 +131,11 @@ fn index_config(config: &Config) -> Result<(usize, Vec<usize>)> {
         .rules
         .iter()
         .map(|rule| {
-            config.resolve_sink_index(&rule.sink_ref).ok_or_else(|| {
+            config.resolve_rule_sinks(rule).ok_or_else(|| {
                 eyre::eyre!(
-                    "Rule '{}' references unknown sink '{}'",
+                    "Rule '{}' references an unknown sink ({})",
                     rule.app_id_pattern,
-                    rule.sink_ref
+                    rule.sink_refs().collect::<Vec<_>>().join(", ")
                 )
             })
         })
@@ -164,16 +184,17 @@ impl State {
         Ok(())
     }
 
-    /// For each matching window, its trigger and the name of the sink it points at
-    fn match_sinks(&self) -> HashMap<u64, (String, String)> {
+    /// For each matching window, its trigger and the names of the sinks it points at
+    fn match_sinks(&self) -> HashMap<u64, (String, Vec<String>)> {
         self.windows
             .iter()
             .filter_map(|(id, w)| {
                 let m = w.matched.as_ref()?;
-                Some((
-                    *id,
-                    (m.trigger.clone(), self.rule_sink(m.rule_index).name.clone()),
-                ))
+                let names = self
+                    .rule_sinks(m.rule_index)
+                    .map(|s| s.name.clone())
+                    .collect();
+                Some((*id, (m.trigger.clone(), names)))
             })
             .collect()
     }
@@ -181,7 +202,7 @@ impl State {
     /// Re-match every window against the current config, logging what changed since
     /// `before` (from [`Self::match_sinks`]); windows are visited oldest first, so the
     /// log reads the same every time
-    fn rematch(&mut self, before: &HashMap<u64, (String, String)>) {
+    fn rematch(&mut self, before: &HashMap<u64, (String, Vec<String>)>) {
         debug!("Re-evaluating all windows against current rules");
         let mut order: Vec<(u64, u64)> = self.windows.iter().map(|(id, w)| (w.seq, *id)).collect();
         order.sort_unstable();
@@ -194,7 +215,7 @@ impl State {
                 (None, Some(m)) => info!(
                     "Rule matched: '{}' → {}",
                     for_log(&window.app_id),
-                    self.rule_sink(m.rule_index).desc
+                    self.targets_desc(m.rule_index)
                 ),
                 (Some((trigger, _)), None) => info!(
                     "Rule unmatched: window {} no longer matches (was: '{}', now: app_id='{}' title='{}')",
@@ -203,13 +224,16 @@ impl State {
                     for_log(&window.app_id),
                     for_log(&window.title)
                 ),
-                (Some((_, old_sink)), Some(m))
-                    if *old_sink != self.rule_sink(m.rule_index).name =>
+                (Some((_, old_sinks)), Some(m))
+                    if !self
+                        .rule_sinks(m.rule_index)
+                        .map(|s| &s.name)
+                        .eq(old_sinks.iter()) =>
                 {
                     info!(
                         "Rule matched: '{}' → {}",
                         for_log(&window.app_id),
-                        self.rule_sink(m.rule_index).desc
+                        self.targets_desc(m.rule_index)
                     );
                 }
                 _ => {}
@@ -252,13 +276,26 @@ impl State {
             .unwrap_or(self.config.settings.notify_rules)
     }
 
-    fn rule_sink(&self, rule_index: usize) -> &SinkConfig {
-        let sink_index = self
+    /// The candidate sinks of a rule, in priority order (the default sink for an
+    /// index out of range, which the invariant rules out)
+    fn rule_sinks(&self, rule_index: usize) -> impl Iterator<Item = &SinkConfig> {
+        let indices = self
             .rule_sinks
             .get(rule_index)
-            .copied()
-            .unwrap_or(self.default_sink);
-        &self.config.sinks[sink_index]
+            .map_or(std::slice::from_ref(&self.default_sink), Vec::as_slice);
+        indices.iter().map(|&i| &self.config.sinks[i])
+    }
+
+    /// A rule's candidates for the log: `Desc`, or `Desc (fallback: Other, Third)`
+    fn targets_desc(&self, rule_index: usize) -> String {
+        let mut sinks = self.rule_sinks(rule_index).map(|s| s.desc.as_str());
+        let first = sinks.next().unwrap_or_default().to_string();
+        let rest: Vec<&str> = sinks.collect();
+        if rest.is_empty() {
+            first
+        } else {
+            format!("{first} (fallback: {})", rest.join(", "))
+        }
     }
 
     fn upsert(&mut self, id: u64, app_id: String, title: String) -> Option<Departure> {
@@ -275,7 +312,7 @@ impl State {
                 info!(
                     "Rule matched: '{}' → {}",
                     for_log(&app_id),
-                    self.rule_sink(m.rule_index).desc
+                    self.targets_desc(m.rule_index)
                 );
             }
             let seq = self.take_seq();
@@ -293,7 +330,7 @@ impl State {
                 info!(
                     "Rule matched: '{}' → {}",
                     for_log(&app_id),
-                    self.rule_sink(m.rule_index).desc
+                    self.targets_desc(m.rule_index)
                 );
                 // Starting to match counts as the most recent activity
                 let seq = self.take_seq();
@@ -353,13 +390,15 @@ impl State {
         })
     }
 
-    /// The sink the rules want right now, and the window that decided it
+    /// The sinks the rules want right now (in priority order), and the window that
+    /// decided them
     ///
     /// Priority follows `match_by_index`:
     /// - `false`: the most recently opened (or most recently matching) window wins
     /// - `true`: the window whose rule has the lowest index wins; most recent breaks ties
     ///
-    /// Falls back to the default sink when no window matches.
+    /// Falls back to the default sink (as the only candidate) when no window matches.
+    /// Which candidate is reachable is not decided here.
     #[must_use]
     pub fn desired(&self) -> Desired<'_> {
         let candidates = self
@@ -374,7 +413,7 @@ impl State {
 
         match winner {
             Some((id, w, m)) => Desired {
-                sink: self.rule_sink(m.rule_index),
+                sinks: self.rule_sinks(m.rule_index).collect(),
                 window: Some(Winner {
                     id,
                     app_id: &w.app_id,
@@ -385,16 +424,16 @@ impl State {
                 }),
             },
             None => Desired {
-                sink: self.default_sink(),
+                sinks: vec![self.default_sink()],
                 window: None,
             },
         }
     }
 
-    /// The sink the rules want right now (see [`State::desired`])
+    /// The rules' first choice right now (see [`State::desired`])
     #[must_use]
     pub fn desired_sink(&self) -> &SinkConfig {
-        self.desired().sink
+        self.desired().first()
     }
 
     /// The configured default sink
@@ -412,7 +451,7 @@ impl State {
             .count()
     }
 
-    /// Every open window, sorted by id, with the sink its rule points at (if any)
+    /// Every open window, sorted by id, with the sinks its rule points at (if any)
     #[must_use]
     pub fn windows(&self) -> Vec<WindowView<'_>> {
         let mut views: Vec<WindowView<'_>> = self
@@ -422,7 +461,10 @@ impl State {
                 id: *id,
                 app_id: &w.app_id,
                 title: &w.title,
-                sink: w.matched.as_ref().map(|m| self.rule_sink(m.rule_index)),
+                sinks: w
+                    .matched
+                    .as_ref()
+                    .map_or_else(Vec::new, |m| self.rule_sinks(m.rule_index).collect()),
             })
             .collect();
         views.sort_by_key(|v| v.id);
@@ -450,7 +492,9 @@ mod tests {
     use test_case::test_case;
 
     use super::*;
-    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+    use crate::test_utils::fixtures::{
+        make_config, make_rule, make_rule_with_fallbacks, make_sink,
+    };
 
     fn opened(id: u64, app_id: &str, title: &str) -> WindowEvent {
         WindowEvent::Opened {
@@ -545,7 +589,7 @@ mod tests {
     fn test_no_windows_desires_default() {
         let s = state(three_sink_config(false));
         let desired = s.desired();
-        assert_eq!(desired.sink.name, "speakers");
+        assert_eq!(desired.first().name, "speakers");
         assert!(desired.window.is_none());
     }
 
@@ -554,7 +598,7 @@ mod tests {
         let mut s = state(three_sink_config(false));
         assert_eq!(s.apply(opened(1, "firefox", "Browser")), None);
         let desired = s.desired();
-        assert_eq!(desired.sink.name, "headphones");
+        assert_eq!(desired.first().name, "headphones");
         assert_eq!(desired.window.map(|w| w.id), Some(1));
         assert_eq!(desired.window.map(|w| w.trigger), Some("Browser"));
     }
@@ -663,7 +707,7 @@ mod tests {
         assert_eq!(s.desired_sink().name, "headphones");
         assert_eq!(s.apply(changed(1, "kitty", "Music")), None);
         let desired = s.desired();
-        assert_eq!(desired.sink.name, "speakers");
+        assert_eq!(desired.first().name, "speakers");
         assert_eq!(desired.window.map(|w| w.rule_index), Some(0));
         assert_eq!(desired.window.map(|w| w.title), Some("Music"));
     }
@@ -826,8 +870,15 @@ mod tests {
         s.apply(opened(2, "zsh", "A"));
         let views = s.windows();
         assert_eq!(views.iter().map(|v| v.id).collect::<Vec<_>>(), vec![2, 5]);
-        assert!(views[0].sink.is_none());
-        assert_eq!(views[1].sink.map(|k| k.name.as_str()), Some("headphones"));
+        assert_eq!(views[0].sinks.len(), 0, "unmatched");
+        assert_eq!(
+            views[1]
+                .sinks
+                .iter()
+                .map(|k| k.name.as_str())
+                .collect::<Vec<_>>(),
+            ["headphones"]
+        );
         assert_eq!(s.tracked_count(), 1);
     }
 
@@ -841,5 +892,55 @@ mod tests {
         let w = s.desired().window.expect("winner");
         assert_eq!(w.trigger, "Steam Big Picture");
         assert!(!w.notify);
+    }
+
+    /// `three_sink_config` with firefox → [headphones, hdmi] (headphones first)
+    fn fallback_config(match_by_index: bool) -> Config {
+        let mut config = three_sink_config(match_by_index);
+        config.rules[1] = make_rule_with_fallbacks("firefox", None, &["Headphones", "hdmi"]);
+        config
+    }
+
+    fn names(desired: &Desired<'_>) -> Vec<String> {
+        desired.names()
+    }
+
+    #[test]
+    fn test_desired_is_the_winning_rules_candidate_list() {
+        let mut s = state(fallback_config(false));
+        assert_eq!(names(&s.desired()), ["speakers"], "default alone");
+        s.apply(opened(1, "firefox", "Docs"));
+        let desired = s.desired();
+        assert_eq!(names(&desired), ["headphones", "hdmi"]);
+        assert_eq!(desired.first().name, "headphones");
+        assert_eq!(desired.window.map(|w| w.id), Some(1));
+        // A single-sink rule wins: its one sink is the whole list
+        s.apply(opened(2, "steam", "Library"));
+        assert_eq!(names(&s.desired()), ["hdmi"]);
+        s.apply(WindowEvent::Closed { id: 2 });
+        assert_eq!(names(&s.desired()), ["headphones", "hdmi"]);
+        s.apply(WindowEvent::Closed { id: 1 });
+        assert_eq!(names(&s.desired()), ["speakers"]);
+    }
+
+    #[test]
+    fn test_windows_view_lists_fallbacks_and_reconfigure_follows_them() {
+        let mut s = state(three_sink_config(false));
+        s.apply(opened(1, "firefox", "Docs"));
+        assert_eq!(names(&s.desired()), ["headphones"]);
+        // (Captured: a log call made without a subscriber can race other tests'
+        // capture of the same call site)
+        let logs = capture_info_logs(|| {
+            s.reconfigure(Arc::new(fallback_config(false)))
+                .expect("valid config");
+        });
+        assert!(
+            logs.contains("Rule matched: 'firefox' → Headphones (fallback: HDMI)"),
+            "{logs}"
+        );
+        assert_eq!(names(&s.desired()), ["headphones", "hdmi"]);
+        let views = s.windows();
+        let sinks: Vec<&str> = views[0].sinks.iter().map(|k| k.name.as_str()).collect();
+        assert_eq!(sinks, ["headphones", "hdmi"]);
     }
 }

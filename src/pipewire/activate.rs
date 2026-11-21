@@ -1,13 +1,18 @@
 //! Sink activation: resolve a configured node name against a fresh snapshot, switch
 //! the card profile if needed, wait for the sink node, set it as default.
 //!
+//! A rule with fallbacks hands over several candidates: [`activate_first`] resolves
+//! them in order against one snapshot and activates the first reachable one, moving
+//! on to the next reachable one if that activation fails.
+//!
 //! Everything goes through [`AudioBackend`] and [`Clock`], so the whole flow is
 //! unit-tested without `PipeWire` and without real sleeps.
 
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::{self, Result};
-use tracing::{debug, info};
+use color_eyre::eyre::{self, Context, Result};
+use tracing::{debug, info, warn};
 
 use super::model::Snapshot;
 use super::resolve::{self, Plan, ProfileSwitch};
@@ -100,6 +105,14 @@ pub(crate) struct Activation {
     pub(crate) profile_switch: Option<ProfileSwitch>,
 }
 
+/// Which candidate an activation chose, and what it did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chosen {
+    /// Index of the activated candidate (0 = the first choice).
+    pub(crate) index: usize,
+    pub(crate) activation: Activation,
+}
+
 /// Make `target` (a configured node name) the default sink.
 ///
 /// The snapshot and the decision are taken here, so a caller that serialises calls
@@ -109,14 +122,101 @@ pub(crate) struct Activation {
 /// Returns an error if the snapshot fails, the target cannot be resolved, the profile
 /// switch fails, the sink node does not appear within `policy.timeout`, or setting
 /// the default fails.
+#[cfg(test)]
 pub(crate) fn activate(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
     policy: WaitPolicy,
     target: &str,
 ) -> Result<Activation> {
-    let snapshot = backend.snapshot()?;
-    let switch = match resolve::resolve(&snapshot, target)? {
+    let chosen = activate_first(backend, clock, policy, &[target.to_string()], None)?;
+    chosen
+        .map(|c| c.activation)
+        .ok_or_else(|| eyre::eyre!("Internal error: nothing activated"))
+}
+
+/// Make the first reachable of `candidates` (configured node names, in priority
+/// order) the default sink.
+///
+/// Every candidate is resolved against one fresh snapshot, in order, and the first
+/// one that resolves (present, or reachable by a profile switch) is activated. If
+/// that activation fails (e.g. the profile switch did not produce the node), the
+/// remaining candidates are resolved against a new snapshot (the failed switch may
+/// have changed the graph) and the next reachable one is tried.
+///
+/// With `upgrade_from: Some(k)` the caller already has candidate `k` as the default:
+/// nothing is done (`Ok(None)`) unless a candidate before `k` is reachable now; if
+/// one is, activation proceeds as above over the whole list.
+///
+/// # Errors
+/// Returns an error if `candidates` is empty, a snapshot fails, or no candidate could
+/// be activated (for a single candidate, its own error; otherwise one naming every
+/// candidate and why it failed).
+pub(crate) fn activate_first(
+    backend: &dyn AudioBackend,
+    clock: &dyn Clock,
+    policy: WaitPolicy,
+    candidates: &[String],
+    upgrade_from: Option<usize>,
+) -> Result<Option<Chosen>> {
+    if candidates.is_empty() {
+        eyre::bail!("No sink to activate");
+    }
+    let mut snapshot = backend.snapshot()?;
+    if let Some(current) = upgrade_from {
+        let better = candidates[..current.min(candidates.len())]
+            .iter()
+            .any(|c| resolve::resolve(&snapshot, c).is_ok());
+        if !better {
+            return Ok(None);
+        }
+    }
+
+    let mut failures: Vec<(&str, eyre::Report)> = Vec::new();
+    for (index, target) in candidates.iter().enumerate() {
+        let plan = match resolve::resolve(&snapshot, target) {
+            Ok(plan) => plan,
+            Err(e) => {
+                debug!("Skipping '{target}': {e:#}");
+                failures.push((target, e));
+                continue;
+            }
+        };
+        match execute(backend, clock, policy, plan, target) {
+            Ok(activation) => return Ok(Some(Chosen { index, activation })),
+            Err(e) => {
+                if index + 1 < candidates.len() {
+                    warn!("Activating '{target}' failed, trying the next sink: {e:#}");
+                    snapshot = backend
+                        .snapshot()
+                        .wrap_err_with(|| format!("after activating '{target}' failed"))?;
+                }
+                failures.push((target, e));
+            }
+        }
+    }
+
+    if failures.len() == 1
+        && let Some((_, e)) = failures.pop()
+    {
+        return Err(e);
+    }
+    let mut message = String::from("every candidate failed:");
+    for (target, e) in &failures {
+        let _ = write!(message, "\n  - '{target}': {e:#}");
+    }
+    Err(eyre::eyre!(message))
+}
+
+/// Carry out a resolved plan for `target`.
+fn execute(
+    backend: &dyn AudioBackend,
+    clock: &dyn Clock,
+    policy: WaitPolicy,
+    plan: Plan,
+    target: &str,
+) -> Result<Activation> {
+    let switch = match plan {
         Plan::SetDefault { node_name } => {
             backend.set_default(&node_name)?;
             return Ok(Activation {
@@ -219,6 +319,8 @@ mod tests {
         state: RefCell<Snapshot>,
         appear_after: Option<usize>,
         rename: Option<&'static str>,
+        /// A switch to this output mapping never produces its sink
+        never_appears: Option<&'static str>,
         pending: RefCell<Option<(SinkNode, usize)>>,
         calls: RefCell<Vec<Call>>,
     }
@@ -229,6 +331,7 @@ mod tests {
                 state: RefCell::new(parse_dump(REAL.as_bytes()).expect("fixture parses")),
                 appear_after,
                 rename: None,
+                never_appears: None,
                 pending: RefCell::new(None),
                 calls: RefCell::new(Vec::new()),
             }
@@ -291,7 +394,9 @@ mod tests {
                 profile_name: Some(mapping.to_string()),
                 card_profile_device: profile.sink_card_devices.first().copied(),
             };
-            if let Some(n) = self.appear_after {
+            if let Some(n) = self.appear_after
+                && self.never_appears != Some(mapping)
+            {
                 *self.pending.borrow_mut() = Some((node, n));
             }
             Ok(())
@@ -407,6 +512,123 @@ mod tests {
         let err = activate(&backend, &FakeClock::new(), POLICY, "nope").unwrap_err();
         assert!(format!("{err}").contains("is not present"), "{err}");
         assert_eq!(backend.calls(), vec![Call::Snapshot]);
+    }
+
+    const IEC: &str = "alsa_output.pci-0000_0c_00.4.iec958-stereo";
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| (*n).to_string()).collect()
+    }
+
+    #[test]
+    fn test_activate_first_skips_unreachable_candidates() {
+        let backend = FakeBackend::new(Some(0));
+        let chosen = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&["bluez_output.gone", IEC]),
+            None,
+        )
+        .expect("activates")
+        .expect("something chosen");
+        assert_eq!(chosen.index, 1);
+        assert_eq!(chosen.activation.node_name, IEC);
+        assert_eq!(backend.calls(), vec![
+            Call::Snapshot,
+            Call::SetDefault(IEC.to_string())
+        ]);
+    }
+
+    #[test]
+    fn test_activate_first_prefers_the_first_reachable() {
+        let backend = FakeBackend::new(Some(0));
+        let chosen = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&[ANALOG, IEC]),
+            None,
+        )
+        .expect("activates")
+        .expect("something chosen");
+        assert_eq!(chosen.index, 0, "a profile switch away is still reachable");
+        assert_eq!(chosen.activation.node_name, ANALOG);
+    }
+
+    #[test]
+    fn test_activate_first_falls_through_when_activation_fails() {
+        let mut backend = FakeBackend::new(Some(0));
+        backend.never_appears = Some("analog-stereo");
+        let chosen = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&[ANALOG, IEC]),
+            None,
+        )
+        .expect("the second candidate activates")
+        .expect("something chosen");
+        assert_eq!(chosen.index, 1);
+        assert_eq!(chosen.activation.node_name, IEC);
+        let calls = backend.calls();
+        // The failed switch removed the digital sink, so the fresh snapshot taken after
+        // the failure leads to a switch back to the digital profile
+        let switches: Vec<_> = calls
+            .iter()
+            .filter(|c| matches!(c, Call::SetProfile(..)))
+            .collect();
+        assert_eq!(switches.len(), 2, "{calls:?}");
+        assert_eq!(calls.last(), Some(&Call::SetDefault(IEC.to_string())));
+    }
+
+    #[test]
+    fn test_activate_first_none_reachable_names_every_candidate() {
+        let backend = FakeBackend::new(Some(0));
+        let err = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&["bluez_output.a", "bluez_output.b"]),
+            None,
+        )
+        .unwrap_err();
+        let text = format!("{err:#}");
+        assert!(text.contains("every candidate failed"), "{text}");
+        assert!(
+            text.contains("'bluez_output.a'") && text.contains("'bluez_output.b'"),
+            "{text}"
+        );
+        assert_eq!(backend.calls(), vec![Call::Snapshot]);
+    }
+
+    #[test]
+    fn test_activate_first_upgrade_only_acts_for_a_better_candidate() {
+        // Candidate 1 is the current default; candidate 0 is still unreachable
+        let backend = FakeBackend::new(Some(0));
+        let chosen = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&["bluez_output.gone", IEC]),
+            Some(1),
+        )
+        .expect("no error");
+        assert_eq!(chosen, None);
+        assert_eq!(backend.calls(), vec![Call::Snapshot], "nothing touched");
+
+        // Now candidate 0 is reachable: it is activated
+        let backend = FakeBackend::new(Some(0));
+        let chosen = activate_first(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            &names(&[IEC, "bluez_output.gone"]),
+            Some(1),
+        )
+        .expect("activates")
+        .expect("upgraded");
+        assert_eq!(chosen.index, 0);
     }
 
     #[rstest::rstest]

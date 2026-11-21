@@ -174,6 +174,7 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
         version: info.version.clone(),
         protocol: ipc::PROTOCOL_VERSION,
         uptime_secs: info.started.elapsed().as_secs(),
+        current_sink_fallback: current_sink.is_some() && snapshot.fallback,
         current_sink,
         active_window: snapshot.active_window.clone(),
         tracked_windows: snapshot.tracked_windows,
@@ -203,7 +204,8 @@ fn test_rule_response(windows: &[WindowInfo], pattern: String) -> Response {
                 app_id: w.app_id.clone(),
                 title: w.title.clone(),
                 matched_on: Some(matched_on.to_string()),
-                tracked: None,
+                // The rule the window matches now, so the output shows its sinks
+                tracked: w.tracked.clone(),
             })
         })
         .collect();

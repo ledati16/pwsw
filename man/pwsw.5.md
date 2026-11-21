@@ -59,8 +59,12 @@ The **[[rules]]** list defines window-to-sink mappings. Rules require at least o
 **title** (string, regex, optional)
 :   Regex pattern matching the window title. If omitted, any title matches.
 
-**sink** (string or integer, required)
+**sink** (string, integer, or array of them, required)
 :   Reference to a sink by its `desc` (recommended; the TUI always writes this) or its `name`. A 1-indexed position in the sinks list (`sink = 2` or `sink = "2"`) is still accepted but deprecated: it logs a warning on load and points at a different sink if the list is reordered by hand. A reference that names no sink is an error. Renaming, reordering, or deleting sinks in the TUI keeps every rule pointing at the same sink, and a sink that rules still use cannot be deleted.
+
+    An array lists *fallback sinks* in priority order: `sink = ["BT Headphones", "Headphones"]`. When the rule decides the output, the first sink that can be activated right now wins (it exists, or a profile switch can provide it); if activating it fails, the next one that can be activated is tried. Every entry must name a configured sink, a sink may appear only once per rule, and the array must not be empty (a one-entry array is fine). Saves write a rule with one sink as a plain string and one with several as an array. A sink that is any entry of a rule, first or not, cannot be deleted.
+
+    When the daemon had to settle for a fallback, it checks again on the next window event or configuration reload (at most every 2 seconds) and switches up if an earlier sink of the list can be activated by then; it does not poll in between. A manual switch is never undone by this check. Status output, notifications and logs name the sink actually used and mark it *(fallback)*.
 
 **desc** (string, optional)
 :   A custom label for this rule used in notifications.
@@ -75,7 +79,7 @@ The daemon tracks every open window and which rule it matches. The sink it wants
 *   With `match_by_index = true`: the window whose rule comes first in the list wins; among windows of the same rule, the most recent one.
 *   When no window matches any rule: the default sink.
 
-The daemon switches only when this answer *changes*. A sink selected elsewhere (e.g. with **pavucontrol**) or with **pwsw set-sink** stays until then.
+The answer is the winning rule's list of sinks (see **sink** above); which of them is used is decided when switching. The daemon switches only when this answer *changes*. A sink selected elsewhere (e.g. with **pavucontrol**) or with **pwsw set-sink** stays until then.
 
 ## HOT RELOAD
 The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is never needed for configuration changes.
@@ -117,9 +121,13 @@ default = true
 name = "alsa_output.usb-Logitech_G_Pro-00.analog-stereo"
 desc = "Headset"
 
+[[sinks]]
+name = "bluez_output.40_ED_98_1C_1D_08.1"
+desc = "BT Headphones"
+
 [[rules]]
 app_id = "discord"
-sink = "Headset"
+sink = ["BT Headphones", "Headset"]  # Bluetooth when connected, else the headset
 
 [[rules]]
 app_id = "firefox"

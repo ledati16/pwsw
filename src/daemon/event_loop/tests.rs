@@ -19,7 +19,7 @@ use super::*;
 use crate::daemon::ipc_handler::{ServerInfo, handle_connection};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::Request;
-use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+use crate::test_utils::fixtures::{make_config, make_rule, make_rule_with_fallbacks, make_sink};
 
 /// Upper bound for any single wait in these tests
 const WAIT: Duration = Duration::from_secs(30);
@@ -69,6 +69,9 @@ async fn within<T>(what: &str, fut: impl Future<Output = T>) -> T {
 /// Also plays the audio server for manual requests: `current` is the real default
 /// (set by successful activations; [`start`] seeds it with `applied` unless a test set
 /// it), and `unreachable` sinks are reported as unable to activate.
+///
+/// For candidate lists (rule fallbacks), `absent` sinks are the ones activation finds
+/// unreachable: they are skipped without a call, like the real resolver does.
 #[derive(Default)]
 struct FakeSwitcher {
     calls: Mutex<Vec<String>>,
@@ -77,6 +80,9 @@ struct FakeSwitcher {
     gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     current: Mutex<Option<String>>,
     unreachable: Mutex<Vec<String>>,
+    absent: Mutex<Vec<String>>,
+    /// Every `activate` request: the candidates and `upgrade_from`
+    requests: Mutex<Vec<(Vec<String>, Option<usize>)>>,
 }
 
 impl FakeSwitcher {
@@ -93,6 +99,11 @@ impl FakeSwitcher {
     fn unreachable(self, sinks: &[&str]) -> Self {
         *self.unreachable.lock().expect("lock") = sinks.iter().map(|s| (*s).to_string()).collect();
         self
+    }
+
+    /// Make activation find `sinks` unreachable (or reachable again, with `&[]`)
+    fn set_absent(&self, sinks: &[&str]) {
+        *self.absent.lock().expect("lock") = sinks.iter().map(|s| (*s).to_string()).collect();
     }
 
     /// The real default, as an outside program (e.g. `pavucontrol`) would set it
@@ -115,8 +126,8 @@ impl FakeSwitcher {
     }
 }
 
-impl SinkSwitcher for FakeSwitcher {
-    fn activate(&self, sink_name: &str) -> Result<String> {
+impl FakeSwitcher {
+    fn activate_one(&self, sink_name: &str) -> Result<String> {
         self.calls.lock().expect("lock").push(sink_name.to_string());
         if let Some(tx) = &*self.started.lock().expect("lock") {
             let _ = tx.send(sink_name.to_string());
@@ -134,6 +145,40 @@ impl SinkSwitcher for FakeSwitcher {
         }
         *self.current.lock().expect("lock") = Some(sink_name.to_string());
         Ok(format!("node.{sink_name}"))
+    }
+}
+
+impl SinkSwitcher for FakeSwitcher {
+    fn activate(
+        &self,
+        candidates: &[String],
+        upgrade_from: Option<usize>,
+    ) -> Result<Option<(usize, String)>> {
+        self.requests
+            .lock()
+            .expect("lock")
+            .push((candidates.to_vec(), upgrade_from));
+        let absent = self.absent.lock().expect("lock").clone();
+        let reachable = |c: &String| !absent.contains(c);
+        if let Some(rank) = upgrade_from
+            && !candidates[..rank.min(candidates.len())]
+                .iter()
+                .any(reachable)
+        {
+            return Ok(None);
+        }
+        let mut errors = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            if !reachable(candidate) {
+                errors.push(format!("{candidate} is not present"));
+                continue;
+            }
+            match self.activate_one(candidate) {
+                Ok(node) => return Ok(Some((index, node))),
+                Err(e) => errors.push(format!("{e:#}")),
+            }
+        }
+        eyre::bail!("{}", errors.join("; "))
     }
 
     fn probe(&self, config: &Config) -> Result<crate::manual::Probe> {
@@ -291,6 +336,10 @@ impl Harness {
 
     fn calls(&self) -> Vec<String> {
         self.switcher.calls.lock().expect("lock").clone()
+    }
+
+    fn requests(&self) -> Vec<(Vec<String>, Option<usize>)> {
+        self.switcher.requests.lock().expect("lock").clone()
     }
 
     fn statuses(&self) -> Vec<String> {
@@ -551,6 +600,210 @@ async fn test_default_on_startup_failure_does_not_abort() {
     let h = start(config, FakeSwitcher::failing("speakers", 1), Some("hdmi"));
     h.wait_applied("speakers").await;
     assert_eq!(h.calls(), vec!["speakers", "speakers"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+// ----------------------------------------------------------------------------
+// Fallback sinks
+// ----------------------------------------------------------------------------
+
+/// `base_config` with firefox → [headphones, hdmi]
+fn fallback_config() -> Config {
+    let mut config = base_config();
+    config.rules[2] = make_rule_with_fallbacks("firefox", None, &["Headphones", "HDMI"]);
+    config
+}
+
+fn names(names: &[&str]) -> Vec<String> {
+    names.iter().map(|n| (*n).to_string()).collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_unreachable_first_choice_falls_back_and_says_so() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_applied("hdmi").await;
+    assert!(snapshot.fallback);
+    assert_eq!(h.calls(), vec!["hdmi"], "the unreachable sink is not tried");
+    assert_eq!(h.requests(), vec![(names(&["headphones", "hdmi"]), None)]);
+    assert_eq!(
+        snapshot.active_window.as_deref(),
+        Some("firefox window: hdmi (fallback)")
+    );
+    let tracked = snapshot.windows[0].tracked.as_ref().expect("tracked");
+    assert_eq!(tracked.sink_name, "headphones");
+    assert_eq!(tracked.fallbacks, vec![FallbackSink {
+        name: "hdmi".to_string(),
+        desc: "HDMI".to_string(),
+    }]);
+    assert_eq!(
+        h.next_notice().await.body,
+        "HDMI (fallback) → firefox window"
+    );
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: HDMI (fallback)")
+    );
+
+    // Closing it goes back to the default, which is nobody's fallback
+    h.close(1).await;
+    let snapshot = h.wait_applied("speakers").await;
+    assert!(!snapshot.fallback);
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_failed_activation_of_first_choice_tries_the_next() {
+    let h = start(
+        fallback_config(),
+        FakeSwitcher::failing("headphones", 1),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_applied("hdmi").await;
+    assert!(snapshot.fallback);
+    assert_eq!(h.calls(), vec!["headphones", "hdmi"]);
+    assert_eq!(h.requests().len(), 1, "one job, no retry");
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_no_reachable_candidate_retries_then_stalls_until_next_event() {
+    let switcher = FakeSwitcher::failing("hdmi", 100);
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    let t0 = Instant::now();
+    h.open(1, "firefox").await;
+    h.wait_for("three attempts", |_, calls| calls.len() == 3)
+        .await;
+    assert!(t0.elapsed() >= RETRY_BACKOFF[0] + RETRY_BACKOFF[1]);
+    // Every retry asks for the whole list again
+    assert_eq!(h.requests(), vec![
+        (names(&["headphones", "hdmi"]), None);
+        3
+    ]);
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let snapshot = h.snapshot().await;
+    assert_eq!(h.calls().len(), 3, "no more attempts without a new event");
+    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
+    assert!(!snapshot.fallback);
+
+    // The next event tries again: now the first choice is back
+    h.switcher.set_absent(&[]);
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.fallback);
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_applied_fallback_upgrades_on_a_later_event() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(
+        h.next_notice().await.body,
+        "HDMI (fallback) → firefox window"
+    );
+
+    // Still unreachable: an event checks, and changes nothing
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    h.wait_for("an upgrade check", |_, _| h.requests().len() == 2)
+        .await;
+    assert_eq!(h.requests()[1], (names(&["headphones", "hdmi"]), Some(1)));
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert!(snapshot.fallback);
+    assert_eq!(h.calls(), vec!["hdmi"]);
+
+    // Checks are rate-limited: an event right after does not check again
+    h.open(3, "zsh").await;
+    h.wait_windows(3).await;
+    assert_eq!(h.requests().len(), 2);
+
+    // The headphones come back: the next event after the interval upgrades
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.close(3).await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.fallback);
+    assert_eq!(h.calls(), vec!["hdmi", "headphones"]);
+    assert_eq!(h.next_notice().await.body, "Headphones → firefox window");
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Headphones")
+    );
+
+    // On the first choice: no more checks
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.close(2).await;
+    h.wait_windows(1).await;
+    assert_eq!(h.requests().len(), 3);
+    h.stop().await.expect("clean shutdown");
+}
+
+#[tokio::test(start_paused = true)]
+async fn test_manual_choice_is_not_upgraded_away() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    let response = h.switch(ManualSwitch::Set("USB".to_string())).await;
+    assert!(
+        matches!(response, Response::SinkSwitched { .. }),
+        "{response:?}"
+    );
+    let snapshot = h.snapshot().await;
+    assert!(!snapshot.fallback);
+
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(
+        snapshot.applied.as_deref(),
+        Some("usb"),
+        "the manual choice holds"
+    );
+    assert_eq!(h.requests().len(), 2, "no upgrade check");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A fallback is the rules' answer too: a reload that keeps the list does not switch
+#[tokio::test(start_paused = true)]
+async fn test_fallback_list_is_the_desired_answer_on_reload() {
+    let switcher = FakeSwitcher::default();
+    switcher.set_absent(&["headphones"]);
+    let h = start(fallback_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("hdmi").await;
+    let mut config = fallback_config();
+    config.settings.log_level = "debug".to_string();
+    config.save_to(&h.config_path).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_for("reload", |_, _| h.reloads.load(Ordering::SeqCst) == 1)
+        .await;
+    // An upgrade check may run (and find nothing better); nothing is switched
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.applied.as_deref(), Some("hdmi"));
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    assert!(
+        h.requests()
+            .iter()
+            .skip(1)
+            .all(|(_, upgrade)| upgrade.is_some())
+    );
     h.stop().await.expect("clean shutdown");
 }
 

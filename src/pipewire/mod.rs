@@ -222,11 +222,44 @@ impl PipeWire {
     /// Returns an error if the sink is not found, a `PipeWire` tool fails or times
     /// out, or the sink node does not appear after the profile switch.
     pub fn activate_sink(sink_name: &str) -> Result<String> {
+        let chosen = Self::activate_first_sink(&[sink_name.to_string()], None)?;
+        chosen
+            .map(|(_, node_name)| node_name)
+            .ok_or_else(|| eyre::eyre!("Internal error: no sink activated"))
+    }
+
+    /// Activate the first reachable of `candidates` (configured node names, in
+    /// priority order), falling through to the next reachable one if an activation
+    /// fails
+    ///
+    /// All candidates are resolved against one snapshot taken under the activation
+    /// lock. With `upgrade_from: Some(k)` (candidate `k` is the current default),
+    /// nothing is done unless a candidate before `k` is reachable now.
+    ///
+    /// Returns the index of the activated candidate and the node name made the
+    /// default, or `None` if an upgrade check found nothing better.
+    ///
+    /// # Errors
+    /// Returns an error if no candidate could be activated (see
+    /// [`PipeWire::activate_sink`] for the causes).
+    pub fn activate_first_sink(
+        candidates: &[String],
+        upgrade_from: Option<usize>,
+    ) -> Result<Option<(usize, String)>> {
         let _guard = ACTIVATION_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let activation =
-            activate::activate(&CliBackend, &SystemClock, WaitPolicy::from_env(), sink_name)?;
+        let Some(chosen) = activate::activate_first(
+            &CliBackend,
+            &SystemClock,
+            WaitPolicy::from_env(),
+            candidates,
+            upgrade_from,
+        )?
+        else {
+            return Ok(None);
+        };
+        let activation = chosen.activation;
         if let Some(switch) = &activation.profile_switch {
             info!(
                 "Switched {} to profile {} and set default sink {}",
@@ -235,7 +268,7 @@ impl PipeWire {
         } else {
             debug!("Set default sink {}", activation.node_name);
         }
-        Ok(activation.node_name)
+        Ok(Some((chosen.index, activation.node_name)))
     }
 }
 

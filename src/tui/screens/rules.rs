@@ -59,6 +59,9 @@ pub struct RuleEditor {
     pub app_id_pattern: Input,
     pub title_pattern: Input,
     pub sink_ref: String,
+    /// Fallback sinks of the rule being edited, kept as they are (the form edits
+    /// only the first choice); empty for a new rule
+    pub fallback_refs: Vec<String>,
     pub desc: Input,
     pub notify: Option<bool>,
     pub focused_field: RuleField,
@@ -110,6 +113,7 @@ impl RuleEditor {
             app_id_regex,
             title_regex,
             sink_ref: self.sink_ref.clone(),
+            fallback_refs: self.fallback_refs.clone(),
             desc: optional(&self.desc),
             notify: self.notify,
             app_id_pattern: app_id.to_string(),
@@ -139,6 +143,7 @@ impl FormEditor for RuleEditor {
             app_id_pattern: Input::new(rule.app_id_pattern.clone()),
             title_pattern: Input::new(rule.title_pattern.clone().unwrap_or_default()),
             sink_ref: rule.sink_ref.clone(),
+            fallback_refs: rule.fallback_refs.clone(),
             desc: Input::new(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             ..Self::default()
@@ -604,4 +609,30 @@ fn render_sink_selector(
         items,
         &mut editor.sink_selector_state,
     );
+}
+
+#[cfg(test)]
+mod editor_tests {
+    use super::*;
+    use crate::test_utils::fixtures::make_rule_with_fallbacks;
+
+    #[test]
+    fn test_editing_a_rule_keeps_its_fallback_sinks() {
+        let rule = make_rule_with_fallbacks("^discord$", None, &["BT Headphones", "Headphones"]);
+        let mut editor = RuleEditor::from_item(&rule);
+        editor.desc = Input::new("Voice chat".to_string());
+
+        let edited = editor.to_rule().expect("valid rule");
+        assert_eq!(edited.sink_ref, "BT Headphones");
+        assert_eq!(edited.fallback_refs, vec!["Headphones".to_string()]);
+    }
+
+    #[test]
+    fn test_new_rule_has_no_fallback_sinks() {
+        let mut editor = RuleEditor::blank();
+        editor.app_id_pattern = Input::new("^mpv$".to_string());
+        editor.sink_ref = "Speakers".to_string();
+        let rule = editor.to_rule().expect("valid rule");
+        assert_eq!(rule.fallback_refs, Vec::<String>::new());
+    }
 }

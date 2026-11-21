@@ -87,6 +87,10 @@ pub enum Response {
         /// description; `None` while it does not know the default sink
         #[serde(default)]
         current_sink: Option<String>,
+        /// `current_sink` is a fallback: a rule-driven switch found its rule's
+        /// earlier sinks unreachable
+        #[serde(default)]
+        current_sink_fallback: bool,
         active_window: Option<String>,
         tracked_windows: usize,
     },
@@ -131,8 +135,19 @@ pub struct WindowInfo {
 /// Information about a tracked window (matched a rule)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrackedInfo {
+    /// The rule's first-choice sink
     pub sink_name: String,
     pub sink_desc: String,
+    /// The rule's fallback sinks, in priority order (absent from older daemons)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallbacks: Vec<FallbackSink>,
+}
+
+/// A fallback sink of a rule
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FallbackSink {
+    pub name: String,
+    pub desc: String,
 }
 
 // ============================================================================
@@ -1310,6 +1325,7 @@ mod tests {
             protocol: PROTOCOL_VERSION,
             uptime_secs: 3600,
             current_sink: Some("test_sink".to_string()),
+            current_sink_fallback: true,
             active_window: Some("firefox".to_string()),
             tracked_windows: 2,
         };
@@ -1320,10 +1336,12 @@ mod tests {
             protocol,
             uptime_secs,
             current_sink,
+            current_sink_fallback,
             active_window,
             tracked_windows,
         } = deserialized
         {
+            assert!(current_sink_fallback);
             assert_eq!(version, "0.3.1");
             assert_eq!(protocol, PROTOCOL_VERSION);
             assert_eq!(uptime_secs, 3600);
@@ -1340,7 +1358,11 @@ mod tests {
     fn test_response_status_without_protocol_is_protocol_zero() {
         let json = r#"{"type":"Status","version":"v0.5.0","uptime_secs":1,"current_sink":"s","active_window":null,"tracked_windows":0}"#;
         let response: Response = serde_json::from_str(json).unwrap();
-        assert!(matches!(response, Response::Status { protocol: 0, .. }));
+        assert!(matches!(response, Response::Status {
+            protocol: 0,
+            current_sink_fallback: false,
+            ..
+        }));
     }
 
     #[test]
@@ -1381,6 +1403,10 @@ mod tests {
             tracked: Some(TrackedInfo {
                 sink_name: "hdmi_sink".to_string(),
                 sink_desc: "HDMI Output".to_string(),
+                fallbacks: vec![FallbackSink {
+                    name: "speakers".to_string(),
+                    desc: "Speakers".to_string(),
+                }],
             }),
         };
         let response = Response::Windows {
@@ -1392,9 +1418,20 @@ mod tests {
             assert_eq!(windows.len(), 1);
             assert_eq!(windows[0].app_id, "firefox");
             assert_eq!(windows[0].title, "Mozilla Firefox");
-            assert!(windows[0].tracked.is_some());
+            let tracked = windows[0].tracked.as_ref().expect("tracked");
+            assert_eq!(tracked.fallbacks[0].desc, "Speakers");
         } else {
             panic!("Expected Windows variant");
         }
+    }
+
+    /// Tracked info from a daemon without fallback support still parses
+    #[test]
+    fn test_tracked_info_without_fallbacks_parses() {
+        let tracked: TrackedInfo =
+            serde_json::from_str(r#"{"sink_name":"a","sink_desc":"A"}"#).unwrap();
+        assert_eq!(tracked.fallbacks, []);
+        let json = serde_json::to_string(&tracked).unwrap();
+        assert!(!json.contains("fallbacks"), "{json}");
     }
 }
