@@ -111,12 +111,9 @@ struct FakeSwitcher {
     hold_upgrades: std::sync::atomic::AtomicBool,
     /// Fail this many upgrade checks outright (like a `pw-dump` that timed out)
     fail_upgrades: AtomicUsize,
-    /// Every `activate` request's sink half: whether a timed-out profile switch is
-    /// switched back (`JobHalf::switch_back`)
-    switch_backs: Mutex<Vec<bool>>,
-    /// Failures (`failures`) are reported like a timed-out profile switch that left
-    /// the card on the new profile (`CardLeft`), unless the half switches back
-    left_on_failure: std::sync::atomic::AtomicBool,
+    /// Every `activate` request's sink half: whether it waits for a profile switch's
+    /// node as long as allowed (`JobHalf::extended_wait`)
+    extended_waits: Mutex<Vec<bool>>,
 }
 
 impl FakeSwitcher {
@@ -161,7 +158,7 @@ impl FakeSwitcher {
 }
 
 impl FakeSwitcher {
-    fn activate_one(&self, kind: Endpoint, name: &str, switch_back: bool) -> Result<String> {
+    fn activate_one(&self, kind: Endpoint, name: &str) -> Result<String> {
         match kind {
             Endpoint::Sink => self.calls.lock().expect("lock").push(name.to_string()),
             Endpoint::Source => self
@@ -182,11 +179,6 @@ impl FakeSwitcher {
             && *left > 0
         {
             *left -= 1;
-            if !switch_back && self.left_on_failure.load(Ordering::SeqCst) {
-                return Err(anyhow::Error::new(crate::pipewire::CardLeft::new(
-                    &format!("fake timeout for {name}; left the card on that profile"),
-                )));
-            }
             anyhow::bail!("fake failure for {name}");
         }
         let current = match kind {
@@ -242,25 +234,17 @@ impl FakeSwitcher {
             }
         }
         let mut errors = Vec::new();
-        let mut left = false;
         for (index, candidate) in candidates.iter().enumerate() {
             if !reachable(candidate) {
                 errors.push(format!("{candidate} is not present"));
                 continue;
             }
-            match self.activate_one(kind, candidate, half.switch_back) {
+            match self.activate_one(kind, candidate) {
                 Ok(node_name) => return Ok(Activated::Switched { index, node_name }),
-                Err(e) => {
-                    left |= e.downcast_ref::<crate::pipewire::CardLeft>().is_some();
-                    errors.push(format!("{e:#}"));
-                }
+                Err(e) => errors.push(format!("{e:#}")),
             }
         }
-        let message = errors.join("; ");
-        if left {
-            return Err(anyhow::Error::new(crate::pipewire::CardLeft::new(&message)));
-        }
-        anyhow::bail!("{message}")
+        anyhow::bail!("{}", errors.join("; "))
     }
 
     /// A source half riding along with a sink half, answered as `keep_answer` says
@@ -307,10 +291,10 @@ impl SinkSwitcher for FakeSwitcher {
                 .lock()
                 .expect("lock")
                 .push((half.candidates.to_vec(), half.upgrade_from));
-            self.switch_backs
+            self.extended_waits
                 .lock()
                 .expect("lock")
-                .push(half.switch_back);
+                .push(half.extended_wait);
         }
         if let Some(half) = source {
             self.source_requests
@@ -536,9 +520,9 @@ impl Harness {
         self.switcher.requests.lock().expect("lock").clone()
     }
 
-    /// Per sink request: whether a timed-out profile switch is switched back
-    fn switch_backs(&self) -> Vec<bool> {
-        self.switcher.switch_backs.lock().expect("lock").clone()
+    /// Per sink request: whether it waits as long as allowed (a rule retry)
+    fn extended_waits(&self) -> Vec<bool> {
+        self.switcher.extended_waits.lock().expect("lock").clone()
     }
 
     fn source_calls(&self) -> Vec<String> {
@@ -849,12 +833,11 @@ async fn test_gives_up_after_backoff_until_next_event() {
     h.stop().await.expect("clean shutdown");
 }
 
-/// A timed-out profile switch is switched back only when no further attempt follows:
-/// a rule switch leaves the card on the new profile for its retries and switches it
-/// back on the last one; the attempt on the next event after giving up starts the
-/// retries over (so it leaves the card too, and its own last retry switches back)
+/// Retries of a failed rule switch wait as long as allowed for a slow card's node;
+/// the first attempt waits as usual, and so does the attempt on the next event after
+/// giving up (its own retries wait longer again)
 #[tokio::test(start_paused = true)]
-async fn test_switch_back_only_on_the_last_attempt() {
+async fn test_retries_wait_longer() {
     let h = start(
         base_config(),
         FakeSwitcher::failing("headphones", 100),
@@ -864,9 +847,9 @@ async fn test_switch_back_only_on_the_last_attempt() {
     h.wait_for("three attempts", |_, calls| calls.len() == 3)
         .await;
     assert_eq!(
-        h.switch_backs(),
-        vec![false, false, true],
-        "first, retry, last retry"
+        h.extended_waits(),
+        vec![false, true, true],
+        "first attempt, retry, last retry"
     );
 
     // Given up; the next event tries again, with the retries over again
@@ -874,16 +857,16 @@ async fn test_switch_back_only_on_the_last_attempt() {
     h.open(2, "zsh").await;
     h.wait_for("three more attempts", |_, calls| calls.len() == 6)
         .await;
-    assert_eq!(h.switch_backs(), vec![
-        false, false, true, false, false, true
+    assert_eq!(h.extended_waits(), vec![
+        false, true, true, false, true, true
     ]);
     h.stop().await.expect("clean shutdown");
 }
 
-/// Manual switches and upgrade checks are never retried: a timed-out switch of theirs
-/// is switched back at once
+/// Manual switches and upgrade checks wait as usual (a manual reply must come well
+/// within `SWITCH_REPLY_TIMEOUT`)
 #[tokio::test(start_paused = true)]
-async fn test_manual_switches_and_upgrade_checks_switch_back() {
+async fn test_manual_switches_and_upgrade_checks_wait_as_usual() {
     let switcher = FakeSwitcher::default();
     switcher.set_absent(&["headphones"]);
     let h = start(fallback_config(), switcher, Some("speakers"));
@@ -903,49 +886,16 @@ async fn test_manual_switches_and_upgrade_checks_switch_back() {
     .await;
     assert_eq!(h.requests()[3], (names(&["headphones", "hdmi"]), Some(1)));
     assert_eq!(
-        h.switch_backs(),
-        vec![true, true, false, true],
+        h.extended_waits(),
+        vec![false, false, false, false],
         "manual, manual, first rule attempt, upgrade check"
     );
     h.stop().await.expect("clean shutdown");
 }
 
-/// A failed attempt that left a card on its new profile (a retry follows) makes the
-/// applied sink uncertain: when the rules return to it before the retry, it is
-/// switched to again (it may not play any more) instead of counting as served
-#[tokio::test(start_paused = true)]
-async fn test_rules_returning_after_a_card_was_left_switch_again() {
-    let switcher = FakeSwitcher::failing("headphones", 1);
-    switcher
-        .left_on_failure
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let h = start(base_config(), switcher, Some("speakers"));
-    h.open(1, "firefox").await;
-    let snapshot = h
-        .wait_for("the failed attempt", |s, calls| {
-            calls.len() == 1 && s.sink_retry_pending
-        })
-        .await;
-    assert_eq!(snapshot.applied.as_deref(), Some("speakers"));
-
-    // Firefox closes before the retry: back to the speakers, switched to again
-    h.close(1).await;
-    h.wait_for("the speakers again", |s, calls| {
-        calls.len() == 2 && !s.sink_in_flight
-    })
-    .await;
-    assert_eq!(h.calls(), vec!["headphones", "speakers"]);
-    assert_eq!(h.switch_backs(), vec![false, false]);
-
-    // Activated again: the speakers serve the rules as usual
-    h.open(2, "zsh").await;
-    let snapshot = h.wait_windows(1).await;
-    assert_eq!(snapshot.jobs_submitted, 2, "nothing more to do");
-    h.stop().await.expect("clean shutdown");
-}
-
-/// An attempt that failed without leaving a card (nothing switched) keeps the applied
-/// sink: the rules returning to it switch nothing
+/// A failed attempt leaves the audio where it was (a timed-out profile switch is
+/// switched back), so the applied sink stays applied: the rules returning to it
+/// switch nothing
 #[tokio::test(start_paused = true)]
 async fn test_rules_returning_after_a_plain_failure_switch_nothing() {
     let h = start(
@@ -972,6 +922,11 @@ async fn test_default_on_startup_failure_does_not_abort() {
     let h = start(config, FakeSwitcher::failing("speakers", 1), Some("hdmi"));
     h.wait_applied("speakers").await;
     assert_eq!(h.calls(), vec!["speakers", "speakers"]);
+    assert_eq!(
+        h.extended_waits(),
+        vec![false, true],
+        "the retry waits longer"
+    );
     h.stop().await.expect("clean shutdown");
 }
 

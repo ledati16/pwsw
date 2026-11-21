@@ -14,8 +14,9 @@
 //! do not each switch as they arrive; with `default_on_startup` it is activated,
 //! otherwise nothing happens until it changes. Window events already queued when the
 //! loop wakes up are applied together before one reconcile. A failed rule-driven
-//! activation is retried with backoff; once that is used up, the next event or reload
-//! starts over.
+//! activation is retried with backoff, each retry waiting as long as allowed for the
+//! node of a profile switch (a slow card); once that is used up, the next event or
+//! reload starts over.
 //!
 //! `applied` is pwsw's view of the default sink: what it last activated, found at
 //! startup, or saw when a manual request probed `PipeWire`. Manual requests are
@@ -386,10 +387,6 @@ struct Lane {
     manual_override: bool,
     /// The rules' target failed and retries ran out: the next event starts over
     stalled: bool,
-    /// A failed rule-driven attempt left a card on the profile it switched to (its
-    /// node had not appeared yet; a retry follows): `applied` may not play any more,
-    /// so it serves nothing until something is activated again
-    card_left: bool,
     /// A rule-driven job that a manual request replaced (or that failed while the
     /// manual request was queued behind it): if the manual request switches nothing,
     /// it is submitted again at once, since no later change of the rules' answer
@@ -416,7 +413,6 @@ impl Lane {
         self.applied_fallback = false;
         self.manual_override = false;
         self.stalled = false;
-        self.card_left = false;
         self.superseded = None;
         self.settle = None;
         self.retry = None;
@@ -788,7 +784,7 @@ impl Daemon {
                     "Startup: switching to {} (what the rules want now)",
                     self.candidates_desc(kind, &names)
                 );
-                self.submit_logged(kind, names, None, &what);
+                self.submit_logged(kind, names, None, &what, false);
             }
         }
         self.publish_status();
@@ -809,8 +805,7 @@ impl Daemon {
             // A manual job: its target is not chosen yet
             Some(_) => false,
             None => {
-                !lane.card_left
-                    && lane.applied.is_some()
+                lane.applied.is_some()
                     && (lane.applied_for.as_deref() == Some(candidates)
                         || lane.applied.as_deref() == candidates.first().map(String::as_str))
             }
@@ -937,9 +932,7 @@ impl Daemon {
                 Target::Rule {
                     candidates: names.clone(),
                     upgrade_from: Some(rank),
-                    // Never retried: a timed-out switch goes back to the fallback's
-                    // profile at once
-                    final_attempt: true,
+                    extended_wait: false,
                 },
                 Some(names),
                 Origin::Upgrade,
@@ -1215,7 +1208,24 @@ impl Daemon {
             self.candidates_desc(kind, &candidates),
             self.switch_reason(kind, departure)
         );
-        self.submit_logged(kind, candidates, notice, &what)
+        self.submit_logged(kind, candidates, notice, &what, false)
+    }
+
+    /// [`Daemon::submit`] for a retry of a failed rule-driven switch: the activation
+    /// waits for the node of a profile switch as long as allowed, so a card too slow
+    /// for the normal wait can make it (a timed-out switch is switched back either way)
+    fn submit_retry(
+        &mut self,
+        kind: Endpoint,
+        candidates: Vec<String>,
+        notice: Option<RuleNotice>,
+    ) -> u64 {
+        let what = format!(
+            "Switching: {}{}; a retry, waiting longer for a slow device",
+            self.candidates_desc(kind, &candidates),
+            self.switch_reason(kind, None)
+        );
+        self.submit_logged(kind, candidates, notice, &what, true)
     }
 
     /// Why the rules want what they want for `kind`, for the `Switching:` line: the
@@ -1242,23 +1252,23 @@ impl Daemon {
         })
     }
 
-    /// [`Daemon::submit`], logging `what` (at info) instead of the usual line
+    /// [`Daemon::submit`], logging `what` (at info) instead of the usual line, with
+    /// the extended wait of a retry (`extended_wait`) or the normal one
     fn submit_logged(
         &mut self,
         kind: Endpoint,
         candidates: Vec<String>,
         notice: Option<RuleNotice>,
         what: &str,
+        extended_wait: bool,
     ) -> u64 {
         info!("{what}");
-        // No retry follows the last scheduled one (see `schedule_retry`)
-        let final_attempt = self.lane(kind).retries >= RETRY_BACKOFF.len();
         self.submit_job(
             kind,
             Target::Rule {
                 candidates: candidates.clone(),
                 upgrade_from: None,
-                final_attempt,
+                extended_wait,
             },
             Some(candidates),
             Origin::Rule,
@@ -1329,18 +1339,6 @@ impl Daemon {
 
         let tried = result.tried;
         let toggled_from = result.toggled_from;
-        if active {
-            // Whether the default may have stopped playing: a failed attempt left a
-            // card switched (a retry follows), until something is activated or seen
-            let lane = self.lane_mut(kind);
-            match &result.outcome {
-                Outcome::Failed(_) => lane.card_left |= result.card_left,
-                Outcome::Activated { .. } | Outcome::Elsewhere(_) | Outcome::Adopted { .. } => {
-                    lane.card_left = false;
-                }
-                Outcome::Unchanged | Outcome::Done(_) => {}
-            }
-        }
         let response = match result.outcome {
             Outcome::Activated { index, node_name } if index < tried.len() => {
                 let name = tried[index].clone();
@@ -1699,7 +1697,7 @@ impl Daemon {
             {
                 continue;
             }
-            self.submit(kind, retry.candidates, retry.notice, None);
+            self.submit_retry(kind, retry.candidates, retry.notice);
         }
     }
 

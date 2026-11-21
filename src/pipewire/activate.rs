@@ -19,7 +19,7 @@ use anyhow::Result;
 use tracing::{debug, info, warn};
 
 use super::model::Snapshot;
-use super::resolve::{self, Plan, PreviousProfile, ProfileSwitch, SinkSide, SourceStep};
+use super::resolve::{self, Plan, ProfileSwitch, SinkSide, SourceStep};
 use crate::config::Endpoint;
 use crate::sanitize::{for_log, one_line};
 
@@ -103,6 +103,20 @@ impl WaitPolicy {
             timeout: Duration::from_millis(total),
         }
     }
+
+    /// The wait for a retry of a failed rule-driven switch: the longest one allowed
+    /// (`MAX_TOTAL_WAIT_MS`), polled as often as this one
+    pub(crate) fn extended(self) -> Self {
+        Self {
+            timeout: self.timeout.max(Duration::from_millis(MAX_TOTAL_WAIT_MS)),
+            ..self
+        }
+    }
+
+    /// This wait, or the [extended](Self::extended) one when `extended`
+    fn for_attempt(self, extended: bool) -> Self {
+        if extended { self.extended() } else { self }
+    }
 }
 
 /// What an activation did.
@@ -134,13 +148,10 @@ pub(crate) struct Request<'a> {
     /// half) only when the sink's planned switch is on the card of one of its
     /// candidates, and left alone (`Ok(None)`) otherwise
     pub(crate) keep: bool,
-    /// A profile switch whose node does not appear in time is switched back to the
-    /// card's previous profile, because no further attempt follows (a manual switch,
-    /// the last retry of a rule switch, an upgrade check). Without it the card is
-    /// left on the new profile, so a slow card can finish while the retry that
-    /// follows waits, and that retry finds the node; the error is then a
-    /// [`CardLeft`].
-    pub(crate) switch_back: bool,
+    /// Wait for the node of a profile switch as long as allowed
+    /// ([`WaitPolicy::extended`]) instead of the normal wait: a retry of a failed
+    /// rule-driven switch, so a slow card that timed out before can make it
+    pub(crate) extended_wait: bool,
 }
 
 /// Why an upgrade check left its half alone although the configured default is not
@@ -152,78 +163,6 @@ pub(crate) enum Elsewhere {
     /// The default is this higher-priority candidate (an index before the applied
     /// fallback's): chosen outside pwsw, it serves the list as well
     Candidate(usize),
-}
-
-/// The error of a half whose failed activation left a card on a profile it switched
-/// to (the node did not appear in time and the card was not switched back): the
-/// default before the job may not play any more
-#[derive(Debug)]
-pub(crate) struct CardLeft(String);
-
-impl std::fmt::Display for CardLeft {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CardLeft {}
-
-#[cfg(test)]
-impl CardLeft {
-    /// For fakes of the activation in other modules' tests
-    pub(crate) fn new(message: &str) -> Self {
-        Self(message.to_string())
-    }
-}
-
-/// Cards an attempt left on the profile it switched to (the node had not appeared;
-/// see [`Request::switch_back`]), each with that profile and the one the card had
-/// before the first such attempt
-///
-/// Kept across jobs (the caller holds it), so the attempts that follow do not switch
-/// the card again but wait for the node once more, and the last one switches it back
-/// to the profile from before the first attempt, not to the one it was left on. An
-/// entry is dropped once a node on that card is activated, the card is switched back,
-/// or its profile is no longer the one it was left on.
-#[derive(Debug, Default)]
-pub(crate) struct LeftCards(Vec<LeftCard>);
-
-#[derive(Debug, Clone)]
-struct LeftCard {
-    device_id: u32,
-    /// The profile the card was left on
-    on: u32,
-    /// The profile it had before
-    before: PreviousProfile,
-}
-
-impl LeftCards {
-    /// No cards left switched
-    pub(crate) const fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    /// The entry of `device_id`, if the card is still on the profile it was left on
-    /// (`current`: its profile now)
-    fn get(&self, device_id: u32, current: Option<u32>) -> Option<&LeftCard> {
-        self.0
-            .iter()
-            .find(|c| c.device_id == device_id && Some(c.on) == current)
-    }
-
-    fn remove(&mut self, device_id: u32) {
-        self.0.retain(|c| c.device_id != device_id);
-    }
-
-    /// Forget cards whose profile changed since (switched by someone else)
-    fn prune(&mut self, snapshot: &Snapshot) {
-        self.0.retain(|c| {
-            snapshot
-                .devices
-                .iter()
-                .any(|d| d.id == c.device_id && d.active_profile == Some(c.on))
-        });
-    }
 }
 
 /// What a job did for each half it was given (`None`: the half was not asked for)
@@ -242,13 +181,11 @@ pub(crate) struct JointOutcome {
 }
 
 /// Cards a job switched: every switch it attempted, and those of them it switched
-/// back after the node did not appear (or whose switch changed nothing); and the
-/// cards left switched by this and earlier jobs
+/// back after the node did not appear (or whose switch changed nothing)
 #[derive(Debug, Default)]
 struct Cards {
     switched: HashSet<u32>,
     restored: HashSet<u32>,
-    left: LeftCards,
 }
 
 /// Make `target` (a configured node name) the default sink.
@@ -292,18 +229,11 @@ pub(crate) fn activate_first(
         candidates,
         upgrade_from,
         keep: false,
-        switch_back: true,
+        extended_wait: false,
     };
-    activate_joint(
-        backend,
-        clock,
-        policy,
-        Some(request),
-        None,
-        &mut LeftCards::new(),
-    )
-    .sink
-    .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no sink result")))
+    activate_joint(backend, clock, policy, Some(request), None)
+        .sink
+        .unwrap_or_else(|| Err(anyhow::anyhow!("Internal error: no sink result")))
 }
 
 /// Activate a job's sink half and source half against one fresh snapshot.
@@ -323,9 +253,9 @@ pub(crate) fn activate_first(
 /// chose another one since), and reports what is the default instead
 /// ([`JointOutcome::elsewhere`]: one of the candidates before `k`, or something else).
 ///
-/// A profile switch whose node does not appear in time is switched back with
-/// [`Request::switch_back`], and left for the retry that follows without it
-/// (recorded in `left`, which the caller keeps from one job to the next).
+/// A profile switch whose node does not appear in time (`policy`, or its extended
+/// wait for a half with [`Request::extended_wait`]) is switched back to the card's
+/// previous profile, so a failed attempt leaves the audio where it was.
 ///
 /// A source half with `keep` does nothing (`Ok(None)`) unless the sink's planned
 /// profile switch is on the card of one of its candidates; then it is planned with the
@@ -340,7 +270,6 @@ pub(crate) fn activate_joint(
     policy: WaitPolicy,
     sink: Option<Request<'_>>,
     source: Option<Request<'_>>,
-    left: &mut LeftCards,
 ) -> JointOutcome {
     let mut outcome = JointOutcome::default();
     let mut halves = [sink, source];
@@ -419,13 +348,8 @@ pub(crate) fn activate_joint(
         outcome.source = Some(Ok(None));
     }
 
-    // Cards switched in this job (attempted or done), those switched back, and the
-    // cards left switched (still on the profile they were left on)
-    left.prune(&snapshot);
-    let mut cards = Cards {
-        left: std::mem::take(left),
-        ..Cards::default()
-    };
+    // Cards switched in this job (attempted or done), and those switched back
+    let mut cards = Cards::default();
     let mut sink_as_planned = true;
     let mut sink_side = None;
     if let Some(request) = sink {
@@ -441,10 +365,6 @@ pub(crate) fn activate_joint(
         sink_as_planned = as_planned;
         if let Ok(Some(chosen)) = &result {
             sink_side = activated_side(&snapshot, &chosen.activation);
-            if let Some(side) = &sink_side {
-                // The card serves a node now: nothing to go back to
-                cards.left.remove(side.device_id);
-            }
         }
         outcome.sink = Some(result);
     }
@@ -486,7 +406,7 @@ pub(crate) fn activate_joint(
                 })
                 .map_err(|e| anyhow::anyhow!("after the sink's activation: {e:#}"))
         };
-        let result = match planned {
+        outcome.source = Some(match planned {
             Ok(planned) => run_source(
                 backend,
                 clock,
@@ -497,21 +417,8 @@ pub(crate) fn activate_joint(
                 &mut cards,
             ),
             Err(e) => Err(e),
-        };
-        if let Ok(Some(chosen)) = &result {
-            let device = match &chosen.activation.profile_switch {
-                Some(switch) => Some(switch.device_id),
-                None => snapshot
-                    .node_by_name(Endpoint::Source, &chosen.activation.node_name)
-                    .and_then(|node| node.device_id),
-            };
-            if let Some(device) = device {
-                cards.left.remove(device);
-            }
-        }
-        outcome.source = Some(result);
+        });
     }
-    *left = cards.left;
     outcome
 }
 
@@ -625,16 +532,6 @@ fn first_reachable(
     None
 }
 
-/// A half's error, as a [`CardLeft`] when one of its attempts left a card on the
-/// profile it switched to (`left`)
-fn card_left_if(error: anyhow::Error, left: bool) -> anyhow::Error {
-    if left {
-        anyhow::Error::new(CardLeft(one_line(&format!("{error:#}"))))
-    } else {
-        error
-    }
-}
-
 /// Run the sink half from its planned candidate; returns the result and whether it
 /// went as planned (the planned candidate activated)
 fn run_sink(
@@ -647,28 +544,21 @@ fn run_sink(
     cards: &mut Cards,
 ) -> (Result<Option<Chosen>>, bool) {
     let candidates = request.candidates;
+    let policy = policy.for_attempt(request.extended_wait);
     let mut next = planned;
     let mut as_planned = true;
-    // An attempt left a card on the profile it switched to
-    let mut left = false;
     loop {
         let Some((index, plan)) = next.take() else {
-            return (Err(card_left_if(none_activated(&failures), left)), false);
+            return (Err(none_activated(&failures)), false);
         };
         let target = &candidates[index];
         if let Plan::SwitchProfile(sw) = &plan {
             cards.switched.insert(sw.device_id);
         }
-        let attempt = Attempt {
-            kind: Endpoint::Sink,
-            target,
-            switch_back: request.switch_back,
-        };
-        match execute(backend, clock, policy, plan, attempt, cards) {
+        match execute(backend, clock, policy, Endpoint::Sink, plan, target, cards) {
             Ok(activation) => return (Ok(Some(Chosen { index, activation })), as_planned),
             Err(e) => {
                 as_planned = false;
-                left |= e.downcast_ref::<CardLeft>().is_some();
                 let text = one_line(&format!("{e:#}"));
                 let more = index + 1 < candidates.len();
                 if more {
@@ -689,11 +579,13 @@ fn run_sink(
                         );
                     }
                     Err(e) => {
-                        let error = anyhow::anyhow!(
-                            "after activating '{target}' failed: {}",
-                            one_line(&format!("{e:#}"))
+                        return (
+                            Err(anyhow::anyhow!(
+                                "after activating '{target}' failed: {}",
+                                one_line(&format!("{e:#}"))
+                            )),
+                            false,
                         );
-                        return (Err(card_left_if(error, left)), false);
                     }
                 }
             }
@@ -716,11 +608,11 @@ fn run_source(
     cards: &mut Cards,
 ) -> Result<Option<Chosen>> {
     let candidates = request.candidates;
+    let policy = policy.for_attempt(request.extended_wait);
     let mut next = planned;
-    let mut left = false;
     loop {
         let Some((index, step)) = next.take() else {
-            return Err(card_left_if(none_activated(&failures), left));
+            return Err(none_activated(&failures));
         };
         let target = &candidates[index];
         let result = match step {
@@ -743,18 +635,20 @@ fn run_source(
                 if let Plan::SwitchProfile(sw) = &plan {
                     cards.switched.insert(sw.device_id);
                 }
-                let attempt = Attempt {
-                    kind: Endpoint::Source,
+                execute(
+                    backend,
+                    clock,
+                    policy,
+                    Endpoint::Source,
+                    plan,
                     target,
-                    switch_back: request.switch_back,
-                };
-                execute(backend, clock, policy, plan, attempt, cards)
+                    cards,
+                )
             }
         };
         match result {
             Ok(activation) => return Ok(Some(Chosen { index, activation })),
             Err(e) => {
-                left |= e.downcast_ref::<CardLeft>().is_some();
                 let text = one_line(&format!("{e:#}"));
                 let rest = index + 1;
                 if rest < candidates.len() {
@@ -765,11 +659,10 @@ fn run_source(
                     continue;
                 }
                 let snapshot = backend.snapshot().map_err(|e| {
-                    let error = anyhow::anyhow!(
+                    anyhow::anyhow!(
                         "after activating '{target}' failed: {}",
                         one_line(&format!("{e:#}"))
-                    );
-                    card_left_if(error, left)
+                    )
                 })?;
                 let again = resolve::plan_joint(
                     &snapshot,
@@ -785,31 +678,20 @@ fn run_source(
     }
 }
 
-/// One activation attempt: the configured node name it is for, and whether a timed-out
-/// profile switch for it is switched back ([`Request::switch_back`])
-#[derive(Debug, Clone, Copy)]
-struct Attempt<'a> {
-    kind: Endpoint,
-    target: &'a str,
-    switch_back: bool,
-}
-
-/// Carry out a resolved plan for an attempt (a sink or a source).
+/// Carry out a resolved plan for `target` (a sink or a source).
 ///
-/// A profile switch whose node does not appear in time is undone with
-/// `switch_back` (the card is switched back to its previous profile, recorded in
-/// `cards`), so the last failed attempt leaves the audio where it was; otherwise,
-/// or when switching back is not possible, the card is left on the new profile and
-/// the error is a [`CardLeft`] that says so.
+/// A profile switch whose node does not appear in time is undone (the card is
+/// switched back to its previous profile, recorded in `cards`), so a failed switch
+/// leaves the audio where it was; when that is not possible the error says so.
 fn execute(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
     policy: WaitPolicy,
+    kind: Endpoint,
     plan: Plan,
-    attempt: Attempt<'_>,
+    target: &str,
     cards: &mut Cards,
 ) -> Result<Activation> {
-    let Attempt { kind, target, .. } = attempt;
     let switch = match plan {
         Plan::SetDefault { node_name } => {
             backend.set_default(kind, &node_name)?;
@@ -821,51 +703,25 @@ fn execute(
         Plan::SwitchProfile(switch) => switch,
     };
 
-    // A card an earlier attempt left on this very profile is not switched again: its
-    // node may still appear, and switching back goes to the profile from before.
-    // Switched to another profile, it is done with.
-    let current = switch.previous.as_ref().map(|p| p.index);
-    let earlier = cards
-        .left
-        .get(switch.device_id, current)
-        .filter(|_| current == Some(switch.profile_index))
-        .cloned();
-    let mut switch = switch;
-    if let Some(earlier) = &earlier {
-        switch.previous = Some(earlier.before.clone());
-    } else {
-        cards.left.remove(switch.device_id);
-    }
-    if earlier.is_some() {
-        debug!(
-            "{} is still on profile {} from an earlier attempt; waiting for its {} again",
-            for_log(&switch.device_name),
-            for_log(&switch.profile_name),
-            switch.kind.noun()
-        );
-    } else {
-        debug!(
-            "Switching {} to profile {} ({}) for '{}'",
-            for_log(&switch.device_name),
-            switch.profile_index,
-            for_log(&switch.profile_name),
-            target
-        );
-        backend.set_profile(switch.device_id, switch.profile_index)?;
-    }
+    debug!(
+        "Switching {} to profile {} ({}) for '{}'",
+        for_log(&switch.device_name),
+        switch.profile_index,
+        for_log(&switch.profile_name),
+        target
+    );
+    backend.set_profile(switch.device_id, switch.profile_index)?;
 
     let node_name = match wait_for_node(backend, clock, policy, &switch) {
         Ok(node_name) => node_name,
         Err(timeout) => {
-            let (undone, left) = after_timeout(backend, &switch, attempt, policy, cards);
-            let message = timeout.message(&switch, target, policy, Some(&undone));
-            if left {
-                return Err(anyhow::Error::new(CardLeft(message)));
-            }
-            anyhow::bail!("{message}");
+            let undone = switch_back(backend, &switch, target, policy, cards);
+            anyhow::bail!(
+                "{}",
+                timeout.message(&switch, target, policy, Some(&undone))
+            );
         }
     };
-    cards.left.remove(switch.device_id);
     if node_name != target {
         info!(
             "{} '{}' appeared as '{}'",
@@ -881,64 +737,29 @@ fn execute(
     })
 }
 
-/// What to do about the card of a timed-out `switch`: switch it back to its previous
-/// profile when the attempt says so (best effort), else leave it for the retry
-///
-/// Returns what happened, for the error message, and whether the card was left on
-/// the new profile.
-fn after_timeout(
+/// Switch the card of a timed-out `switch` back to its previous profile (best
+/// effort); returns what happened, for the error message
+fn switch_back(
     backend: &dyn AudioBackend,
     switch: &ProfileSwitch,
-    attempt: Attempt<'_>,
+    target: &str,
     policy: WaitPolicy,
     cards: &mut Cards,
-) -> (String, bool) {
+) -> String {
     let new = for_log(&switch.profile_name);
     let Some(previous) = &switch.previous else {
-        return (
-            format!("its previous profile is unknown, so the card stays on '{new}'"),
-            true,
-        );
+        return format!("its previous profile is unknown, so the card stays on '{new}'");
     };
     if previous.index == switch.profile_index {
         // Nothing changed on the card: it is as it was
         cards.restored.insert(switch.device_id);
-        return (
-            "the card was already on that profile before, so there was nothing to switch back"
-                .to_string(),
-            false,
-        );
+        return "the card was already on that profile before, so there was nothing to switch back"
+            .to_string();
     }
     let old = for_log(&previous.name);
-    // Whatever happens now, an older entry for the card is replaced or done with
-    cards.left.remove(switch.device_id);
-    if !attempt.switch_back {
-        cards.left.0.push(LeftCard {
-            device_id: switch.device_id,
-            on: switch.profile_index,
-            before: previous.clone(),
-        });
-        debug!(
-            "Leaving {} on profile {new} for the next attempt: the {} for '{}' did not appear \
-             within {} ms",
-            for_log(&switch.device_name),
-            switch.kind.noun(),
-            attempt.target,
-            policy.timeout.as_millis()
-        );
-        return (
-            format!(
-                "left the card on that profile, since pwsw tries again (the {} may still \
-                 appear)",
-                switch.kind.noun()
-            ),
-            true,
-        );
-    }
     if !previous.available {
-        return (
-            format!("its previous profile '{old}' is not available, so the card stays on '{new}'"),
-            true,
+        return format!(
+            "its previous profile '{old}' is not available, so the card stays on '{new}'"
         );
     }
     match backend.set_profile(switch.device_id, previous.index) {
@@ -948,20 +769,14 @@ fn after_timeout(
                 "Switched {} back to profile {old}: the {} for '{}' did not appear within {} ms",
                 for_log(&switch.device_name),
                 switch.kind.noun(),
-                attempt.target,
+                target,
                 policy.timeout.as_millis()
             );
-            (
-                format!("switched it back to its previous profile '{old}'"),
-                false,
-            )
+            format!("switched it back to its previous profile '{old}'")
         }
-        Err(e) => (
-            format!(
-                "switching it back to profile '{old}' failed ({}), so the card stays on '{new}'",
-                one_line(&format!("{e:#}"))
-            ),
-            true,
+        Err(e) => format!(
+            "switching it back to profile '{old}' failed ({}), so the card stays on '{new}'",
+            one_line(&format!("{e:#}"))
         ),
     }
 }
@@ -987,17 +802,28 @@ impl WaitTimeout {
             .last_error
             .as_ref()
             .map_or_else(String::new, |e| format!(" (last pw-dump error: {e})"));
+        // At the cap (a rule retry's extended wait) the variables cannot lengthen the
+        // wait; they still set the wait of first attempts and manual switches
+        let more_time = if policy.timeout < Duration::from_millis(MAX_TOTAL_WAIT_MS) {
+            format!(
+                "raise PROFILE_SWITCH_DELAY_MS / PROFILE_SWITCH_MAX_RETRIES; the wait is capped \
+                 at {MAX_TOTAL_WAIT_MS} ms"
+            )
+        } else {
+            format!(
+                "{MAX_TOTAL_WAIT_MS} ms is the longest pwsw waits, whatever \
+                 PROFILE_SWITCH_DELAY_MS / PROFILE_SWITCH_MAX_RETRIES say"
+            )
+        };
         format!(
             "Switched {} to profile '{}' but its {} for '{}' did not appear within {} ms{undone}. \
-             The device may need more time (raise PROFILE_SWITCH_DELAY_MS / \
-             PROFILE_SWITCH_MAX_RETRIES; the wait is capped at {} ms), or the port may have no \
-             hardware behind it (check `pwsw list-sinks`){cause}",
+             The device may need more time ({more_time}), or the port may have no hardware \
+             behind it (check `pwsw list-sinks`){cause}",
             for_log(&switch.device_name),
             for_log(&switch.profile_name),
             switch.kind.noun(),
             target,
             policy.timeout.as_millis(),
-            MAX_TOTAL_WAIT_MS,
         )
     }
 }
@@ -1259,17 +1085,6 @@ mod tests {
         }
     }
 
-    /// [`activate_joint`] with nothing left switched by earlier jobs
-    fn joint_fresh(
-        backend: &dyn AudioBackend,
-        clock: &dyn Clock,
-        policy: WaitPolicy,
-        sink: Option<Request<'_>>,
-        source: Option<Request<'_>>,
-    ) -> JointOutcome {
-        activate_joint(backend, clock, policy, sink, source, &mut LeftCards::new())
-    }
-
     const POLICY: WaitPolicy = WaitPolicy {
         poll_interval: Duration::from_millis(100),
         timeout: Duration::from_millis(1_000),
@@ -1491,11 +1306,11 @@ mod tests {
                 candidates: c,
                 upgrade_from: None,
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             })
         }
         let (sinks, sources) = (names(sinks), names(sources));
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             backend,
             &FakeClock::new(),
             POLICY,
@@ -1571,7 +1386,7 @@ mod tests {
         sources: &[&str],
     ) -> (HalfOutcome, HalfOutcome) {
         let (sinks, sources) = (names(sinks), names(sources));
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             backend,
             &FakeClock::new(),
             POLICY,
@@ -1579,13 +1394,13 @@ mod tests {
                 candidates: &sinks,
                 upgrade_from: None,
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             Some(Request {
                 candidates: &sources,
                 upgrade_from: None,
                 keep: true,
-                switch_back: true,
+                extended_wait: false,
             }),
         );
         (outcome.sink, outcome.source)
@@ -1698,7 +1513,7 @@ mod tests {
         let backend = FakeBackend::new(Some(0));
         let sinks = names(&["bluez_output.gone", IEC]);
         let sources = names(&[IN_ANALOG]);
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
             POLICY,
@@ -1706,13 +1521,13 @@ mod tests {
                 candidates: &sinks,
                 upgrade_from: Some(1),
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             Some(Request {
                 candidates: &sources,
                 upgrade_from: None,
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
         );
         assert!(matches!(outcome.sink, Some(Ok(None))));
@@ -1762,7 +1577,7 @@ mod tests {
             profile_name: None,
             card_profile_device: None,
         });
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
             POLICY,
@@ -1770,7 +1585,7 @@ mod tests {
                 candidates: &candidates,
                 upgrade_from: Some(1),
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             None,
         );
@@ -1783,7 +1598,7 @@ mod tests {
 
         // The user chose the rule's own first choice: reported as that candidate
         backend.set_configured(Endpoint::Sink, "bluez_output.back");
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
             POLICY,
@@ -1791,7 +1606,7 @@ mod tests {
                 candidates: &candidates,
                 upgrade_from: Some(1),
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             None,
         );
@@ -1801,7 +1616,7 @@ mod tests {
 
         // Still on the fallback (by name): the upgrade goes ahead
         backend.set_configured(Endpoint::Sink, ANALOG);
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
             POLICY,
@@ -1809,7 +1624,7 @@ mod tests {
                 candidates: &candidates,
                 upgrade_from: Some(1),
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             None,
         );
@@ -1826,7 +1641,7 @@ mod tests {
         backend.state.borrow_mut().sinks[0].name = "renamed.digital".to_string();
         backend.set_configured(Endpoint::Sink, "renamed.digital");
         let candidates = names(&["bluez_output.gone", IEC]);
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
             POLICY,
@@ -1834,7 +1649,7 @@ mod tests {
                 candidates: &candidates,
                 upgrade_from: Some(1),
                 keep: false,
-                switch_back: true,
+                extended_wait: false,
             }),
             None,
         );
@@ -1867,10 +1682,6 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains('\n'), "one line: {text:?}");
-        assert!(
-            err.downcast_ref::<CardLeft>().is_none(),
-            "the card is as it was"
-        );
         assert_eq!(
             backend.switches(),
             vec![Call::SetProfile(43, 1), Call::SetProfile(43, 4)],
@@ -1911,10 +1722,6 @@ mod tests {
         let err = activate(&backend, &FakeClock::new(), POLICY, ANALOG).expect_err("times out");
         let text = format!("{err:#}");
         assert!(text.contains(expected), "{text}");
-        assert!(
-            err.downcast_ref::<CardLeft>().is_some(),
-            "the card is left switched"
-        );
         let expected_switches = if fails {
             vec![Call::SetProfile(43, 1), Call::SetProfile(43, 4)]
         } else {
@@ -1945,61 +1752,78 @@ mod tests {
         );
     }
 
-    /// A sink half over `candidates` with the given `switch_back`
-    fn sink_half(candidates: &[String], switch_back: bool) -> Request<'_> {
+    /// A sink half over `candidates`, with the extended wait of a rule retry or not
+    fn sink_half(candidates: &[String], extended_wait: bool) -> Request<'_> {
         Request {
             candidates,
             upgrade_from: None,
             keep: false,
-            switch_back,
+            extended_wait,
         }
     }
 
-    /// A rule attempt that a retry follows (`switch_back: false`) leaves a timed-out
-    /// switch in place and says so ([`CardLeft`]); the retry finds the node the slow
-    /// card produced meanwhile and only sets the default (no flapping)
+    /// The wait of a rule retry is the longest allowed, polled as usual; it never
+    /// shortens a longer configured wait
     #[test]
-    fn test_timed_out_switch_is_left_for_the_retry_that_follows() {
-        // The node appears on the 11th snapshot after the switch: just after the 10
-        // polls of the first attempt
-        let backend = FakeBackend::new(Some(10));
+    fn test_extended_wait_is_the_cap() {
+        let normal = WaitPolicy::from_values(None, None);
+        assert_eq!(normal.extended(), WaitPolicy {
+            poll_interval: Duration::from_millis(150),
+            timeout: Duration::from_millis(MAX_TOTAL_WAIT_MS),
+        });
+        let configured = WaitPolicy::from_values(Some("1000"), Some("100"));
+        assert_eq!(configured.extended(), configured, "already at the cap");
+        assert_eq!(normal.for_attempt(false), normal);
+        assert_eq!(normal.for_attempt(true), normal.extended());
+    }
+
+    /// A card that needs 4 s: the normal wait (3 s) times out and switches the card
+    /// back; a retry with the extended wait (5 s) switches it again and finds the node
+    #[test]
+    fn test_slow_card_fails_with_the_normal_wait_and_makes_it_with_the_extended_one() {
+        let policy = WaitPolicy::from_values(None, None);
+        // The node appears on the 27th poll after the switch (4.05 s)
+        let backend = FakeBackend::new(Some(26));
         let candidates = names(&[ANALOG]);
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
-            POLICY,
+            policy,
             Some(sink_half(&candidates, false)),
             None,
         );
-        let err = outcome.sink.expect("asked").expect_err("times out");
-        assert!(err.downcast_ref::<CardLeft>().is_some(), "{err:#}");
+        let err = outcome.sink.expect("asked").expect_err("3 s is too short");
         let text = format!("{err:#}");
+        assert!(text.contains("did not appear within 3000 ms"), "{text}");
         assert!(
-            text.contains(
-                "did not appear within 1000 ms; left the card on that profile, since pwsw tries \
-                 again (the sink may still appear)"
-            ),
+            text.contains("; switched it back to its previous profile 'output:iec958-stereo'"),
             "{text}"
         );
-        assert!(!text.contains("switched it back"), "{text}");
-        assert_eq!(
-            backend.switches(),
-            vec![Call::SetProfile(43, 1)],
-            "not undone"
+        assert!(
+            text.contains("raise PROFILE_SWITCH_DELAY_MS / PROFILE_SWITCH_MAX_RETRIES"),
+            "{text}"
         );
+        assert_eq!(backend.switches(), vec![
+            Call::SetProfile(43, 1),
+            Call::SetProfile(43, 4)
+        ]);
 
-        let outcome = joint_fresh(
+        let outcome = activate_joint(
             &backend,
             &FakeClock::new(),
-            POLICY,
-            Some(sink_half(&candidates, false)),
+            policy,
+            Some(sink_half(&candidates, true)),
             None,
         );
         assert_eq!(chosen(outcome.sink).activation.node_name, ANALOG);
         assert_eq!(
             backend.switches(),
-            vec![Call::SetProfile(43, 1)],
-            "the retry switches nothing"
+            vec![
+                Call::SetProfile(43, 1),
+                Call::SetProfile(43, 4),
+                Call::SetProfile(43, 1)
+            ],
+            "switched again from where it was"
         );
         assert_eq!(
             backend.calls().last(),
@@ -2007,107 +1831,134 @@ mod tests {
         );
     }
 
-    /// A node that never appears: the attempts that follow a left switch do not switch
-    /// the card again but wait once more, and the last one switches it back to the
-    /// profile from before the first attempt (not the one it was left on)
+    /// A node that never appears: an attempt with the extended wait waits 5 s, is
+    /// switched back like any other, and its error says the wait cannot be raised
     #[test]
-    fn test_left_card_is_waited_for_again_and_switched_back_at_the_end() {
+    fn test_extended_wait_that_times_out_is_switched_back() {
         let mut backend = FakeBackend::new(Some(0));
         backend.never_appears = Some("analog-stereo");
         let candidates = names(&[ANALOG]);
-        let mut left = LeftCards::new();
-        let mut attempt = |switch_back| {
-            activate_joint(
-                &backend,
-                &FakeClock::new(),
-                POLICY,
-                Some(sink_half(&candidates, switch_back)),
-                None,
-                &mut left,
-            )
-            .sink
-            .expect("asked")
-            .expect_err("never appears")
-        };
-        for _ in 0..2 {
-            let err = attempt(false);
-            assert!(err.downcast_ref::<CardLeft>().is_some(), "{err:#}");
-        }
-        let err = attempt(true);
-        assert!(
-            format!("{err:#}")
-                .contains("switched it back to its previous profile 'output:iec958-stereo'"),
-            "{err:#}"
-        );
-        assert!(err.downcast_ref::<CardLeft>().is_none(), "{err:#}");
-        assert_eq!(
-            backend.switches(),
-            vec![Call::SetProfile(43, 1), Call::SetProfile(43, 4)],
-            "switched once, back once"
-        );
-        assert!(left.0.is_empty(), "done with the card");
-    }
-
-    /// A card left switched and then wanted on another profile is simply switched
-    /// (from the profile it is on), and forgotten as left
-    #[test]
-    fn test_left_card_wanted_elsewhere_is_switched_normally() {
-        let mut backend = FakeBackend::new(Some(0));
-        backend.never_appears = Some("analog-stereo");
-        let mut left = LeftCards::new();
-        let analog = names(&[ANALOG]);
+        let clock = FakeClock::new();
         let outcome = activate_joint(
             &backend,
-            &FakeClock::new(),
-            POLICY,
-            Some(sink_half(&analog, false)),
-            None,
-            &mut left,
-        );
-        assert!(outcome.sink.expect("asked").is_err());
-        assert_eq!(left.0.len(), 1);
-        let iec = names(&["alsa_output.pci-0000_0c_00.4.iec958-stereo"]);
-        let outcome = activate_joint(
-            &backend,
-            &FakeClock::new(),
-            POLICY,
-            Some(sink_half(&iec, true)),
-            None,
-            &mut left,
-        );
-        let chosen = chosen(outcome.sink);
-        let switch = chosen.activation.profile_switch.expect("a profile switch");
-        assert_eq!(
-            switch.previous.map(|p| p.index),
-            Some(1),
-            "from where it is"
-        );
-        // From the duplex profile it is on, the digital one that keeps the input
-        assert_eq!(backend.switches(), vec![
-            Call::SetProfile(43, 1),
-            Call::SetProfile(43, 3)
-        ]);
-        assert!(left.0.is_empty());
-    }
-
-    /// The same slow card on the last attempt (`switch_back: true`) is switched back
-    #[test]
-    fn test_timed_out_switch_on_the_last_attempt_is_switched_back() {
-        let backend = FakeBackend::new(Some(10));
-        let candidates = names(&[ANALOG]);
-        let outcome = joint_fresh(
-            &backend,
-            &FakeClock::new(),
-            POLICY,
+            &clock,
+            WaitPolicy::from_values(None, None),
             Some(sink_half(&candidates, true)),
             None,
         );
-        let err = outcome.sink.expect("asked").expect_err("times out");
-        assert!(err.downcast_ref::<CardLeft>().is_none(), "{err:#}");
+        let err = outcome.sink.expect("asked").expect_err("never appears");
+        let text = format!("{err:#}");
+        assert!(text.contains("did not appear within 5000 ms"), "{text}");
+        assert!(
+            text.contains("; switched it back to its previous profile 'output:iec958-stereo'"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "5000 ms is the longest pwsw waits, whatever PROFILE_SWITCH_DELAY_MS / \
+                 PROFILE_SWITCH_MAX_RETRIES say"
+            ),
+            "{text}"
+        );
+        assert_eq!(clock.offset.get(), Duration::from_secs(5), "waited 5 s");
         assert_eq!(backend.switches(), vec![
             Call::SetProfile(43, 1),
             Call::SetProfile(43, 4)
         ]);
+    }
+
+    /// Two candidates of one rule on the same card, neither node appears: each attempt
+    /// switches the card back, so it ends on the profile it had (no attempt takes the
+    /// previous attempt's dead profile for the card's own), and every attempt of the
+    /// rule (first or retry) does the same
+    #[test_case(false ; "normal wait")]
+    #[test_case(true ; "extended wait")]
+    fn test_candidates_on_one_card_each_switch_back_to_the_original_profile(extended: bool) {
+        let backend = FakeBackend::new(None);
+        let surround = "alsa_output.pci-0000_0c_00.4.analog-surround-51";
+        let candidates = names(&[ANALOG, surround]);
+        for attempt in 1..=3 {
+            let outcome = activate_joint(
+                &backend,
+                &FakeClock::new(),
+                POLICY,
+                Some(sink_half(&candidates, extended)),
+                None,
+            );
+            let err = outcome.sink.expect("asked").expect_err("never appears");
+            let text = format!("{err:#}");
+            assert_eq!(
+                text.matches("switched it back to its previous profile 'output:iec958-stereo'")
+                    .count(),
+                2,
+                "attempt {attempt}: {text}"
+            );
+            let card = backend
+                .state
+                .borrow()
+                .devices
+                .iter()
+                .find(|d| d.id == 43)
+                .cloned();
+            assert_eq!(
+                card.and_then(|d| d.active_profile),
+                Some(4),
+                "attempt {attempt}: on its own profile again"
+            );
+        }
+        let switches = backend.switches();
+        assert_eq!(switches.len(), 12, "{switches:?}");
+        for pair in switches.chunks(2) {
+            assert!(
+                matches!(pair, [Call::SetProfile(43, to), Call::SetProfile(43, 4)] if *to != 4),
+                "every switch is followed by one back to 4: {switches:?}"
+            );
+        }
+    }
+
+    /// The first candidate's card times out and is switched back; the fallback on
+    /// another card is activated, and the first card stays on its own profile
+    #[test]
+    fn test_fallback_on_another_card_leaves_the_first_card_restored() {
+        let mut backend = FakeBackend::new(Some(0));
+        backend.never_appears = Some("analog-stereo");
+        // A Bluetooth headset: a node of its own, no card profile to switch
+        let headset = "bluez_output.headset";
+        backend.state.borrow_mut().sinks.push(Node {
+            id: 900,
+            name: headset.to_string(),
+            description: String::new(),
+            device_id: None,
+            profile_name: None,
+            card_profile_device: None,
+        });
+        let candidates = names(&[ANALOG, headset]);
+        let outcome = activate_joint(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(sink_half(&candidates, false)),
+            None,
+        );
+        let chosen = chosen(outcome.sink);
+        assert_eq!(chosen.index, 1);
+        assert_eq!(chosen.activation.node_name, headset);
+        assert_eq!(backend.switches(), vec![
+            Call::SetProfile(43, 1),
+            Call::SetProfile(43, 4)
+        ]);
+        let card = backend
+            .state
+            .borrow()
+            .devices
+            .iter()
+            .find(|d| d.id == 43)
+            .cloned();
+        assert_eq!(card.and_then(|d| d.active_profile), Some(4));
+        assert_eq!(
+            backend.calls().last(),
+            Some(&Call::SetDefault(headset.to_string()))
+        );
     }
 
     /// A riding microphone whose card the sink's switch was to the profile the card
@@ -2132,7 +1983,6 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(err.downcast_ref::<CardLeft>().is_none(), "{text}");
         assert!(matches!(source, Some(Ok(None))), "{source:?}");
         assert_eq!(backend.switches(), vec![Call::SetProfile(43, 1)]);
     }
@@ -2168,7 +2018,7 @@ mod tests {
         let candidates = names(sinks);
         let mut outcome = None;
         let logs = capture_debug_logs(|| {
-            outcome = Some(joint_fresh(
+            outcome = Some(activate_joint(
                 &FailAfterFirst(&backend, Cell::new(false)),
                 &FakeClock::new(),
                 POLICY,
@@ -2202,7 +2052,7 @@ mod tests {
         let candidates = names(&[ANALOG, iec]);
         let mut outcome = None;
         let logs = capture_debug_logs(|| {
-            outcome = Some(joint_fresh(
+            outcome = Some(activate_joint(
                 &backend,
                 &FakeClock::new(),
                 POLICY,

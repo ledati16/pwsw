@@ -33,8 +33,7 @@ mod node_state;
 mod parse;
 mod resolve;
 
-pub(crate) use activate::CardLeft;
-use activate::{LeftCards, Request, SystemClock, WaitPolicy};
+use activate::{Request, SystemClock, WaitPolicy};
 use cli::CliBackend;
 pub use model::Snapshot;
 pub use node_state::NodeState;
@@ -180,32 +179,31 @@ pub struct JobHalf<'a> {
     /// one of `candidates` (then planned jointly: one profile for both, or this half
     /// fails when none provides both); otherwise nothing is touched (`Ok(None)`).
     pub keep: bool,
-    /// Switch a card back to its previous profile when the node of a profile switch
-    /// does not appear in time (no further attempt follows); without it the card is
-    /// left on the new profile for the retry that follows
-    pub switch_back: bool,
+    /// Wait for the node of a profile switch as long as allowed (5 s) instead of the
+    /// configured wait: a retry of a failed rule-driven switch, so a slow card that
+    /// timed out before can make it. Every half switches a card back to its previous
+    /// profile when the node does not appear in time.
+    pub extended_wait: bool,
 }
 
 impl<'a> JobHalf<'a> {
-    /// A plain half: activate the first reachable of `candidates` (a timed-out profile
-    /// switch is switched back)
+    /// A plain half: activate the first reachable of `candidates`, with the
+    /// configured wait
     #[must_use]
     pub const fn new(candidates: &'a [String]) -> Self {
         Self {
             candidates,
             upgrade_from: None,
             keep: false,
-            switch_back: true,
+            extended_wait: false,
         }
     }
 }
 
 /// Serialises all sink and source activations in this process, so each one takes its snapshot
-/// and makes its decision with no other switch in flight. Guards the cards an
-/// attempt left switched for the attempts that follow ([`activate::LeftCards`]); a
-/// poisoned lock (a panicking activation) is simply taken over, as that record is
-/// only advice (at worst a card is switched again, or back to the profile it had).
-static ACTIVATION_LOCK: Mutex<LeftCards> = Mutex::new(LeftCards::new());
+/// and makes its decision with no other switch in flight. Guards no data, so a
+/// poisoned lock (a panicking activation) is simply taken over.
+static ACTIVATION_LOCK: Mutex<()> = Mutex::new(());
 
 impl PipeWire {
     /// Validate that all required `PipeWire` tools are available in `PATH`
@@ -400,7 +398,8 @@ impl PipeWire {
     /// Activations are serialised process-wide; the snapshot and the decision are
     /// taken while holding the lock. After a profile switch, waits (bounded by
     /// `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES`, at most 5 s) for the
-    /// new node, then sets it as the configured default.
+    /// new node, then sets it as the configured default; when it does not appear, the
+    /// card is switched back to its previous profile.
     ///
     /// Returns the node name that was made the default (it can differ from `name`
     /// when the node was resolved by device identity).
@@ -454,10 +453,10 @@ impl PipeWire {
                 candidates: half.candidates,
                 upgrade_from: half.upgrade_from,
                 keep: half.keep,
-                switch_back: half.switch_back,
+                extended_wait: half.extended_wait,
             }
         }
-        let mut left = ACTIVATION_LOCK
+        let _guard = ACTIVATION_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let outcome = activate::activate_joint(
@@ -466,7 +465,6 @@ impl PipeWire {
             WaitPolicy::from_env(),
             sink.map(request),
             source.map(request),
-            &mut left,
         );
         let switches = |result: &Option<Result<Option<activate::Chosen>>>| match result {
             Some(Ok(Some(chosen))) => chosen.activation.profile_switch.clone(),

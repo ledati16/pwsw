@@ -659,12 +659,12 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     crate::outln!("{}", "-".repeat(12));
     let config_loaded = config.is_some();
     match &current_sink {
-        Some((_, description)) => {
+        Some((name, description)) => {
             crate::outln!(
                 "{} {}{}",
                 "Current:".dim(),
                 term(description).as_ref().bold(),
-                outside_note(description, &daemon, Endpoint::Sink, config_loaded)
+                outside_note(name, description, &daemon, Endpoint::Sink, config_loaded)
             );
         }
         None => crate::outln!(
@@ -675,12 +675,12 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     }
     if sources_configured {
         match &current_source {
-            Some((_, description)) => {
+            Some((name, description)) => {
                 crate::outln!(
                     "{} {}{}",
                     "Mic:".dim(),
                     term(description).as_ref().bold(),
-                    outside_note(description, &daemon, Endpoint::Source, config_loaded)
+                    outside_note(name, description, &daemon, Endpoint::Source, config_loaded)
                 );
             }
             None => crate::outln!("{} {}", "Mic:".dim(), "unknown".dim()),
@@ -789,10 +789,17 @@ fn describe_default(
 }
 
 /// ` (changed outside pwsw)` when a running daemon applied another `kind` than the
-/// real `PipeWire` default (`description`, see [`describe_default`]); empty
-/// otherwise, also when this command could not load the config (`config_loaded`
-/// false: the default cannot be described as the daemon describes it)
+/// real `PipeWire` default (its node `name` and `description`, see
+/// [`describe_default`]); empty otherwise, also when this command could not load the
+/// config (`config_loaded` false: the default cannot be described as the daemon
+/// describes it)
+///
+/// The daemon reports what it applied as the configured entry's description when it
+/// has the configured name, else as the node name it saw (at startup, or probing for
+/// a manual switch); a node `WirePlumber` renamed is then its node name here, while
+/// this command describes it as its entry. Either matching is the same default.
 fn outside_note(
+    name: &str,
     description: &str,
     daemon: &DaemonStatus,
     kind: Endpoint,
@@ -805,7 +812,7 @@ fn outside_note(
     if config_loaded
         && daemon.running
         && daemon.error.is_none()
-        && applied.is_some_and(|applied| applied != description)
+        && applied.is_some_and(|applied| applied != description && applied != name)
     {
         format!(" {}", "(changed outside pwsw)".warning())
     } else {
@@ -1258,17 +1265,23 @@ mod tests {
             ..DaemonStatus::default()
         };
         assert_eq!(
-            outside_note("Speakers", &daemon, Endpoint::Sink, true),
+            outside_note("speakers", "Speakers", &daemon, Endpoint::Sink, true),
             " (changed outside pwsw)"
         );
-        assert_eq!(outside_note("TV", &daemon, Endpoint::Sink, true), "");
+        assert_eq!(outside_note("tv", "TV", &daemon, Endpoint::Sink, true), "");
         assert_eq!(
-            outside_note("Desk Mic", &daemon, Endpoint::Source, true),
+            outside_note("mic", "Desk Mic", &daemon, Endpoint::Source, true),
             "",
             "unknown applied source"
         );
         assert_eq!(
-            outside_note("Speakers", &DaemonStatus::default(), Endpoint::Sink, true),
+            outside_note(
+                "speakers",
+                "Speakers",
+                &DaemonStatus::default(),
+                Endpoint::Sink,
+                true
+            ),
             "",
             "no daemon"
         );
@@ -1276,6 +1289,7 @@ mod tests {
         // says nothing about whether it is what the daemon applied
         assert_eq!(
             outside_note(
+                "alsa_output.pci-0000_0c_00.4.analog-stereo",
                 "alsa_output.pci-0000_0c_00.4.analog-stereo",
                 &daemon,
                 Endpoint::Sink,
@@ -1326,7 +1340,36 @@ mod tests {
             daemon_sink: Some("Optical".to_string()),
             ..DaemonStatus::default()
         };
-        assert_eq!(outside_note("Optical", &daemon, Endpoint::Sink, true), "");
+        assert_eq!(
+            outside_note(&renamed, "Optical", &daemon, Endpoint::Sink, true),
+            ""
+        );
+        // The daemon names what it saw by node name (`applied` from startup, a manual
+        // switch's probe, an outside choice it adopted): no configured entry has the
+        // renamed node's name, so it reports the raw name. The same default all the
+        // same: no marker
+        let daemon = DaemonStatus {
+            running: true,
+            daemon_sink: Some(renamed.clone()),
+            ..DaemonStatus::default()
+        };
+        let (name, description) =
+            describe_default(&snapshot, Endpoint::Sink, Some(&config)).expect("a default");
+        assert_eq!(
+            outside_note(&name, &description, &daemon, Endpoint::Sink, true),
+            "",
+            "the raw name of the default"
+        );
+        // Another node by its raw name is still marked
+        let daemon = DaemonStatus {
+            running: true,
+            daemon_sink: Some("alsa_output.pci-0000_0c_00.4.analog-stereo.3".to_string()),
+            ..DaemonStatus::default()
+        };
+        assert_eq!(
+            outside_note(&name, &description, &daemon, Endpoint::Sink, true),
+            " (changed outside pwsw)"
+        );
         // Without the config: the node name
         assert_eq!(
             describe_default(&snapshot, Endpoint::Sink, None),

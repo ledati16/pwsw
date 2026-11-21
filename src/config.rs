@@ -2509,7 +2509,6 @@ pub fn dangling_symlink_target(path: &Path) -> Option<PathBuf> {
     None
 }
 
-/// The directory holding `path` (`.` for a bare file name)
 /// The directory a dangling symlink at `path` points into, when that directory does
 /// not exist either: nothing (not `pwsw init`, not `pwsw tui`) can create the config
 /// there until it is created or the link is changed
@@ -2520,6 +2519,7 @@ pub(crate) fn missing_symlink_dir(path: &Path) -> Option<PathBuf> {
     (!dir.is_dir()).then(|| dir.to_path_buf())
 }
 
+/// The directory holding `path` (`.` for a bare file name)
 fn parent_dir(path: &Path) -> &Path {
     path.parent()
         .filter(|p| !p.as_os_str().is_empty())

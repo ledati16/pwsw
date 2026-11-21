@@ -55,10 +55,10 @@ maintenance mode.
 - **Profile switches are saved in WirePlumber** (so it keeps the profile), only
   available profiles are used, and a profile that keeps the card's microphone is
   preferred. pwsw waits up to 3 s for the new node (was 750 ms). If it does not appear,
-  a rule-driven switch leaves the card on the new profile for its retries (a slow card
-  usually finishes meanwhile, and the retry only sets the default); when the last retry
-  fails, the card is switched back to its previous profile. A manual switch switches it
-  back at once, so a failed one leaves the audio where it was.
+  the card is switched back to its previous profile, so a failed switch leaves the audio
+  where it was. The retries of a failed rule-driven switch (after 2 s and 5 s) wait up
+  to 5 s, so a card too slow for the first attempt usually makes it then; for very slow
+  devices, raise `PROFILE_SWITCH_DELAY_MS`.
 - **A choice made outside pwsw is respected by fallbacks too:** when a rule settled
   for a fallback and you pick another output (e.g. in pavucontrol), pwsw no longer
   moves you to the rule's first choice when it becomes available.

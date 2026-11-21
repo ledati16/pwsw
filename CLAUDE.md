@@ -76,7 +76,8 @@ At startup the loop first applies the windows the compositor already has (up to
 `WindowEvent::InitialSync`, at most `INITIAL_SYNC_TIMEOUT`, 2 s), then takes the answer
 as the baseline; with `default_on_startup` it is activated. Window events already queued
 when the loop wakes are applied together (up to `WINDOW_EVENT_BATCH`) before one
-reconcile. Failed rule switches retry after 2 s and 5 s; if those fail too the lane
+reconcile. Failed rule switches retry after 2 s and 5 s (with the extended 5 s wait for
+a profile switch's node); if those fail too the lane
 stalls, and the next event or reload starts over (an attempt, then the two retries). A manual switch holds the same way; a failed manual switch changes
 nothing. "Changed" means
 the candidate list changed. A rule job activates the first reachable candidate against
@@ -131,14 +132,14 @@ inside it.
   sink's card must keep the sink's output. A job never switches a card twice for its
   two halves (cards switched for the sink are frozen for the source's fallthrough).
 - Post-switch wait: `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES` (default
-  150 ms × 20 = 3 s), capped at 5 s. A switch whose node does not appear in time is
-  undone (the card goes back to its previous profile, if still available) only when no
-  further attempt follows (`JobHalf::switch_back`: manual jobs, upgrade checks, `keep`,
-  and the last scheduled rule retry, `Target::Rule::final_attempt`); otherwise the card
-  is left on the new profile so a slow card can finish and the retry finds the node, and
-  the half's error is a `CardLeft`. The loop then treats `applied` as not serving
-  anything (`Lane::card_left`) until something is activated, so the rules returning to
-  it switch again. A switch to the profile the card already had counts as undone; a
+  150 ms × 20 = 3 s), capped at 5 s. Retries of a failed rule switch (submitted by
+  `Daemon::submit_retry`, `Target::Rule::extended_wait` → `JobHalf::extended_wait`) wait
+  the cap (`WaitPolicy::extended`); first attempts, manual jobs, upgrade checks and
+  `keep` halves use the normal wait (manual replies stay within `SWITCH_REPLY_TIMEOUT`).
+  No state is kept between jobs. Every switch whose node does not appear in time is
+  undone (the card goes back to the profile it had before that attempt, if still
+  available), so a failed attempt leaves the audio where it was and `applied` keeps
+  serving. A switch to the profile the card already had counts as undone; a
   `keep` source on an undone card counts as untouched, as it does when no snapshot
   could be taken at all.
 - Upgrade checks only act while the configured default is still the applied fallback
