@@ -24,7 +24,7 @@ jobs:
     name: Check (clippy, test, docs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust 1.100.0
         uses: dtolnay/rust-toolchain@1.100.0
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust 1.100.0
         uses: dtolnay/rust-toolchain@1.100.0
@@ -81,7 +81,7 @@ jobs:
     name: Formatting (nightly rustfmt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Setup Rust nightly-2026-11-14
         uses: dtolnay/rust-toolchain@master
@@ -96,7 +96,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
