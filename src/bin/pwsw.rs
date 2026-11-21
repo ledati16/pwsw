@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
             if config.sinks.is_empty() {
                 eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
             }
-            commands::set_sink_smart(&config, &sink)
+            commands::set_sink(&config, &sink).await
         }
 
         Some(Command::NextSink) => {
@@ -152,7 +152,7 @@ async fn main() -> Result<()> {
             if config.sinks.is_empty() {
                 eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
             }
-            commands::cycle_sink(&config, commands::Direction::Next)
+            commands::cycle(&config, commands::Direction::Next).await
         }
 
         Some(Command::PrevSink) => {
@@ -161,7 +161,7 @@ async fn main() -> Result<()> {
             if config.sinks.is_empty() {
                 eyre::bail!("No sinks configured. Add sinks via 'pwsw tui' first.");
             }
-            commands::cycle_sink(&config, commands::Direction::Prev)
+            commands::cycle(&config, commands::Direction::Prev).await
         }
 
         // TUI - Terminal User Interface

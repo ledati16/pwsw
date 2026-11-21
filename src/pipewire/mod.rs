@@ -203,10 +203,13 @@ impl PipeWire {
     /// `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES`, at most 5 s) for the
     /// new sink node, then sets it as the configured default.
     ///
+    /// Returns the node name that was made the default (it can differ from
+    /// `sink_name` when the sink was resolved by device identity).
+    ///
     /// # Errors
     /// Returns an error if the sink is not found, a `PipeWire` tool fails or times
     /// out, or the sink node does not appear after the profile switch.
-    pub fn activate_sink(sink_name: &str) -> Result<()> {
+    pub fn activate_sink(sink_name: &str) -> Result<String> {
         let _guard = ACTIVATION_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
@@ -220,6 +223,6 @@ impl PipeWire {
         } else {
             debug!("Set default sink {}", activation.node_name);
         }
-        Ok(())
+        Ok(activation.node_name)
     }
 }

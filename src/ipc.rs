@@ -46,8 +46,13 @@ pub enum Request {
     ListWindows,
     /// Test a rule pattern against current windows
     TestRule { pattern: String },
-    /// Manually switch to a specific sink
+    /// Manually switch to a specific sink (by position, description or node name).
+    /// Honours `set_smart_toggle`: asking for the current sink switches to the default.
     SetSink { sink: String },
+    /// Manually switch to the next configured sink (wrapping)
+    NextSink,
+    /// Manually switch to the previous configured sink (wrapping)
+    PrevSink,
     /// Get daemon manager information (systemd vs direct)
     GetManagerInfo,
     /// Gracefully shutdown the daemon
@@ -80,6 +85,13 @@ pub enum Response {
     /// Daemon manager information
     ManagerInfo {
         daemon_manager: crate::daemon_manager::DaemonManager,
+    },
+    /// A manual switch finished: the configured sink and the node made default
+    SinkSwitched {
+        /// Configured sink description
+        desc: String,
+        /// `PipeWire` node name that was made the default
+        node_name: String,
     },
 }
 
@@ -175,6 +187,22 @@ fn socket_location_from(
 #[must_use]
 pub fn get_socket_path() -> PathBuf {
     socket_location().path
+}
+
+/// Path of a daemon runtime file next to the socket (e.g. `pwsw.lock`)
+///
+/// Same location rules as the socket: `$XDG_RUNTIME_DIR/<file_name>` when that is an
+/// absolute path, else `/tmp/pwsw-<uid>/<file_name>`, creating and verifying the
+/// private `0700` directory first so the file cannot be squatted.
+///
+/// # Errors
+/// Returns an error if the private fallback directory cannot be created or verified.
+pub(crate) fn runtime_file_path(file_name: &str) -> Result<PathBuf> {
+    let location = socket_location();
+    if let Some(dir) = &location.private_dir {
+        ensure_private_dir(dir, current_uid())?;
+    }
+    Ok(location.path.with_file_name(file_name))
 }
 
 /// Create (if missing) and verify the private fallback directory.

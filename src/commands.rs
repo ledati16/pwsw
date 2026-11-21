@@ -1,7 +1,8 @@
 //! CLI commands
 //!
 //! Implements both local commands (list-sinks, validate) and IPC-based commands
-//! that communicate with the daemon (status, reload, list-windows, test-rule).
+//! that communicate with the daemon (status, list-windows, test-rule). Manual
+//! switching (set-sink, next-sink, prev-sink) goes through the daemon when it runs.
 
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -188,7 +189,60 @@ pub enum Direction {
     Prev,
 }
 
-/// Set sink with smart toggle support
+/// Switch to a sink (`set-sink`), with smart toggle support
+///
+/// When the daemon runs, the switch goes through it (`IPC`), so its view of the
+/// current sink stays correct and its rules see the manual choice; otherwise the
+/// switch happens locally.
+///
+/// # Errors
+/// Returns an error if the sink reference is invalid, the daemon reports a failure,
+/// or local sink activation fails.
+pub async fn set_sink(config: &Config, sink_ref: &str) -> Result<()> {
+    if ipc::is_daemon_running().await {
+        return switch_via_daemon(Request::SetSink {
+            sink: sink_ref.to_string(),
+        })
+        .await;
+    }
+    set_sink_smart(config, sink_ref)
+}
+
+/// Cycle to the next/previous sink (`next-sink` / `prev-sink`)
+///
+/// Goes through the daemon when it runs (see [`set_sink`]), otherwise switches locally.
+///
+/// # Errors
+/// Returns an error if the daemon reports a failure, or the local sink query or
+/// activation fails.
+pub async fn cycle(config: &Config, direction: Direction) -> Result<()> {
+    if ipc::is_daemon_running().await {
+        let request = match direction {
+            Direction::Next => Request::NextSink,
+            Direction::Prev => Request::PrevSink,
+        };
+        return switch_via_daemon(request).await;
+    }
+    cycle_sink(config, direction)
+}
+
+/// Send a manual switch request to the daemon and print the outcome
+async fn switch_via_daemon(request: Request) -> Result<()> {
+    match ipc::send_request(request).await? {
+        Response::SinkSwitched { desc, .. } => {
+            println!("{} {}", "Switched to:".success(), desc.as_str().bold());
+            Ok(())
+        }
+        Response::Ok { message } => {
+            println!("{message}");
+            Ok(())
+        }
+        Response::Error { message } => eyre::bail!("{message}"),
+        _ => eyre::bail!("Unexpected response from daemon"),
+    }
+}
+
+/// Set sink with smart toggle support, switching locally (no daemon)
 ///
 /// # Errors
 /// Returns an error if the sink reference is invalid or sink activation fails.
@@ -251,7 +305,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     Ok(())
 }
 
-/// Cycle through configured sinks
+/// Cycle through configured sinks, switching locally (no daemon)
 ///
 /// # Errors
 /// Returns an error if sink query or activation fails.

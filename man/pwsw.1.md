@@ -115,7 +115,7 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 :   The name of the Wayland display to connect to.
 
 **XDG_RUNTIME_DIR**
-:   Directory for the IPC socket (`pwsw.sock`) and PID file. If unset, empty or not an absolute path, the socket is placed in */tmp/pwsw-<uid>/* instead (see **FILES**).
+:   Directory for the IPC socket (`pwsw.sock`) and the single-instance lock file (`pwsw.lock`). If unset, empty or not an absolute path, both are placed in */tmp/pwsw-<uid>/* instead (see **FILES**).
 
 **PROFILE_SWITCH_DELAY_MS**
 :   Interval in milliseconds between checks for the new sink after a profile switch (default: 150, clamped to 10-1000).
@@ -132,6 +132,9 @@ The TUI supports mouse interaction and the following keybindings. Press `?` or `
 
 *$XDG_RUNTIME_DIR/pwsw.sock*
 :   IPC socket (mode 0600). Fallback: */tmp/pwsw-<uid>/pwsw.sock*, in a directory created with mode 0700; pwsw refuses to use that directory if it is a symlink, owned by another user, or has a different mode. Both sides check that the peer runs as the same user.
+
+*$XDG_RUNTIME_DIR/pwsw.lock*
+:   Single-instance lock (mode 0600), held with **flock**(2) while the daemon runs and released by the kernel when it exits, so a crashed daemon never blocks the next start. Lives next to the socket (fallback: */tmp/pwsw-<uid>/pwsw.lock*).
 
 *contrib/pwsw.service*
 :   systemd user unit (install to *~/.config/systemd/user/*). Part of *graphical-session.target*, restarts on failure, sandboxed.

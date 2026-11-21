@@ -82,6 +82,7 @@ mandown = "1"
 
 [dev-dependencies]
 pretty_assertions = "1"
+tokio = { version = "1", features = ["test-util"] }   # paused clock for daemon loop tests
 rstest = "0.28"
 test-case = "3"
 wayland-server = "0.31"

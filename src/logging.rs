@@ -1,9 +1,91 @@
+//! Daemon logging: a size-rotated log file plus a reloadable level filter
+
 use std::fs::{self, File};
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+use color_eyre::eyre::{Context, Result};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Registry, fmt, reload};
+
+/// Daemon log file name inside the log directory
+const DAEMON_LOG_FILE: &str = "daemon.log";
+/// Rotate the daemon log beyond this size
+const DAEMON_LOG_MAX_BYTES: u64 = 1_000_000;
+
+/// Handle to the daemon's logging setup
+///
+/// Keep it alive for the whole run: dropping it flushes and stops the log writer
+/// thread, so log lines written after that are lost.
+pub struct DaemonLogging {
+    _guard: WorkerGuard,
+    filter: reload::Handle<EnvFilter, Registry>,
+    /// `RUST_LOG` was set: it wins over the config's `log_level`, also on reload
+    env_override: bool,
+}
+
+/// The filter for a config `log_level`: only this crate logs, at that level
+fn level_filter(level: &str) -> EnvFilter {
+    EnvFilter::new(format!("pwsw={level}"))
+}
+
+/// Install the global `tracing` subscriber for the daemon
+///
+/// Always writes to `dir/daemon.log` (rotated at 1 MB, one backup) for the TUI; with
+/// `to_stderr` (foreground / systemd) also logs to stderr. `RUST_LOG`, when set,
+/// overrides `level`.
+///
+/// # Errors
+/// Returns an error if the log directory cannot be created or a global subscriber is
+/// already installed.
+pub fn init_daemon_logging(dir: &Path, to_stderr: bool, level: &str) -> Result<DaemonLogging> {
+    fs::create_dir_all(dir)
+        .with_context(|| format!("Failed to create log directory: {}", dir.display()))?;
+
+    let (filter, env_override) = match EnvFilter::try_from_default_env() {
+        Ok(filter) => (filter, true),
+        Err(_) => (level_filter(level), false),
+    };
+    let (filter_layer, filter_handle) = reload::Layer::new(filter);
+
+    let appender = RotatingFileAppender::new(dir, DAEMON_LOG_FILE, DAEMON_LOG_MAX_BYTES);
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+
+    tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(to_stderr.then(fmt::layer))
+        .with(fmt::layer().with_writer(writer).with_ansi(false))
+        .try_init()
+        .context("Failed to install the daemon log subscriber")?;
+
+    Ok(DaemonLogging {
+        _guard: guard,
+        filter: filter_handle,
+        env_override,
+    })
+}
+
+impl DaemonLogging {
+    /// A callback that re-applies a config `log_level` (no-op while `RUST_LOG` is set)
+    pub fn level_setter(&self) -> impl Fn(&str) + Send + 'static {
+        let handle = self.filter.clone();
+        let env_override = self.env_override;
+        move |level: &str| {
+            if env_override {
+                tracing::debug!("RUST_LOG is set; ignoring log_level = {level}");
+                return;
+            }
+            if let Err(e) = handle.reload(level_filter(level)) {
+                tracing::warn!("Could not apply log_level = {level}: {e}");
+            }
+        }
+    }
+}
 
 /// A file appender that rotates logs based on size.
 ///

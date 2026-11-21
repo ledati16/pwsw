@@ -1,24 +1,31 @@
 //! Daemon mode
 //!
-//! Runs the main event loop, listening to compositor window events,
-//! `IPC` requests, and switching audio sinks based on configured rules.
+//! Startup (single-instance lock, optional detach, logging, compositor, `IPC`) and the
+//! wiring of the event loop in [`event_loop`], which tracks windows, reconciles the
+//! default sink with the rules, and never waits on `PipeWire` itself.
 
-use std::io::Write;
-use std::path::PathBuf;
+mod event_loop;
+mod ipc_handler;
+mod lock;
+mod notifier;
+mod worker;
+
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
 use color_eyre::eyre::{self, Context, ContextCompat, Result};
 use notify::{Event, RecursiveMode, Watcher};
-use tempfile::NamedTempFile;
-use tokio::signal;
-use tokio::sync::broadcast;
+use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use self::event_loop::{Daemon, Hooks, Inputs, Signal};
+use self::ipc_handler::ServerInfo;
+use self::lock::InstanceLock;
+use self::notifier::{Notice, NoticeKind, Notifier};
+use self::worker::PipeWireSwitcher;
 use crate::compositor;
 use crate::config::Config;
-use crate::ipc::{self, IpcServer, Request, Response, WindowInfo};
-use crate::notification::send_notification;
+use crate::ipc::{self, IpcServer};
 use crate::pipewire::PipeWire;
 use crate::state::State;
 use crate::style::PwswStyle;
@@ -38,147 +45,6 @@ pub fn get_log_file_path() -> Result<PathBuf> {
         .context("Failed to get local data directory")?
         .join("pwsw");
     Ok(log_dir.join("daemon.log"))
-}
-
-/// Get the daemon PID file path
-///
-/// Returns `$XDG_RUNTIME_DIR/pwsw.pid` or `/tmp/pwsw-{uid}.pid` as fallback
-///
-/// The fallback uses the numeric UID rather than the `USER` environment variable
-/// to prevent potential symlink attacks from manipulated environment variables.
-#[must_use]
-pub fn get_pid_file_path() -> PathBuf {
-    if let Ok(runtime_dir) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime_dir).join("pwsw.pid")
-    } else {
-        // Fallback to /tmp with UID for consistent, secure location
-        // Using UID instead of USER env var prevents potential symlink attacks
-        use rustix::process::getuid;
-        let uid = getuid().as_raw();
-        PathBuf::from(format!("/tmp/pwsw-{uid}.pid"))
-    }
-}
-
-/// Write the daemon PID file
-///
-/// Creates a file with the current process ID, with user-only permissions (0o600).
-///
-/// # Errors
-/// Returns an error if the PID file cannot be written or permissions cannot be set.
-fn write_pid_file() -> Result<()> {
-    let pid_path = get_pid_file_path();
-    let pid = std::process::id();
-
-    let dir = pid_path
-        .parent()
-        .context("Failed to get parent directory of PID file")?;
-
-    // Create a temporary file in the same directory as the target PID file
-    let mut temp = NamedTempFile::new_in(dir)
-        .with_context(|| format!("Failed to create temporary PID file in {}", dir.display()))?;
-
-    // Write the PID to the temporary file
-    write!(temp, "{pid}").with_context(|| {
-        format!(
-            "Failed to write to temporary PID file: {}",
-            temp.path().display()
-        )
-    })?;
-
-    // Set user-only permissions on Unix for the temp file before persisting
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o600))
-            .with_context(|| {
-                format!(
-                    "Failed to set permissions on temporary PID file: {}",
-                    temp.path().display()
-                )
-            })?;
-    }
-
-    // Atomically move the temporary file to the final PID file path
-    temp.persist(&pid_path).with_context(|| {
-        format!(
-            "Failed to persist temporary PID file to {}",
-            pid_path.display()
-        )
-    })?;
-
-    info!("PID file written: {} (PID: {})", pid_path.display(), pid);
-    Ok(())
-}
-
-/// Remove the daemon PID file
-///
-/// Attempts to remove the PID file. Logs warnings on failure but does not return errors
-/// since cleanup failure is not critical during shutdown.
-fn remove_pid_file() {
-    let pid_path = get_pid_file_path();
-    if pid_path.exists() {
-        if let Err(e) = std::fs::remove_file(&pid_path) {
-            warn!("Failed to remove PID file {}: {}", pid_path.display(), e);
-        } else {
-            info!("PID file removed: {}", pid_path.display());
-        }
-    }
-}
-
-/// Check if a stale PID file exists and clean it up if the process is not running
-///
-/// Returns `Ok(true)` if a running daemon was detected, `Ok(false)` otherwise.
-///
-/// # Errors
-/// Returns an error if PID file reading fails or process checking encounters errors.
-fn check_and_cleanup_stale_pid_file() -> Result<bool> {
-    let pid_path = get_pid_file_path();
-
-    if !pid_path.exists() {
-        return Ok(false);
-    }
-
-    // Read PID from file
-    let pid_str = std::fs::read_to_string(&pid_path)
-        .with_context(|| format!("Failed to read PID file: {}", pid_path.display()))?;
-
-    let pid: u32 = pid_str
-        .trim()
-        .parse()
-        .with_context(|| format!("Invalid PID in file {}: '{}'", pid_path.display(), pid_str))?;
-
-    // Check if process is still running by checking /proc/{pid}
-    // This is Linux-specific, but PWSW is Linux-only (Wayland/PipeWire).
-    #[cfg(target_os = "linux")]
-    {
-        let proc_path = std::path::Path::new("/proc").join(pid.to_string());
-        if proc_path.exists() {
-            // Process exists
-            info!("Daemon already running with PID {}", pid);
-            Ok(true)
-        } else {
-            // Process does not exist - stale PID file
-            warn!("Stale PID file found (PID {} not running), removing", pid);
-            std::fs::remove_file(&pid_path).with_context(|| {
-                format!("Failed to remove stale PID file: {}", pid_path.display())
-            })?;
-            Ok(false)
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        // Fallback for non-Linux unix-likes (unlikely for Wayland/PipeWire but good practice)
-        // Without `nix` or `/proc`, we can't easily check. Assume stale if we can't lock?
-        // For now, just warn and remove to be safe/aggressive about startup.
-        warn!(
-            "Cannot verify PID {} on non-Linux system, assuming stale",
-            pid
-        );
-        std::fs::remove_file(&pid_path)
-            .with_context(|| format!("Failed to remove PID file: {}", pid_path.display()))?;
-        Ok(false)
-    }
 }
 
 /// Open the daemon log for appending (creating it and its directory, mode `0600`).
@@ -337,70 +203,39 @@ async fn spawn_background_daemon() -> Result<()> {
 const NOTIFICATION_STARTED_TITLE: &str = "PWSW Started";
 /// Notification message when daemon starts
 const NOTIFICATION_STARTED_MSG: &str = "Audio switcher running";
-/// Notification title when daemon stops
-const NOTIFICATION_STOPPED_TITLE: &str = "PWSW Stopped";
-/// Notification message when daemon stops
-const NOTIFICATION_STOPPED_MSG: &str = "Audio switcher stopped";
+/// Capacity of the `IPC` → event loop command channel
+const COMMAND_CHANNEL_CAPACITY: usize = 32;
 
-// ============================================================================
-// Data Structures
-// ============================================================================
-
-/// Context data passed to IPC request handlers
-struct IpcContext {
-    version: String,
-    uptime_secs: u64,
-    current_sink_name: String,
-    active_window: Option<String>,
-    daemon_manager: crate::daemon_manager::DaemonManager,
-    // tracked: (id, app_id, title, sink_name, sink_desc)
-    tracked_with_sinks: Vec<(u64, String, String, String, String)>,
-    // all windows: (id, app_id, title)
-    all_windows: Vec<(u64, String, String)>,
-    config: Arc<Config>,
-    shutdown_tx: broadcast::Sender<()>,
+/// The "already running" error, naming the check that detected it
+fn already_running(check: &str) -> eyre::Report {
+    eyre::eyre!(
+        "Another PWSW daemon is already running ({check}).\n\
+         Socket: {}\n\n\
+         To stop the existing daemon, run:\n  \
+         pwsw shutdown",
+        ipc::get_socket_path().display()
+    )
 }
 
 /// Run the daemon with the given configuration
 ///
 /// # Errors
 /// Returns an error if another daemon is running, initialization fails, compositor
-/// connection fails, `SIGTERM` signal handler cannot be installed, or any critical
-/// component encounters an error.
+/// connection fails or is lost, or a signal handler cannot be installed.
 ///
 /// # Returns
-/// Returns `Ok(())` on successful daemon shutdown.
-// Main daemon event loop - cohesive logic hard to split; constants scoped in spawn blocks
+/// Returns `Ok(())` on a requested shutdown (signal or `IPC`).
 pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
-    const CONFIG_DEBOUNCE_MS: u64 = 250;
-
-    use std::time::Duration;
-
-    // Check for running daemon BEFORE any initialization
-    // Order matters: Check PID file first (fast, local), then IPC socket (slow, network timeout)
-    // This minimizes TOCTOU race window compared to checking IPC first
-    if check_and_cleanup_stale_pid_file()? {
-        // Running daemon detected via PID file
-        let socket_path = ipc::get_socket_path();
-        eyre::bail!(
-            "Another PWSW daemon is already running (PID file check).\n\
-             Socket: {}\n\n\
-             To stop the existing daemon, run:\n  \
-             pwsw shutdown",
-            socket_path.display()
-        );
+    // Refuse early if another daemon holds the instance lock. This probe is released
+    // right away; the daemon process takes the lock for good below.
+    let lock_path = lock::lock_path()?;
+    if InstanceLock::try_acquire(&lock_path)?.is_none() {
+        return Err(already_running("instance lock"));
     }
 
-    // Double-check via IPC socket (catches edge case where PID check passed but daemon is running)
+    // Also ask the socket (catches a daemon from an older version without the lock)
     if ipc::is_daemon_running().await {
-        let socket_path = ipc::get_socket_path();
-        eyre::bail!(
-            "Another PWSW daemon is already running (IPC check).\n\
-             Socket: {}\n\n\
-             To stop the existing daemon, run:\n  \
-             pwsw shutdown",
-            socket_path.display()
-        );
+        return Err(already_running("IPC check"));
     }
 
     // Background mode: spawn detached process and wait for successful startup
@@ -408,66 +243,25 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         return spawn_background_daemon().await;
     }
 
+    // From here on this process is the daemon: hold the lock for its whole lifetime
+    let Some(_instance_lock) = InstanceLock::try_acquire(&lock_path)? else {
+        return Err(already_running("instance lock"));
+    };
+
     // Validate required `PipeWire` tools are available
     // Run in spawn_blocking to avoid blocking the tokio runtime during startup
     tokio::task::spawn_blocking(PipeWire::validate_tools)
         .await
         .map_err(|e| eyre::eyre!("Join error during tool validation: {e:#}"))??;
 
-    // Initialize logging with config log_level
-    // Filter format: "pwsw=LEVEL" ensures only our crate logs at the configured level
-    // At this point, we're either:
-    // - Running with --foreground flag (user debugging)
-    // - Running as spawned background child (foreground=false, PWSW_DAEMON_CHILD set)
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        tracing_subscriber::EnvFilter::new(format!("pwsw={}", config.settings.log_level))
-    });
-
-    // Always write to log file for TUI integration
+    // Logging: always to the log file (TUI log view); also stderr in foreground mode
+    // (systemd / debugging). Kept alive until `run` returns so no lines are lost.
     let log_path = get_log_file_path()?;
     let log_dir = log_path
         .parent()
         .context("Log file path has no parent directory")?;
-
-    std::fs::create_dir_all(log_dir)
-        .with_context(|| format!("Failed to create log directory: {}", log_dir.display()))?;
-
-    // Use custom rotating appender (1MB limit, keeps 1 backup)
-    let file_appender = crate::logging::RotatingFileAppender::new(log_dir, "daemon.log", 1_000_000);
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-
-    if foreground {
-        // Foreground mode (systemd or user debugging): log to BOTH stderr and file
-        // This ensures TUI log viewer works with systemd, and journalctl captures logs
-        use tracing_subscriber::Layer;
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::util::SubscriberInitExt;
-
-        let stderr_layer = tracing_subscriber::fmt::layer().with_filter(filter.clone());
-        let file_layer = tracing_subscriber::fmt::layer()
-            .with_writer(non_blocking)
-            .with_ansi(false) // No ANSI colors in log file
-            .with_filter(filter);
-
-        tracing_subscriber::registry()
-            .with(stderr_layer)
-            .with(file_layer)
-            .init();
-    } else {
-        // Background daemon (spawned child): log to file only
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(non_blocking)
-            .with_ansi(false) // No ANSI colors in log file
-            .init();
-    }
-
-    // Store guard to prevent it from being dropped (would close log file)
-    // SAFETY: Guard must live for entire daemon lifetime
-    std::mem::forget(guard);
-
-    // Write PID file now that daemon is fully initialized
-    write_pid_file()?;
+    let logging =
+        crate::logging::init_daemon_logging(log_dir, foreground, &config.settings.log_level)?;
 
     info!("Starting PWSW daemon {}", crate::version_string());
     info!(
@@ -475,406 +269,152 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         config.sinks.len(),
         config.rules.len()
     );
+    let started = std::time::Instant::now();
 
-    let start_time = Instant::now();
-
-    // Detect how the daemon is being managed (systemd vs direct)
-    // Run detection in blocking thread as it executes external command
+    // Detect how the daemon is being managed (runs an external command)
     let daemon_manager = tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::detect)
         .await
         .map_err(|e| eyre::eyre!("Join error during manager detection: {e:#}"))?;
     info!("Daemon manager: {:?}", daemon_manager);
 
-    let config_clone = config.clone();
-    let mut state = tokio::task::spawn_blocking(move || State::new(config_clone, daemon_manager))
-        .await
-        .map_err(|e| eyre::eyre!("Join error during state initialization: {e:#}"))??;
+    let state = State::new(Arc::clone(&config))?;
 
-    // Create shutdown channel with larger buffer to handle concurrent subscribers
-    let (shutdown_tx, mut shutdown_rx) = broadcast::channel::<()>(8);
-
-    // Switch to default on startup if configured
-    if state.config.settings.default_on_startup {
-        let default = state
-            .config
-            .get_default_sink()
-            .ok_or_else(|| eyre::eyre!("No default sink configured"))?;
-        if state.current_sink_name != default.name {
-            info!("Switching to default sink: {}", default.desc);
-
-            // Run activation in blocking thread pool to avoid blocking the async runtime
-            let name_clone = default.name.clone();
-            let desc_clone = default.desc.clone();
-            let join = tokio::task::spawn_blocking(move || {
-                crate::state::switch_audio_blocking(&name_clone, &desc_clone, None, None, false)
-            });
-
-            let inner = join.await.map_err(|e| eyre::eyre!("Join error: {e:#}"))?;
-            inner?;
-
-            state.current_sink_name.clone_from(&default.name);
+    // The current default, so startup does not switch needlessly
+    let applied = match tokio::task::spawn_blocking(PipeWire::get_default_sink_name).await {
+        Ok(Ok(name)) => {
+            info!("Current default sink: {name}");
+            Some(name)
         }
-    }
-
-    // Spawn compositor event thread
-    let mut window_events = compositor::spawn_compositor_thread()?;
-    info!("Compositor event thread started");
-
-    // Start IPC server
-    let ipc_server = IpcServer::bind().await?;
-    info!("IPC server listening on {:?}", ipc_server.socket_path());
-
-    // Setup config file watcher (hot-reload)
-    let config_path = Config::get_config_path()?;
-    let config_dir = config_path.parent().unwrap_or(&config_path);
-
-    // Use unbounded channel to ensure no config reload events are lost
-    // Debouncing (250ms) in the main loop handles rapid successive saves
-    let (config_tx, mut config_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
-    let config_tx_clone = config_tx.clone();
-
-    // Only notify reloads for changes to the exact config file
-    // Use unbounded send() instead of try_send() to never drop events
-    let config_path_clone = config_path.clone();
-    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-        match res {
-            Ok(event) => {
-                if (event.kind.is_modify() || event.kind.is_create())
-                    && event.paths.iter().any(|p| p == &config_path_clone)
-                {
-                    // Never drop config reload events - unbounded send always succeeds
-                    let _ = config_tx_clone.send(());
-                }
-            }
-            Err(e) => error!("Config watch error: {:?}", e),
+        Ok(Err(e)) => {
+            warn!("Could not query default sink: {e:#}");
+            None
         }
-    })?;
-
-    if let Err(e) = watcher.watch(config_dir, RecursiveMode::NonRecursive) {
-        warn!("Failed to watch config directory for hot-reload: {}", e);
-    }
-
-    if state.config.settings.notify_manual
-        && let Err(e) =
-            send_notification(NOTIFICATION_STARTED_TITLE, NOTIFICATION_STARTED_MSG, None)
-    {
-        warn!("Could not send startup notification: {}", e);
-    }
-
-    // Setup signal handlers for graceful shutdown
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .context("Failed to install SIGTERM handler")?;
-
-    // Notify systemd that daemon is ready
-    #[cfg(unix)]
-    {
-        if matches!(sd_notify::booted(), Ok(true))
-            && let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready])
-        {
-            warn!("Failed to notify systemd: {}", e);
-        } else if matches!(sd_notify::booted(), Ok(true)) {
-            info!("Notified systemd that daemon is ready");
-        }
-    }
-
-    info!("Daemon initialization complete, entering event loop");
-
-    let mut last_config_reload = Instant::now();
-
-    // Main event loop
-    loop {
-        tokio::select! {
-            result = window_events.recv() => {
-                let Some(event) = result else {
-                    error!("Compositor connection lost (event channel closed)");
-                    break;
-                };
-
-                if let Err(e) = state.process_event(event).await {
-                    error!("Event processing error: {e:#}", e = e);
-                }
-            }
-
-            Some(mut stream) = ipc_server.accept() => {
-                // Handle IPC request - clone what we need for the task
-                // Tracked windows: (id, app_id, title, sink_name, sink_desc)
-                let tracked_with_sinks = state.get_tracked_windows_with_sinks();
-                // All windows: (id, app_id, title)
-                let all_windows = state.get_all_windows();
-
-                let ctx = IpcContext {
-                    version: crate::version_string(),
-                    uptime_secs: start_time.elapsed().as_secs(),
-                    current_sink_name: state.current_sink_name.clone(),
-                    active_window: state.get_most_recent_window()
-                        .map(|w| format!("{}: {}", w.trigger_desc, w.sink_name)),
-                    daemon_manager: state.daemon_manager,
-                    tracked_with_sinks,
-                    all_windows,
-                    config: state.config.clone(),
-                    shutdown_tx: shutdown_tx.clone(),
-                };
-
-                tokio::spawn(async move {
-                    if let Err(e) = handle_ipc_request(&mut stream, ctx).await {
-                        // Check if this is a benign health check connection (client disconnects before sending data)
-                        let is_health_check = e.chain()
-                            .any(|cause| {
-                                cause.downcast_ref::<std::io::Error>()
-                                    .is_some_and(|io_err| io_err.kind() == std::io::ErrorKind::UnexpectedEof)
-                            });
-
-                        if !is_health_check {
-                            // Don't log health checks (TUI polls every 700ms)
-                            error!("IPC request handling error: {e:#}", e = e);
-                        }
-                    }
-                });
-            }
-
-            _ = config_rx.recv() => {
-                let now = Instant::now();
-                if now.duration_since(last_config_reload) >= Duration::from_millis(CONFIG_DEBOUNCE_MS) {
-                    last_config_reload = now;
-                    info!("Config file changed, attempting reload...");
-                    // Never creates a file; a missing file is usually an editor's
-                    // rename-save in progress and is ignored below
-                    match Config::load() {
-                        Ok(new_config) => {
-                            // Daemon requires sinks to operate - reject config with no sinks
-                            if new_config.sinks.is_empty() {
-                                warn!("Config reload rejected: no sinks configured. Keeping previous config.");
-                                if state.config.settings.notify_manual {
-                                    let _ = send_notification("Reload Rejected", "Config has no sinks - keeping previous", None);
-                                }
-                                // Drain pending events
-                                while config_rx.try_recv().is_ok() {}
-                                continue;
-                            }
-
-                            let notify_enabled = state.config.settings.notify_manual;
-                            state.reload_config(Arc::new(new_config));
-
-                            // Re-evaluate all active windows against new rules
-                            if let Err(e) = state.reevaluate_all_windows().await {
-                                error!("Failed to re-evaluate windows after config reload: {e:#}");
-                            }
-
-                            if notify_enabled {
-                                let _ = send_notification("Configuration Reloaded", "New settings applied successfully", None);
-                            }
-
-                            // Drain any pending events that occurred during processing (e.g. from atomic save steps)
-                            while config_rx.try_recv().is_ok() {}
-                        },
-                        Err(e) if e.downcast_ref::<crate::config::ConfigNotFound>().is_some() => {
-                            info!("Config file missing (save in progress?); keeping current config");
-                        }
-                        Err(e) => {
-                            error!("Failed to reload config: {e:#}");
-                            if state.config.settings.notify_manual {
-                                let _ = send_notification("Reload Failed", &format!("Config error: {e:#}"), None);
-                            }
-                        }
-                    }
-                }
-            }
-
-            _ = signal::ctrl_c() => {
-                info!("Shutting down (Ctrl-C)");
-                if state.config.settings.notify_manual {
-                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
-                }
-                break;
-            }
-
-            _ = sigterm.recv() => {
-                info!("Shutting down (SIGTERM from systemd)");
-                if state.config.settings.notify_manual {
-                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
-                }
-                break;
-            }
-
-            _ = shutdown_rx.recv() => {
-                info!("Shutting down (IPC request)");
-                if state.config.settings.notify_manual {
-                    let _ = send_notification(NOTIFICATION_STOPPED_TITLE, NOTIFICATION_STOPPED_MSG, None);
-                }
-                break;
-            }
-        }
-    }
-
-    // Cleanup PID file on shutdown
-    remove_pid_file();
-
-    Ok(())
-}
-
-/// Handle a single IPC request from a client
-// IPC request handler - cohesive dispatch logic for all request types
-async fn handle_ipc_request(stream: &mut tokio::net::UnixStream, ctx: IpcContext) -> Result<()> {
-    let request = ipc::read_request(stream).await?;
-
-    let response = match request {
-        Request::Status => {
-            // Get current sink description
-            let current_sink = ctx
-                .config
-                .sinks
-                .iter()
-                .find(|s| s.name == ctx.current_sink_name)
-                .map_or_else(|| ctx.current_sink_name.clone(), |s| s.desc.clone());
-
-            Response::Status {
-                version: ctx.version,
-                uptime_secs: ctx.uptime_secs,
-                current_sink,
-                active_window: ctx.active_window,
-                tracked_windows: ctx.tracked_with_sinks.len(),
-            }
-        }
-
-        Request::ListWindows => {
-            use std::collections::HashMap;
-
-            // Build a map of tracked windows by id for quick lookup
-            let tracked_map: HashMap<u64, (String, String)> = ctx
-                .tracked_with_sinks
-                .iter()
-                .map(|(id, _app_id, _title, sink_name, sink_desc)| {
-                    (*id, (sink_name.clone(), sink_desc.clone()))
-                })
-                .collect();
-
-            // Build WindowInfo for all windows with tracking status using ids from all_windows
-            let windows = ctx
-                .all_windows
-                .iter()
-                .map(|(id, app_id, title)| {
-                    // Find tracked info by id
-                    let tracked_opt =
-                        tracked_map
-                            .get(id)
-                            .map(|(sink_name, sink_desc)| ipc::TrackedInfo {
-                                sink_name: sink_name.clone(),
-                                sink_desc: sink_desc.clone(),
-                            });
-
-                    WindowInfo {
-                        id: Some(*id),
-                        app_id: app_id.clone(),
-                        title: title.clone(),
-                        matched_on: None,
-                        tracked: tracked_opt,
-                    }
-                })
-                .collect();
-
-            Response::Windows { windows }
-        }
-
-        Request::TestRule { pattern } => match crate::config::compile_rule_regex(&pattern) {
-            Ok(regex) => {
-                let matches = ctx
-                    .all_windows
-                    .iter()
-                    .filter_map(|(id, app_id, title)| {
-                        let app_id_match = regex.is_match(app_id);
-                        let title_match = regex.is_match(title);
-
-                        if app_id_match || title_match {
-                            let matched_on = match (app_id_match, title_match) {
-                                (true, true) => "both",
-                                (true, false) => "app_id",
-                                (false, true) => "title",
-                                (false, false) => unreachable!("Already filtered by outer if"),
-                            };
-
-                            Some(WindowInfo {
-                                id: Some(*id),
-                                app_id: app_id.clone(),
-                                title: title.clone(),
-                                matched_on: Some(matched_on.to_string()),
-                                tracked: None,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-
-                Response::RuleMatches { pattern, matches }
-            }
-            Err(e) => Response::Error {
-                message: format!("Invalid regex pattern: {e}"),
-            },
-        },
-
-        Request::GetManagerInfo => Response::ManagerInfo {
-            daemon_manager: ctx.daemon_manager,
-        },
-
-        Request::SetSink { sink } => {
-            // Resolve sink reference (name, description, or 1-indexed position)
-            if let Some(target) = ctx.config.resolve_sink(&sink) {
-                // Attempt to activate the sink via PipeWire
-                // Run blocking activation in spawn_blocking to avoid blocking the IPC task/runtime
-                let target_name = target.name.clone();
-                let join =
-                    tokio::task::spawn_blocking(move || PipeWire::activate_sink(&target_name));
-
-                match join.await {
-                    Ok(Ok(())) => Response::Ok {
-                        message: format!("Switched to sink: {}", target.desc),
-                    },
-                    Ok(Err(e)) => Response::Error {
-                        message: format!(
-                            "Failed to activate sink '{target_desc}': {e:#}",
-                            target_desc = target.desc,
-                            e = e
-                        ),
-                    },
-                    Err(e) => Response::Error {
-                        message: format!("Internal error during sink activation: {e:#}"),
-                    },
-                }
-            } else {
-                // Build helpful error message with available sinks
-                let available: Vec<_> = ctx
-                    .config
-                    .sinks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
-                    .collect();
-                Response::Error {
-                    message: format!(
-                        "Unknown sink '{}'. Available: [{}]",
-                        sink,
-                        available.join(", ")
-                    ),
-                }
-            }
-        }
-
-        Request::Shutdown => {
-            info!("Shutdown requested via IPC");
-            // Send response before shutting down
-            ipc::write_response(stream, &Response::Ok {
-                message: "Daemon shutting down...".to_string(),
-            })
-            .await?;
-
-            // Signal shutdown to main loop
-            let _ = ctx.shutdown_tx.send(());
-
-            // Return without sending another response
-            return Ok(());
+        Err(e) => {
+            warn!("Could not query default sink: {e}");
+            None
         }
     };
 
-    ipc::write_response(stream, &response).await?;
-    Ok(())
+    let window_events = compositor::spawn_compositor_thread()?;
+    info!("Compositor event thread started");
+
+    let ipc_server = IpcServer::bind().await?;
+    info!(
+        "IPC server listening on {}",
+        ipc_server.socket_path().display()
+    );
+    let (command_tx, command_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
+    let ipc_task = ipc_handler::spawn(
+        ipc_server,
+        command_tx,
+        Arc::new(ServerInfo {
+            version: crate::version_string(),
+            started,
+            daemon_manager,
+        }),
+    );
+
+    // Config hot-reload: the loop debounces these events
+    let config_path = Config::get_config_path()?;
+    let (config_tx, config_rx) = mpsc::unbounded_channel();
+    let _watcher = watch_config(&config_path, config_tx)?;
+
+    let signals = forward_signals()?;
+
+    let notifier = Notifier::spawn();
+    if config.settings.notify_manual {
+        notifier.send(Notice {
+            kind: NoticeKind::Daemon,
+            summary: NOTIFICATION_STARTED_TITLE.to_string(),
+            body: NOTIFICATION_STARTED_MSG.to_string(),
+            icon: None,
+        });
+    }
+
+    let hooks = Hooks {
+        systemd: true,
+        set_log_level: Some(Box::new(logging.level_setter())),
+    };
+    let daemon = Daemon::new(
+        state,
+        config_path,
+        Arc::new(PipeWireSwitcher),
+        notifier,
+        hooks,
+        applied,
+    );
+
+    // No-op unless started by systemd with `Type=notify`
+    if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {
+        warn!("Failed to notify systemd: {e}");
+    }
+    info!("Daemon initialization complete, entering event loop");
+
+    let result = daemon
+        .run(Inputs {
+            windows: window_events,
+            commands: command_rx,
+            config_changed: config_rx,
+            signals,
+        })
+        .await;
+
+    // Stop serving IPC; dropping the server removes the socket
+    ipc_task.abort();
+    let _ = ipc_task.await;
+
+    if let Err(e) = &result {
+        error!("Daemon exiting with error: {e:#}");
+    }
+    result
+}
+
+/// Watch the config file's directory and send `()` for changes to the file itself
+fn watch_config(
+    config_path: &Path,
+    tx: mpsc::UnboundedSender<()>,
+) -> Result<notify::RecommendedWatcher> {
+    let config_dir = config_path.parent().unwrap_or(config_path).to_path_buf();
+    let path = config_path.to_path_buf();
+    let mut watcher =
+        notify::recommended_watcher(move |res: Result<Event, notify::Error>| match res {
+            Ok(event) => {
+                if (event.kind.is_modify() || event.kind.is_create())
+                    && event.paths.iter().any(|p| p == &path)
+                {
+                    let _ = tx.send(());
+                }
+            }
+            Err(e) => error!("Config watch error: {e:?}"),
+        })?;
+    if let Err(e) = watcher.watch(&config_dir, RecursiveMode::NonRecursive) {
+        warn!("Failed to watch config directory for hot-reload: {e}");
+    }
+    Ok(watcher)
+}
+
+/// Install `SIGINT`/`SIGTERM`/`SIGHUP` handlers once and forward them to the loop
+fn forward_signals() -> Result<mpsc::Receiver<Signal>> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sigint = signal(SignalKind::interrupt()).context("Failed to install SIGINT handler")?;
+    let mut sigterm =
+        signal(SignalKind::terminate()).context("Failed to install SIGTERM handler")?;
+    let mut sighup = signal(SignalKind::hangup()).context("Failed to install SIGHUP handler")?;
+
+    let (tx, rx) = mpsc::channel(8);
+    tokio::spawn(async move {
+        loop {
+            let received = tokio::select! {
+                Some(()) = sigint.recv() => Signal::Interrupt,
+                Some(()) = sigterm.recv() => Signal::Terminate,
+                Some(()) = sighup.recv() => Signal::Hangup,
+                else => break,
+            };
+            if tx.send(received).await.is_err() {
+                break;
+            }
+        }
+    });
+    Ok(rx)
 }
