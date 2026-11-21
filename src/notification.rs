@@ -3,17 +3,27 @@
 //! Handles sending notifications via notify-rust and icon detection
 //! using `FreeDesktop` standard icon names.
 
+use std::sync::OnceLock;
+
 use color_eyre::eyre::{Context, Result};
 use notify_rust::Notification;
+use tracing::debug;
 
 use crate::config::SinkConfig;
 use crate::sanitize;
 
+/// The notification-spec capability saying the server interprets body markup
+const BODY_MARKUP: &str = "body-markup";
+
 /// Send a desktop notification
 ///
-/// The body may contain untrusted text (window titles), so it is escaped for
-/// Pango markup and stripped of control characters before sending; the summary
-/// has control characters replaced (it is plain text per the notification spec).
+/// The body may contain untrusted text (window titles), so it is stripped of
+/// control characters and, if the server interprets markup (see
+/// [`server_supports_markup`]), escaped for Pango markup; the summary has control
+/// characters replaced (it is plain text per the notification spec).
+///
+/// Blocks on `D-Bus` (the first call also queries the server's capabilities), so
+/// call it from a thread that may block.
 ///
 /// # Errors
 /// Returns an error if the notification cannot be sent (e.g., no notification daemon running).
@@ -21,7 +31,7 @@ pub fn send_notification(summary: &str, body: &str, icon: Option<&str>) -> Resul
     // Use provided icon, or fall back to generic audio icon
     let icon = icon.filter(|i| !i.is_empty()).unwrap_or("audio-card");
     let summary = sanitize::sanitize_line(summary, sanitize::MAX_LOG_CHARS);
-    let body = sanitize::for_notification(body);
+    let body = sanitize::for_notification(body, server_supports_markup());
 
     Notification::new()
         .summary(&summary)
@@ -33,6 +43,32 @@ pub fn send_notification(summary: &str, body: &str, icon: Option<&str>) -> Resul
         .context("Failed to show notification")?;
 
     Ok(())
+}
+
+/// Whether the notification server interprets body markup
+///
+/// Asked once over `D-Bus`; a successful answer is cached for the process
+/// lifetime. A failed query counts as "no markup" (the body is then sent
+/// unescaped, which a server without markup shows correctly) and is retried with
+/// the next notification, so a daemon started before the notification server
+/// does not keep a wrong answer.
+fn server_supports_markup() -> bool {
+    static MARKUP: OnceLock<bool> = OnceLock::new();
+    if let Some(&markup) = MARKUP.get() {
+        return markup;
+    }
+    match notify_rust::get_capabilities() {
+        Ok(capabilities) => *MARKUP.get_or_init(|| supports_markup(&capabilities)),
+        Err(e) => {
+            debug!("Could not query notification server capabilities: {e}");
+            false
+        }
+    }
+}
+
+/// Whether a server advertising `capabilities` interprets body markup
+fn supports_markup<S: AsRef<str>>(capabilities: &[S]) -> bool {
+    capabilities.iter().any(|c| c.as_ref() == BODY_MARKUP)
 }
 
 /// Determine icon for a sink (custom or auto-detected using `FreeDesktop` standard names)
@@ -129,6 +165,27 @@ fn app_icon_candidate(app_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::test_utils::fixtures::{make_sink, make_sink_with_icon};
+
+    #[test]
+    fn test_body_escaped_only_when_server_supports_markup() {
+        let body = "Tom & Jerry <3";
+        let with_markup = ["actions", "body", "body-markup"];
+        let plain = ["actions", "body", "body-hyperlinks"];
+        let none: [&str; 0] = [];
+
+        assert!(supports_markup(&with_markup));
+        assert!(!supports_markup(&plain));
+        assert!(!supports_markup(&none));
+
+        assert_eq!(
+            sanitize::for_notification(body, supports_markup(&with_markup)),
+            "Tom &amp; Jerry &lt;3"
+        );
+        assert_eq!(
+            sanitize::for_notification(body, supports_markup(&plain)),
+            "Tom & Jerry <3"
+        );
+    }
 
     #[test]
     fn test_get_sink_icon_custom_override() {

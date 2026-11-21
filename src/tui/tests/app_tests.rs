@@ -309,3 +309,107 @@ fn test_rule_sink_dropdown_accepts_enter_and_survives_shrunk_list() {
     assert_eq!(app.rules_screen.mode, RulesMode::AddEdit);
     assert_eq!(app.rules_screen.editor.sink_ref, "d2");
 }
+
+/// An app with unsaved edits whose Ctrl+S save is in flight on a (fake) worker.
+fn app_with_save_in_flight() -> (App, mpsc::Receiver<BgCommand>, Box<Config>) {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.config_path = Some(PathBuf::from("unused"));
+    edit(&mut app);
+    simulate_key_event(&mut app, ctrl('s'));
+    let Ok(BgCommand::SaveConfig { config, .. }) = rx.try_recv() else {
+        panic!("save queued");
+    };
+    assert!(app.save_pending);
+    (app, rx, config)
+}
+
+fn press(app: &mut App, key: KeyEvent) {
+    handle_event(app, &Event::Key(key));
+}
+
+#[test]
+fn test_quit_during_save_waits_for_it_then_exits() {
+    for quit_key in [key(KeyCode::Char('q')), ctrl('c')] {
+        let (mut app, _rx, saved) = app_with_save_in_flight();
+
+        // Unsaved-changes prompt, then the confirmation: waits instead of exiting
+        press(&mut app, quit_key);
+        assert!(app.confirm_quit);
+        press(&mut app, quit_key);
+        assert!(!app.should_quit, "must not exit while the save runs");
+        assert!(app.is_quitting_after_save());
+        assert!(app.quit_save_deadline().is_some());
+        assert!(app.status_message().expect("status").contains("Saving"));
+
+        // Input is ignored while waiting
+        press(&mut app, key(KeyCode::Char('2')));
+        assert_eq!(app.current_screen, Screen::Dashboard);
+
+        app.handle_update(AppUpdate::ConfigSaved {
+            saved,
+            outcome: SaveOutcome::Saved,
+        });
+        assert!(app.should_quit, "exits once the save is on disk");
+    }
+}
+
+#[test]
+fn test_quit_during_failed_save_stays_open_and_reports() {
+    let (mut app, _rx, saved) = app_with_save_in_flight();
+    press(&mut app, ctrl('c'));
+    press(&mut app, ctrl('c'));
+    assert!(app.is_quitting_after_save());
+
+    app.handle_update(AppUpdate::ConfigSaved {
+        saved,
+        outcome: SaveOutcome::Failed("disk full".to_string()),
+    });
+    assert!(!app.should_quit);
+    assert!(!app.is_quitting_after_save());
+    assert!(app.config_dirty, "edits are still unsaved");
+    let status = app.status_message().expect("status");
+    assert!(
+        status.contains("Not quitting") && status.contains("disk full"),
+        "{status}"
+    );
+}
+
+#[test]
+fn test_quit_during_save_times_out_then_can_force() {
+    let (mut app, _rx, _saved) = app_with_save_in_flight();
+    press(&mut app, key(KeyCode::Char('q')));
+    press(&mut app, key(KeyCode::Char('q')));
+    assert!(app.is_quitting_after_save());
+
+    // The event loop calls this at the deadline
+    app.quit_save_wait_expired();
+    assert!(!app.should_quit, "stays open rather than lose the save");
+    assert!(!app.is_quitting_after_save());
+    assert!(
+        app.status_message()
+            .expect("status")
+            .contains("Save still running")
+    );
+
+    // A further confirmed quit exits without waiting again
+    press(&mut app, key(KeyCode::Char('q')));
+    press(&mut app, key(KeyCode::Char('q')));
+    assert!(app.should_quit);
+}
+
+#[test]
+fn test_esc_cancels_quit_waiting_for_save() {
+    let (mut app, _rx, saved) = app_with_save_in_flight();
+    press(&mut app, key(KeyCode::Char('q')));
+    press(&mut app, key(KeyCode::Char('q')));
+    press(&mut app, key(KeyCode::Esc));
+    assert!(!app.is_quitting_after_save());
+
+    app.handle_update(AppUpdate::ConfigSaved {
+        saved,
+        outcome: SaveOutcome::Saved,
+    });
+    assert!(!app.should_quit, "quit was cancelled");
+}

@@ -190,9 +190,13 @@ where
         }
 
         let animating = app.is_busy();
+        let quit_deadline = app.quit_save_deadline();
         tokio::select! {
             () = tokio::time::sleep_until(redraw_at.unwrap_or_else(Instant::now)),
                 if redraw_at.is_some() => {}
+            // A quit waiting for an in-flight save gives up (the app stays open)
+            () = tokio::time::sleep_until(quit_deadline.unwrap_or_else(Instant::now)),
+                if quit_deadline.is_some() => app.quit_save_wait_expired(),
             _ = anim.tick(), if animating => app.advance_throbber(),
             event = events.next() => match event {
                 Some(Ok(event)) => {

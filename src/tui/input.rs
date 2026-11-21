@@ -12,8 +12,20 @@ use crate::config::{Rule, SinkConfig, compile_rule_regex};
 /// Handle a single input event and update app state
 ///
 /// Key presses go to `handle_key_event`; a bracketed paste goes to the focused
-/// text field only (never to key bindings); resizes trigger a redraw.
+/// text field only (never to key bindings); resizes trigger a redraw. While a quit
+/// waits for an in-flight save, everything but Esc (cancel the quit) is ignored.
 pub fn handle_event(app: &mut App, event: &Event) {
+    // Quitting, waiting for an in-flight save: only Esc (cancel the quit) does anything
+    if app.is_quitting_after_save() {
+        match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release && key.code == KeyCode::Esc => {
+                app.cancel_quit_after_save();
+            }
+            Event::Resize(..) => app.dirty = true,
+            _ => {}
+        }
+        return;
+    }
     match event {
         Event::Key(key_event) if key_event.kind != KeyEventKind::Release => {
             handle_key_event(app, *key_event);

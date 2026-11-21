@@ -4,7 +4,8 @@
 //! they must be treated as untrusted. A title containing a newline can forge whole
 //! lines in `daemon.log` (which the `TUI` then highlights as if the daemon wrote
 //! them), terminal escape sequences can repaint a terminal, and `<`/`&` are
-//! interpreted as Pango markup by most notification daemons.
+//! interpreted as Pango markup by notification daemons that advertise the
+//! `body-markup` capability.
 
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -65,18 +66,22 @@ pub fn for_log(input: &str) -> Cow<'_, str> {
     sanitize_line(input, MAX_LOG_CHARS)
 }
 
-/// Escape the characters Pango markup interprets (`&`, `<`, `>`) so a
-/// notification body is shown literally, and replace unsafe control characters
-/// with a space (notification bodies may legitimately span lines, but untrusted
-/// text must not inject markup or terminal escapes).
+/// Prepare untrusted text for a notification body: replace unsafe control
+/// characters (see [`is_unsafe_char`]) with a space and, if `markup` is set,
+/// escape the characters Pango markup interprets (`&`, `<`, `>`) so the text is
+/// shown literally.
+///
+/// `markup` must reflect whether the notification server interprets body markup
+/// (its `body-markup` capability): a server that does not would show the escapes
+/// themselves (`Tom &amp; Jerry`).
 #[must_use]
-pub fn for_notification(input: &str) -> String {
+pub fn for_notification(input: &str, markup: bool) -> String {
     let mut out = String::with_capacity(input.len());
     for c in input.chars() {
         match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
+            '&' if markup => out.push_str("&amp;"),
+            '<' if markup => out.push_str("&lt;"),
+            '>' if markup => out.push_str("&gt;"),
             c if is_unsafe_char(c) => out.push(' '),
             c => out.push(c),
         }
@@ -186,7 +191,14 @@ mod tests {
     #[test_case("a\nb\u{1b}c", "a b c" ; "controls become spaces")]
     #[test_case("音楽 🎵", "音楽 🎵" ; "unicode kept")]
     fn test_for_notification(input: &str, expected: &str) {
-        assert_eq!(for_notification(input), expected);
+        assert_eq!(for_notification(input, true), expected);
+    }
+
+    #[test_case("<b>bold</b>", "<b>bold</b>" ; "tags kept")]
+    #[test_case("Tom & Jerry", "Tom & Jerry" ; "ampersand kept")]
+    #[test_case("a\nb\u{1b}c\u{202e}d", "a b c d" ; "controls still become spaces")]
+    fn test_for_notification_without_markup(input: &str, expected: &str) {
+        assert_eq!(for_notification(input, false), expected);
     }
 
     #[test_case("plain", "plain" ; "plain")]

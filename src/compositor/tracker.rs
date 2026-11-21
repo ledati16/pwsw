@@ -125,13 +125,22 @@ const fn event_id(event: &WindowEvent) -> u64 {
 
 /// Append `event` to `queue`, dropping events it makes redundant
 ///
-/// Rules (all per window id; events for different windows keep their relative order):
+/// Rules (all per window id):
 /// - `Opened` is always appended.
-/// - `Changed` replaces any queued `Changed` (the newest state wins) and goes to the back,
-///   so its position still reflects when the latest change happened.
+/// - `Changed` replaces a queued `Changed` for the same window **in place** (the newest
+///   state wins, but keeps the queue slot of the oldest undelivered change); with no
+///   queued `Changed` it is appended. At most one `Changed` per window is ever queued.
 /// - `Closed` removes any queued `Changed`. If the window's `Opened` is still queued, the
 ///   daemon never learnt about the window, so the `Opened` is removed and no `Closed` is
 ///   queued either. Otherwise `Closed` is appended.
+///
+/// Ordering guarantee: events that survive coalescing are delivered in the order they
+/// were first queued, so no surviving event ever moves behind an event that was queued
+/// after it. In particular a window whose (since superseded) change was queued before
+/// another window's `Opened` is still processed before that `Opened`, so the daemon - which
+/// renews a window's priority when it starts matching a rule - never ranks it above a
+/// window that opened later merely because the channel was backed up. The cost is that
+/// the coalesced change carries the latest state at the earliest change's position.
 ///
 /// Consequently the consumer never sees `Changed` after `Closed`, and every `Opened` it
 /// does see is eventually followed by that window's `Closed`.
@@ -140,8 +149,14 @@ fn coalesce_push(queue: &mut VecDeque<WindowEvent>, event: WindowEvent) {
     match event {
         WindowEvent::Opened { .. } => queue.push_back(event),
         WindowEvent::Changed { .. } => {
-            queue.retain(|e| !matches!(e, WindowEvent::Changed { id: other, .. } if *other == id));
-            queue.push_back(event);
+            if let Some(slot) = queue
+                .iter_mut()
+                .find(|e| matches!(e, WindowEvent::Changed { id: other, .. } if *other == id))
+            {
+                *slot = event;
+            } else {
+                queue.push_back(event);
+            }
         }
         WindowEvent::Closed { .. } => {
             queue.retain(|e| !matches!(e, WindowEvent::Changed { id: other, .. } if *other == id));
@@ -335,14 +350,28 @@ mod tests {
     }
 
     #[test]
-    fn test_changed_supersedes_queued_changed_and_moves_to_back() {
+    fn test_changed_supersedes_queued_changed_in_place() {
         let got = push_all(vec![
             opened(1, "a"),
             changed(1, "b"),
             opened(2, "x"),
             changed(1, "c"),
         ]);
-        assert_eq!(got, vec!["O1:a", "O2:x", "C1:c"]);
+        assert_eq!(got, vec!["O1:a", "C1:c", "O2:x"]);
+    }
+
+    /// Window 1's `Opened` was already delivered; its change (queued before window 2
+    /// opened) is superseded while the channel is backed up. The coalesced change must
+    /// stay ahead of `Opened{2}`, or the daemon would renew window 1's priority after
+    /// window 2 opened and let it win although window 2 is newer.
+    #[test]
+    fn test_coalesced_changed_does_not_overtake_later_opened() {
+        let got = push_all(vec![changed(1, "b"), opened(2, "x"), changed(1, "c")]);
+        assert_eq!(got, vec!["C1:c", "O2:x"]);
+
+        // A change with nothing queued for the window is appended as usual
+        let got = push_all(vec![opened(2, "x"), changed(1, "c")]);
+        assert_eq!(got, vec!["O2:x", "C1:c"]);
     }
 
     #[test]

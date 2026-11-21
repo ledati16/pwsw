@@ -19,6 +19,8 @@ const MAX_PASTE_CHARS: usize = 4096;
 
 /// Maximum number of daemon log lines kept for the log view.
 pub(crate) const MAX_LOG_LINES: usize = 500;
+/// How long quitting waits for an in-flight config save before giving up and staying open.
+pub(crate) const QUIT_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Active screen in the TUI
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +244,12 @@ pub struct App {
     pub(crate) daemon_action_pending: bool,
     /// Whether a config save sent to the background worker has not reported back yet
     pub(crate) save_pending: bool,
+    /// Quit was requested while a save was in flight: the app quits once the save
+    /// succeeds, and gives up waiting (staying open) at this deadline
+    quit_after_save: Option<tokio::time::Instant>,
+    /// A quit already waited [`QUIT_SAVE_WAIT`] for the current save in vain; the next
+    /// confirmed quit exits without waiting again
+    quit_wait_expired: bool,
     /// Whether a config reload sent to the background worker has not reported back yet
     pub(crate) reload_pending: bool,
     /// Cached active sinks snapshot (updated by background worker)
@@ -319,6 +327,8 @@ impl App {
             pipewire_available: true, // Optimistic default until first poll
             daemon_action_pending: false,
             save_pending: false,
+            quit_after_save: None,
+            quit_wait_expired: false,
             reload_pending: false,
             daemon_log_lines: Vec::new(),
 
@@ -511,10 +521,53 @@ impl App {
         );
     }
 
-    /// Request application quit
-    pub(crate) const fn quit(&mut self) {
-        self.should_quit = true;
+    /// Quit (unsaved edits, if any, are discarded)
+    ///
+    /// While a config save is in flight the app does not exit at once: killing the
+    /// save thread before its atomic rename would lose the save. Instead it waits up
+    /// to [`QUIT_SAVE_WAIT`] for the result (see [`Self::quit_save_deadline`]) and
+    /// exits only if the save succeeded.
+    pub(crate) fn quit(&mut self) {
         self.dirty = true;
+        if !self.save_pending || self.quit_wait_expired {
+            self.should_quit = true;
+            return;
+        }
+        if self.quit_after_save.is_none() {
+            self.quit_after_save = Some(tokio::time::Instant::now() + QUIT_SAVE_WAIT);
+        }
+        self.set_status("Saving configuration… (quitting once it is written)".to_string());
+    }
+
+    /// When a quit waiting for an in-flight save gives up; `None` when not waiting
+    pub(crate) const fn quit_save_deadline(&self) -> Option<tokio::time::Instant> {
+        self.quit_after_save
+    }
+
+    /// Whether a quit is waiting for an in-flight save (input is ignored meanwhile,
+    /// except Esc, which cancels the quit)
+    pub(crate) const fn is_quitting_after_save(&self) -> bool {
+        self.quit_after_save.is_some()
+    }
+
+    /// Stop waiting to quit after the save; the app stays open
+    pub(crate) fn cancel_quit_after_save(&mut self) {
+        if self.quit_after_save.take().is_some() {
+            self.set_status("Quit cancelled; the save is still running".to_string());
+        }
+    }
+
+    /// The save did not finish within [`QUIT_SAVE_WAIT`]: stay open rather than risk
+    /// losing it. A further confirmed quit exits without waiting.
+    pub(crate) fn quit_save_wait_expired(&mut self) {
+        if self.quit_after_save.take().is_none() {
+            return;
+        }
+        self.quit_wait_expired = true;
+        self.set_status(
+            "Save still running; not quitting so it is not lost. Quit again to exit anyway"
+                .to_string(),
+        );
     }
 
     /// Request quit: quits at once without unsaved changes, otherwise asks for
@@ -856,6 +909,9 @@ impl App {
             }
             AppUpdate::ConfigSaved { saved, outcome } => {
                 self.save_pending = false;
+                self.quit_wait_expired = false;
+                let quitting = self.quit_after_save.take().is_some();
+                let succeeded = outcome == SaveOutcome::Saved;
                 match outcome {
                     SaveOutcome::Saved => {
                         // The snapshot is what is on disk now; anything edited
@@ -880,6 +936,15 @@ impl App {
                         // Dirty flag stays: the user still sees the save indicator
                         self.set_status(format!("Failed to save config: {message}"));
                     }
+                }
+                // A quit waiting for this save: exit once it is on disk (the user
+                // confirmed discarding edits made after Ctrl+S), otherwise stay open
+                // and say why
+                if quitting && succeeded {
+                    self.should_quit = true;
+                } else if quitting {
+                    let reason = self.status_message.take().unwrap_or_default();
+                    self.set_status(format!("Not quitting: {reason}"));
                 }
             }
             AppUpdate::ConfigReloaded(result) => {
