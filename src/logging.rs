@@ -1,14 +1,20 @@
 //! Daemon logging: a size-rotated log file plus a reloadable level filter
+//!
+//! Lines are written synchronously: each event is on disk (in the page cache) before
+//! the logging call returns, so nothing queued is lost when the process aborts on a
+//! panic (release builds use `panic = "abort"`). The daemon logs a handful of lines
+//! per window switch, so the cost is negligible.
 
+use std::any::Any;
 use std::fs::{self, File};
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use color_eyre::eyre::{Context, Result};
-use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt, reload};
@@ -18,12 +24,8 @@ const DAEMON_LOG_FILE: &str = "daemon.log";
 /// Rotate the daemon log beyond this size
 const DAEMON_LOG_MAX_BYTES: u64 = 1_000_000;
 
-/// Handle to the daemon's logging setup
-///
-/// Keep it alive for the whole run: dropping it flushes and stops the log writer
-/// thread, so log lines written after that are lost.
+/// Handle to the daemon's logging setup (for re-applying the config's `log_level`)
 pub struct DaemonLogging {
-    _guard: WorkerGuard,
     filter: reload::Handle<EnvFilter, Registry>,
     /// `RUST_LOG` was set: it wins over the config's `log_level`, also on reload
     env_override: bool,
@@ -53,8 +55,12 @@ pub fn init_daemon_logging(dir: &Path, to_stderr: bool, level: &str) -> Result<D
     };
     let (filter_layer, filter_handle) = reload::Layer::new(filter);
 
-    let appender = RotatingFileAppender::new(dir, DAEMON_LOG_FILE, DAEMON_LOG_MAX_BYTES);
-    let (writer, guard) = tracing_appender::non_blocking(appender);
+    // Synchronous: `Arc<W>` is a `MakeWriter` because `&RotatingFileAppender: Write`
+    let writer = Arc::new(RotatingFileAppender::new(
+        dir,
+        DAEMON_LOG_FILE,
+        DAEMON_LOG_MAX_BYTES,
+    ));
 
     tracing_subscriber::registry()
         .with(filter_layer)
@@ -68,7 +74,6 @@ pub fn init_daemon_logging(dir: &Path, to_stderr: bool, level: &str) -> Result<D
         .context("Failed to install the daemon log subscriber")?;
 
     Ok(DaemonLogging {
-        _guard: guard,
         filter: filter_handle,
         env_override,
     })
@@ -88,6 +93,35 @@ impl DaemonLogging {
                 tracing::warn!("Could not apply log_level = {level}: {e}");
             }
         }
+    }
+}
+
+/// Log panics through `tracing` (message and location), then run the previous hook
+///
+/// The background daemon's stderr is the log file as it was opened at spawn time; once
+/// the log rotates, stderr points at `daemon.log.old` (and later at an unlinked file),
+/// so the default hook's message would be lost. Logging it as an event writes it to the
+/// current log file before the process aborts.
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("{}", panic_message(info.payload(), info.location()));
+        previous(info);
+    }));
+}
+
+/// "panicked at `file:line:col`: message" for a panic payload
+fn panic_message(payload: &(dyn Any + Send), location: Option<&Location<'_>>) -> String {
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("(non-string panic payload)");
+    let thread = std::thread::current();
+    let thread = thread.name().unwrap_or("<unnamed>");
+    match location {
+        Some(location) => format!("thread '{thread}' panicked at {location}: {message}"),
+        None => format!("thread '{thread}' panicked: {message}"),
     }
 }
 
@@ -191,6 +225,18 @@ impl RotatingFileAppender {
 
 impl Write for RotatingFileAppender {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        (&*self).write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+/// Writes go through the internal mutex, so a shared reference is enough (this is
+/// what makes `Arc<RotatingFileAppender>` a `tracing` writer)
+impl Write for &RotatingFileAppender {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut guard = self
             .file
             .lock()
@@ -230,5 +276,73 @@ impl Write for RotatingFileAppender {
             file.flush()?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    fn read(path: &Path) -> String {
+        fs::read_to_string(path).expect("read log")
+    }
+
+    /// Past the size limit the next write rotates: the old lines move to `.old` and
+    /// the new line lands in a fresh `daemon.log`
+    #[test]
+    fn test_write_after_rotation_lands_in_new_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut appender = RotatingFileAppender::new(dir.path(), "daemon.log", 16);
+        appender
+            .write_all(b"first line, long enough\n")
+            .expect("write");
+        appender.write_all(b"second\n").expect("write");
+        assert_eq!(read(&dir.path().join("daemon.log")), "second\n");
+        assert_eq!(
+            read(&dir.path().join("daemon.log.old")),
+            "first line, long enough\n"
+        );
+    }
+
+    /// A `tracing` event is in the file as soon as the logging call returns (no
+    /// background writer that an abort would cut off)
+    #[test]
+    fn test_events_are_written_synchronously() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let writer = Arc::new(RotatingFileAppender::new(dir.path(), "daemon.log", 1 << 20));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(Arc::clone(&writer))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!("written before returning");
+            let text = read(&dir.path().join("daemon.log"));
+            assert!(text.contains("written before returning"), "{text:?}");
+        });
+    }
+
+    #[test]
+    fn test_panic_message_names_message_and_location() {
+        let location = Location::caller();
+        let thread = std::thread::current();
+        let thread = thread.name().unwrap_or("<unnamed>").to_string();
+
+        let payload: Box<dyn Any + Send> = Box::new("static message");
+        assert_eq!(
+            panic_message(payload.as_ref(), Some(location)),
+            format!("thread '{thread}' panicked at {location}: static message")
+        );
+        let payload: Box<dyn Any + Send> = Box::new(format!("formatted {}", 42));
+        assert_eq!(
+            panic_message(payload.as_ref(), None),
+            format!("thread '{thread}' panicked: formatted 42")
+        );
+        let payload: Box<dyn Any + Send> = Box::new(7_u32);
+        assert!(
+            panic_message(payload.as_ref(), Some(location))
+                .ends_with(": (non-string panic payload)")
+        );
     }
 }

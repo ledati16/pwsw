@@ -39,7 +39,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
 
 **name** (string, required)
-:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`), as shown by **pwsw list-sinks**. Must be non-empty and unique. A sink that is not active yet but can be reached by switching its card's profile is listed there too, with the node name it will have.
+:   The PipeWire node name (e.g., `alsa_output.pci-0000_00_1f.3.analog-stereo`), as shown by **pwsw list-sinks**. Must be non-empty and unique. A sink that is not active yet but can be reached by switching its card's profile is listed there too, with the node name it will have. To reach such a sink, pwsw switches to an available profile providing that output, preferring one that also keeps (or provides) the card's input, so a microphone is never dropped silently; it picks such a duplex profile even when the current profile has no input. Profile switching predicts the default ALSA node names (`alsa_output.<card>.<output>`): a name that WirePlumber rules changed can only be activated while that node exists. A Bluetooth sink (`bluez_output.*`) exists only while its device is connected.
 
 **desc** (string, required)
 :   A friendly description for the sink used in rules and notifications. Must be non-empty, unique, not a number, and not equal to another sink's `name`.

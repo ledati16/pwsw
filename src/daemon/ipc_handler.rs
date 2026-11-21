@@ -161,13 +161,15 @@ async fn respond(
 }
 
 fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
-    let current = snapshot.applied.as_deref().unwrap_or(&snapshot.desired);
-    let current_sink = snapshot
-        .config
-        .sinks
-        .iter()
-        .find(|s| s.name == current)
-        .map_or_else(|| current.to_string(), |s| s.desc.clone());
+    // Only a sink pwsw applied or saw: the rules' wish is not reported as applied
+    let current_sink = snapshot.applied.as_deref().map(|current| {
+        snapshot
+            .config
+            .sinks
+            .iter()
+            .find(|s| s.name == current)
+            .map_or_else(|| current.to_string(), |s| s.desc.clone())
+    });
     Response::Status {
         version: info.version.clone(),
         protocol: ipc::PROTOCOL_VERSION,

@@ -76,6 +76,7 @@ pub(crate) struct Snapshot {
     /// Sink pwsw last applied (or found at startup)
     pub applied: Option<String>,
     /// Sink the rules want right now
+    #[cfg(test)]
     pub desired: String,
     /// "trigger: sink" of the window deciding the desired sink
     pub active_window: Option<String>,
@@ -145,6 +146,13 @@ struct Retry {
     notice: Option<Notice>,
 }
 
+/// A rule-driven job replaced by a manual request before its result came in
+#[derive(Debug)]
+struct Superseded {
+    sink: String,
+    notice: Option<Notice>,
+}
+
 /// The daemon's event loop state
 pub(crate) struct Daemon {
     state: State,
@@ -161,6 +169,11 @@ pub(crate) struct Daemon {
     manual_override: bool,
     /// The rules' sink failed and retries ran out: try once more on the next event
     stalled: bool,
+    /// A rule-driven job that a manual request replaced (or that failed while the
+    /// manual request was queued behind it): if the manual request switches nothing,
+    /// it is submitted again at once, since no later change of the rules' answer
+    /// would bring it back
+    superseded: Option<Superseded>,
     /// Last status line published
     status: Option<String>,
     next_generation: u64,
@@ -196,6 +209,7 @@ impl Daemon {
             last_desired: None,
             manual_override: false,
             stalled: false,
+            superseded: None,
             status: None,
             next_generation: 0,
             submitted: None,
@@ -324,6 +338,7 @@ impl Daemon {
             self.manual_override = false;
             self.retry = None;
             self.stalled = false;
+            self.superseded = None;
             self.retries = 0;
             if self.target() != Some(name.as_str()) {
                 let notice = self.rule_notice(departure);
@@ -456,9 +471,17 @@ impl Daemon {
                     Some(Submitted {
                         origin: Origin::Manual { .. },
                         ..
-                    }) => self.manual_notice(&sink),
+                    }) => {
+                        // The user's choice holds now, until the rules' answer changes
+                        self.superseded = None;
+                        self.manual_notice(&sink)
+                    }
                     None => None,
                 };
+                if self.superseded.as_ref().is_some_and(|s| s.sink == sink) {
+                    // The superseded rule job had already started, and it succeeded
+                    self.superseded = None;
+                }
                 if let Some(notice) = notice {
                     self.notifier.send(notice);
                 }
@@ -510,13 +533,32 @@ impl Daemon {
 
     /// A manual request that switched nothing: audio stays where it was, and so does
     /// the override state from before the request
+    ///
+    /// If the request had replaced a rule-driven switch (or that switch failed while
+    /// the request waited behind it), that switch is submitted again now: the rules'
+    /// answer already changed, so no later reconcile would bring it back.
     fn settle_manual(&mut self, submitted: Option<&Submitted>) {
-        if let Some(Submitted {
+        let Some(Submitted {
             origin: Origin::Manual { restore_override },
             ..
         }) = submitted
+        else {
+            return;
+        };
+        self.manual_override = *restore_override;
+        let Some(superseded) = self.superseded.take() else {
+            return;
+        };
+        if !self.manual_override
+            && self.submitted.is_none()
+            && self.last_desired.as_deref() == Some(superseded.sink.as_str())
+            && self.applied.as_deref() != Some(superseded.sink.as_str())
         {
-            self.manual_override = *restore_override;
+            info!(
+                "Resuming the switch to {} the manual request replaced",
+                self.sink_desc(&superseded.sink)
+            );
+            self.submit(superseded.sink, superseded.notice);
         }
     }
 
@@ -598,6 +640,20 @@ impl Daemon {
             _ => self.manual_override,
         };
         self.manual_override = true;
+        // A rule job not yet settled is replaced (if queued) or may still fail (if
+        // running): remember it, so a manual request that switches nothing resumes it
+        if let Some(Submitted {
+            origin: Origin::Rule,
+            sink: Some(sink),
+            notice,
+            ..
+        }) = &self.submitted
+        {
+            self.superseded = Some(Superseded {
+                sink: sink.clone(),
+                notice: notice.clone(),
+            });
+        }
         // A pending rule retry becomes a stall: if this request switches nothing,
         // the rules' sink gets its next try on the next event
         if self.retry.take().is_some() {
@@ -641,6 +697,7 @@ impl Daemon {
         Snapshot {
             config: Arc::clone(self.state.config()),
             applied: self.applied.clone(),
+            #[cfg(test)]
             desired: desired.sink.name.clone(),
             active_window: desired
                 .window

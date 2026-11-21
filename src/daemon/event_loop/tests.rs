@@ -790,6 +790,139 @@ async fn test_smart_toggle_uses_real_default() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// Queue a manual request without waiting for its reply; returns once the loop has
+/// handed it to the worker (a query behind it on the same channel was answered)
+async fn queue_switch(h: &Harness, request: ManualSwitch) -> oneshot::Receiver<Response> {
+    let (reply, rx) = oneshot::channel();
+    h.command(Command::Switch { request, reply }).await;
+    h.snapshot().await;
+    rx
+}
+
+/// A rule-driven switch queued behind a running activation is replaced by a manual
+/// request that then fails: the rules' sink must still be activated afterwards
+// Real clock: activations are held on purpose (see `test_activation_is_not_awaited_inline`)
+#[tokio::test]
+async fn test_failed_manual_switch_resumes_the_rule_switch_it_replaced() {
+    let (fake, gate, mut started) = FakeSwitcher::gated();
+    fake.failures
+        .lock()
+        .expect("lock")
+        .insert("usb".to_string(), 1);
+    let h = start(base_config(), fake, Some("speakers"));
+
+    h.open(1, "steam").await;
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("hdmi")
+    );
+    h.open(2, "firefox").await; // headphones: queued behind the held hdmi switch
+    assert_eq!(h.wait_windows(2).await.desired, "headphones");
+    let reply = queue_switch(&h, ManualSwitch::Set("USB".to_string())).await;
+
+    drop(gate); // release everything
+    let response = within("switch reply", reply).await.expect("reply");
+    assert!(
+        matches!(&response, Response::Error { message } if message.contains("fake failure")),
+        "{response:?}"
+    );
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.manual_override);
+    assert_eq!(h.calls(), vec!["hdmi", "usb", "headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// As above, but the older rule switch fails and the manual request finds nothing to
+/// do ("Already on"): the rules' current sink must still be activated
+// Real clock: activations are held on purpose
+#[tokio::test]
+async fn test_noop_manual_switch_resumes_the_rule_switch_it_replaced() {
+    let (fake, gate, mut started) = FakeSwitcher::gated();
+    fake.failures
+        .lock()
+        .expect("lock")
+        .insert("hdmi".to_string(), 1);
+    let h = start(base_config(), fake, Some("speakers"));
+
+    h.open(1, "steam").await;
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("hdmi")
+    );
+    h.open(2, "firefox").await;
+    assert_eq!(h.wait_windows(2).await.desired, "headphones");
+    let reply = queue_switch(&h, ManualSwitch::Set("Speakers".to_string())).await;
+
+    drop(gate);
+    let response = within("switch reply", reply).await.expect("reply");
+    assert!(
+        matches!(&response, Response::Ok { message } if message == "Already on: Speakers"),
+        "{response:?}"
+    );
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(!snapshot.manual_override);
+    assert_eq!(h.calls(), vec!["hdmi", "headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// The rule switch itself is running when a manual request queues behind it; it
+/// fails (not the latest job, so no retry is scheduled) and the manual request finds
+/// nothing to do: the rules' sink gets another try at once
+// Real clock: activations are held on purpose
+#[tokio::test]
+async fn test_rule_failure_behind_noop_manual_switch_is_retried() {
+    let (fake, gate, mut started) = FakeSwitcher::gated();
+    fake.failures
+        .lock()
+        .expect("lock")
+        .insert("headphones".to_string(), 1);
+    let h = start(base_config(), fake, Some("speakers"));
+
+    h.open(1, "firefox").await;
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("headphones")
+    );
+    let reply = queue_switch(&h, ManualSwitch::Set("Speakers".to_string())).await;
+
+    drop(gate);
+    let response = within("switch reply", reply).await.expect("reply");
+    assert!(matches!(response, Response::Ok { .. }), "{response:?}");
+    h.wait_applied("headphones").await;
+    assert_eq!(h.calls(), vec!["headphones", "headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A manual request that replaced a rule switch and succeeds holds as usual
+// Real clock: activations are held on purpose
+#[tokio::test]
+async fn test_successful_manual_switch_over_queued_rule_switch_holds() {
+    let (fake, gate, mut started) = FakeSwitcher::gated();
+    let h = start(base_config(), fake, Some("speakers"));
+
+    h.open(1, "steam").await;
+    assert_eq!(
+        within("activation start", started.recv()).await.as_deref(),
+        Some("hdmi")
+    );
+    h.open(2, "firefox").await;
+    assert_eq!(h.wait_windows(2).await.desired, "headphones");
+    let reply = queue_switch(&h, ManualSwitch::Set("USB".to_string())).await;
+
+    drop(gate);
+    let response = within("switch reply", reply).await.expect("reply");
+    assert!(
+        matches!(response, Response::SinkSwitched { .. }),
+        "{response:?}"
+    );
+    h.open(3, "zsh").await;
+    let snapshot = h.wait_windows(3).await;
+    assert_eq!(snapshot.applied.as_deref(), Some("usb"));
+    assert!(snapshot.manual_override);
+    assert_eq!(h.calls(), vec!["hdmi", "usb"]);
+    h.stop().await.expect("clean shutdown");
+}
+
 /// `set-sink` over a real `IPC` stream: request in, `SinkSwitched` out
 #[tokio::test]
 async fn test_set_sink_over_ipc_stream() {
@@ -916,6 +1049,21 @@ async fn test_status_reports_version_and_protocol() {
     assert_eq!(version, "v9.9.9+test");
     assert_eq!(protocol, crate::ipc::PROTOCOL_VERSION);
     h.stop().await.expect("clean shutdown");
+}
+
+/// `Status` reports the sink the daemon applied, never the rules' unconfirmed wish
+#[tokio::test]
+async fn test_status_reports_no_sink_while_the_default_is_unknown() {
+    let body = serde_json::to_vec(&Request::Status).expect("serialize");
+    for (applied, expected) in [(None, None), (Some("hdmi"), Some("HDMI"))] {
+        let h = start(base_config(), FakeSwitcher::default(), applied);
+        let response = raw_ipc_exchange(&h, &body).await;
+        let Response::Status { current_sink, .. } = response else {
+            panic!("expected a status reply, got {response:?}");
+        };
+        assert_eq!(current_sink.as_deref(), expected, "applied = {applied:?}");
+        h.stop().await.expect("clean shutdown");
+    }
 }
 
 // ----------------------------------------------------------------------------

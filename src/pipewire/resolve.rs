@@ -28,6 +28,8 @@ use super::model::{Availability, Device, Profile, SinkNode, Snapshot};
 
 const CARD_PREFIX: &str = "alsa_card.";
 const OUTPUT_PREFIX: &str = "alsa_output.";
+/// Bluetooth sinks: they exist only while the device is connected
+const BLUEZ_OUTPUT_PREFIX: &str = "bluez_output.";
 
 /// What to do to make a configured sink the default.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +103,12 @@ fn existing_node<'a>(
 /// (`output:<mapping>+input:<current input>`); otherwise any profile with an input
 /// (so the card's microphone survives); otherwise output-only. Ties go to the higher
 /// `priority`, then the lower index. Unavailable profiles are never chosen.
+///
+/// A duplex profile wins even when the current profile is output-only, i.e. a switch
+/// may bring an input back that was off. That is deliberate: losing a microphone
+/// silently is worse than having an unused one available, and an output-only profile
+/// is more often a leftover (e.g. of an earlier switch that dropped the input) than a
+/// choice.
 pub(crate) fn choose_profile<'a>(device: &'a Device, mapping: &str) -> Option<&'a Profile> {
     let current_input = device
         .active_profile
@@ -180,7 +188,9 @@ pub(crate) fn list_profile_sinks(
 ///
 /// # Errors
 /// Returns an error if no node has that name and it cannot be reached by switching
-/// an available profile of a matching ALSA card.
+/// an available profile of a matching ALSA card. The message says why: a Bluetooth
+/// sink that is not connected, an ALSA name no card matches, or any other name that
+/// is simply not present.
 pub(crate) fn resolve(snapshot: &Snapshot, target: &str) -> Result<Plan> {
     if snapshot.sink_by_name(target).is_some() {
         return Ok(Plan::SetDefault {
@@ -202,9 +212,18 @@ pub(crate) fn resolve(snapshot: &Snapshot, target: &str) -> Result<Plan> {
         })
         .max_by_key(|(_, len, _)| *len);
     let Some((device, _, mapping)) = candidate else {
+        if target.starts_with(BLUEZ_OUTPUT_PREFIX) {
+            eyre::bail!("Sink '{target}' is not present (Bluetooth device disconnected?)");
+        }
+        if target.starts_with(OUTPUT_PREFIX) {
+            eyre::bail!(
+                "Sink '{target}' not found: no such node exists and no ALSA card matches the \
+                 name (check `pwsw list-sinks`)"
+            );
+        }
         eyre::bail!(
-            "Sink '{target}' not found: no such node exists and no ALSA card matches the name \
-             (check `pwsw list-sinks`)"
+            "Sink '{target}' is not present and not reachable by a profile switch (check \
+             `pwsw list-sinks`)"
         );
     };
 
@@ -399,13 +418,32 @@ mod tests {
         let s = snap(REAL);
         for name in [
             "alsa_output.usb-nope.analog-stereo",
-            "bluez_output.00_11.1",
             "alsa_output.pci-0000_0c_00.4.analog-stereo-analog-stereo",
             "alsa_output.pci-0000_0c_00.4.",
         ] {
             let err = resolve(&s, name).unwrap_err();
             assert!(format!("{err}").contains("not found"), "{name}: {err}");
         }
+    }
+
+    /// Names no ALSA card could produce get an error that does not talk about ALSA
+    #[test]
+    fn test_resolve_missing_non_alsa_sinks_say_not_present() {
+        let s = snap(REAL);
+        let err = resolve(&s, "bluez_output.00_11_22_33_44_55.1")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "Sink 'bluez_output.00_11_22_33_44_55.1' is not present (Bluetooth device \
+             disconnected?)"
+        );
+        let err = resolve(&s, "my_renamed_speakers").unwrap_err().to_string();
+        assert!(
+            err.contains("is not present and not reachable by a profile switch"),
+            "{err}"
+        );
+        assert!(!err.contains("ALSA"), "{err}");
     }
 
     #[test]

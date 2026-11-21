@@ -37,7 +37,7 @@ ProtectSystem=strict
 # created by `pwsw init` / `pwsw tui`, never by the daemon.
 ReadWritePaths=%h/.local/share/pwsw %t
 # Nothing needs the shared /tmp: under systemd XDG_RUNTIME_DIR (%t) is always
-# set, so the IPC socket and PID file live there, never in the /tmp fallback.
+# set, so the IPC socket and lock file live there, never in the /tmp fallback.
 PrivateTmp=yes
 
 # Logging

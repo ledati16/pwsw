@@ -111,16 +111,13 @@ fn index_config(config: &Config) -> Result<(usize, Vec<usize>)> {
         .rules
         .iter()
         .map(|rule| {
-            config
-                .resolve_sink(&rule.sink_ref)
-                .and_then(|sink| config.sinks.iter().position(|s| std::ptr::eq(s, sink)))
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "Rule '{}' references unknown sink '{}'",
-                        rule.app_id_pattern,
-                        rule.sink_ref
-                    )
-                })
+            config.resolve_sink_index(&rule.sink_ref).ok_or_else(|| {
+                eyre::eyre!(
+                    "Rule '{}' references unknown sink '{}'",
+                    rule.app_id_pattern,
+                    rule.sink_ref
+                )
+            })
         })
         .collect::<Result<Vec<_>>>()?;
     Ok((default_sink, rule_sinks))
@@ -165,15 +162,6 @@ impl State {
         self.rule_sinks = rule_sinks;
         self.rematch(&before);
         Ok(())
-    }
-
-    /// Recompute every window's rule match in one pass, keeping sequence numbers
-    ///
-    /// Logs windows that start or stop matching, or whose match now leads to another
-    /// sink, like window events do.
-    pub fn reevaluate(&mut self) {
-        let before = self.match_sinks();
-        self.rematch(&before);
     }
 
     /// For each matching window, its trigger and the name of the sink it points at
@@ -233,8 +221,8 @@ impl State {
     }
 
     /// Find the first rule matching `app_id` and `title`, with its index
-    #[must_use]
-    pub fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
+    #[cfg(test)]
+    fn find_matching_rule(&self, app_id: &str, title: &str) -> Option<(usize, &Rule)> {
         find_rule(&self.config, app_id, title)
     }
 
@@ -706,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn test_reevaluate_is_deterministic_with_many_windows() {
+    fn test_reconfigure_is_deterministic_with_many_windows() {
         // Rules match nothing at first; reconfigure so many windows match at once. The
         // winner must not depend on HashMap iteration order (repeat to shake it out).
         let base = make_config(

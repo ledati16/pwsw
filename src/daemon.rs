@@ -53,6 +53,12 @@ pub fn get_log_file_path() -> Result<PathBuf> {
 /// logging is initialised (or a final error report) ends up next to its logs
 /// instead of vanishing into `/dev/null`.
 ///
+/// Limitation: stderr stays bound to this file (inode) for the daemon's lifetime.
+/// Once the log rotates it is `daemon.log.old`, and after the next rotation an
+/// unlinked file, so late stderr output is lost. Everything that matters after
+/// startup goes through `tracing` instead, which follows rotation (panics too, via
+/// [`crate::logging::install_panic_hook`]).
+///
 /// # Errors
 /// Returns an error if the directory or file cannot be created/opened.
 fn open_log_for_stderr(log_path: &std::path::Path) -> Result<std::fs::File> {
@@ -262,6 +268,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         .context("Log file path has no parent directory")?;
     let logging =
         crate::logging::init_daemon_logging(log_dir, foreground, &config.settings.log_level)?;
+    // Panics go to the current log file too (stderr may point at a rotated-away file)
+    crate::logging::install_panic_hook();
 
     info!("Starting PWSW daemon {}", crate::version_string());
     info!(

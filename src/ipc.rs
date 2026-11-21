@@ -83,7 +83,10 @@ pub enum Response {
         #[serde(default)]
         protocol: u32,
         uptime_secs: u64,
-        current_sink: String,
+        /// The sink the daemon last applied (or found at startup), by configured
+        /// description; `None` while it does not know the default sink
+        #[serde(default)]
+        current_sink: Option<String>,
         active_window: Option<String>,
         tracked_windows: usize,
     },
@@ -549,15 +552,6 @@ async fn cleanup_stale_socket_at(socket_path: &Path) -> Result<StaleSocketCheck>
             Ok(StaleSocketCheck::TimedOut)
         }
     }
-}
-
-/// Clean up any stale socket at the default IPC path.
-///
-/// # Errors
-/// Returns an error if socket removal fails.
-pub async fn cleanup_stale_socket() -> Result<()> {
-    let socket_path = get_socket_path();
-    cleanup_stale_socket_at(&socket_path).await.map(|_| ())
 }
 
 // ============================================================================
@@ -1315,7 +1309,7 @@ mod tests {
             version: "0.3.1".to_string(),
             protocol: PROTOCOL_VERSION,
             uptime_secs: 3600,
-            current_sink: "test_sink".to_string(),
+            current_sink: Some("test_sink".to_string()),
             active_window: Some("firefox".to_string()),
             tracked_windows: 2,
         };
@@ -1333,7 +1327,7 @@ mod tests {
             assert_eq!(version, "0.3.1");
             assert_eq!(protocol, PROTOCOL_VERSION);
             assert_eq!(uptime_secs, 3600);
-            assert_eq!(current_sink, "test_sink");
+            assert_eq!(current_sink.as_deref(), Some("test_sink"));
             assert_eq!(active_window, Some("firefox".to_string()));
             assert_eq!(tracked_windows, 2);
         } else {

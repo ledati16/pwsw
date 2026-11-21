@@ -15,7 +15,7 @@ use std::time::Duration;
 use color_eyre::eyre::{self, Context, Result};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
-use tracker::{CloseOnDrop, EventOutbox, WindowTracker};
+use tracker::{EventOutbox, WindowTracker};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, EventQueue, QueueHandle};
@@ -114,10 +114,11 @@ pub fn spawn_compositor_thread() -> Result<mpsc::Receiver<WindowEvent>> {
 ///
 /// The receiver yields `None` once the stream is over, after any queued events:
 /// - the compositor connection is lost (compositor crash/restart, protocol error);
-/// - the compositor sends `finished` (it will not report windows any more);
-/// - the Wayland thread panics.
+/// - the compositor sends `finished` (it will not report windows any more).
 ///
-/// Each case is logged as an error on the Wayland thread. Callers should treat closure
+/// Each case is logged as an error on the Wayland thread. A panic on either thread
+/// aborts the process in release builds (`panic = "abort"`), like a panic anywhere else
+/// in the daemon; the supervisor restarts it. Callers should treat closure
 /// as fatal. Dropping the receiver stops both threads (the Wayland thread notices on its
 /// next compositor event).
 ///
@@ -134,7 +135,7 @@ pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<Win
     let tx_probe = tx.clone();
     std::thread::Builder::new()
         .name("pwsw-wayland".into())
-        .spawn(move || wayland_thread(&conn, thread_outbox, &tx_probe, &ready_tx))
+        .spawn(move || wayland_thread(&conn, &thread_outbox, &tx_probe, &ready_tx))
         .context("Failed to spawn Wayland thread")?;
 
     let protocol = match ready_rx.recv_timeout(SETUP_TIMEOUT) {
@@ -157,34 +158,21 @@ pub fn spawn_compositor_thread_on(conn: Connection) -> Result<mpsc::Receiver<Win
     Ok(rx)
 }
 
-/// Body of the Wayland thread: run the event loop and log how it ended
+/// Body of the Wayland thread: run the event loop, log how it ended, then close the
+/// outbox so the forwarder delivers what is left and closes the channel
+///
+/// There is no unwinding to handle: release builds abort on panic.
 fn wayland_thread(
     conn: &Connection,
-    outbox: Arc<EventOutbox>,
+    outbox: &Arc<EventOutbox>,
     tx_probe: &mpsc::Sender<WindowEvent>,
     ready: &SyncSender<Result<Protocol>>,
 ) {
-    // Dropped last (also on panic): lets the forwarder drain and close the channel
-    let _close = CloseOnDrop(Arc::clone(&outbox));
-
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_wayland(conn, outbox, tx_probe, ready)
-    }));
-
-    match result {
-        Ok(Ok(())) => info!("Wayland thread stopped"),
-        Ok(Err(e)) => error!("Wayland event loop ended: {e:#}"),
-        Err(panic_info) => {
-            let panic_msg = if let Some(&s) = panic_info.downcast_ref::<&str>() {
-                s
-            } else if let Some(s) = panic_info.downcast_ref::<String>() {
-                s.as_str()
-            } else {
-                "Unknown panic"
-            };
-            error!("Wayland event loop panicked: {panic_msg}");
-        }
+    match run_wayland(conn, Arc::clone(outbox), tx_probe, ready) {
+        Ok(()) => info!("Wayland thread stopped"),
+        Err(e) => error!("Wayland event loop ended: {e:#}"),
     }
+    outbox.close();
 }
 
 /// Detect and bind a protocol, report the outcome on `ready`, then dispatch until the end

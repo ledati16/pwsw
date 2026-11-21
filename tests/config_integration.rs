@@ -83,6 +83,13 @@ notify = false
     assert_eq!(loaded.rules[1].app_id_pattern, "mpv");
     assert_eq!(loaded.rules[1].title_pattern, Some(".*Music.*".to_string()));
     assert_eq!(loaded.rules[1].notify, Some(false));
+
+    // Save it to a new file and load that back: the same config
+    let copy_path = config_path.with_file_name("copy.toml");
+    loaded.save_to(&copy_path).expect("Failed to save config");
+    let reloaded =
+        pwsw::config::Config::load_from_path(&copy_path).expect("Failed to load saved config");
+    assert_eq!(reloaded, loaded);
 }
 
 #[test]

@@ -271,7 +271,7 @@ fn response_kind(response: &Response) -> &'static str {
 /// # Errors
 /// Returns an error if the sink reference is invalid, `PipeWire` cannot be queried,
 /// or sink activation fails.
-pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
+fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
     switch_locally(config, &ManualSwitch::Set(sink_ref.to_string()))
 }
 
@@ -283,7 +283,7 @@ pub fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
 /// # Errors
 /// Returns an error if `PipeWire` cannot be queried, no other sink can be activated,
 /// or sink activation fails.
-pub fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
+fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
     let request = match direction {
         Direction::Next => ManualSwitch::Next,
         Direction::Prev => ManualSwitch::Prev,
@@ -376,7 +376,7 @@ impl DaemonStatus {
                 version: Some(version),
                 protocol: Some(protocol),
                 uptime_secs: Some(uptime_secs),
-                daemon_sink: Some(current_sink),
+                daemon_sink: current_sink,
                 active_window,
                 tracked_windows: Some(tracked_windows),
             },

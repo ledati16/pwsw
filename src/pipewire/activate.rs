@@ -405,7 +405,7 @@ mod tests {
     fn test_activate_unknown_sink_touches_nothing() {
         let backend = FakeBackend::new(Some(0));
         let err = activate(&backend, &FakeClock::new(), POLICY, "nope").unwrap_err();
-        assert!(format!("{err}").contains("not found"), "{err}");
+        assert!(format!("{err}").contains("is not present"), "{err}");
         assert_eq!(backend.calls(), vec![Call::Snapshot]);
     }
 

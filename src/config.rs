@@ -121,8 +121,7 @@ impl std::error::Error for ConfigNotFound {}
 /// The config file changed on disk after it was loaded, so saving would discard
 /// those changes.
 ///
-/// Returned by [`Config::save`] / [`Config::save_to`]; [`Config::save_force`] skips the
-/// check.
+/// Returned by [`Config::save_to`]; [`Config::save_force_to`] skips the check.
 #[derive(Debug, Clone)]
 pub struct ConfigModifiedOnDisk {
     /// The file that changed.
@@ -530,18 +529,19 @@ impl Config {
 
     /// Parse and validate config text. `path` is only used in error messages.
     fn parse_str(contents: &str, path: &Path) -> Result<Self> {
-        let config_file: ConfigFile = toml::from_str(contents).map_err(|e| {
+        let parse_error = |e: &dyn fmt::Display| {
             eyre::eyre!(
                 "Failed to parse config: {path_display}\n{e}",
                 path_display = path.display()
             )
-        })?;
-        let doc: DocumentMut = contents.parse().map_err(|e| {
-            eyre::eyre!(
-                "Failed to parse config: {path_display}\n{e}",
-                path_display = path.display()
-            )
-        })?;
+        };
+        // Parsed once: the spanned document feeds serde (errors quote line and
+        // column) and becomes the editable document that saves write back into
+        let parsed =
+            toml_edit::Document::parse(contents.to_owned()).map_err(|e| parse_error(&e))?;
+        let config_file: ConfigFile =
+            toml_edit::de::from_document(parsed.clone()).map_err(|e| parse_error(&e))?;
+        let doc: DocumentMut = parsed.into_mut();
 
         let mut config = Self::from_config_file(config_file)
             .wrap_err_with(|| format!("Invalid config: {}", path.display()))?;
@@ -694,27 +694,7 @@ impl Config {
     // Saving
     // ------------------------------------------------------------------------
 
-    /// Save configuration to the active config path (see [`Config::get_config_path`]).
-    ///
-    /// # Errors
-    /// Returns an error if the config is invalid, if the file changed on disk since it
-    /// was loaded ([`ConfigModifiedOnDisk`]), or if it cannot be written.
-    pub fn save(&self) -> Result<()> {
-        let config_path = Self::get_config_path()?;
-        self.save_impl(&config_path, false)
-    }
-
-    /// Like [`Config::save`], but overwrite the file even if it changed on disk since it
-    /// was loaded.
-    ///
-    /// # Errors
-    /// Returns an error if the config is invalid or cannot be written.
-    pub fn save_force(&self) -> Result<()> {
-        let config_path = Self::get_config_path()?;
-        self.save_impl(&config_path, true)
-    }
-
-    /// Save configuration to the specified path (used by tests to avoid touching XDG paths)
+    /// Save configuration to `path` (normally [`Config::get_config_path`])
     ///
     /// # Errors
     /// Returns an error if the config is invalid, if the file changed on disk since it
@@ -925,6 +905,10 @@ impl Config {
 
     /// Render the config as TOML, applying the current values into the loaded document
     /// (or into an empty one for in-memory configs).
+    ///
+    /// Formatting is kept except for a UTF-8 byte-order mark, which the parser drops
+    /// (and the file is written without), and the array placement noted on
+    /// [`rebuild_array`].
     fn render(&self) -> String {
         let fresh = self.origin.doc.is_none();
         let mut doc = self
@@ -1560,7 +1544,7 @@ impl Config {
     }
 
     /// Resolve a sink reference (by position, desc, or name) to its 0-based index.
-    fn resolve_sink_index(&self, sink_ref: &str) -> Option<usize> {
+    pub(crate) fn resolve_sink_index(&self, sink_ref: &str) -> Option<usize> {
         // Try position first (1-indexed)
         if let Some(pos) = positional_ref(sink_ref) {
             return (pos > 0 && pos <= self.sinks.len()).then(|| pos - 1);
@@ -1720,6 +1704,9 @@ fn apply_settings(doc: &mut DocumentMut, s: &Settings, write_all: bool) {
         let mut table = Table::new();
         table.set_position(first.map(|p| p - 1));
         doc.insert("settings", Item::Table(table));
+        if let Some(first) = first {
+            blank_line_before_table_at(doc, first);
+        }
     }
     let Some(table) = doc.get_mut("settings").and_then(Item::as_table_like_mut) else {
         return;
@@ -1748,6 +1735,33 @@ fn apply_settings(doc: &mut DocumentMut, s: &Settings, write_all: bool) {
         s.log_level == d.log_level,
         w,
     );
+}
+
+/// Start the table at document `position` with a blank line (unless it already does),
+/// so a table inserted right before it does not run into it
+fn blank_line_before_table_at(doc: &mut DocumentMut, position: isize) {
+    let keys: Vec<String> = doc.iter().map(|(key, _)| key.to_string()).collect();
+    for key in keys {
+        let tables: Vec<&mut Table> = match doc.get_mut(&key) {
+            Some(Item::Table(table)) => vec![table],
+            Some(Item::ArrayOfTables(array)) => array.iter_mut().collect(),
+            _ => Vec::new(),
+        };
+        for table in tables {
+            if table.position() != Some(position) {
+                continue;
+            }
+            let decor = table.decor_mut();
+            let prefix = decor
+                .prefix()
+                .and_then(|p| p.as_str())
+                .unwrap_or_default()
+                .to_string();
+            if !prefix.starts_with('\n') {
+                decor.set_prefix(format!("\n{prefix}"));
+            }
+        }
+    }
 }
 
 fn apply_sink(table: &mut Table, sink: &SinkConfig) {
@@ -1783,6 +1797,11 @@ fn apply_rule(table: &mut Table, rule: &Rule) {
 ///
 /// Each item reuses its original table (`slots[i]`), so the comments above it and on its
 /// lines move with it; new items get fresh tables; tables of removed items are dropped.
+///
+/// All entries render together at the position of the first original table, so
+/// entries of another array written between them (e.g. a `[[rules]]` table between two
+/// `[[sinks]]`) end up after the whole array. An inline array (`sinks = [...]`) is
+/// rewritten as an array of tables; its comments are not kept.
 fn rebuild_array<T>(
     doc: &mut DocumentMut,
     key: &str,
@@ -1812,7 +1831,13 @@ fn rebuild_array<T>(
 
     if array.is_empty() {
         doc.remove(key);
-    } else if let Some(existing) = doc.get_mut(key) {
+    } else if let Some((mut doc_key, existing)) = doc.as_table_mut().get_key_value_mut(key) {
+        if !existing.is_array_of_tables() {
+            // `sinks = [...]`: the key's spacing around `=` would end up inside the
+            // table header (`[[sinks ]]`)
+            doc_key.leaf_decor_mut().clear();
+            doc_key.dotted_decor_mut().clear();
+        }
         *existing = Item::ArrayOfTables(array);
     } else {
         doc.insert(key, Item::ArrayOfTables(array));
@@ -2557,6 +2582,45 @@ sink = "HDMI"
         // New sink is placed with the other sinks, before the rules
         let phones = out.find("bluez_output.phones").unwrap();
         assert!(phones < out.find("# --- rules ---").unwrap(), "{out}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    /// A `[settings]` table added on save is separated from the table after it
+    #[test]
+    fn test_save_new_settings_table_gets_a_blank_line_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "c.toml",
+            "[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = true\n",
+        );
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.settings.log_level = "debug".to_string();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            out,
+            "[settings]\nlog_level = \"debug\"\n\n[[sinks]]\nname = \"a\"\ndesc = \"A\"\ndefault = \
+             true\n"
+        );
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
+    }
+
+    /// An inline `sinks = [...]` array becomes an array of tables with a clean header
+    #[test]
+    fn test_save_inline_sinks_array_gets_clean_table_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(
+            &dir,
+            "c.toml",
+            "sinks = [ { name = \"a\", desc = \"A\", default = true } ]\n",
+        );
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.add_sink(make_sink("b", "B", false)).unwrap();
+        cfg.save_to(&path).unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(!out.contains("[[sinks ]]"), "{out}");
+        assert_eq!(out.matches("[[sinks]]\n").count(), 2, "{out}");
         assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
     }
 

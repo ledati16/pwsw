@@ -121,14 +121,14 @@ impl Snapshot {
     }
 
     /// `default.configured.audio.sink`: the user's chosen default, if set.
-    #[must_use]
-    pub fn configured_default(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn configured_default(&self) -> Option<&str> {
         self.defaults.configured.as_deref()
     }
 
     /// `default.audio.sink`: the default `WirePlumber` currently routes to, if set.
-    #[must_use]
-    pub fn effective_default(&self) -> Option<&str> {
+    #[cfg(test)]
+    pub(crate) fn effective_default(&self) -> Option<&str> {
         self.defaults.effective.as_deref()
     }
 

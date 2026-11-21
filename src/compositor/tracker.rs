@@ -90,15 +90,6 @@ impl EventOutbox {
     }
 }
 
-/// Closes the outbox when dropped, so the forwarder stops even if the Wayland thread panics
-pub(super) struct CloseOnDrop(pub(super) Arc<EventOutbox>);
-
-impl Drop for CloseOnDrop {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
 /// Forwarder thread body: move events from the outbox into the daemon's channel
 ///
 /// Blocking here (when the daemon is slow) is harmless: the Wayland thread keeps
