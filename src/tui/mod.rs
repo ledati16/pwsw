@@ -79,8 +79,9 @@ pub async fn run() -> Result<()> {
     // over, so first-run messages appear normally and Ctrl+C still works. The
     // TUI is the one place that creates the commented default config.
     let config_path = crate::config::Config::get_config_path()?;
-    let config = crate::config::Config::load_or_init()?;
+    let (config, created) = crate::config::Config::load_or_init()?;
     let mut app = App::new(config, config_path);
+    app.first_run_guidance(created);
 
     // Enable/disable are offered whenever the systemd unit is installed
     let unit_installed = crate::daemon_manager::DaemonManager::unit_installed_cached().await;
@@ -289,14 +290,6 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
     ])
     .areas(content_area);
 
-    chrome::render_header(
-        frame,
-        header_area,
-        app.current_screen,
-        app.config_dirty,
-        app.daemon_paused,
-    );
-
     match app.current_screen {
         Screen::Dashboard => {
             let mut ctx = screens::DashboardRenderContext {
@@ -359,15 +352,27 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         render_help(frame, main_area, app.current_screen, &mut app.help);
     }
 
-    // Footer last: its hints describe whatever is on top
+    // Header and footer last: a dialog clears a margin around itself, which must
+    // not blank them, and the footer's hints describe whatever is on top
+    chrome::render_header(
+        frame,
+        header_area,
+        app.current_screen,
+        app.config_dirty,
+        app.daemon_paused,
+    );
     let contexts = app.active_contexts();
-    let unsaved = app.config_dirty;
+    let hints = keymap::HintState {
+        unsaved: app.config_dirty,
+        daemon_running: app.daemon_running,
+        paused: app.daemon_paused,
+    };
     let (status, spinner) = app.footer_parts();
     let footer = chrome::Footer {
         status,
         spinner,
         contexts: &contexts,
-        unsaved,
+        hints,
     };
     chrome::render_footer(frame, footer_area, &footer);
 }

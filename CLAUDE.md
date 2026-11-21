@@ -30,7 +30,7 @@ that binary.
 | `src/daemon_manager.rs` | systemd vs direct detection (`/proc/self/cgroup`), `systemctl` queries with timeouts |
 | `src/ipc.rs` | Socket path, peer checks, framing, stale cleanup, `PROTOCOL_VERSION` |
 | `src/compositor/` | `mod.rs` (Wayland thread, protocol detection, `ProtocolProbe`, `WindowEvent`), `tracker.rs` (`WindowTracker`, `EventOutbox` coalescing), `ext_toplevel.rs`, `wlr_toplevel.rs`, `output.rs` (`wl_output` connector names, `wlr` only) |
-| `src/pipewire/` | `model`, `parse` (pure), `resolve` (pure), `activate` (over `AudioBackend` + `Clock`), `cli` (only process spawning) |
+| `src/pipewire/` | `model`, `parse` (pure), `resolve` (pure), `activate` (over `AudioBackend` + `Clock`), `cli` (only process spawning), `node_state` (`NodeState`: current / present / via profile / missing, shared by `list-sinks` and the TUI) |
 | `src/notification.rs` | `notify-rust` wrapper, markup capability detection, icon selection |
 | `src/sanitize.rs` | Untrusted text for logs, notifications, captured child output |
 | `src/logging.rs` | Size-rotated `daemon.log` appender (1 MB, one `.old`, synchronous writes), reloadable level filter, panic hook that records panics in the log |

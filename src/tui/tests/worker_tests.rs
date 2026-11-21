@@ -259,6 +259,8 @@ fn test_failed_command_send_leaves_no_pending_state() {
     assert!(!app.save_pending, "no save pending after failed send");
     assert!(!app.is_busy());
 
+    // Saved state for the start (with unsaved changes it is refused before sending)
+    app.config_dirty = false;
     app.current_screen = Screen::Dashboard;
     simulate_key_event(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(
@@ -289,6 +291,7 @@ fn test_full_command_queue_leaves_no_pending_state() {
 fn test_successful_send_sets_pending_until_result() {
     let (tx, mut rx) = mpsc::channel(4);
     let mut app = dirty_app(tx);
+    app.config_dirty = false;
     app.current_screen = Screen::Dashboard;
 
     simulate_key_event(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

@@ -18,8 +18,8 @@ use std::time::Duration;
 use anyhow::Result;
 
 use crate::compositor::{Backend, ProtocolPreference, ProtocolProbe, probe_protocols};
-use crate::config::{Config, Endpoint};
-use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, output_with_timeout};
+use crate::config::{Config, Endpoint, PositionalRef};
+use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, StartHint, output_with_timeout};
 use crate::ipc::{self, Request, Response};
 use crate::pipewire::{GraphInfo, PipeWire, Reachability, Snapshot};
 use crate::style::PwswStyle;
@@ -152,7 +152,6 @@ impl Report {
             out.push('\n');
         }
         let (fails, warns) = (self.count(Level::Fail), self.count(Level::Warn));
-        let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
         let summary = match (fails, warns) {
             (0, 0) => "Everything looks fine.".success().to_string(),
             (0, w) => format!("No problems, {}.", plural(w, "warning"))
@@ -167,6 +166,11 @@ impl Report {
     }
 }
 
+/// `1 sink`, `2 sinks`
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
 // ============================================================================
 // Running the checks
 // ============================================================================
@@ -176,8 +180,8 @@ impl Report {
 /// `--config` was given (to say where the config path comes from).
 pub async fn run(config_flag: bool) -> bool {
     let local = tokio::task::spawn_blocking(move || local_sections(config_flag)).await;
-    let (sections, monitor) = match local {
-        Ok(local) => (local.sections, local.monitor),
+    let (sections, monitor, has_sinks) = match local {
+        Ok(local) => (local.sections, local.monitor, local.has_sinks),
         Err(e) => (
             vec![Section {
                 title: "Doctor",
@@ -187,15 +191,17 @@ pub async fn run(config_flag: bool) -> bool {
                 )],
             }],
             MonitorRules::default(),
+            false,
         ),
     };
     let mut report = Report { sections };
-    report
-        .sections
-        .push(daemon_checks(&DaemonFacts::query().await, monitor));
-    if let Ok(sections) = tokio::task::spawn_blocking(service_sections).await {
-        report.sections.extend(sections);
-    }
+    let facts = DaemonFacts::query().await;
+    let (service, unit_installed) = tokio::task::spawn_blocking(service_sections)
+        .await
+        .unwrap_or_default();
+    let start = StartHint::new(has_sinks, unit_installed);
+    report.sections.push(daemon_checks(&facts, monitor, start));
+    report.sections.extend(service);
     crate::style::write_stdout(format_args!("{}", report.render()));
     report.passed()
 }
@@ -213,6 +219,8 @@ struct MonitorRules {
 struct Local {
     sections: Vec<Section>,
     monitor: MonitorRules,
+    /// The config loaded and has sinks (the daemon can start)
+    has_sinks: bool,
 }
 
 /// Wayland, `PipeWire`, config, sinks and sources (blocking)
@@ -255,7 +263,11 @@ fn local_sections(config_flag: bool) -> Local {
     let mut sections = vec![wayland, pipewire, config_section];
     sections.extend(sink_checks(loaded, snapshot));
     sections.extend(source_checks(loaded, snapshot));
-    Local { sections, monitor }
+    Local {
+        sections,
+        monitor,
+        has_sinks: loaded.is_some_and(|c| !c.sinks.is_empty()),
+    }
 }
 
 /// Whether the compositor offers a protocol that reports monitors (`wlr`)
@@ -265,8 +277,9 @@ fn monitor_info_offered(probe: &ProtocolProbe) -> bool {
         .is_some_and(crate::compositor::Capabilities::monitor_info)
 }
 
-/// systemd unit and log file (blocking)
-fn service_sections() -> Vec<Section> {
+/// systemd unit and log file (blocking), and whether the unit is installed
+fn service_sections() -> (Vec<Section>, bool) {
+    let mut installed = false;
     let systemd = if in_path("systemctl") {
         let query = |verb: &str| {
             let mut cmd = Command::new("systemctl");
@@ -277,6 +290,9 @@ fn service_sections() -> Vec<Section> {
             })
         };
         let enabled = query("is-enabled");
+        installed = enabled
+            .as_ref()
+            .is_some_and(|q| !matches!(q.stdout.as_str(), "" | "not-found"));
         let active = query("is-active");
         systemd_checks(Some((enabled, active)))
     } else {
@@ -288,10 +304,13 @@ fn service_sections() -> Vec<Section> {
         .as_deref()
         .and_then(|p| std::fs::read(p).ok())
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
-    vec![
-        systemd,
-        log_checks(log_path.as_deref(), contents.as_deref()),
-    ]
+    (
+        vec![
+            systemd,
+            log_checks(log_path.as_deref(), contents.as_deref()),
+        ],
+        installed,
+    )
 }
 
 /// Whether an executable `name` is in `PATH`
@@ -415,7 +434,7 @@ fn pipewire_checks(
     let broken: Vec<_> = tools.iter().filter(|(_, r)| r.is_err()).collect();
     if broken.is_empty() {
         let names: Vec<&str> = tools.iter().map(|(t, _)| *t).collect();
-        checks.push(Check::ok(format!("{} work", names.join(", "))));
+        checks.push(Check::ok(format!("{} are installed", names.join(", "))));
     }
     for (tool, result) in broken {
         if let Err(e) = result {
@@ -515,8 +534,6 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
             "Fix the file; pwsw validate shows the same error",
         )),
         Some(Ok(config)) => {
-            let plural =
-                |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
             checks.push(Check::ok(format!(
                 "The config is valid: {}, {}",
                 plural(config.sinks.len(), "sink"),
@@ -528,16 +545,8 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
                     "Add sinks: pwsw tui (2 Sinks → a); pwsw list-sinks shows your outputs",
                 ));
             }
-            let positional = config.rules_with_positional_refs();
-            if !positional.is_empty() {
-                let numbers: Vec<String> = positional.iter().map(ToString::to_string).collect();
-                checks.push(Check::warn(
-                    format!(
-                        "Rule(s) {} name a sink by position, which is deprecated",
-                        numbers.join(", ")
-                    ),
-                    "Use the sink's desc (sink = \"Speakers\"); saving the rule in pwsw tui does that",
-                ));
+            if let Some(check) = positional_check(&config.positional_refs()) {
+                checks.push(check);
             }
         }
     }
@@ -545,6 +554,47 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
         title: "Config",
         checks,
     }
+}
+
+/// The warning about rules that refer to sinks or mics by position (`None`: no
+/// such rule); the hint names what to write instead when every position resolves
+fn positional_check(refs: &[PositionalRef]) -> Option<Check> {
+    if refs.is_empty() {
+        return None;
+    }
+    let mut rules: Vec<String> = refs.iter().map(|r| r.rule.to_string()).collect();
+    rules.dedup();
+    let sinks = refs.iter().any(|r| r.kind == Endpoint::Sink);
+    let mics = refs.iter().any(|r| r.kind == Endpoint::Source);
+    let what = match (sinks, mics) {
+        (true, true) => "a sink or mic",
+        (false, true) => "a mic",
+        _ => "a sink",
+    };
+    let message = format!(
+        "Rule(s) {} refer to {what} by position, which is deprecated",
+        rules.join(", ")
+    );
+    let replacements: Option<Vec<String>> = refs
+        .iter()
+        .map(|r| {
+            r.replacement().map(|text| {
+                if rules.len() == 1 {
+                    text
+                } else {
+                    format!("rule {}: {text}", r.rule)
+                }
+            })
+        })
+        .collect();
+    let hint = match replacements {
+        Some(list) => format!(
+            "Use the desc: {} (saving the rule in pwsw tui does that)",
+            list.join(", ")
+        ),
+        None => "Use the desc; saving the rule in pwsw tui does that".to_string(),
+    };
+    Some(Check::warn(message, hint))
 }
 
 /// Judge each configured sink against one snapshot (`None` when there is no valid
@@ -618,8 +668,8 @@ fn endpoint_checks(
     if reachable == 0 {
         checks.push(Check::fail(
             format!(
-                "None of the configured {} can be activated right now",
-                kind.plural()
+                "None of the configured {}s can be activated right now",
+                kind.human_noun()
             ),
             compare,
         ));
@@ -692,15 +742,13 @@ impl DaemonFacts {
 }
 
 /// Judge the daemon (`monitor`: whether monitor rules are configured and possible, to
-/// notice a daemon started before they were added)
-fn daemon_checks(facts: &DaemonFacts, monitor: MonitorRules) -> Section {
+/// notice a daemon started before they were added; `start`: how to start a stopped
+/// one)
+fn daemon_checks(facts: &DaemonFacts, monitor: MonitorRules, start: StartHint) -> Section {
     let mut checks = Vec::new();
     let restart = "Restart it: systemctl --user restart pwsw (or pwsw shutdown, then pwsw daemon)";
     match &facts.status {
-        _ if !facts.running => checks.push(Check::warn(
-            "The daemon is not running",
-            "Start it: systemctl --user enable --now pwsw (or pwsw daemon)",
-        )),
+        _ if !facts.running => checks.push(Check::warn("The daemon is not running", start.text())),
         None => {}
         Some(Err(message)) => checks.push(Check::fail(
             format!("The daemon runs but could not report its status: {message}"),
@@ -1092,7 +1140,7 @@ mod tests {
         let good = pipewire_checks(&tools(Ok(String::new())), Ok(&ok), Some(&wp));
         let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
         assert_eq!(messages, [
-            "pw-dump, pw-cli, pw-metadata work",
+            "pw-dump, pw-cli, pw-metadata are installed",
             "PipeWire 1.2.7 is running",
             "WirePlumber 0.5.6 is connected",
         ]);
@@ -1151,10 +1199,13 @@ mod tests {
             "The config is valid: 1 sink, 2 rules"
         );
         assert_eq!(valid.checks[2].level, Level::Warn);
-        assert!(
-            valid.checks[2]
-                .message
-                .starts_with("Rule(s) 2 name a sink by position")
+        assert_eq!(
+            valid.checks[2].message,
+            "Rule(s) 2 refer to a sink by position, which is deprecated"
+        );
+        assert_eq!(
+            valid.checks[2].hint.as_deref(),
+            Some("Use the desc: sink = \"A\" (saving the rule in pwsw tui does that)")
         );
 
         let empty = config_checks(
@@ -1223,13 +1274,13 @@ mod tests {
         let section = source_checks(Some(&none), Some(&snapshot)).expect("a section");
         let last = section.checks.last().expect("checks");
         assert_eq!(last.level, Level::Fail);
-        assert!(last.message.contains("configured sources"), "{last:?}");
+        assert!(last.message.contains("configured mics"), "{last:?}");
     }
 
     #[test]
     fn test_daemon_checks() {
         let none = MonitorRules::default();
-        let stopped = daemon_checks(&DaemonFacts::default(), none);
+        let stopped = daemon_checks(&DaemonFacts::default(), none, StartHint::Systemd);
         assert_eq!(stopped.checks.len(), 1);
         assert_eq!(stopped.checks[0].level, Level::Warn);
 
@@ -1246,7 +1297,11 @@ mod tests {
             manager: Some(DaemonManager::Systemd),
         };
         let mine = crate::version_string();
-        let good = daemon_checks(&status(ipc::PROTOCOL_VERSION, &mine), none);
+        let good = daemon_checks(
+            &status(ipc::PROTOCOL_VERSION, &mine),
+            none,
+            StartHint::Systemd,
+        );
         let messages: Vec<&str> = good.checks.iter().map(|c| c.message.as_str()).collect();
         assert_eq!(messages, [
             format!("The daemon {mine} is running (uptime 1h 1m)").as_str(),
@@ -1254,9 +1309,17 @@ mod tests {
             "Managed by systemd (pwsw.service)",
         ]);
 
-        let old = daemon_checks(&status(ipc::PROTOCOL_VERSION, "v0.6.0"), none);
+        let old = daemon_checks(
+            &status(ipc::PROTOCOL_VERSION, "v0.6.0"),
+            none,
+            StartHint::Systemd,
+        );
         assert_eq!(old.checks[1].level, Level::Warn);
-        let other_protocol = daemon_checks(&status(ipc::PROTOCOL_VERSION + 1, "v9"), none);
+        let other_protocol = daemon_checks(
+            &status(ipc::PROTOCOL_VERSION + 1, "v9"),
+            none,
+            StartHint::Systemd,
+        );
         assert_eq!(other_protocol.checks[0].level, Level::Fail);
 
         let mute = daemon_checks(
@@ -1266,8 +1329,95 @@ mod tests {
                 manager: None,
             },
             none,
+            StartHint::Systemd,
         );
         assert_eq!(mute.checks[0].level, Level::Fail);
+    }
+
+    /// A stopped daemon gets a start hint that can work: without sinks it would
+    /// refuse to start, without the unit `systemctl` cannot start it
+    #[test]
+    fn test_daemon_checks_start_hint_fits_the_setup() {
+        let hint = |start| {
+            daemon_checks(&DaemonFacts::default(), MonitorRules::default(), start).checks[0]
+                .hint
+                .clone()
+        };
+        assert_eq!(
+            hint(StartHint::new(false, true)).as_deref(),
+            Some("Add a sink first (pwsw tui)")
+        );
+        assert_eq!(
+            hint(StartHint::new(true, false)).as_deref(),
+            Some("Start it: pwsw daemon")
+        );
+        assert_eq!(
+            hint(StartHint::new(true, true)).as_deref(),
+            Some("Start it: systemctl --user enable --now pwsw (or pwsw daemon)")
+        );
+    }
+
+    /// Positional references: one warning naming sinks and/or mics, and what to
+    /// write instead when every position names an entry
+    #[test]
+    fn test_positional_check() {
+        let config = make_config(
+            vec![
+                make_sink("a", "Speakers", true),
+                make_sink("b", "Headphones", false),
+            ],
+            vec![make_rule("x", None, "2"), make_rule("y", None, "Speakers")],
+        );
+        let check = positional_check(&config.positional_refs()).expect("a warning");
+        assert_eq!(
+            check.message,
+            "Rule(s) 1 refer to a sink by position, which is deprecated"
+        );
+        assert_eq!(
+            check.hint.as_deref(),
+            Some("Use the desc: sink = \"Headphones\" (saving the rule in pwsw tui does that)")
+        );
+
+        let mut rule = make_rule("z", None, "Speakers");
+        rule.source_refs = vec!["1".to_string()];
+        let config = make_config(
+            vec![
+                make_sink("a", "Speakers", true),
+                make_sink("b", "Headphones", false),
+            ],
+            vec![make_rule("x", None, "2"), rule],
+        )
+        .with_sources(vec![make_sink("m", "Desk Mic", true)]);
+        let check = positional_check(&config.positional_refs()).expect("a warning");
+        assert_eq!(
+            check.message,
+            "Rule(s) 1, 2 refer to a sink or mic by position, which is deprecated"
+        );
+        assert_eq!(
+            check.hint.as_deref(),
+            Some(
+                "Use the desc: rule 1: sink = \"Headphones\", rule 2: source = \"Desk Mic\" \
+                 (saving the rule in pwsw tui does that)"
+            )
+        );
+
+        // A position that names nothing: no concrete advice
+        let unresolved = [PositionalRef {
+            rule: 3,
+            kind: Endpoint::Source,
+            position: "9".to_string(),
+            desc: None,
+        }];
+        let check = positional_check(&unresolved).expect("a warning");
+        assert_eq!(
+            check.message,
+            "Rule(s) 3 refer to a mic by position, which is deprecated"
+        );
+        assert_eq!(
+            check.hint.as_deref(),
+            Some("Use the desc; saving the rule in pwsw tui does that")
+        );
+        assert!(positional_check(&[]).is_none());
     }
 
     /// A daemon on ext while the config has `output` rules and the compositor offers
@@ -1288,7 +1438,7 @@ mod tests {
             manager: None,
         };
         let restart_warning = |facts: &DaemonFacts, monitor| {
-            daemon_checks(facts, monitor)
+            daemon_checks(facts, monitor, StartHint::Systemd)
                 .checks
                 .into_iter()
                 .find(|c| c.message.contains("rules with `output`"))

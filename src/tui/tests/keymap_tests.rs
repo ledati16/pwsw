@@ -255,8 +255,9 @@ fn setups(context: Context) -> Vec<Setup> {
                 app.settings_screen.log_level_index = 2;
             }));
         }
-        Context::Dialog(screen) => {
-            for inspect in [false, true] {
+        Context::Delete(screen) | Context::Details(screen) => {
+            let inspect = matches!(context, Context::Details(_));
+            {
                 out.push(Box::new(move |app: &mut App| {
                     app.current_screen = screen;
                     app.sinks_screen.selected = 1;
@@ -408,7 +409,13 @@ fn test_every_binding_lists_its_keys() {
 
 #[test]
 fn test_footer_hints_come_from_bindings_and_fit() {
-    use crate::tui::keymap::{Hint, footer_hints};
+    use crate::tui::keymap::{Hint, HintState, Show, footer_hints};
+
+    let every_hint = HintState {
+        unsaved: true,
+        daemon_running: true,
+        paused: false,
+    };
 
     let mut contexts: Vec<Context> = Vec::new();
     for binding in BINDINGS {
@@ -437,7 +444,7 @@ fn test_footer_hints_come_from_bindings_and_fit() {
             _ => vec![context],
         };
         for width in [40, 76, 200] {
-            let hints = footer_hints(&active, true, width);
+            let hints = footer_hints(&active, every_hint, width);
             let used: usize =
                 hints.iter().map(Hint::width).sum::<usize>() + 2 * hints.len().saturating_sub(1);
             assert!(used <= width, "{context:?} at {width}: {used}");
@@ -451,8 +458,8 @@ fn test_footer_hints_come_from_bindings_and_fit() {
                 .expect("a hint");
             assert!(hints.contains(&best), "{context:?} at {width}");
         }
-        // Ctrl+S only when there is something to save
-        let clean = footer_hints(&active, false, 200);
-        assert!(clean.iter().all(|h| !h.only_unsaved), "{context:?}");
+        // Ctrl+S only when there is something to save, p only while the daemon runs
+        let clean = footer_hints(&active, HintState::default(), 200);
+        assert!(clean.iter().all(|h| h.show == Show::Always), "{context:?}");
     }
 }

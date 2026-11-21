@@ -670,9 +670,12 @@ fn test_pause_key_sends_toggle_and_shows_the_answer() {
         assert_eq!(app.daemon_paused, !expected);
         let status = app.status_message().expect("status");
         if expected {
-            assert_eq!(status, "Resumed automatic switching");
+            assert_eq!(status, "Resumed rule-driven switching");
         } else {
-            assert!(status.starts_with("Paused automatic switching"), "{status}");
+            assert!(
+                status.starts_with("Paused rule-driven switching"),
+                "{status}"
+            );
         }
     }
 
@@ -918,10 +921,16 @@ fn test_mics_are_managed_through_the_sinks_screen_and_saved() {
     assert_eq!(app.config.sources[0].desc, "Headset");
     assert_eq!(app.config.rules[0].source_refs, ["Headset"]);
 
-    // A mic a rule uses cannot be deleted; the other one can
-    press_all(&mut app, &[key(KeyCode::Char('x')), key(KeyCode::Enter)]);
+    // A mic a rule uses cannot be deleted (said at once, no question asked); the
+    // other one can
+    simulate_key_event(&mut app, key(KeyCode::Char('x')));
+    assert_eq!(app.endpoint_screen().mode, ListMode::List, "no dialog");
+    let status = app.status_message().expect("says why");
+    assert!(
+        status.starts_with("Used by rule 1 (") && status.contains("cannot delete"),
+        "{status}"
+    );
     assert_eq!(app.config.sources.len(), 2, "refused");
-    assert!(app.status_message().is_some(), "says why");
     press_all(&mut app, &[
         key(KeyCode::Down),
         key(KeyCode::Char('x')),
@@ -1105,4 +1114,178 @@ fn test_sink_delete_refuses_sink_used_by_rule() {
     );
     let status = app.status_message().expect("refusal is reported");
     assert!(status.contains("Cannot remove sink 'd2'"), "{status}");
+}
+
+// ============================================================================
+// First run, quitting with s, daemon start checks
+// ============================================================================
+
+/// `s` at the unsaved-changes prompt saves, then quits once the file is written
+#[test]
+fn test_quit_prompt_s_saves_then_quits() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, path) = file_app(&dir);
+    edit(&mut app);
+    simulate_key_event(&mut app, key(KeyCode::Char('q')));
+    assert!(app.confirm_quit);
+    let prompt = app.status_message().expect("prompt");
+    assert!(prompt.contains("s save and quit"), "{prompt}");
+
+    simulate_key_event(&mut app, key(KeyCode::Char('s')));
+    assert!(app.should_quit, "saved (no worker: at once) and quit");
+    let saved = Config::load_from_path(&path).expect("reload");
+    assert_eq!(
+        saved.settings.notify_rules, app.config.settings.notify_rules,
+        "the edit is on disk"
+    );
+}
+
+/// With a background worker the quit waits for the save's result
+#[test]
+fn test_quit_prompt_s_waits_for_the_save() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.config_path = Some(PathBuf::from("unused"));
+    edit(&mut app);
+    simulate_key_event(&mut app, key(KeyCode::Char('q')));
+    simulate_key_event(&mut app, key(KeyCode::Char('s')));
+    let Ok(BgCommand::SaveConfig { config, .. }) = rx.try_recv() else {
+        panic!("save queued");
+    };
+    assert!(!app.should_quit, "not before the file is written");
+    assert!(app.is_quitting_after_save());
+    app.handle_update(AppUpdate::ConfigSaved {
+        saved: config,
+        outcome: SaveOutcome::Saved,
+    });
+    assert!(app.should_quit);
+}
+
+/// A config without sinks opens on the Sinks screen with the next step in the
+/// footer (naming the file when it was just created)
+#[test]
+fn test_first_run_opens_on_sinks_with_guidance() {
+    let mut app = App::new(make_config(vec![], vec![]), PathBuf::from("/c/config.toml"));
+    app.first_run_guidance(true);
+    assert_eq!(app.current_screen, Screen::Sinks);
+    let status = app.status_message().expect("guidance");
+    assert!(status.starts_with("Created /c/config.toml."), "{status}");
+    assert!(
+        status.contains("Press a, then Space to pick an output"),
+        "{status}"
+    );
+
+    let mut app = App::new(make_config(vec![], vec![]), PathBuf::from("/c/config.toml"));
+    app.first_run_guidance(false);
+    assert_eq!(app.current_screen, Screen::Sinks);
+    let status = app.status_message().expect("guidance");
+    assert!(status.starts_with("No sinks yet"), "{status}");
+
+    // The path in the footer is short
+    assert_eq!(
+        crate::tui::app::home_relative(
+            std::path::Path::new("/home/u/.config/pwsw/config.toml"),
+            Some(std::ffi::OsStr::new("/home/u"))
+        ),
+        "~/.config/pwsw/config.toml"
+    );
+    assert_eq!(
+        crate::tui::app::home_relative(std::path::Path::new("/etc/pwsw.toml"), None),
+        "/etc/pwsw.toml"
+    );
+
+    // With sinks nothing changes
+    let mut app = App::new(
+        make_config(vec![make_sink("s1", "d1", true)], vec![]),
+        PathBuf::from("/c/config.toml"),
+    );
+    app.first_run_guidance(true);
+    assert_eq!(app.current_screen, Screen::Dashboard);
+    assert_eq!(app.status_message(), None);
+}
+
+/// Adding the first sink (or mic) opens the form with Default already ticked;
+/// Esc closes it without asking (nothing was changed)
+#[test]
+fn test_first_entry_form_is_prefilled_as_default() {
+    let mut app = App::with_config(make_config(vec![], vec![]));
+    app.current_screen = Screen::Sinks;
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    assert_eq!(app.sinks_screen.mode, ListMode::AddEdit);
+    assert!(app.sinks_screen.editor.default, "first sink is the default");
+    simulate_key_event(&mut app, key(KeyCode::Esc));
+    assert_eq!(app.sinks_screen.mode, ListMode::List, "not modified");
+
+    // With entries already there, a new one is not the default
+    let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
+    app.current_screen = Screen::Sinks;
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    assert!(!app.sinks_screen.editor.default);
+
+    // Mics: the first one too
+    simulate_key_event(&mut app, key(KeyCode::Esc));
+    simulate_key_event(&mut app, key(KeyCode::Char('i')));
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    assert!(
+        app.sources_screen.editor.default,
+        "first mic is the default"
+    );
+}
+
+/// Applying an edit says that Ctrl+S still has to write it
+#[test]
+fn test_applied_edits_remind_to_save() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, _) = file_app(&dir);
+    app.current_screen = Screen::Rules;
+    simulate_key_event(&mut app, key(KeyCode::Char('e')));
+    simulate_key_event(&mut app, key(KeyCode::Char('$')));
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.rules[0].app_id_pattern, "firefox$");
+    assert_eq!(app.status_message(), Some("Rule updated · Ctrl+S to save"));
+
+    app.current_screen = Screen::Sinks;
+    simulate_key_event(&mut app, key(KeyCode::Char('a')));
+    type_text(&mut app, "alsa_output.new");
+    simulate_key_event(&mut app, key(KeyCode::Down));
+    type_text(&mut app, "New Sink");
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.config.sinks.len(), 3);
+    assert_eq!(app.status_message(), Some("Sink added · Ctrl+S to save"));
+}
+
+/// Start and Restart are refused when they cannot work: no sinks, or unsaved
+/// changes the daemon would not see (nothing is saved for the user)
+#[test]
+fn test_dashboard_start_checks_sinks_and_unsaved_changes() {
+    let (tx, mut rx) = mpsc::channel(4);
+    let mut app = App::with_config(make_config(vec![], vec![]));
+    app.bg_cmd_tx = Some(tx);
+    app.config_path = Some(PathBuf::from("unused"));
+    app.dashboard_screen.selected_action = 0; // Start
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(rx.try_recv().is_err(), "not sent");
+    assert_eq!(app.status_message(), Some("Add a sink first (2 Sinks → a)"));
+
+    app.config.sinks.push(make_sink("s1", "d1", true));
+    app.mark_dirty();
+    assert!(app.config_dirty);
+    app.dashboard_screen.selected_action = 2; // Restart
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(rx.try_recv().is_err(), "not sent");
+    let status = app.status_message().expect("why");
+    assert!(
+        status.starts_with("Unsaved changes: Ctrl+S first"),
+        "{status}"
+    );
+    assert!(app.config_dirty, "not saved behind the user's back");
+
+    // Stop is never refused for these reasons
+    app.dashboard_screen.selected_action = 1;
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(BgCommand::DaemonAction(crate::tui::app::DaemonAction::Stop))
+    ));
 }

@@ -17,7 +17,7 @@ fn colors_enabled() -> bool {
     if let Some(forced) = COLOR_OVERRIDE.with(std::cell::Cell::get) {
         return forced;
     }
-    crate::style::colors_enabled()
+    crate::style::tui_colors_enabled()
 }
 
 #[cfg(test)]
@@ -152,11 +152,11 @@ mod tests {
         assert!(all().iter().any(|s| s.fg.is_some()), "restored afterwards");
     }
 
-    /// Without the test override, styles follow [`crate::style::colors_enabled`]:
+    /// Without the test override, styles follow [`crate::style::tui_colors_enabled`]:
     /// `crate::style::init` never runs in unit tests, so stdout is uncoloured there
     #[test]
     fn test_production_wiring_follows_the_style_decision() {
-        assert!(!crate::style::colors_enabled(), "init never ran");
+        assert!(!crate::style::tui_colors_enabled(), "init never ran");
         with_color_override(None, || {
             assert!(!colors_enabled());
             assert_eq!(accent(), Style::new());

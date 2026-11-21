@@ -369,6 +369,13 @@ async fn run_action<B: Backend>(
                 DaemonAction::Start | DaemonAction::Stop | DaemonAction::Restart
             ),
         ),
+        // A start that failed: `pwsw doctor` checks the whole setup
+        Err(e) if matches!(action, DaemonAction::Start | DaemonAction::Restart) => (
+            Err(format!(
+                "Daemon did not start (pwsw doctor shows why): {e:#}"
+            )),
+            false,
+        ),
         Err(e) => (Err(format!("Failed: {e:#}")), false),
     };
     let _ = updates.send(AppUpdate::ActionResult(result));

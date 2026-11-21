@@ -705,6 +705,109 @@ fn cli_validate_rejects_unparseable_config() {
     sb.assert_default_locations_untouched();
 }
 
+/// Help text is plain: no rustdoc backticks; the getting-started list ends with
+/// `pwsw doctor`
+#[test]
+fn cli_help_text_has_no_backticks() {
+    let sb = Sandbox::new();
+    let output = run(sb.cmd().arg("--help"));
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    assert!(
+        out.contains("6. pwsw doctor           If something does not work"),
+        "{out}"
+    );
+    for args in [
+        &["--help"][..],
+        &["status", "--help"],
+        &["init", "--help"],
+        &["test-rule", "--help"],
+        &["set-source", "--help"],
+        &["pause", "--help"],
+        &["doctor", "--help"],
+    ] {
+        let output = run(sb.cmd().args(args));
+        assert_exit(&output, 0);
+        let out = stdout(&output);
+        assert!(!out.contains('`'), "{args:?} prints a backtick:\n{out}");
+    }
+}
+
+/// `validate` without sinks says so instead of an empty `Sinks (0):` header
+#[test]
+fn cli_validate_without_sinks_says_so() {
+    let sb = Sandbox::new();
+    let config = sb.write_file("empty.toml", NO_SINKS_CONFIG);
+    let output = run(sb.cmd().arg("--config").arg(&config).arg("validate"));
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    assert!(out.contains("No sinks configured."), "{out}");
+    assert!(!out.contains("Sinks (0)"), "{out}");
+}
+
+/// `validate` calls sources mics, shows a rule's desc, and the deprecation
+/// warning for positions is one short line per reference (no timestamp, no
+/// module path)
+#[test]
+fn cli_validate_shows_mics_rule_descs_and_short_warnings() {
+    let sb = Sandbox::new();
+    let config = sb.write_file(
+        "mics.toml",
+        r#"
+[[sinks]]
+name = "alsa_output.a"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.b"
+desc = "Headphones"
+
+[[sources]]
+name = "alsa_input.m"
+desc = "Desk Mic"
+default = true
+
+[[rules]]
+app_id = "^firefox$"
+sink = 2
+desc = "Browser"
+
+[[rules]]
+app_id = "^discord$"
+sink = "Speakers"
+source = 1
+"#,
+    );
+    let output = run(sb.cmd().arg("--config").arg(&config).arg("validate"));
+    assert_exit(&output, 0);
+    let out = stdout(&output);
+    for needle in ["Mics (1):", "Desk Mic [DEFAULT]", "desc: Browser"] {
+        assert!(out.contains(needle), "{needle:?} in:\n{out}");
+    }
+    assert!(!out.contains("Sources ("), "{out}");
+    let err = stderr(&output);
+    let lines: Vec<&str> = err.lines().map(str::trim).collect();
+    assert_eq!(lines, [
+        "WARN rule 1 refers to its sink by position (sink = 2); use the sink's desc (sink = \
+         \"Headphones\")",
+        "WARN rule 2 refers to its mic by position (source = 1); use the mic's desc (source = \
+         \"Desk Mic\")",
+    ]);
+
+    // An unknown sink lists the descs to use, not the deprecated positions
+    let output = run(sb
+        .cmd()
+        .arg("--config")
+        .arg(&config)
+        .args(["set-sink", "Nope"]));
+    assert_exit(&output, 1);
+    assert_stderr_contains(
+        &output,
+        "error: Unknown sink 'Nope'. Available: 'Speakers', 'Headphones'",
+    );
+}
+
 #[test]
 fn cli_daemon_refuses_to_start_without_sinks() {
     let sb = Sandbox::new();
@@ -794,6 +897,8 @@ fn cli_status_reports_missing_pipewire_tools() {
     let out = stdout(&output);
     assert!(out.contains("unavailable"), "{out}");
     assert!(out.contains("Not running"), "{out}");
+    // No systemd unit to start (no systemctl at all here)
+    assert!(out.contains("  Start it: pwsw daemon"), "{out}");
     sb.assert_default_locations_untouched();
 }
 
@@ -1012,7 +1117,8 @@ fn cli_doctor_reports_what_is_missing_and_changes_nothing() {
         "✗ The config file does not exist",
         "→ Create it: pwsw init",
         "⚠ The daemon is not running",
-        "→ Start it: systemctl --user enable --now pwsw",
+        // No config, so no sinks: starting it would fail
+        "→ Add a sink first (pwsw tui)",
         "· systemctl not found: skipped",
         "· No log yet (the daemon has not run)",
         "5 problems, 2 warnings.",
@@ -1037,6 +1143,8 @@ fn cli_doctor_reports_what_is_missing_and_changes_nothing() {
         &format!("· Config file: {} (--config)", config.display()),
         "✓ The config is valid: 1 sink, 0 rules",
         "Sinks\n  · Not checked: PipeWire could not be queried",
+        // Sinks, but no systemd unit (no systemctl): start it directly
+        "⚠ The daemon is not running\n    → Start it: pwsw daemon",
     ] {
         assert!(out.contains(line), "missing {line:?} in:\n{out}");
     }

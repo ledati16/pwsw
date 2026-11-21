@@ -10,7 +10,7 @@ use ratatui::widgets::{Cell, ListItem, ListState, Row};
 use tui_input::Input;
 
 use crate::config::{Endpoint, SinkConfig};
-use crate::pipewire::{ActiveSink, ProfileSink};
+use crate::pipewire::{ActiveSink, NodeState, ProfileSink};
 use crate::tui::screens::list::{
     FormEditor, ListMode, ListScreen, open_editor_dialog, optional, render_delete_dialog,
     render_discard_dialog, render_empty, render_table, table_columns,
@@ -151,6 +151,13 @@ impl FormEditor for SinkEditor {
 }
 
 impl SinkEditor {
+    /// Tick Default in a blank form, as the state it opened with (adding the first
+    /// entry of a list, which becomes the default anyway)
+    pub(crate) const fn prefill_default(&mut self) {
+        self.default = true;
+        self.initial.3 = true;
+    }
+
     /// The sink the form describes
     ///
     /// # Errors
@@ -234,53 +241,20 @@ pub struct SinksRenderContext<'a> {
     pub pipewire_available: bool,
 }
 
-/// Where a configured sink (or source) stands in the last `PipeWire` snapshot
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SinkState {
-    /// It is the current default sink (source): audio plays (is recorded) here now
-    Playing,
-    /// The node exists
-    Present,
-    /// The node appears after a device profile switch
-    ViaProfile,
-    /// Not found
-    Missing,
+/// How a node state reads in the State column and the details
+pub(crate) const fn state_label(state: NodeState) -> &'static str {
+    match state {
+        NodeState::Current => "▶ current",
+        NodeState::Present | NodeState::ViaProfile | NodeState::Missing => state.word(),
+    }
 }
 
-impl SinkState {
-    /// State of the sink with node `name`
-    pub(crate) fn of(name: &str, active: &[ActiveSink], profiles: &[ProfileSink]) -> Self {
-        match active.iter().find(|s| s.name == name) {
-            Some(s) if s.is_default => Self::Playing,
-            Some(_) => Self::Present,
-            None if profiles.iter().any(|p| p.predicted_name == name) => Self::ViaProfile,
-            None => Self::Missing,
-        }
-    }
-
-    /// How the state reads in a list of `kind` entries
-    pub(crate) const fn label(self, kind: Endpoint) -> &'static str {
-        match self {
-            Self::Playing if matches!(kind, Endpoint::Source) => "● in use",
-            Self::Playing => "▶ playing",
-            Self::Present => "present",
-            Self::ViaProfile => "via profile",
-            Self::Missing => "missing",
-        }
-    }
-
-    fn style(self) -> ratatui::style::Style {
-        match self {
-            Self::Playing => theme::success().add_modifier(ratatui::style::Modifier::BOLD),
-            Self::Present => theme::text(),
-            Self::ViaProfile => theme::dim(),
-            Self::Missing => theme::error(),
-        }
-    }
-
-    /// Whether the node can be used right now without a profile switch
-    pub(crate) const fn is_present(self) -> bool {
-        matches!(self, Self::Playing | Self::Present)
+fn state_style(state: NodeState) -> ratatui::style::Style {
+    match state {
+        NodeState::Current => theme::success().add_modifier(ratatui::style::Modifier::BOLD),
+        NodeState::Present => theme::text(),
+        NodeState::ViaProfile => theme::dim(),
+        NodeState::Missing => theme::error(),
     }
 }
 
@@ -324,9 +298,9 @@ pub fn render_sinks(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext)
 /// Render the sinks table (or the empty-state guidance)
 fn render_list(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
     let sinks = ctx.sinks;
-    let states: Vec<SinkState> = sinks
+    let states: Vec<NodeState> = sinks
         .iter()
-        .map(|s| SinkState::of(&s.name, ctx.active_sink_list, ctx.profile_sink_list))
+        .map(|s| NodeState::of(&s.name, ctx.active_sink_list, ctx.profile_sink_list))
         .collect();
     let present = states.iter().filter(|s| s.is_present()).count();
 
@@ -393,7 +367,7 @@ fn render_list(frame: &mut Frame, area: Rect, ctx: &mut SinksRenderContext) {
                     truncate_node_name(&sink.name, cols[1]).into_owned(),
                     theme::dim(),
                 )),
-                Cell::from(Span::styled(state.label(kind), state.style())),
+                Cell::from(Span::styled(state_label(*state), state_style(*state))),
                 if sink.default {
                     Cell::from(Span::styled(FALLBACK_MARKER, theme::accent()))
                 } else {
@@ -468,7 +442,7 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, ctx: &SinksRenderContext)
         return;
     };
     let kind = ctx.kind;
-    let state = SinkState::of(&sink.name, ctx.active_sink_list, ctx.profile_sink_list);
+    let state = NodeState::of(&sink.name, ctx.active_sink_list, ctx.profile_sink_list);
     let auto = format!("(auto: {})", auto_icon(kind, &sink.desc));
     let (icon, icon_auto) = sink
         .icon
@@ -484,7 +458,7 @@ fn render_inspect_popup(frame: &mut Frame, area: Rect, ctx: &SinksRenderContext)
         ("Description", &sink.desc, false),
         ("Icon", icon, icon_auto),
         ("Default", fallback, false),
-        ("State", state.label(kind), false),
+        ("State", state_label(state), false),
     ]);
     let heading = format!("{} Details", title(kind));
     render_text_dialog(frame, area, &heading, lines, &[("Enter", "close")]);

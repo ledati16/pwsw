@@ -1019,7 +1019,12 @@ impl Daemon {
             lane.superseded = None;
         }
         if self.state.config().settings.notify_manual {
-            self.notify_daemon("Switching Paused", "Rules will not switch the audio output");
+            let body = if self.state.config().sources.is_empty() {
+                "Rules will not switch the audio output"
+            } else {
+                "Rules will not switch the output or mic"
+            };
+            self.notify_daemon("Switching Paused", body);
         }
         self.publish_status();
     }
@@ -1030,7 +1035,12 @@ impl Daemon {
     fn resume(&mut self) {
         info!("Resumed: rule-driven switching is on again");
         if self.state.config().settings.notify_manual {
-            self.notify_daemon("Switching Resumed", "Rules switch the audio output again");
+            let body = if self.state.config().sources.is_empty() {
+                "Rules switch the audio output again"
+            } else {
+                "Rules switch the output and mic again"
+            };
+            self.notify_daemon("Switching Resumed", body);
         }
         for kind in Endpoint::ALL {
             if let Some(names) = self.desired_names(kind) {

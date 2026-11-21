@@ -25,7 +25,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 :   Show desktop notifications for manual switches (**set-sink**, **next-sink**, **prev-sink**, **set-source**) and daemon events: start and stop, configuration reloaded or rejected, switching paused or resumed.
 
 **notify_rules** (boolean, default: true)
-:   Show desktop notifications for automatic rule-based switches. A rule's own *notify* key overrides it.
+:   Show desktop notifications for rule-driven switches (sink and mic). A rule's own *notify* key overrides it.
 
 **match_by_index** (boolean, default: false)
 :   Which window decides the sink (and the source) when several match (see **PRIORITY**). If false, the most recently opened (or most recently matching) window wins. If true, the window matching the earliest rule in the list wins.
@@ -54,7 +54,7 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty li
 :   The icon name to use in notifications. Without it, the icon is chosen from the description and node name: `video-display` for HDMI/TV/display, `audio-headphones` for headphones, headsets and Bluetooth, otherwise `audio-speakers`.
 
 ## SOURCES
-The optional **[[sources]]** list defines the audio inputs (microphones) PWSW may switch, with the same keys as **[[sinks]]**: **name** (the `Audio/Source` node name, e.g. `alsa_input.pci-0000_00_1f.3.analog-stereo` or `bluez_input.*`, as shown in the *INPUT DEVICES / SOURCES* section of **pwsw list-sinks**; monitors of sinks are not sources), **desc**, **default** and **icon** (default icon: `audio-input-microphone`). The same uniqueness rules apply within the list (a source may share a description with a sink). When sources are configured, exactly one must have `default = true`: it is used when no open window's rule asks for a source.
+The optional **[[sources]]** list defines the audio inputs (microphones) PWSW may switch, with the same keys as **[[sinks]]**: **name** (the `Audio/Source` node name, e.g. `alsa_input.pci-0000_00_1f.3.analog-stereo` or `bluez_input.*`, as shown in the *MICS (SOURCES)* section of **pwsw list-sinks**; monitors of sinks are not sources), **desc**, **default** and **icon** (default icon: `audio-input-microphone`). The same uniqueness rules apply within the list (a source may share a description with a sink). When sources are configured, exactly one must have `default = true`: it is used when no open window's rule asks for a source.
 
 Without any **[[sources]]** (the default), pwsw never touches the default source; existing configurations keep working unchanged.
 

@@ -68,15 +68,21 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     app.dismiss_sticky_status();
 
     // A pending "unsaved changes" quit prompt: the very next key decides. q (where
-    // it is a command, not text) or Ctrl+C quits; Esc only dismisses the prompt;
-    // any other key dismisses it and then does its normal job.
+    // it is a command, not text) or Ctrl+C quits; s saves, then quits; Esc only
+    // dismisses the prompt; any other key dismisses it and then does its normal job.
     if app.confirm_quit {
-        let q_command = key.code == KeyCode::Char('q')
-            && key.modifiers == KeyModifiers::NONE
-            && !is_modal_active(app)
-            && !app.save_conflict;
-        if ctrl_c || q_command {
+        let command = |c: char| {
+            key.code == KeyCode::Char(c)
+                && key.modifiers == KeyModifiers::NONE
+                && !is_modal_active(app)
+                && !app.save_conflict
+        };
+        if ctrl_c || command('q') {
             app.quit();
+            return;
+        }
+        if command('s') {
+            app.save_and_quit();
             return;
         }
         app.cancel_quit();
@@ -243,8 +249,17 @@ fn handle_dashboard_input(app: &mut App, key: KeyEvent) {
                 4 => DaemonAction::Disable,
                 _ => return,
             };
+            let starts = matches!(action, DaemonAction::Start | DaemonAction::Restart);
             if app.daemon_action_pending {
                 app.set_status(StatusKind::Warning, "A daemon action is already running");
+            } else if starts && app.config.sinks.is_empty() {
+                app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
+            } else if starts && app.config_dirty {
+                // Not saved for the user: they decide what goes into the file
+                app.set_status(
+                    StatusKind::Warning,
+                    "Unsaved changes: Ctrl+S first, the daemon reads the file",
+                );
             } else if app.send_command(BgCommand::DaemonAction(action)) {
                 app.daemon_action_pending = true;
                 app.set_status(StatusKind::Info, format!("{}…", action.progress()));
@@ -451,12 +466,13 @@ fn moved(app: &mut App, result: anyhow::Result<()>, what: &str, to: usize) {
 }
 
 /// Report the result of a config change made from a form or dialog: `done`
-/// on success, the reason (keeping the form open) on failure
+/// on success (with a reminder that the change is not written yet), the reason
+/// (keeping the form open) on failure
 fn changed(app: &mut App, result: anyhow::Result<()>, done: &str) -> bool {
     match result {
         Ok(()) => {
             app.mark_dirty();
-            app.set_status(StatusKind::Success, done);
+            app.set_status(StatusKind::Success, format!("{done} · Ctrl+S to save"));
             true
         }
         Err(e) => {
@@ -579,11 +595,36 @@ fn endpoint_parts(app: &mut App) -> (&mut SinksScreen, &[ActiveSink], &[ProfileS
 /// Handle sinks screen input (its list of sinks or of sources, whichever is shown)
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
     let kind = app.endpoint_view;
+    let on_list = app.endpoint_screen().mode == ListMode::List;
+    let list_key = |c: char| on_list && key.code == KeyCode::Char(c) && key.modifiers.is_empty();
+    // Deleting an entry that rules use is refused: say so before asking
+    if list_key('x') {
+        let users = app
+            .config
+            .endpoint_users(kind, app.endpoint_screen().selected);
+        if !users.is_empty() {
+            let rule = if users.len() == 1 { "rule" } else { "rules" };
+            app.set_status(
+                StatusKind::Warning,
+                format!(
+                    "Used by {rule} {}, cannot delete (retarget or delete those rules first)",
+                    users.join(", ")
+                ),
+            );
+            return;
+        }
+    }
+    let first = list_key('a') && app.config.endpoints(kind).is_empty();
     let screen = match kind {
         Endpoint::Sink => &mut app.sinks_screen,
         Endpoint::Source => &mut app.sources_screen,
     };
-    match list_keys(screen, app.config.endpoints(kind), key) {
+    let key_result = list_keys(screen, app.config.endpoints(kind), key);
+    if first {
+        // The first entry becomes the default anyway: show it
+        screen.editor.prefill_default();
+    }
+    match key_result {
         ListKey::Done => {}
         ListKey::Move { from, to } => {
             let result = endpoint_ops::move_to(&mut app.config, kind, from, to);
@@ -601,7 +642,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
             ListMode::List if key.code == KeyCode::Char('i') && key.modifiers.is_empty() => {
                 app.toggle_endpoint_view();
             }
-            // Space: make the selected entry the fallback
+            // Space: make the selected entry the default
             ListMode::List if key.code == KeyCode::Char(' ') && key.modifiers.is_empty() => {
                 let idx = app.endpoint_screen().selected;
                 if idx < app.config.endpoints(kind).len() {

@@ -17,7 +17,7 @@ use crate::test_utils::fixtures::{
 };
 use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
 use crate::tui::input::simulate_key_event;
-use crate::tui::keymap::BINDINGS;
+use crate::tui::keymap::{BINDINGS, RESUME_HINT};
 use crate::tui::screens::list::ListMode;
 use crate::tui::screens::rules::RuleField;
 use crate::tui::screens::settings::SettingItem;
@@ -431,13 +431,15 @@ fn state(name: &str) -> App {
     app
 }
 
-/// Every "keys label" hint the keymap defines
+/// Every "keys label" hint the keymap defines (the pause key also as "resume")
 fn all_hints() -> Vec<String> {
-    BINDINGS
+    let mut hints: Vec<String> = BINDINGS
         .iter()
         .filter_map(|b| b.hint)
         .map(|h| format!("{} {}", h.keys, h.label))
-        .collect()
+        .collect();
+    hints.push(format!("p {}", RESUME_HINT.0));
+    hints
 }
 
 /// Assert the footer text (after any status) is made only of whole hints
@@ -598,7 +600,7 @@ fn test_sink_form_shows_every_field_at_80x24() {
         rows[row_with("Default")].contains("[ ] used when no rule matches"),
         "{screen}"
     );
-    assert!(screen.contains("Enter save · Esc cancel"), "{screen}");
+    assert!(screen.contains("Enter apply · Esc cancel"), "{screen}");
 
     // The Node field shows the cursor (just after the name)
     let cursor = terminal.backend().cursor_position();
@@ -637,7 +639,7 @@ fn test_rule_form_shows_every_field_at_80x24() {
         ("App ID", "firefox"),
         ("Title", "any title"),
         ("Sinks", SONY_DESC),
-        ("Description", "optional note"),
+        ("Description", "optional · shown in notifications"),
         ("Notify", "default (from Settings)"),
     ] {
         assert!(
@@ -901,7 +903,7 @@ fn test_sinks_table_marks_states_and_never_prints_icon_names() {
                 .find(|r| r.contains(text))
                 .unwrap_or_else(|| panic!("{text}:\n{screen}"))
         };
-        assert!(row("Sony WH-1000XM4").contains("▶ playing"), "{screen}");
+        assert!(row("Sony WH-1000XM4").contains("▶ current"), "{screen}");
         let builtin = row("Built-in Audio");
         assert!(builtin.contains("present"), "{screen}");
         assert!(builtin.contains("★ default"), "{screen}");
@@ -957,7 +959,7 @@ fn test_dashboard_summary_and_logs() {
     let screen = rows.join("\n");
     assert!(screen.contains("Daemon ● running · enabled"), "{screen}");
     assert!(screen.contains("2/4 windows matched"), "{screen}");
-    assert!(screen.contains("Playing on"), "{screen}");
+    assert!(screen.contains("╭ Current "), "{screen}");
     assert!(screen.contains("Sony WH-1000XM4"), "{screen}");
     assert!(screen.contains("4 sinks · 2 present · 3 rules"), "{screen}");
     assert!(screen.contains("Logs · live · UTC"), "{screen}");
@@ -1484,7 +1486,7 @@ fn test_settings_show_the_switch_delay_and_its_editor() {
     app.settings_screen.delay_input = None;
     let screen = draw_rows(&mut app, 80, 24).join("\n");
     assert!(
-        screen.contains("Delay before a rule-triggered switch"),
+        screen.contains("Delay before a rule-driven switch"),
         "{screen}"
     );
     assert!(
@@ -1518,7 +1520,7 @@ fn test_mics_list_marks_states_at_every_size() {
             "switch hint in the title"
         );
         let headset = row_with(&rows, "Headset Mic");
-        assert!(headset.contains("● in use"), "{screen}");
+        assert!(headset.contains("▶ current"), "{screen}");
         assert!(headset.contains("★ default"), "{screen}");
         assert!(
             row_with(&rows, "Webcam Mic").contains("present"),
@@ -1566,7 +1568,7 @@ fn test_mic_dialogs_name_mics() {
     assert!(screen.contains("After a profile switch"), "{screen}");
     let screen = draw_rows(&mut state("mic details"), 80, 24).join("\n");
     assert!(screen.contains("Mic Details"), "{screen}");
-    assert!(screen.contains("● in use"), "{screen}");
+    assert!(screen.contains("▶ current"), "{screen}");
     let screen = draw_rows(&mut state("mic delete"), 80, 24).join("\n");
     assert!(screen.contains("Delete this mic?"), "{screen}");
     assert!(screen.contains("Built-in Mic"), "{screen}");
@@ -1743,4 +1745,131 @@ fn test_print_80x24_mic_screens() {
         "--- rule edit with mics and output (60x16) ---\n{}",
         rows.join("\n")
     );
+}
+
+/// The footer of a dialog names the same keys as the dialog: delete or close,
+/// never a generic "ok"
+#[test]
+fn test_dialog_footers_match_their_dialogs() {
+    for (name, wanted) in [
+        ("sink delete", &["Enter delete", "Esc cancel"][..]),
+        ("rule delete", &["Enter delete", "Esc cancel"]),
+        ("sink details", &["Enter close"]),
+        ("rule details", &["Enter close"]),
+    ] {
+        let rows = draw_rows(&mut state(name), 80, 24);
+        let footer = rows.last().expect("footer");
+        for hint in wanted {
+            assert!(footer.contains(hint), "{name}: {hint:?} in {footer:?}");
+        }
+        assert!(!footer.contains("Enter ok"), "{name}: {footer:?}");
+    }
+}
+
+/// A dialog clears a one-cell margin around itself: no text of the screen behind
+/// it touches its border (seen as `Monitors: none╰────╯m)` before)
+#[test]
+fn test_dialogs_keep_a_blank_margin() {
+    for (name, title) in [
+        ("conflict", "Config Changed on Disk"),
+        ("sink delete", "Delete Sink"),
+        ("rule details", "Rule Details"),
+        ("settings switch delay", "Switch Delay"),
+    ] {
+        for (width, height) in [(80, 24), (60, 16)] {
+            let rows = draw_rows(&mut state(name), width, height);
+            let grid: Vec<Vec<char>> = rows.iter().map(|r| r.chars().collect()).collect();
+            let screen = rows.join("\n");
+            // The dialog's top-left corner, found by its title
+            let corner: Vec<char> = format!("╭ {title} ").chars().collect();
+            let (top, left) = grid
+                .iter()
+                .enumerate()
+                .find_map(|(y, row)| {
+                    row.windows(corner.len())
+                        .position(|w| w == corner.as_slice())
+                        .map(|x| (y, x))
+                })
+                .expect("the dialog");
+            let right = left
+                + grid[top][left..]
+                    .iter()
+                    .position(|&c| c == '╮')
+                    .expect("top-right corner");
+            let bottom = (top..grid.len())
+                .find(|&y| grid[y][left] == '╰')
+                .expect("bottom-left corner");
+            let last_col = usize::from(width) - 1;
+            for (y, row) in grid.iter().enumerate().take(bottom + 1).skip(top) {
+                for x in [left.checked_sub(1), Some(right + 1)].into_iter().flatten() {
+                    // The outermost columns are panel borders, kept unless covered
+                    if x == 0 || x >= last_col {
+                        continue;
+                    }
+                    assert_eq!(
+                        row[x], ' ',
+                        "{name} at {width}x{height}: ({x}, {y}) next to the dialog\n{screen}"
+                    );
+                }
+            }
+            for y in [top.checked_sub(1), Some(bottom + 1)].into_iter().flatten() {
+                // Header and footer are drawn over the margin
+                if y == 0 || y + 1 >= grid.len() {
+                    continue;
+                }
+                let from = left.saturating_sub(1).max(1);
+                let to = (right + 1).min(last_col - 1);
+                assert!(
+                    grid[y][from..=to].iter().all(|&c| c == ' '),
+                    "{name} at {width}x{height}: row {y} touches the dialog\n{screen}"
+                );
+            }
+        }
+    }
+}
+
+/// The pause key's footer hint follows the daemon: hidden while it is stopped,
+/// "resume" while paused, and kept at 80x24 even with unsaved changes
+#[test]
+fn test_footer_pause_hint_follows_the_daemon() {
+    let footer = |app: &mut App| draw_rows(app, 80, 24).pop().expect("footer");
+
+    let mut app = state("dashboard");
+    app.daemon_running = true;
+    assert!(footer(&mut app).contains("p pause"), "running");
+
+    app.daemon_running = false;
+    let stopped = footer(&mut app);
+    assert!(
+        !stopped.contains("p pause") && !stopped.contains("p resume"),
+        "{stopped}"
+    );
+
+    let mut app = state("dashboard paused");
+    app.daemon_running = true;
+    let paused = footer(&mut app);
+    assert!(app.config_dirty, "unsaved changes too");
+    assert!(paused.contains("p resume"), "{paused}");
+    assert!(paused.contains("Ctrl+S save"), "{paused}");
+    assert!(!paused.contains("p pause"), "{paused}");
+}
+
+/// Each About text starts with its own words, not the summary line repeated
+#[test]
+fn test_settings_about_does_not_repeat_the_summary() {
+    for (index, item) in SettingItem::all().iter().enumerate() {
+        let detail = item.detailed_description();
+        let first = detail.lines().next().unwrap_or_default();
+        assert_ne!(first.trim_end_matches('.'), item.description(), "{item:?}");
+        let mut app = state("settings");
+        app.settings_screen.selected = index;
+        let screen = draw_rows(&mut app, 120, 40).join("\n");
+        assert_eq!(
+            screen.matches(item.description()).count(),
+            1,
+            "{item:?} summary shown once\n{screen}"
+        );
+        // Heading markers are never shown
+        assert!(!screen.contains("# "), "{item:?}\n{screen}");
+    }
 }

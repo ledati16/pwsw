@@ -41,9 +41,34 @@ pub fn modal_rect(area: Rect, width: u16, height: u16) -> Rect {
     area.centered(Constraint::Max(width), Constraint::Max(height))
 }
 
-/// Clear `rect` and draw `block` there; returns the area inside it.
-pub fn open_dialog(frame: &mut Frame, rect: Rect, block: Block) -> Rect {
+/// Clear `rect` and one cell around it, so no clipped text of what is behind
+/// touches the dialog's border. The margin stays inside the frame and off its
+/// first and last column (the side borders of the screen's panels) unless the
+/// dialog itself covers that column; the header and footer rows are drawn after
+/// the dialogs.
+pub fn clear_dialog_area(frame: &mut Frame, rect: Rect) {
+    let area = frame.area();
+    let left = if rect.x <= area.x { area.x } else { area.x + 1 };
+    let right = if rect.right() >= area.right() {
+        area.right()
+    } else {
+        area.right().saturating_sub(1)
+    };
+    let bounds = Rect::new(left, area.y, right.saturating_sub(left), area.height);
+    let margin = Rect::new(
+        rect.x.saturating_sub(1),
+        rect.y.saturating_sub(1),
+        rect.width.saturating_add(2),
+        rect.height.saturating_add(2),
+    );
     frame.render_widget(Clear, rect);
+    frame.render_widget(Clear, margin.intersection(bounds));
+}
+
+/// Clear `rect` (and a margin, see [`clear_dialog_area`]) and draw `block` there;
+/// returns the area inside it.
+pub fn open_dialog(frame: &mut Frame, rect: Rect, block: Block) -> Rect {
+    clear_dialog_area(frame, rect);
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     inner
@@ -158,7 +183,7 @@ pub fn render_pick_list(
         .highlight_symbol(theme::SELECTED_SYMBOL)
         .highlight_spacing(HighlightSpacing::Always)
         .scroll_padding(1);
-    frame.render_widget(Clear, rect);
+    clear_dialog_area(frame, rect);
     frame.render_stateful_widget(list, rect, state);
     render_scrollbar(frame, rect, 0, total, state.offset());
 }
@@ -310,9 +335,10 @@ pub fn render_form(frame: &mut Frame, area: Rect, fields: &[FormField]) {
             FieldValue::Fixed(line) => frame.render_widget(line.clone(), value),
             FieldValue::Text { input, placeholder } => {
                 if input.value().is_empty() {
+                    // Cut with an ellipsis on narrow terminals rather than clipped
                     frame.render_widget(
                         Span::styled(
-                            placeholder.as_ref(),
+                            ellipsize(placeholder, usize::from(value.width)),
                             theme::dim().add_modifier(Modifier::ITALIC),
                         ),
                         value,

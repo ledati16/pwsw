@@ -145,7 +145,8 @@ impl<E: FormEditor> ListScreen<E> {
             ListMode::AddEdit if self.confirm_discard => Some(Context::Discard(screen)),
             ListMode::AddEdit => Some(Context::Editor(screen)),
             ListMode::SelectSink => Some(Context::Dropdown(screen)),
-            ListMode::Delete | ListMode::Inspect => Some(Context::Dialog(screen)),
+            ListMode::Delete => Some(Context::Delete(screen)),
+            ListMode::Inspect => Some(Context::Details(screen)),
         }
     }
 
@@ -206,7 +207,7 @@ pub(crate) fn open_editor_dialog(
     height: u16,
 ) -> Rect {
     let block =
-        dialog_block(title).title_bottom(border_hints(&[("Enter", "save"), ("Esc", "cancel")]));
+        dialog_block(title).title_bottom(border_hints(&[("Enter", "apply"), ("Esc", "cancel")]));
     open_dialog(frame, modal_rect(area, width, height), block)
 }
 

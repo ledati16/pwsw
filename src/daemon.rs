@@ -183,7 +183,8 @@ async fn spawn_background_daemon() -> Result<()> {
                 };
                 anyhow::bail!(
                     "Daemon process (PID: {pid}) exited during startup with status: {status}{tail}\n\n\
-                     Full log: {}",
+                     Full log: {}\n\
+                     Check the whole setup with: pwsw doctor",
                     log_path.display()
                 );
             }
@@ -197,7 +198,8 @@ async fn spawn_background_daemon() -> Result<()> {
     anyhow::bail!(
         "Daemon failed to start within {} seconds.\n\
          Process may still be initializing. Check with: pwsw status\n\
-         Log: {}",
+         Log: {}\n\
+         Check the whole setup with: pwsw doctor",
         (u64::from(MAX_ATTEMPTS) * RETRY_DELAY_MS) / 1000,
         log_path.display()
     );

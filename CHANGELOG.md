@@ -92,7 +92,7 @@ maintenance mode.
 - **TUI redesign**: a one-row header and footer (status messages and key hints from
   the real key bindings), forms and dialogs sized to their content, a theme that uses
   the terminal's own text colour (readable on light themes) and honours `--color never`
-  and `NO_COLOR`, a Sinks table with a *State* column (playing, present, via profile,
+  and `NO_COLOR`, a Sinks table with a *State* column (current, present, via profile,
   missing), and a "terminal too small" notice below 60×16. It is also much lighter: it
   no longer runs `pw-dump` while drawing, sleeps while idle, and shows rule previews
   immediately.
@@ -113,8 +113,8 @@ maintenance mode.
   microphone's card is planned the same way (and a microphone it drops is reported as
   unknown rather than still claimed); a source-only switch always keeps the card's
   current output. Without `[[sources]]` pwsw never touches the default source. New
-  `pwsw set-source <ref>`; `pwsw list-sinks` gains an *INPUT DEVICES / SOURCES* section
-  (and `*_sources` JSON fields); `status` shows the input; `list-windows` and
+  `pwsw set-source <ref>`; `pwsw list-sinks` gains a *MICS (SOURCES)* section
+  (and `*_sources` JSON fields); `status` shows the mic; `list-windows` and
   `test-rule` show a rule's sources; the systemd status reads `Sink: X · Mic: Y`. In
   the TUI `i` on the Sinks screen switches to a mic list that works like the sink
   list, the rule editor has an optional **Mics** field picked like **Sinks**, the rules

@@ -302,6 +302,8 @@ fn summarize_stderr(stderr: &[u8]) -> String {
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .take_while(|l| !l.starts_with("Stack backtrace:"))
+        // Advice to run the TUI, which is already running (the no-sinks error)
+        .filter(|l| !l.contains("pwsw tui") && *l != "Add sinks via:")
         .collect();
     if lines.is_empty() {
         return "no error output".to_string();
@@ -329,6 +331,19 @@ mod tests {
         assert_eq!(
             summarize_stderr(report.as_bytes()),
             "Error: Failed to load config | Caused by: | No sinks configured"
+        );
+    }
+
+    /// The TUI's own status line never tells the user to run the TUI
+    #[test]
+    fn test_summarize_stderr_drops_tui_advice() {
+        let stderr = "error: No sinks configured. The daemon cannot start without sinks.\n\n\
+                      Add sinks via:\n  pwsw tui        (interactive setup)\n  \
+                      pwsw list-sinks (discover available sinks)\n";
+        assert_eq!(
+            summarize_stderr(stderr.as_bytes()),
+            "error: No sinks configured. The daemon cannot start without sinks. | pwsw \
+             list-sinks (discover available sinks)"
         );
     }
 

@@ -109,16 +109,10 @@ fn unknown(config: &Config, kind: Endpoint, r: &str) -> String {
                 microphones"
             .to_string();
     }
-    let available: Vec<String> = config
-        .endpoints(kind)
-        .iter()
-        .enumerate()
-        .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
-        .collect();
     format!(
-        "Unknown {} '{r}'. Available: [{}]",
+        "Unknown {} '{r}'. Available: {}",
         kind.noun(),
-        available.join(", ")
+        crate::config::available_descs(config.endpoints(kind))
     )
 }
 
@@ -292,7 +286,7 @@ mod tests {
         let err = answer_without_pipewire(&c, &set("Nope")).expect("decided without PipeWire");
         assert_eq!(
             err,
-            Err("Unknown source 'Nope'. Available: [1. 'Desk Mic', 2. 'Headset Mic']".to_string())
+            Err("Unknown source 'Nope'. Available: 'Desk Mic', 'Headset Mic'".to_string())
         );
         let err = answer_without_pipewire(&config(), &set("Mic")).expect("decided");
         assert!(err.unwrap_err().starts_with("No sources configured"));

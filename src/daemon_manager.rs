@@ -54,6 +54,40 @@ impl DaemonManager {
     }
 }
 
+/// How to get a stopped daemon running, for hints that must be able to succeed
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartHint {
+    /// No sinks are configured: the daemon would refuse to start
+    AddSink,
+    /// No systemd unit is installed: start it directly
+    Direct,
+    /// The `pwsw.service` user unit is installed
+    Systemd,
+}
+
+impl StartHint {
+    /// The hint for a config with (`has_sinks`) or without sinks, and an installed or
+    /// missing user unit
+    #[must_use]
+    pub const fn new(has_sinks: bool, unit_installed: bool) -> Self {
+        match (has_sinks, unit_installed) {
+            (false, _) => Self::AddSink,
+            (true, false) => Self::Direct,
+            (true, true) => Self::Systemd,
+        }
+    }
+
+    /// What to do: `Add a sink first (pwsw tui)`, `Start it: pwsw daemon`, ...
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::AddSink => "Add a sink first (pwsw tui)",
+            Self::Direct => "Start it: pwsw daemon",
+            Self::Systemd => "Start it: systemctl --user enable --now pwsw (or pwsw daemon)",
+        }
+    }
+}
+
 /// Whether any cgroup path in a `/proc/<pid>/cgroup` listing has `unit` as one of
 /// its components.
 ///

@@ -775,21 +775,19 @@ fn seen_monitors(windows: &[WindowInfo]) -> Vec<&str> {
 fn monitors_hint(windows: &[WindowInfo], daemon_running: bool, width: usize) -> Line<'static> {
     const LABEL: &str = "Monitors: ";
     let monitors = seen_monitors(windows);
+    let room = width.saturating_sub(text_width(LABEL));
     let value = if !monitors.is_empty() {
-        Span::raw(
-            ellipsize(
-                &monitors.join(", "),
-                width.saturating_sub(text_width(LABEL)),
-            )
-            .into_owned(),
-        )
+        Span::raw(ellipsize(&monitors.join(", "), room).into_owned())
     } else if daemon_running {
         Span::styled(
-            "none reported (only the wlr protocol reports them)",
+            ellipsize("none reported (wlr only)", room).into_owned(),
             theme::dim(),
         )
     } else {
-        Span::styled("unknown while the daemon is stopped", theme::dim())
+        Span::styled(
+            ellipsize("unknown while the daemon is stopped", room).into_owned(),
+            theme::dim(),
+        )
     };
     Line::from(vec![Span::styled(LABEL, theme::dim()), value])
 }
@@ -886,7 +884,7 @@ fn render_editor(frame: &mut Frame, area: Rect, ctx: &RulesRenderContext) {
             label: "Description",
             value: FieldValue::Text {
                 input: &editor.desc,
-                placeholder: Cow::Borrowed("optional note"),
+                placeholder: Cow::Borrowed("optional · shown in notifications and status bars"),
             },
             trailing: None,
             focused: focused(RuleField::Desc),
@@ -1004,7 +1002,7 @@ fn live_preview_lines(
     if incomplete {
         // Users who want to match all windows should use `.*` explicitly.
         lines.push(line(
-            "Type an app ID or output pattern to see which windows it matches".to_string(),
+            "Type an app ID or output to preview matches".to_string(),
             theme::dim(),
         ));
     } else if errors.iter().any(|(_, e)| e.is_some()) {

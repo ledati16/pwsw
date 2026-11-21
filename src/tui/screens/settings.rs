@@ -61,36 +61,37 @@ impl SettingItem {
             Self::DefaultOnStartup => "Default on Startup",
             Self::SetSmartToggle => "Smart Toggle",
             Self::NotifyManual => "Manual Switch Notifications",
-            Self::NotifyRules => "Rule-Based Notifications",
+            Self::NotifyRules => "Rule Switch Notifications",
             Self::MatchByIndex => "Match by Rule Index",
             Self::SwitchDelay => "Switch Delay",
             Self::LogLevel => "Log Level",
         }
     }
 
-    /// Get short description for this setting
+    /// Get short description for this setting (the first line of the About panel)
     pub(crate) const fn description(self) -> &'static str {
         match self {
-            Self::DefaultOnStartup => "Apply the rules' sink when the daemon starts",
-            Self::SetSmartToggle => "Intelligent toggling for manual sink switches",
+            Self::DefaultOnStartup => "Apply the rules' sink and mic when the daemon starts",
+            Self::SetSmartToggle => "Intelligent toggling for manual sink switches via the CLI",
             Self::NotifyManual => "Show notifications for manual switches and daemon events",
-            Self::NotifyRules => "Show notifications for rule-triggered switches",
-            Self::MatchByIndex => "Rule priority strategy for window matching",
-            Self::SwitchDelay => "Delay before rule-triggered switches",
-            Self::LogLevel => "Logging verbosity level",
+            Self::NotifyRules => "Show notifications for rule-driven switches",
+            Self::MatchByIndex => "Rule priority strategy when several windows match",
+            Self::SwitchDelay => "Delay before a rule-driven switch, in milliseconds",
+            Self::LogLevel => "Logging verbosity level of the daemon",
         }
     }
 
-    /// Get detailed description with examples for this setting
+    /// Get the detailed description with examples for this setting, shown below
+    /// [`Self::description`]. A line starting with [`HEADING`] is a heading (the
+    /// marker is not shown).
     pub(crate) const fn detailed_description(self) -> &'static str {
         match self {
             Self::DefaultOnStartup => {
-                "Switches to the sink the rules want when the daemon starts.\n\
-                 \n\
-                 When enabled: On startup, activates the sink of the highest-priority\n\
-                 open window that matches a rule, or the default sink if none matches.\n\
-                 When disabled: Leaves the current sink alone until the rules want a\n\
-                 different one (e.g. a matching window opens).\n\
+                "When enabled: On startup, activates the sink of the highest-priority\n\
+                 open window that matches a rule, or the default sink if none matches\n\
+                 (with mics configured, the mic likewise).\n\
+                 When disabled: Leaves the current sink and mic alone until the rules\n\
+                 want a different one (e.g. a matching window opens).\n\
                  \n\
                  Either way the daemon first waits (up to 2 s) for the list of open\n\
                  windows, so startup switches at most once.\n\
@@ -98,22 +99,18 @@ impl SettingItem {
                  Default: disabled"
             }
             Self::SetSmartToggle => {
-                "Intelligent toggling behavior for manual sink switches via CLI.\n\
-                 \n\
-                 When enabled: Running 'pwsw set-sink <name>' toggles back to default\n\
+                "When enabled: Running 'pwsw set-sink <name>' toggles back to default\n\
                  if the sink is already active ('pwsw set-source' likewise for mics).\n\
                  When disabled: Asking for the sink that is already active does nothing.\n\
                  \n\
-                 Example: If headphones are active:\n\
+                 # Example: If headphones are active:\n\
                  • Enabled: 'pwsw set-sink headphones' → switches to default sink\n\
                  • Disabled: 'pwsw set-sink headphones' → stays on headphones\n\
                  \n\
                  Default: enabled"
             }
             Self::NotifyManual => {
-                "Desktop notifications for manual switches and daemon events.\n\
-                 \n\
-                 When enabled: Shows notifications for:\n\
+                "When enabled: Shows notifications for:\n\
                  • Manual switches: 'pwsw set-sink <name>', 'pwsw set-source <name>'\n\
                  • Cycling commands: 'pwsw prev-sink' and 'pwsw next-sink'\n\
                  • Daemon events: start/stop, config reload/rejection, pause/resume\n\
@@ -125,11 +122,9 @@ impl SettingItem {
                  Default: enabled"
             }
             Self::NotifyRules => {
-                "Desktop notifications for automatic rule-triggered sink switches.\n\
-                 \n\
-                 When enabled: Shows notification when daemon switches sink due to a\n\
-                 window matching a rule.\n\
-                 When disabled: Rule-based switches happen silently.\n\
+                "When enabled: Shows a notification when the daemon switches the sink\n\
+                 (or the mic) because a window matches a rule.\n\
+                 When disabled: Rule-driven switches happen silently.\n\
                  \n\
                  A rule's own Notify option overrides this setting for that rule.\n\
                  Useful for debugging rules or understanding why switches occur.\n\
@@ -137,13 +132,11 @@ impl SettingItem {
                  Default: enabled"
             }
             Self::MatchByIndex => {
-                "Rule priority strategy when multiple windows match different rules.\n\
-                 \n\
-                 When enabled: Uses rule priority - higher priority rules always win.\n\
+                "When enabled: Uses rule priority - higher priority rules always win.\n\
                  Rules at the top of the list have higher priority than those below.\n\
                  When disabled: The most recently opened matching window decides the sink.\n\
                  \n\
-                 Example: Firefox (rule 1) and Discord (rule 2) are both open:\n\
+                 # Example: Firefox (rule 1) and Discord (rule 2) are both open:\n\
                  • Enabled: Firefox's sink stays active whichever window opened last\n\
                  • Disabled: Whichever window opened (or started matching) last wins\n\
                  \n\
@@ -152,26 +145,22 @@ impl SettingItem {
                  Default: disabled (most recent window)"
             }
             Self::SwitchDelay => {
-                "Delay before a rule-triggered switch, in milliseconds.\n\
-                 \n\
-                 When 0: Switches as soon as the rules want a different sink.\n\
-                 When set: Waits this long; switches only if that sink is still wanted.\n\
+                "When 0: Switches as soon as the rules want a different sink or mic.\n\
+                 When set: Waits this long; switches only if that is still wanted.\n\
                  Stops launchers and splash screens from flipping your audio. Manual\n\
-                 switches, retries and the startup switch are never delayed.\n\
+                 switches, retries, resume and the startup switch are never delayed.\n\
                  \n\
                  Default: 0 (switch immediately)"
             }
             Self::LogLevel => {
-                "Logging verbosity level for daemon output.\n\
-                 \n\
-                 Levels (from least to most verbose):\n\
+                "# Levels (from least to most verbose):\n\
                  • error: Only critical errors\n\
                  • warn: Warnings and errors\n\
                  • info: General information (recommended)\n\
                  • debug: Detailed debugging information\n\
                  • trace: Very verbose tracing (for development)\n\
                  \n\
-                 Log file: ~/.local/share/pwsw/daemon.log\n\
+                 Log file: $XDG_DATA_HOME/pwsw/daemon.log (normally ~/.local/share/pwsw/…)\n\
                  Or in TUI: the Dashboard log view ([w] toggles Logs/Windows)\n\
                  \n\
                  Default: info"
@@ -179,6 +168,9 @@ impl SettingItem {
         }
     }
 }
+
+/// Marks a heading line in [`SettingItem::detailed_description`]
+pub(crate) const HEADING: &str = "# ";
 
 /// Settings screen state
 #[derive(Debug)]
@@ -486,8 +478,8 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
                 line,
                 theme::dim().add_modifier(Modifier::ITALIC),
             )));
-        } else if line.ends_with(':') && !line.contains("pw") {
-            lines.push(Line::from(Span::styled(line, theme::bold())));
+        } else if let Some(heading) = line.strip_prefix(HEADING) {
+            lines.push(Line::from(Span::styled(heading, theme::bold())));
         } else {
             lines.push(Line::from(line));
         }

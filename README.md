@@ -143,8 +143,9 @@ Use `Tab` or `1`-`4` to switch screens:
    with live preview
 4. **Settings**: global behaviour, including the switch delay
 
-`Ctrl+S` saves, `p` pauses or resumes rule-driven switching. Press `?` or `F1` for help
-on the current screen. On first run the TUI creates the config file for you.
+`Enter` in a form applies the edit and `Ctrl+S` writes the file; `p` pauses or resumes
+rule-driven switching. Press `?` or `F1` for help on the current screen. On first run
+the TUI creates the config file for you and opens on the Sinks screen.
 
 ### Commands
 
@@ -252,7 +253,7 @@ desc = "TV"
 
 # Optional: microphones. Without [[sources]] pwsw never touches the default input.
 [[sources]]
-name = "alsa_input.usb-SteelSeries_Arctis-00.mono-fallback"  # INPUT DEVICES in `pwsw list-sinks`
+name = "alsa_input.usb-SteelSeries_Arctis-00.mono-fallback"  # MICS in `pwsw list-sinks`
 desc = "Headset Mic"
 
 [[sources]]

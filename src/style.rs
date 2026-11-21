@@ -11,7 +11,7 @@
 //! - Cyan for headers and technical terms
 //! - Bold for important identifiers, dim for secondary information
 //!
-//! The TUI draws with `ratatui` styles instead and asks [`colors_enabled`] whether
+//! The TUI draws with `ratatui` styles instead and asks [`tui_colors_enabled`] whether
 //! it may use colour at all.
 
 use std::ffi::OsStr;
@@ -89,13 +89,15 @@ pub fn write_stderr(args: fmt::Arguments<'_>) {
 // ============================================================================
 
 /// When to colour output (`--color`)
+// The variant docs are `--help` text, printed verbatim: no backticks
+#[allow(clippy::doc_markdown)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum ColorChoice {
-    /// Colour when the stream is a terminal and `NO_COLOR` is unset or empty
-    /// (`CLICOLOR_FORCE` forces colour on)
+    /// Colour when the stream is a terminal and NO_COLOR is unset or empty
+    /// (CLICOLOR_FORCE forces colour on)
     #[default]
     Auto,
-    /// Always colour, even when piped or with `NO_COLOR` set
+    /// Always colour, even when piped or with NO_COLOR set
     Always,
     /// Never colour
     Never,
@@ -139,7 +141,7 @@ pub fn color_enabled(stream: Stream) -> bool {
 /// Whether the TUI may use colour: the decision [`init`] made for stdout, which the
 /// TUI draws to (`--color never` or `NO_COLOR` turn it off)
 #[must_use]
-pub fn colors_enabled() -> bool {
+pub fn tui_colors_enabled() -> bool {
     color_enabled(Stream::Stdout)
 }
 

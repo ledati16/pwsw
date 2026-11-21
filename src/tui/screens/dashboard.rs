@@ -14,7 +14,7 @@ use crate::tui::widgets::{
     truncate_node_name,
 };
 
-/// Height of the daemon and "playing on" cards
+/// Height of the daemon and "current" cards
 const CARD_HEIGHT: u16 = 5;
 
 /// Index of each daemon action in `DashboardScreen::selected_action`
@@ -376,14 +376,14 @@ fn render_daemon_card(
         ])
     } else {
         Line::from(Span::styled(
-            "no windows tracked while stopped",
+            ellipsize("stopped: no windows", usize::from(inner.width)).into_owned(),
             theme::dim(),
         ))
     });
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// The current mic for the "Playing on" card: `Mic  Headset Mic` (the configured
+/// The current mic for the "Current" card: `Mic  Headset Mic` (the configured
 /// description, else what `PipeWire` calls it)
 fn mic_line(ctx: &DashboardRenderContext, width: usize) -> Line<'static> {
     const LABEL: &str = "Mic ";
@@ -402,13 +402,13 @@ fn mic_line(ctx: &DashboardRenderContext, width: usize) -> Line<'static> {
     Line::from(vec![Span::styled(LABEL, theme::dim()), value])
 }
 
-/// "Playing on" card: the current default sink (and, with mics configured, the
+/// "Current" card: the current default sink (and, with mics configured, the
 /// current mic) from the last `PipeWire` snapshot (no I/O here) and what is
 /// configured
 fn render_sink_card(frame: &mut Frame, area: Rect, ctx: &DashboardRenderContext) {
     let block = rounded_block()
         .padding(Padding::horizontal(1))
-        .title(Span::styled(" Playing on ", theme::bold()));
+        .title(Span::styled(" Current ", theme::bold()));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let width = usize::from(inner.width);

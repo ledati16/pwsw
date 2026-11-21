@@ -204,6 +204,17 @@ pub(crate) fn load_blocking(path: &Path) -> Result<Box<Config>, String> {
         .map_err(|e| format!("{e:#}"))
 }
 
+/// `path` with a leading `home` directory written as `~` (shorter in the footer)
+pub(crate) fn home_relative(path: &Path, home: Option<&std::ffi::OsStr>) -> String {
+    match home
+        .filter(|h| !h.is_empty())
+        .and_then(|h| path.strip_prefix(h).ok())
+    {
+        Some(rest) => format!("~/{}", rest.display()),
+        None => path.display().to_string(),
+    }
+}
+
 /// Commands sent from UI to background worker
 #[derive(Debug)]
 pub enum BgCommand {
@@ -392,6 +403,24 @@ impl App {
             bg_cmd_tx: None,
             dirty: true,
         }
+    }
+
+    /// Without sinks, open on the Sinks screen and say how to add one (`created`:
+    /// the config file was just written)
+    pub(crate) fn first_run_guidance(&mut self, created: bool) {
+        if !self.config.sinks.is_empty() {
+            return;
+        }
+        self.current_screen = Screen::Sinks;
+        self.endpoint_view = Endpoint::Sink;
+        let message = match (&self.config_path, created) {
+            (Some(path), true) => format!(
+                "Created {}. Press a, then Space to pick an output",
+                home_relative(path, std::env::var_os("HOME").as_deref())
+            ),
+            _ => "No sinks yet. Press a, then Space to pick an output".to_string(),
+        };
+        self.set_status(StatusKind::Warning, message);
     }
 
     /// Navigate to a specific screen
@@ -635,7 +664,7 @@ impl App {
         if !self.daemon_running {
             self.set_status(
                 StatusKind::Warning,
-                "Daemon not running: start it to pause or resume automatic switching",
+                "Daemon not running: start it to pause or resume rule-driven switching",
             );
             return;
         }
@@ -646,9 +675,9 @@ impl App {
         if self.send_command(BgCommand::TogglePause) {
             self.pause_pending = true;
             let progress = if self.daemon_paused {
-                "Resuming automatic switching…"
+                "Resuming rule-driven switching…"
             } else {
-                "Pausing automatic switching…"
+                "Pausing rule-driven switching…"
             };
             self.set_status(StatusKind::Info, progress);
         }
@@ -736,10 +765,24 @@ impl App {
             self.confirm_quit = true;
             self.set_status(
                 StatusKind::Warning,
-                "Unsaved changes! Press q or Ctrl+C again to quit without saving, any other key \
-                 to stay",
+                "Unsaved changes: s save and quit · q quit without saving · other keys stay",
             );
         } else {
+            self.quit();
+        }
+    }
+
+    /// Answer `s` to the unsaved-changes prompt: save, then quit once the file is
+    /// written (a failed or refused save keeps the app open and says why)
+    pub(crate) fn save_and_quit(&mut self) {
+        self.confirm_quit = false;
+        self.quit_wait_expired = false;
+        self.request_save(false);
+        if self.save_pending {
+            // Waits for the save and exits only if it succeeded
+            self.quit();
+        } else if !self.config_dirty {
+            // Saved right away (no background worker)
             self.quit();
         }
     }
@@ -898,10 +941,10 @@ impl App {
                         if paused {
                             self.set_status(
                                 StatusKind::Success,
-                                "Paused automatic switching (p resumes)",
+                                "Paused rule-driven switching (p resumes)",
                             );
                         } else {
-                            self.set_status(StatusKind::Success, "Resumed automatic switching");
+                            self.set_status(StatusKind::Success, "Resumed rule-driven switching");
                         }
                     }
                     Err(message) => self.set_status(StatusKind::Error, message),

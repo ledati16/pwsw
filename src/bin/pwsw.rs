@@ -17,13 +17,16 @@ use pwsw::{commands, daemon};
 /// Initialize logging for CLI commands.
 ///
 /// Uses `tracing_subscriber` to log to stderr (never stdout, which may carry
-/// `JSON`) based on the `RUST_LOG` env var.
+/// `JSON`) based on the `RUST_LOG` env var. Lines are short (`WARN message`, no
+/// timestamp or module path): they are read by the person who ran the command.
 fn init_logging() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
+        .without_time()
+        .with_target(false)
         .with_writer(std::io::stderr)
         .with_ansi(style::color_enabled(Stream::Stderr))
         .init();

@@ -1,43 +1,31 @@
 //! CLI commands
 //!
-//! Implements both local commands (list-sinks, validate) and IPC-based commands
-//! that communicate with the daemon (status, list-windows, test-rule). Manual
-//! switching (set-sink, next-sink, prev-sink) goes through the daemon when it runs.
+//! `list-sinks` is local (`PipeWire` and the config); `status` works with or without
+//! the daemon (it asks one when it runs); `list-windows`, `test-rule`, `shutdown`
+//! and `pause`/`resume`/`toggle-pause` need the daemon (`IPC`). Manual switching
+//! (`set-sink`, `next-sink`, `prev-sink`, `set-source`) goes through the daemon when
+//! it runs and switches `PipeWire` directly otherwise. (`validate`, `init` and
+//! `doctor` live in `bin/pwsw.rs`, `config` and `doctor`.)
 
 use std::collections::HashSet;
 use std::fmt::Write;
 
 use anyhow::Result;
-use tracing::{info, warn};
+use tracing::{debug, info};
 
 use crate::config::{Config, Endpoint};
 use crate::ipc::{self, Request, Response};
 use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
 use crate::notification::{get_sink_icon, get_source_icon, send_notification};
 use crate::pipewire::{
-    ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSink,
-    ProfileSinkJson,
+    ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, NodeState, PipeWire,
+    ProfileSink, ProfileSinkJson,
 };
 use crate::style::PwswStyle;
 
 // ============================================================================
 // Local Commands (no daemon needed)
 // ============================================================================
-
-/// Helper to determine a sink's status (active, requires profile switch, or not found)
-fn get_sink_status(
-    sink_name: &str,
-    active: &[ActiveSink],
-    profile: &[ProfileSink],
-) -> &'static str {
-    if active.iter().any(|a| a.name == sink_name) {
-        "active"
-    } else if profile.iter().any(|p| p.predicted_name == sink_name) {
-        "requires_profile_switch"
-    } else {
-        "not_found"
-    }
-}
 
 /// What `PipeWire` offers for one kind of endpoint (sinks or sources)
 struct Listing {
@@ -109,7 +97,9 @@ impl Listing {
                     desc: s.desc.clone(),
                     icon: s.icon.clone(),
                     is_default_config: s.default,
-                    status: get_sink_status(&s.name, &self.active, &self.profile).to_string(),
+                    status: NodeState::of(&s.name, &self.active, &self.profile)
+                        .json_status()
+                        .to_string(),
                 })
                 .collect()
         })
@@ -135,14 +125,14 @@ impl Listing {
             crate::outln!("  {}", "(none)".dim());
         } else {
             for node in &self.active {
-                let marker = if node.is_default { "* " } else { "  " };
+                let marker = if node.is_default { "*" } else { " " };
                 crate::outln!(
-                    "{}{}{}",
-                    marker,
+                    "  {} {}{}",
+                    marker.success(),
                     node.name.as_str().bold(),
                     configured_marker(&node.name)
                 );
-                crate::outln!("    {}", node.description.as_str().dim());
+                crate::outln!("      {}", node.description.as_str().dim());
             }
             crate::outln!("\n  {} = current default", "*".dim());
         }
@@ -158,7 +148,7 @@ impl Listing {
                     configured_marker(&node.predicted_name)
                 );
                 crate::outln!(
-                    "    {} (profile: {})",
+                    "      {} (profile: {})",
                     node.description.as_str().dim(),
                     node.profile_name.as_str().technical()
                 );
@@ -182,10 +172,11 @@ impl Listing {
             } else {
                 String::new()
             };
-            let status = match get_sink_status(&entry.name, &self.active, &self.profile) {
-                "active" => "active".success().to_string(),
-                "requires_profile_switch" => "profile switch".warning().to_string(),
-                _ => "not found".error().to_string(),
+            let state = NodeState::of(&entry.name, &self.active, &self.profile);
+            let status = match state {
+                NodeState::Current | NodeState::Present => state.word().success().to_string(),
+                NodeState::ViaProfile => state.word().warning().to_string(),
+                NodeState::Missing => state.word().error().to_string(),
             };
             crate::outln!(
                 "  {}. \"{}\"{} - {}",
@@ -199,8 +190,8 @@ impl Listing {
     }
 }
 
-/// List all available sinks (active and profile-switch), then the input devices
-/// (sources), so one command shows everything a config can name
+/// List all available sinks (active and profile-switch), then the mics (sources),
+/// so one command shows everything a config can name
 ///
 /// # Errors
 /// Returns an error if `PipeWire` query fails or `JSON` serialization fails.
@@ -229,9 +220,9 @@ pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
         ]);
         crate::outln!();
         sources.print(config, [
-            "INPUT DEVICES / SOURCES:",
-            "INPUTS AVAILABLE VIA PROFILE SWITCH:",
-            "CONFIGURED SOURCES:",
+            "MICS (SOURCES):",
+            "MICS AVAILABLE VIA PROFILE SWITCH:",
+            "CONFIGURED MICS:",
         ]);
 
         if let Ok(path) = Config::get_config_path() {
@@ -265,7 +256,8 @@ pub async fn set_sink(config: &Config, sink_ref: &str) -> Result<()> {
         })
         .await;
     }
-    set_sink_smart(config, sink_ref)
+    // The smart toggle compares with the real default sink
+    switch_locally(config, &ManualSwitch::Set(sink_ref.to_string()))
 }
 
 /// Switch the default source (microphone) to a configured source (`set-source`), with
@@ -302,7 +294,13 @@ pub async fn cycle(config: &Config, direction: Direction) -> Result<()> {
         };
         return switch_via_daemon(request).await;
     }
-    cycle_sink(config, direction)
+    // Starts from the real default sink and skips sinks that cannot be activated
+    // right now, like the daemon does
+    let request = match direction {
+        Direction::Next => ManualSwitch::Next,
+        Direction::Prev => ManualSwitch::Prev,
+    };
+    switch_locally(config, &request)
 }
 
 /// Send a manual switch request to the daemon and print the outcome
@@ -345,33 +343,6 @@ fn response_kind(response: &Response) -> &'static str {
     }
 }
 
-/// Set sink with smart toggle support, switching locally (no daemon)
-///
-/// The smart toggle compares with the real default sink.
-///
-/// # Errors
-/// Returns an error if the sink reference is invalid, `PipeWire` cannot be queried,
-/// or sink activation fails.
-fn set_sink_smart(config: &Config, sink_ref: &str) -> Result<()> {
-    switch_locally(config, &ManualSwitch::Set(sink_ref.to_string()))
-}
-
-/// Cycle through configured sinks, switching locally (no daemon)
-///
-/// Starts from the real default sink and skips sinks that cannot be activated right
-/// now, like the daemon does.
-///
-/// # Errors
-/// Returns an error if `PipeWire` cannot be queried, no other sink can be activated,
-/// or sink activation fails.
-fn cycle_sink(config: &Config, direction: Direction) -> Result<()> {
-    let request = match direction {
-        Direction::Next => ManualSwitch::Next,
-        Direction::Prev => ManualSwitch::Prev,
-    };
-    switch_locally(config, &request)
-}
-
 /// Carry out a manual request without the daemon: probe `PipeWire`, decide with the
 /// daemon's own rules ([`manual::plan`]), activate, print and notify
 fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
@@ -405,8 +376,9 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
             Endpoint::Sink => ("Audio Output", get_sink_icon(target)),
             Endpoint::Source => ("Audio Input", get_source_icon(target)),
         };
+        // The switch worked; a missing notification server is not worth a warning
         if let Err(e) = send_notification(title, &target.desc, Some(&icon)) {
-            warn!("Notification failed: {}", e);
+            debug!("Notification failed: {e:#}");
         }
     }
     Ok(())
@@ -612,9 +584,9 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     if sources_configured {
         match &current_source {
             Some((_, description)) => {
-                crate::outln!("{} {}", "Input:".dim(), description.as_str().bold());
+                crate::outln!("{} {}", "Mic:".dim(), description.as_str().bold());
             }
-            None => crate::outln!("{} {}", "Input:".dim(), "unknown".dim()),
+            None => crate::outln!("{} {}", "Mic:".dim(), "unknown".dim()),
         }
     }
     crate::outln!();
@@ -623,7 +595,13 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
 
     if !daemon.running {
         crate::outln!("{} {}", "Status:".dim(), "Not running".error());
-        crate::outln!("  Start with: {}", "pwsw daemon".technical());
+        let has_sinks = config.as_ref().is_some_and(|c| !c.sinks.is_empty());
+        let unit_installed = has_sinks
+            && tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::unit_installed)
+                .await
+                .unwrap_or(false);
+        let hint = crate::daemon_manager::StartHint::new(has_sinks, unit_installed);
+        crate::outln!("  {}", hint.text().technical());
     } else if let Some(uptime_secs) = daemon.uptime_secs {
         crate::outln!(
             "{} {}",
@@ -645,7 +623,8 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             crate::outln!(
                 "{} {}",
                 "Switching:".dim(),
-                "Paused (rules do not switch; resume with: pwsw resume)".warning()
+                "Paused (rules do not switch the output or mic; resume with: pwsw resume)"
+                    .warning()
             );
         }
         if daemon.error.is_some() {
@@ -663,11 +642,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             } else {
                 ""
             };
-            crate::outln!(
-                "{} {}{fallback}",
-                "Microphone:".dim(),
-                source.as_str().technical()
-            );
+            crate::outln!("{} {}{fallback}", "Mic:".dim(), source.as_str().technical());
         }
         if let Some(tracked) = daemon.tracked_windows {
             crate::outln!(
@@ -746,11 +721,11 @@ pub async fn pause(action: PauseAction) -> Result<()> {
 fn pause_message(paused: bool, changed: bool) -> crate::style::Painted<&'static str> {
     match (paused, changed) {
         (true, true) => {
-            "Paused: rules will not switch the audio output (resume with: pwsw resume)".warning()
+            "Paused: rules will not switch the output or mic (resume with: pwsw resume)".warning()
         }
         (true, false) => "Already paused (resume with: pwsw resume)".warning(),
-        (false, true) => "Resumed: rules switch the audio output again".success(),
-        (false, false) => "Not paused: rules are switching the audio output".success(),
+        (false, true) => "Resumed: rules switch the output and mic again".success(),
+        (false, false) => "Not paused: rules are switching the output and mic".success(),
     }
 }
 
@@ -880,7 +855,7 @@ fn print_sources(tracked: &ipc::TrackedInfo, indent: &str) {
     crate::outln!(
         "{indent}{} {}: {}",
         "→".success(),
-        "source".dim(),
+        "mic".dim(),
         descs.join(", then ").as_str().bold()
     );
 }
@@ -965,7 +940,7 @@ pub async fn test_rule(
             (None, o) => format!("output {}", o.unwrap_or_default()),
         };
         crate::outln!("Testing pattern: {}", heading.as_str().technical());
-        crate::outln!("{}", "=".repeat(16 + heading.chars().count()));
+        crate::outln!("{}", "-".repeat(17 + heading.chars().count()));
         if matches.is_empty() {
             crate::outln!("{}", "No matches found.".dim());
         } else {

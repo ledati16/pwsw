@@ -29,12 +29,14 @@ use tracing::{debug, info};
 mod activate;
 mod cli;
 mod model;
+mod node_state;
 mod parse;
 mod resolve;
 
 use activate::{Request, SystemClock, WaitPolicy};
 use cli::CliBackend;
 pub use model::Snapshot;
+pub use node_state::NodeState;
 
 use crate::config::Endpoint;
 

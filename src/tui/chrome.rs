@@ -11,7 +11,7 @@ use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 
 use crate::tui::app::{Screen, Status, StatusKind};
-use crate::tui::keymap::{Context, footer_hints};
+use crate::tui::keymap::{Context, HintState, footer_hints};
 use crate::tui::theme;
 use crate::tui::widgets::{ellipsize, text_width};
 
@@ -126,7 +126,8 @@ pub(crate) struct Footer<'a> {
     /// The spinner frame to show (`None`: nothing is running)
     pub(crate) spinner: Option<&'static str>,
     pub(crate) contexts: &'a [Context],
-    pub(crate) unsaved: bool,
+    /// What decides the hints besides the contexts (unsaved changes, daemon state)
+    pub(crate) hints: HintState,
 }
 
 /// Draw the footer: spinner, status message on the left, key hints on the
@@ -170,7 +171,7 @@ pub(crate) fn render_footer(frame: &mut Frame, area: Rect, footer: &Footer) {
         1
     };
     let room = width.saturating_sub(reserved);
-    let hints = footer_hints(footer.contexts, footer.unsaved, room);
+    let hints = footer_hints(footer.contexts, footer.hints, room);
     let mut spans = Vec::new();
     for (i, hint) in hints.iter().enumerate() {
         if i > 0 {

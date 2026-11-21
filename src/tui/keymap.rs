@@ -28,8 +28,10 @@ pub(crate) enum Context {
     Editor(Screen),
     /// A selection list opened from a screen (node, target sinks or mics, log level)
     Dropdown(Screen),
-    /// The delete confirmation and details dialogs of a screen
-    Dialog(Screen),
+    /// The delete confirmation of a screen
+    Delete(Screen),
+    /// The details dialog of a screen
+    Details(Screen),
     /// The "discard changes?" question after Esc in an editor with edits
     Discard(Screen),
     /// The "config changed on disk" dialog shown when a save was refused
@@ -47,7 +49,8 @@ impl Context {
             Self::List(s)
             | Self::Editor(s)
             | Self::Dropdown(s)
-            | Self::Dialog(s)
+            | Self::Delete(s)
+            | Self::Details(s)
             | Self::Discard(s) => Some(s),
             Self::DashboardView(_) => Some(Screen::Dashboard),
             Self::Global | Self::TextInput | Self::Help | Self::Conflict => None,
@@ -60,7 +63,8 @@ impl Context {
             Self::Editor(Screen::Settings) => Some("In the switch delay editor:"),
             Self::Editor(_) => Some("In the add/edit dialog:"),
             Self::Dropdown(_) => Some("In a selection list:"),
-            Self::Dialog(_) => Some("In the delete/details dialog:"),
+            Self::Delete(_) => Some("In the delete dialog:"),
+            Self::Details(_) => Some("In the details dialog:"),
             Self::Discard(_) => Some("When asked to discard changes:"),
             Self::DashboardView(DashboardView::Logs) => Some("In the Logs view:"),
             Self::DashboardView(DashboardView::Windows) => Some("In the Windows view:"),
@@ -79,9 +83,35 @@ pub(crate) struct Hint {
     /// Lower is more important: when the footer is too narrow, hints with the
     /// highest numbers are left out first
     pub(crate) priority: u8,
-    /// Only shown while the config has unsaved changes
-    pub(crate) only_unsaved: bool,
+    /// When the hint is shown
+    pub(crate) show: Show,
 }
+
+/// When a footer hint is shown
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Show {
+    /// Whenever its context is active
+    Always,
+    /// Only while the config has unsaved changes
+    Unsaved,
+    /// The pause key: only while the daemon runs, labelled "resume" (and kept
+    /// first among the others) while it is paused
+    Pause,
+}
+
+/// What the footer hints depend on besides the active contexts
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HintState {
+    /// The config has unsaved changes
+    pub(crate) unsaved: bool,
+    /// The daemon runs
+    pub(crate) daemon_running: bool,
+    /// The daemon's rule-driven switching is paused
+    pub(crate) paused: bool,
+}
+
+/// Footer label and priority of the pause hint while paused
+pub(crate) const RESUME_HINT: (&str, u8) = ("resume", 1);
 
 impl Hint {
     /// Columns the hint takes in the footer ("keys label")
@@ -135,36 +165,60 @@ impl Binding {
                 keys,
                 label,
                 priority,
-                only_unsaved: false,
+                show: Show::Always,
             }),
             ..self
         }
     }
 
-    /// Like [`Self::hint`], only while there are unsaved changes
-    const fn hint_unsaved(self, keys: &'static str, label: &'static str, priority: u8) -> Self {
+    /// Like [`Self::hint`], shown only as `show` says
+    const fn hint_when(
+        self,
+        keys: &'static str,
+        label: &'static str,
+        priority: u8,
+        show: Show,
+    ) -> Self {
         Self {
             hint: Some(Hint {
                 keys,
                 label,
                 priority,
-                only_unsaved: true,
+                show,
             }),
             ..self
         }
     }
 }
 
-/// The footer hints for the active `contexts` that fit in `width` columns
+/// `hint` as the footer shows it in `state` (`None`: not shown)
+fn shown_hint(hint: Hint, state: HintState) -> Option<Hint> {
+    match hint.show {
+        Show::Always => Some(hint),
+        Show::Unsaved => state.unsaved.then_some(hint),
+        Show::Pause if !state.daemon_running => None,
+        Show::Pause => Some(if state.paused {
+            Hint {
+                label: RESUME_HINT.0,
+                priority: RESUME_HINT.1,
+                ..hint
+            }
+        } else {
+            hint
+        }),
+    }
+}
+
+/// The footer hints for the active `contexts` (as `state` decides) that fit in
+/// `width` columns
 /// (hints are separated by two spaces), in table order. When not all fit, the
 /// least important are dropped; a hint is never cut.
-pub(crate) fn footer_hints(contexts: &[Context], unsaved: bool, width: usize) -> Vec<Hint> {
+pub(crate) fn footer_hints(contexts: &[Context], state: HintState, width: usize) -> Vec<Hint> {
     let mut candidates: Vec<(usize, Hint)> = BINDINGS
         .iter()
         .enumerate()
         .filter(|(_, b)| contexts.contains(&b.context))
-        .filter_map(|(i, b)| b.hint.map(|h| (i, h)))
-        .filter(|(_, h)| unsaved || !h.only_unsaved)
+        .filter_map(|(i, b)| b.hint.and_then(|h| shown_hint(h, state)).map(|h| (i, h)))
         .collect();
     candidates.sort_by_key(|(i, h)| (h.priority, *i));
     let mut chosen = Vec::new();
@@ -339,10 +393,10 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Editor(Screen::Sinks),
         "Enter",
-        "Save sink (mic)",
+        "Apply the edit (Ctrl+S writes the file)",
         ENTER,
     )
-    .hint("Enter", "save", 1),
+    .hint("Enter", "apply", 1),
     b(
         Context::Editor(Screen::Sinks),
         "Esc",
@@ -371,20 +425,21 @@ pub(crate) static BINDINGS: &[Binding] = &[
         ESC,
     )
     .hint("Esc", "back", 2),
+    b(Context::Delete(Screen::Sinks), "Enter", "Delete it", ENTER).hint("Enter", "delete", 1),
     b(
-        Context::Dialog(Screen::Sinks),
-        "Enter",
-        "Confirm delete / close details",
-        ENTER,
-    )
-    .hint("Enter", "ok", 1),
-    b(
-        Context::Dialog(Screen::Sinks),
+        Context::Delete(Screen::Sinks),
         "Esc",
-        "Cancel / close details",
+        "Cancel (keep it)",
         ESC,
     )
-    .hint("Esc", "back", 2),
+    .hint("Esc", "cancel", 2),
+    b(
+        Context::Details(Screen::Sinks),
+        "Enter, Esc",
+        "Close the details",
+        &[(KeyCode::Enter, NONE), (KeyCode::Esc, NONE)],
+    )
+    .hint("Enter", "close", 1),
     b(
         Context::Discard(Screen::Sinks),
         "y",
@@ -450,7 +505,13 @@ pub(crate) static BINDINGS: &[Binding] = &[
         SPACE,
     )
     .hint("Space", "choose", 3),
-    b(Context::Editor(Screen::Rules), "Enter", "Save rule", ENTER).hint("Enter", "save", 1),
+    b(
+        Context::Editor(Screen::Rules),
+        "Enter",
+        "Apply the edit (Ctrl+S writes the file)",
+        ENTER,
+    )
+    .hint("Enter", "apply", 1),
     b(
         Context::Editor(Screen::Rules),
         "Esc",
@@ -496,20 +557,21 @@ pub(crate) static BINDINGS: &[Binding] = &[
         ESC,
     )
     .hint("Esc", "back", 2),
+    b(Context::Delete(Screen::Rules), "Enter", "Delete it", ENTER).hint("Enter", "delete", 1),
     b(
-        Context::Dialog(Screen::Rules),
-        "Enter",
-        "Confirm delete / close details",
-        ENTER,
-    )
-    .hint("Enter", "ok", 1),
-    b(
-        Context::Dialog(Screen::Rules),
+        Context::Delete(Screen::Rules),
         "Esc",
-        "Cancel / close details",
+        "Cancel (keep it)",
         ESC,
     )
-    .hint("Esc", "back", 2),
+    .hint("Esc", "cancel", 2),
+    b(
+        Context::Details(Screen::Rules),
+        "Enter, Esc",
+        "Close the details",
+        &[(KeyCode::Enter, NONE), (KeyCode::Esc, NONE)],
+    )
+    .hint("Enter", "close", 1),
     b(
         Context::Discard(Screen::Rules),
         "y",
@@ -675,21 +737,22 @@ pub(crate) static BINDINGS: &[Binding] = &[
         KeyCode::Char('s'),
         CTRL,
     )])
-    .hint_unsaved("Ctrl+S", "save", 0),
+    .hint_when("Ctrl+S", "save", 0, Show::Unsaved),
     b(
         Context::Global,
         "q, Ctrl+C",
-        "Quit (with unsaved changes: press again to confirm)",
+        "Quit (with unsaved changes it asks first: s saves, then quits; q again quits \
+         without saving)",
         &[(KeyCode::Char('q'), NONE), (KeyCode::Char('c'), CTRL)],
     )
     .hint("q", "quit", 1),
     b(
         Context::Global,
         "p",
-        "Pause / resume automatic (rule-driven) switching; manual switches still work",
+        "Pause / resume rule-driven switching (output and mic); manual switches still work",
         &[(KeyCode::Char('p'), NONE)],
     )
-    .hint("p", "pause", 7),
+    .hint_when("p", "pause", 7, Show::Pause),
     b(Context::Global, "Esc", "Clear status message", ESC),
     b(Context::Global, "F1, ?", "Show this help", &[
         (KeyCode::F(1), NONE),

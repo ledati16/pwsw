@@ -183,6 +183,15 @@ impl Endpoint {
         }
     }
 
+    /// `sink` / `mic`: what user-facing text (TUI, CLI messages) calls one entry
+    #[must_use]
+    pub const fn human_noun(self) -> &'static str {
+        match self {
+            Self::Sink => "sink",
+            Self::Source => "mic",
+        }
+    }
+
     /// `Sink` / `Source`
     #[must_use]
     pub const fn title(self) -> &'static str {
@@ -207,6 +216,47 @@ impl Endpoint {
         match self {
             Self::Sink => 0,
             Self::Source => 1,
+        }
+    }
+}
+
+/// A rule's reference to a sink or source by its (deprecated) 1-based position
+/// (see [`Config::positional_refs`])
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PositionalRef {
+    /// The rule's 1-based number
+    pub rule: usize,
+    pub kind: Endpoint,
+    /// The reference as written (`"2"`)
+    pub position: String,
+    /// The `desc` of the entry it points at now (`None`: no entry at that position)
+    pub desc: Option<String>,
+}
+
+impl PositionalRef {
+    /// `sink = "Speakers"`: what to write instead (`None` when the position names
+    /// no entry)
+    #[must_use]
+    pub fn replacement(&self) -> Option<String> {
+        self.desc
+            .as_ref()
+            .map(|desc| format!("{} = {desc:?}", self.kind.noun()))
+    }
+
+    /// The deprecation warning logged on load: `rule 2 refers to its sink by position
+    /// (sink = 1); use the sink's desc (sink = "Speakers")`
+    #[must_use]
+    pub fn warning(&self) -> String {
+        let noun = self.kind.human_noun();
+        let text = format!(
+            "rule {} refers to its {noun} by position ({} = {}); use the {noun}'s desc",
+            self.rule,
+            self.kind.noun(),
+            self.position
+        );
+        match self.replacement() {
+            Some(replacement) => format!("{text} ({replacement})"),
+            None => text,
         }
     }
 }
@@ -653,6 +703,20 @@ fn positional_ref(sink_ref: &str) -> Option<usize> {
     sink_ref.parse::<usize>().ok()
 }
 
+/// `'Speakers', 'Headset'`: the descs of `entries` for "Available: ..." in errors
+/// (positions are deprecated, so they are not offered); `none` for an empty list
+#[must_use]
+pub fn available_descs(entries: &[SinkConfig]) -> String {
+    if entries.is_empty() {
+        return "none".to_string();
+    }
+    entries
+        .iter()
+        .map(|s| format!("'{}'", s.desc))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Resolve a reference (by position, desc, or name) to its 0-based index in `sinks`
 /// (or a sources list), the way [`Config::resolve_sink`] does.
 pub(crate) fn sink_index_in(sinks: &[SinkConfig], sink_ref: &str) -> Option<usize> {
@@ -681,10 +745,10 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# PWSW (PipeWire Switcher) Configuratio
 default_on_startup = false # On daemon start, switch to what the rules want
 set_smart_toggle = true    # set-sink toggles back to default if already active
 notify_manual = true       # Desktop notifications for manual switches
-notify_rules = true        # Desktop notifications for rule-triggered switches
+notify_rules = true        # Desktop notifications for rule-driven switches
 match_by_index = false     # Priority: false = recent window, true = rule order
 log_level = "info"         # error, warn, info, debug, trace
-switch_delay_ms = 0        # Delay (ms) before rule-triggered switches; 0 = immediately
+switch_delay_ms = 0        # Delay (ms) before rule-driven switches; 0 = immediately
 
 # Audio sinks - add at least one with default = true before starting daemon
 # Find available sinks with: pwsw list-sinks
@@ -708,7 +772,7 @@ switch_delay_ms = 0        # Delay (ms) before rule-triggered switches; 0 = imme
 
 # Microphones (optional) - only if you want rules to switch the default input too.
 # Without any [[sources]], pwsw never touches the default source.
-# Find available sources with: pwsw list-sinks (INPUT DEVICES section)
+# Find available sources with: pwsw list-sinks (MICS section)
 #
 # Example:
 #
@@ -830,19 +894,22 @@ impl Config {
     /// Load the config, first writing the commented default template if no file
     /// exists yet. Only interactive setup (`pwsw tui`) should use this.
     ///
+    /// Returns the config and whether the file was just created. Creating it prints
+    /// one line to stderr (the TUI explains the next steps itself).
+    ///
     /// # Errors
     /// Returns an error if the template cannot be written, or if loading fails as in
     /// [`Config::load`].
-    pub fn load_or_init() -> Result<Self> {
+    pub fn load_or_init() -> Result<(Self, bool)> {
         let config_path = Self::get_config_path()?;
         match Self::load_from_path(&config_path) {
             Err(e) if e.downcast_ref::<ConfigNotFound>().is_some() => {
                 info!("Creating default config at {}", config_path.display());
                 Self::init_at(&config_path, false)?;
-                Self::print_init_guidance(&config_path);
-                Self::load_from_path(&config_path)
+                Self::print_created(&config_path);
+                Self::load_from_path(&config_path).map(|config| (config, true))
             }
-            other => other,
+            other => other.map(|config| (config, false)),
         }
     }
 
@@ -993,52 +1060,32 @@ impl Config {
         Ok(config)
     }
 
-    /// The 1-based numbers of the rules that reference a `kind` entry by (deprecated)
-    /// position
-    fn positional_rules(&self, kind: Endpoint) -> Vec<usize> {
-        self.rules
-            .iter()
-            .enumerate()
-            .filter(|(_, r)| {
-                r.refs(kind)
-                    .into_iter()
-                    .any(|r| positional_ref(r).is_some())
-            })
-            .map(|(i, _)| i + 1)
-            .collect()
-    }
-
-    /// The 1-based numbers of the rules that reference a sink or a source by
-    /// (deprecated) position
+    /// Every reference of a rule to a sink or source by (deprecated) position, in
+    /// rule order (sinks before sources within a rule)
     #[must_use]
-    pub fn rules_with_positional_refs(&self) -> Vec<usize> {
-        let mut rules: Vec<usize> = Endpoint::ALL
-            .into_iter()
-            .flat_map(|kind| self.positional_rules(kind))
-            .collect();
-        rules.sort_unstable();
-        rules.dedup();
-        rules
+    pub fn positional_refs(&self) -> Vec<PositionalRef> {
+        let mut found = Vec::new();
+        for (i, rule) in self.rules.iter().enumerate() {
+            for kind in Endpoint::ALL {
+                for r in rule.refs(kind) {
+                    if positional_ref(r).is_some() {
+                        found.push(PositionalRef {
+                            rule: i + 1,
+                            kind,
+                            position: r.to_string(),
+                            desc: self.resolve_endpoint(kind, r).map(|e| e.desc.clone()),
+                        });
+                    }
+                }
+            }
+        }
+        found
     }
 
-    /// Log a single deprecation warning (per kind) for rules that reference sinks or
-    /// sources by position.
+    /// Log one deprecation warning per positional sink or source reference.
     fn warn_positional_refs(&self) {
-        for kind in Endpoint::ALL {
-            let positional: Vec<String> = self
-                .positional_rules(kind)
-                .iter()
-                .map(ToString::to_string)
-                .collect();
-            if !positional.is_empty() {
-                let (noun, plural) = (kind.noun(), kind.plural());
-                warn!(
-                    "Rule(s) {} reference a {noun} by position; positional references are \
-                     deprecated (they silently retarget when {plural} are reordered). Use the \
-                     {noun}'s desc instead.",
-                    positional.join(", ")
-                );
-            }
+        for found in self.positional_refs() {
+            warn!("{}", found.warning());
         }
     }
 
@@ -1081,8 +1128,8 @@ impl Config {
         Self::write_atomic(&target, DEFAULT_CONFIG_TEMPLATE, path)
     }
 
-    /// Print the "created default config / next steps" message to stderr.
-    pub fn print_init_guidance(path: &Path) {
+    /// Print "✓ Created default config at: <path>" to stderr.
+    fn print_created(path: &Path) {
         crate::errln!(
             "{} {}",
             "✓".success().to_stderr(),
@@ -1090,6 +1137,12 @@ impl Config {
                 .success()
                 .to_stderr()
         );
+    }
+
+    /// Print the "created default config / next steps" message to stderr
+    /// (`pwsw init`).
+    pub fn print_init_guidance(path: &Path) {
+        Self::print_created(path);
         crate::errln!();
         crate::errln!("{}", "Next steps:".header().to_stderr());
         crate::errln!(
@@ -1543,6 +1596,22 @@ impl Config {
         })
     }
 
+    /// The rules that use the `kind` entry at `index` (as first choice or fallback),
+    /// each as `N (label)` with its 1-based number
+    #[must_use]
+    pub fn endpoint_users(&self, kind: Endpoint, index: usize) -> Vec<String> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| {
+                r.refs(kind)
+                    .into_iter()
+                    .any(|r| self.resolve_index(kind, r) == Some(index))
+            })
+            .map(|(i, r)| format!("{} ({})", i + 1, r.label()))
+            .collect()
+    }
+
     fn remove_endpoint(&mut self, kind: Endpoint, index: usize) -> Result<()> {
         self.transact(|c| {
             let entry = c
@@ -1550,22 +1619,12 @@ impl Config {
                 .get(index)
                 .cloned()
                 .with_context(|| format!("No {} at position {}", kind.noun(), index + 1))?;
-            let users: Vec<String> = c
-                .rules
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| {
-                    r.refs(kind)
-                        .into_iter()
-                        .any(|r| c.resolve_index(kind, r) == Some(index))
-                })
-                .map(|(i, r)| format!("{} ({})", i + 1, r.label()))
-                .collect();
+            let users = c.endpoint_users(kind, index);
             if !users.is_empty() {
                 anyhow::bail!(
                     "Cannot remove {} '{}': used by rule {}. Retarget or delete those rules \
                      first.",
-                    kind.noun(),
+                    kind.human_noun(),
                     entry.desc,
                     users.join(", ")
                 );
@@ -1932,16 +1991,11 @@ impl Config {
                 anyhow::bail!("Rule {} has an empty {noun} reference", i + 1);
             }
             let Some(target) = self.resolve_index(kind, r) else {
-                let available: Vec<_> = entries
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
-                    .collect();
                 anyhow::bail!(
-                    "Rule {} references unknown {noun} '{}'. Available: [{}]",
+                    "Rule {} references unknown {noun} '{}'. Available: {}",
                     i + 1,
                     r,
-                    available.join(", ")
+                    available_descs(entries)
                 );
             };
             if targets.contains(&target) {
@@ -2096,12 +2150,19 @@ impl Config {
 
         for kind in Endpoint::ALL {
             let entries = self.endpoints(kind);
-            if kind == Endpoint::Source && entries.is_empty() {
+            if entries.is_empty() {
+                if kind == Endpoint::Sink {
+                    crate::outln!("\n{}", "No sinks configured.".dim());
+                }
                 continue;
             }
+            let heading = match kind {
+                Endpoint::Sink => "Sinks",
+                Endpoint::Source => "Mics",
+            };
             crate::outln!(
                 "\n{} ({}):",
-                format!("{}s", kind.title()).header(),
+                heading.header(),
                 entries.len().to_string().technical()
             );
             for (i, entry) in entries.iter().enumerate() {
@@ -2184,6 +2245,9 @@ impl Config {
                         "source".dim(),
                         rule.source_refs.join(", ").as_str().bold()
                     );
+                }
+                if let Some(desc) = &rule.desc {
+                    crate::outln!("     {}: {}", "desc".dim(), desc);
                 }
             }
         }
@@ -4325,7 +4389,7 @@ sink = "Headset"
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
          desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\n\
          source = \"Nope\"\n",
-        "Rule 1 references unknown source 'Nope'. Available: [1. 'Mic']" ; "unknown_source_ref"
+        "Rule 1 references unknown source 'Nope'. Available: 'Mic'" ; "unknown_source_ref"
     )]
     #[test_case(
         "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
@@ -4399,7 +4463,7 @@ sink = "Headset"
             .expect_err("`remove_source` fails")
             .to_string();
         assert!(
-            err.contains("Cannot remove source 'Arctis Mic': used by rule 1"),
+            err.contains("Cannot remove mic 'Arctis Mic': used by rule 1"),
             "{err}"
         );
         assert_eq!(cfg.sources.len(), 2, "refused removals change nothing");
