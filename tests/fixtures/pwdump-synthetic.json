@@ -450,6 +450,29 @@
     }
   },
   {
+    "id": 73,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor",
+        "node.description": "Monitor of Built-in Audio Analog Stereo",
+        "media.class": "Audio/Source",
+        "device.id": 70
+      }
+    }
+  },
+  {
+    "id": 74,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "node.name": "echo-cancel-source",
+        "node.description": "Echo-Cancel Source",
+        "media.class": "Audio/Source/Virtual"
+      }
+    }
+  },
+  {
     "id": 80,
     "type": "PipeWire:Interface:Device",
     "info": {
@@ -614,6 +637,22 @@
         "type": "Spa:String:JSON",
         "value": {
           "name": "alsa_output.pci-0000_00_1f.3.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.configured.audio.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_input.pci-0000_00_1f.3.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_input.pci-0000_00_1f.3.analog-stereo"
         }
       }
     ]

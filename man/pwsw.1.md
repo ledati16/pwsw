@@ -11,7 +11,9 @@ pwsw - PipeWire Switcher daemon and client
 
 It can also be used as a command-line client to query the daemon status, list windows, and manually switch sinks.
 
-The daemon switches when the sink its rules want *changes* (a matching window opens, closes or changes title, or a reload changes the rules). It does not fight other programs: a default sink changed elsewhere (e.g. with **pavucontrol**, or by WirePlumber) stays until the rules' answer changes again. A manual switch holds the same way. A failed rule-driven switch is retried after 2 s and 5 s, then once more on the next window event or reload. Under systemd the daemon reports the current sink as its status line (**systemctl --user status pwsw**).
+Optionally it also switches the default *source* (microphone): with **[[sources]]** in the configuration, a rule may name a *source* as well, and the microphone follows the highest-priority matching window whose rule has one, independently of the sink (see **pwsw**(5)). Without **[[sources]]** pwsw never touches the default source.
+
+The daemon switches when the sink its rules want *changes* (a matching window opens, closes or changes title, or a reload changes the rules). It does not fight other programs: a default sink changed elsewhere (e.g. with **pavucontrol**, or by WirePlumber) stays until the rules' answer changes again. A manual switch holds the same way. A failed rule-driven switch is retried after 2 s and 5 s, then once more on the next window event or reload. Under systemd the daemon reports the current sink as its status line (**systemctl --user status pwsw**), as *Sink: X · Mic: Y* when sources are configured. Sources follow the same rules (switch on a change of their answer, retries, fallbacks, manual choice, pause, settle delay), each dimension on its own.
 
 ## COMMANDS
 **daemon** [*OPTIONS*]
@@ -22,7 +24,7 @@ The daemon switches when the sink its rules want *changes* (a matching window op
     With **-f**/**--foreground** it runs in the foreground instead (useful for systemd or debugging); logs then also go to stderr.
 
 **status** [*--json*]
-:   Show the current audio output (queried from PipeWire directly) and the daemon's status: uptime, version, whether rule-driven switching is paused, active rule and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
+:   Show the current audio output (queried from PipeWire directly; with sources configured also the current input) and the daemon's status: uptime, version, whether rule-driven switching is paused, active rule, the microphone it applied (with sources configured) and number of tracked windows. Works without a running daemon; this is also what **pwsw** without a command does. A part that cannot be determined (configuration, PipeWire, daemon) is reported and the rest is still shown; the human-readable form then exits with status 1 and prints the problems to stderr as *error:* lines.
 
     With **--json**, a single JSON document is always printed (exit status 0), even when PipeWire or the daemon cannot be reached; see **STATUS JSON**.
 
@@ -30,13 +32,13 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 :   Launch the interactive Terminal User Interface for configuration and monitoring. On first run it creates the commented default configuration file (like **pwsw init**).
 
 **list-sinks** [*--json*]
-:   List all active and profile-switchable PipeWire sinks.
+:   List all active and profile-switchable PipeWire sinks and the configured sinks' status, then the same for input devices in an *INPUT DEVICES / SOURCES* section (sources; monitors of sinks are not listed). Inputs reachable by a profile switch are those a switch can provide while keeping the card's current output. There is no separate **list-sources** command. With **--json**, the object has *active_sinks*, *profile_sinks*, *configured_sinks*, *current_default*, and the same for sources: *active_sources*, *profile_sources*, *configured_sources*, *current_default_source*.
 
 **list-windows** [*--json*]
-:   List all open windows the daemon sees, split into tracked (matching a rule, with the sink they selected and its fallback sinks, if any) and untracked ones. Requires a running daemon.
+:   List all open windows the daemon sees, split into tracked (matching a rule, with the sink they selected and its fallback sinks, if any, and the rule's sources) and untracked ones. In the JSON output a tracked window's *tracked.sources* lists the rule's sources (first choice first), omitted when the rule has none. Requires a running daemon.
 
 **test-rule** *PATTERN* [*--json*]
-:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field; for a window that currently matches a rule, also that rule's sinks (with fallbacks). Requires a running daemon. See **pwsw**(5) for details on regex syntax.
+:   Test a regex pattern against the *app_id* and title of every open window and show which matched, and on which field; for a window that currently matches a rule, also that rule's sinks (with fallbacks) and sources. Requires a running daemon. See **pwsw**(5) for details on regex syntax.
 
 **validate**
 :   Validate the configuration file syntax and sink references. Reports a missing file (it does not create one).
@@ -52,6 +54,9 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 **set-sink** *SINK*
 :   Set audio output by description or node name (a 1-indexed position such as "2" also works, but is deprecated like positional references in the configuration). If `set_smart_toggle` is enabled in config and the target sink is already active, toggles back to the default sink; "already active" means the current PipeWire default. The sink is always attempted, and its error reported, even if it cannot be activated right now. A failed switch leaves the audio where it was. When the daemon runs, the switch goes through it (so its rules see the manual choice); otherwise PipeWire is switched directly.
 
+**set-source** *SOURCE*
+:   Set the default input (microphone) to a configured source, by description or node name (a deprecated position also works). Needs **[[sources]]** in the configuration. Like **set-sink**: with `set_smart_toggle`, asking for the source that is already the PipeWire default switches to the default source; the source is always attempted; a failed switch changes nothing; when the daemon runs the switch goes through it, and the choice holds until the rules' *source* answer changes (sink-only changes do not end it). A source on an ALSA card whose current profile lacks its input is reached by a profile switch that keeps the card's current output; if none exists, the error says so.
+
 **next-sink**
 :   Cycle to the next configured sink after the current PipeWire default (wraps around), skipping sinks that cannot be activated right now (e.g. an HDMI output whose display is off). If no other sink can be activated, says why and changes nothing. Through the daemon when it runs, like **set-sink**.
 
@@ -59,10 +64,10 @@ The daemon switches when the sink its rules want *changes* (a matching window op
 :   Like **next-sink**, in the other direction.
 
 **pause**
-:   Stop rule-driven switching. The daemon keeps tracking windows and applying configuration changes, and manual switches (**set-sink**, **next-sink**, **prev-sink**) still work, but no rule switches the sink until **resume**. Pending retries and settle waits (*switch_delay_ms*) are dropped. The pause is kept in memory only: a restarted daemon starts unpaused. Requires a running daemon; under systemd the status line ends in *(paused)*.
+:   Stop rule-driven switching. The daemon keeps tracking windows and applying configuration changes, and manual switches (**set-sink**, **next-sink**, **prev-sink**) still work, but no rule switches the sink (or the source) until **resume**. Pending retries and settle waits (*switch_delay_ms*) are dropped. The pause is kept in memory only: a restarted daemon starts unpaused. Requires a running daemon; under systemd the status line ends in *(paused)*.
 
 **resume**
-:   Resume rule-driven switching. This counts as a change of the rules' answer: if the sink the rules want now is not the current one, the daemon switches at once (without the settle delay), also over a manual choice. Requires a running daemon.
+:   Resume rule-driven switching. This counts as a change of the rules' answer: if the sink (or source) the rules want now is not the current one, the daemon switches at once (without the settle delay), also over a manual choice. Requires a running daemon.
 
 **toggle-pause**
 :   **pause** when running, **resume** when paused (e.g. for a key binding). Requires a running daemon.
@@ -82,28 +87,33 @@ The daemon watches its configuration file and applies changes automatically when
 ```
 {
   "current_sink": { "name": "...", "description": "..." } | null,
+  "current_source": { "name": "...", "description": "..." } | null,
+  "sources_configured": true | false,
   "daemon": {
     "running": true | false,
     "error": null | "...",
     "version": "v0.7.0+abc1234" | null,
-    "protocol": 1 | null,
+    "protocol": 2 | null,
     "uptime_secs": 3600 | null,
     "uptime_human": "1h" | null,
     "daemon_sink": "..." | null,
     "daemon_sink_fallback": true | false | null,
+    "daemon_source": "..." | null,
+    "daemon_source_fallback": true | false | null,
     "active_window": "..." | null,
     "tracked_windows": 2 | null,
     "paused": true | false | null
   },
   "pipewire": {
     "current_sink": { "name": "...", "description": "..." } | null,
+    "current_source": { "name": "...", "description": "..." } | null,
     "error": null | "..."
   },
   "config": { "path": "..." | null, "error": null | "..." }
 }
 ```
 
-*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *daemon.paused* is true while rule-driven switching is paused (**pwsw pause**), *null* when no daemon status could be read. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
+*current_sink* is the PipeWire default sink (its configured description if it is a configured sink, else its node name); it is the same as *pipewire.current_sink* and is *null* when PipeWire could not be queried (*pipewire.error* says why). *daemon.running* is false when no daemon answers on the socket; *daemon.error* is set when one runs but could not report its status, or speaks a different IPC protocol than this client (restart it). *daemon.daemon_sink* is the sink the daemon last applied (its configured description), or *null* while the daemon does not know the default sink (it could not query it at startup and has not switched since). *daemon.daemon_sink_fallback* is true when that sink is a fallback a rule settled for because its earlier sinks could not be activated (*null* together with *daemon_sink*); *daemon.active_window* then also ends in *(fallback)*. *daemon.paused* is true while rule-driven switching is paused (**pwsw pause**), *null* when no daemon status could be read. *current_source* (also *pipewire.current_source*) is the PipeWire default source the same way, *null* when there is none; *sources_configured* says whether the configuration has **[[sources]]**. *daemon.daemon_source* is the source the daemon last applied (configured description), *null* without sources configured or while unknown, and *daemon.daemon_source_fallback* is true when it is a fallback of the deciding rule. *config.error* is set when the configuration file could not be loaded (descriptions then fall back to node names).
 
 ## COMPATIBILITY
 **pwsw** relies on standard Wayland protocols to monitor windows.

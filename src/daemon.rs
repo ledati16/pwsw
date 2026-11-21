@@ -287,19 +287,30 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
 
     let state = State::new(Arc::clone(&config))?;
 
-    // The current default, so startup does not switch needlessly
-    let applied = match tokio::task::spawn_blocking(PipeWire::get_default_sink_name).await {
-        Ok(Ok(name)) => {
-            info!("Current default sink: {name}");
-            Some(name)
+    // The current defaults, so startup does not switch needlessly
+    let (applied, applied_source) = match tokio::task::spawn_blocking(PipeWire::get_defaults).await
+    {
+        Ok(Ok((sink, source))) => {
+            if let Some(name) = &sink {
+                info!("Current default sink: {name}");
+            } else {
+                warn!("Could not query default sink: none set in PipeWire metadata");
+            }
+            if !config.sources.is_empty() {
+                info!(
+                    "Current default source: {}",
+                    source.as_deref().unwrap_or("unknown")
+                );
+            }
+            (sink, source)
         }
         Ok(Err(e)) => {
             warn!("Could not query default sink: {e:#}");
-            None
+            (None, None)
         }
         Err(e) => {
             warn!("Could not query default sink: {e}");
-            None
+            (None, None)
         }
     };
 
@@ -353,7 +364,8 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         notifier,
         hooks,
         applied,
-    );
+    )
+    .with_applied_source(applied_source);
 
     // No-op unless started by systemd with `Type=notify`
     if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {

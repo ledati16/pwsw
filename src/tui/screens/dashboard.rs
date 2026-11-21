@@ -896,6 +896,7 @@ mod tests {
                 sink_name: String::new(),
                 sink_desc: String::new(),
                 fallbacks: Vec::new(),
+                sources: Vec::new(),
             }),
         }
     }

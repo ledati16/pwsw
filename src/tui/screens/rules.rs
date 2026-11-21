@@ -62,6 +62,9 @@ pub struct RuleEditor {
     /// The rule's sinks in priority order: the first choice, then the fallbacks
     /// (sink references as in the config; empty for a new rule)
     pub sink_refs: Vec<String>,
+    /// The rule's source references, carried through edits unchanged (the form does
+    /// not edit them yet; empty for a new rule)
+    pub source_refs: Vec<String>,
     pub desc: Input,
     pub notify: Option<bool>,
     pub focused_field: RuleField,
@@ -130,6 +133,7 @@ impl RuleEditor {
             title_regex,
             sink_ref: first.clone(),
             fallback_refs: fallbacks.to_vec(),
+            source_refs: self.source_refs.clone(),
             desc: optional(&self.desc),
             notify: self.notify,
             app_id_pattern: app_id.to_string(),
@@ -253,6 +257,7 @@ impl FormEditor for RuleEditor {
             app_id_pattern: Input::new(rule.app_id_pattern.clone()),
             title_pattern: Input::new(rule.title_pattern.clone().unwrap_or_default()),
             sink_refs: rule.sink_refs().map(str::to_string).collect(),
+            source_refs: rule.source_refs.clone(),
             desc: Input::new(rule.desc.clone().unwrap_or_default()),
             notify: rule.notify,
             ..Self::default()
@@ -847,7 +852,9 @@ mod editor_tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::test_utils::fixtures::{make_rule, make_rule_with_fallbacks, make_sink};
+    use crate::test_utils::fixtures::{
+        make_rule, make_rule_with_fallbacks, make_sink, with_sources,
+    };
 
     fn sinks() -> Vec<SinkConfig> {
         vec![
@@ -862,6 +869,22 @@ mod editor_tests {
         let mut editor = RuleEditor::from_item(rule);
         editor.open_picker(&sinks());
         editor
+    }
+
+    /// The form does not edit sources yet: an edit must keep them as they were
+    #[test]
+    fn test_edit_keeps_the_rules_sources() {
+        let rule = with_sources(make_rule("^discord$", None, "Speakers"), &["Headset Mic"]);
+        let mut editor = RuleEditor::from_item(&rule);
+        editor.sink_refs = vec!["Headphones".to_string()];
+        let edited = editor.to_rule().expect("valid rule");
+        assert_eq!(edited.source_refs, ["Headset Mic"]);
+        assert_eq!(edited.sink_ref, "Headphones");
+        assert_eq!(
+            RuleEditor::from_item(&rule).to_rule().expect("valid rule"),
+            rule
+        );
+        assert_eq!(RuleEditor::blank().source_refs, Vec::<String>::new());
     }
 
     #[test]

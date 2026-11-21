@@ -151,6 +151,7 @@ async fn respond(
         Request::SetSink { sink } => switch(commands, ManualSwitch::Set(sink)).await,
         Request::NextSink => switch(commands, ManualSwitch::Next).await,
         Request::PrevSink => switch(commands, ManualSwitch::Prev).await,
+        Request::SetSource { source } => switch(commands, ManualSwitch::SetSource(source)).await,
         Request::Pause => set_paused(commands, PauseRequest::Pause).await,
         Request::Resume => set_paused(commands, PauseRequest::Resume).await,
         Request::TogglePause => set_paused(commands, PauseRequest::Toggle).await,
@@ -185,6 +186,11 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
             .find(|s| s.name == current)
             .map_or_else(|| current.to_string(), |s| s.desc.clone())
     });
+    let current_source = snapshot.applied_source.as_deref().map(|current| {
+        snapshot
+            .config
+            .endpoint_desc(crate::config::Endpoint::Source, current)
+    });
     Response::Status {
         version: info.version.clone(),
         protocol: ipc::PROTOCOL_VERSION,
@@ -194,6 +200,9 @@ fn status_response(snapshot: &Snapshot, info: &ServerInfo) -> Response {
         active_window: snapshot.active_window.clone(),
         tracked_windows: snapshot.tracked_windows,
         paused: snapshot.paused,
+        current_source_fallback: current_source.is_some() && snapshot.source_fallback,
+        current_source,
+        sources_configured: snapshot.sources_configured,
     }
 }
 

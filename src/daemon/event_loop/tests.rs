@@ -19,7 +19,9 @@ use super::*;
 use crate::daemon::ipc_handler::{ServerInfo, handle_connection};
 use crate::daemon_manager::DaemonManager;
 use crate::ipc::Request;
-use crate::test_utils::fixtures::{make_config, make_rule, make_rule_with_fallbacks, make_sink};
+use crate::test_utils::fixtures::{
+    make_config, make_rule, make_rule_with_fallbacks, make_sink, with_sources,
+};
 
 /// Upper bound for any single wait in these tests
 const WAIT: Duration = Duration::from_secs(30);
@@ -81,8 +83,16 @@ struct FakeSwitcher {
     current: Mutex<Option<String>>,
     unreachable: Mutex<Vec<String>>,
     absent: Mutex<Vec<String>>,
-    /// Every `activate` request: the candidates and `upgrade_from`
+    /// Every `activate` request's sink half: the candidates and `upgrade_from`
     requests: Mutex<Vec<(Vec<String>, Option<usize>)>>,
+    /// Every `activate` request's source half
+    source_requests: Mutex<Vec<(Vec<String>, Option<usize>)>>,
+    /// Source activations, by name (sink ones are in `calls`)
+    source_calls: Mutex<Vec<String>>,
+    /// The real default source
+    current_source: Mutex<Option<String>>,
+    /// For every `activate` call: whether it carried a sink half and a source half
+    halves: Mutex<Vec<(bool, bool)>>,
 }
 
 impl FakeSwitcher {
@@ -127,37 +137,44 @@ impl FakeSwitcher {
 }
 
 impl FakeSwitcher {
-    fn activate_one(&self, sink_name: &str) -> Result<String> {
-        self.calls.lock().expect("lock").push(sink_name.to_string());
+    fn activate_one(&self, kind: Endpoint, name: &str) -> Result<String> {
+        match kind {
+            Endpoint::Sink => self.calls.lock().expect("lock").push(name.to_string()),
+            Endpoint::Source => self
+                .source_calls
+                .lock()
+                .expect("lock")
+                .push(name.to_string()),
+        }
         if let Some(tx) = &*self.started.lock().expect("lock") {
-            let _ = tx.send(sink_name.to_string());
+            let _ = tx.send(name.to_string());
         }
         if let Some(gate) = &*self.gate.lock().expect("lock") {
             // Bounded: a held activation must never keep runtime shutdown waiting
             let _ = gate.recv_timeout(WAIT);
         }
         let mut failures = self.failures.lock().expect("lock");
-        if let Some(left) = failures.get_mut(sink_name)
+        if let Some(left) = failures.get_mut(name)
             && *left > 0
         {
             *left -= 1;
-            eyre::bail!("fake failure for {sink_name}");
+            eyre::bail!("fake failure for {name}");
         }
-        *self.current.lock().expect("lock") = Some(sink_name.to_string());
-        Ok(format!("node.{sink_name}"))
+        let current = match kind {
+            Endpoint::Sink => &self.current,
+            Endpoint::Source => &self.current_source,
+        };
+        *current.lock().expect("lock") = Some(name.to_string());
+        Ok(format!("node.{name}"))
     }
-}
 
-impl SinkSwitcher for FakeSwitcher {
-    fn activate(
+    /// One half: like the real resolver, `absent` candidates are skipped
+    fn activate_half(
         &self,
+        kind: Endpoint,
         candidates: &[String],
         upgrade_from: Option<usize>,
     ) -> Result<Option<(usize, String)>> {
-        self.requests
-            .lock()
-            .expect("lock")
-            .push((candidates.to_vec(), upgrade_from));
         let absent = self.absent.lock().expect("lock").clone();
         let reachable = |c: &String| !absent.contains(c);
         if let Some(rank) = upgrade_from
@@ -173,12 +190,46 @@ impl SinkSwitcher for FakeSwitcher {
                 errors.push(format!("{candidate} is not present"));
                 continue;
             }
-            match self.activate_one(candidate) {
+            match self.activate_one(kind, candidate) {
                 Ok(node) => return Ok(Some((index, node))),
                 Err(e) => errors.push(format!("{e:#}")),
             }
         }
         eyre::bail!("{}", errors.join("; "))
+    }
+
+    /// Set the real default source, as an outside program would
+    fn set_current_source(&self, source: &str) {
+        *self.current_source.lock().expect("lock") = Some(source.to_string());
+    }
+}
+
+impl SinkSwitcher for FakeSwitcher {
+    fn activate(
+        &self,
+        sink: Option<worker::Half<'_>>,
+        source: Option<worker::Half<'_>>,
+    ) -> (Option<worker::HalfResult>, Option<worker::HalfResult>) {
+        self.halves
+            .lock()
+            .expect("lock")
+            .push((sink.is_some(), source.is_some()));
+        if let Some((candidates, upgrade_from)) = sink {
+            self.requests
+                .lock()
+                .expect("lock")
+                .push((candidates.to_vec(), upgrade_from));
+        }
+        if let Some((candidates, upgrade_from)) = source {
+            self.source_requests
+                .lock()
+                .expect("lock")
+                .push((candidates.to_vec(), upgrade_from));
+        }
+        (
+            sink.map(|(c, u)| self.activate_half(Endpoint::Sink, c, u)),
+            source.map(|(c, u)| self.activate_half(Endpoint::Source, c, u)),
+        )
     }
 
     fn probe(&self, config: &Config) -> Result<crate::manual::Probe> {
@@ -191,6 +242,7 @@ impl SinkSwitcher for FakeSwitcher {
                 .filter(|s| unreachable.contains(&s.name))
                 .map(|s| (s.name.clone(), format!("{} is off", s.desc)))
                 .collect(),
+            current_source: self.current_source.lock().expect("lock").clone(),
         })
     }
 }
@@ -258,6 +310,8 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
             *current = applied.map(str::to_string);
         }
     }
+    // The fake's real default source (if a test set one) is what startup found
+    let applied_source = switcher.current_source.lock().expect("lock").clone();
     let switcher = Arc::new(switcher);
     let daemon = Daemon::new(
         State::new(Arc::new(config)).expect("valid config"),
@@ -266,7 +320,8 @@ fn start(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harne
         notifier,
         hooks,
         applied.map(str::to_string),
-    );
+    )
+    .with_applied_source(applied_source);
     let task = tokio::spawn(daemon.run(Inputs {
         windows: windows_rx,
         commands: commands_rx,
@@ -340,6 +395,26 @@ impl Harness {
 
     fn requests(&self) -> Vec<(Vec<String>, Option<usize>)> {
         self.switcher.requests.lock().expect("lock").clone()
+    }
+
+    fn source_calls(&self) -> Vec<String> {
+        self.switcher.source_calls.lock().expect("lock").clone()
+    }
+
+    fn source_requests(&self) -> Vec<(Vec<String>, Option<usize>)> {
+        self.switcher.source_requests.lock().expect("lock").clone()
+    }
+
+    /// For each `activate` call: (had a sink half, had a source half)
+    fn halves(&self) -> Vec<(bool, bool)> {
+        self.switcher.halves.lock().expect("lock").clone()
+    }
+
+    async fn wait_source(&self, source: &str) -> Snapshot {
+        self.wait_for(&format!("applied source = {source}"), |s, _| {
+            s.applied_source.as_deref() == Some(source)
+        })
+        .await
     }
 
     fn statuses(&self) -> Vec<String> {
@@ -1801,5 +1876,330 @@ async fn test_settle_not_applied_to_startup_and_resume() {
     h.resume().await;
     h.wait_applied("headphones").await;
     assert!(t1.elapsed() < SETTLE, "resume took {:?}", t1.elapsed());
+    h.stop().await.expect("clean shutdown");
+}
+
+// ----------------------------------------------------------------------------
+// Sources (microphones)
+// ----------------------------------------------------------------------------
+
+/// `base_config` plus sources Desk Mic (default) and Headset Mic, Arctis Mic; rules:
+/// discord → headphones + Headset Mic, zoom → speakers + [Arctis Mic, Headset Mic]
+fn source_config() -> Config {
+    let mut config = base_config().with_sources(vec![
+        make_sink("mic.desk", "Desk Mic", true),
+        make_sink("mic.headset", "Headset Mic", false),
+        make_sink("mic.arctis", "Arctis Mic", false),
+    ]);
+    config
+        .rules
+        .push(with_sources(make_rule("^discord$", None, "headphones"), &[
+            "Headset Mic",
+        ]));
+    config
+        .rules
+        .push(with_sources(make_rule("^zoom$", None, "speakers"), &[
+            "Arctis Mic",
+            "Headset Mic",
+        ]));
+    config
+}
+
+fn with_desk_mic(switcher: FakeSwitcher) -> FakeSwitcher {
+    switcher.set_current_source("mic.desk");
+    switcher
+}
+
+/// No sources configured: pwsw never asks for a source, and the status line has no mic
+#[tokio::test(start_paused = true)]
+async fn test_no_sources_never_touches_the_default_source() {
+    let h = start(
+        base_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    h.wait_applied("headphones").await;
+    h.close(1).await;
+    let snapshot = h.wait_applied("speakers").await;
+    assert!(!snapshot.sources_configured);
+    assert_eq!(snapshot.applied_source, None);
+    assert_eq!(h.source_requests(), Vec::new());
+    assert!(h.halves().iter().all(|&(_, source)| !source));
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers")
+    );
+    let response = h
+        .switch(ManualSwitch::SetSource("Desk Mic".to_string()))
+        .await;
+    let Response::Error { message } = response else {
+        panic!("expected an error, got {response:?}");
+    };
+    assert!(message.starts_with("No sources configured"), "{message}");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A rule with a source switches both, jointly; a sink-only rule after it moves
+/// only the sink, and the microphone stays with the window that chose it
+#[tokio::test(start_paused = true)]
+async fn test_source_follows_its_own_rules_independently() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "discord").await;
+    h.wait_source("mic.headset").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert_eq!(h.halves(), vec![(true, true)], "one joint activation");
+    assert_eq!(snapshot.desired_source.as_deref(), Some("mic.headset"));
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Headphones · Mic: Headset Mic")
+    );
+    let discord = snapshot
+        .windows
+        .iter()
+        .find(|w| w.id == Some(1))
+        .expect("window");
+    let tracked = discord.tracked.as_ref().expect("tracked");
+    assert_eq!(tracked.sources[0].desc, "Headset Mic");
+
+    // Steam: sink only; the microphone answer is unchanged, so no source job
+    h.open(2, "steam").await;
+    let snapshot = h.wait_applied("hdmi").await;
+    assert_eq!(snapshot.applied_source.as_deref(), Some("mic.headset"));
+    assert_eq!(h.source_calls(), vec!["mic.headset"]);
+    assert_eq!(h.halves(), vec![(true, true), (true, false)]);
+
+    // Discord closes: the sink goes to Steam's, the mic back to the default
+    h.close(1).await;
+    h.wait_source("mic.desk").await;
+    assert_eq!(
+        h.calls(),
+        vec!["headphones", "hdmi"],
+        "sink stays on Steam's"
+    );
+    assert_eq!(h.source_calls(), vec!["mic.headset", "mic.desk"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A source rule with fallbacks settles for the next reachable one, and upgrades
+/// when the first choice comes back (on the next event)
+#[tokio::test(start_paused = true)]
+async fn test_source_fallback_and_upgrade() {
+    let switcher = with_desk_mic(FakeSwitcher::default());
+    switcher.set_absent(&["mic.arctis"]);
+    let h = start(source_config(), switcher, Some("speakers"));
+    h.open(1, "zoom").await;
+    let snapshot = h.wait_source("mic.headset").await;
+    assert!(snapshot.source_fallback);
+    assert_eq!(h.source_requests(), vec![(
+        names(&["mic.arctis", "mic.headset"]),
+        None
+    )]);
+    assert!(
+        h.statuses()
+            .last()
+            .is_some_and(|s| s.ends_with("Mic: Headset Mic (fallback)")),
+        "{:?}",
+        h.statuses()
+    );
+
+    h.switcher.set_absent(&[]);
+    tokio::time::sleep(UPGRADE_CHECK_INTERVAL).await;
+    h.open(2, "zsh").await;
+    let snapshot = h.wait_source("mic.arctis").await;
+    assert!(!snapshot.source_fallback);
+    assert_eq!(
+        h.source_requests().last(),
+        Some(&(names(&["mic.arctis", "mic.headset"]), Some(1)))
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A failed source switch retries on its own schedule; the sink is not resubmitted
+#[tokio::test(start_paused = true)]
+async fn test_failed_source_switch_retries_without_the_sink() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::failing("mic.headset", 1)),
+        Some("speakers"),
+    );
+    h.open(1, "discord").await;
+    h.wait_source("mic.headset").await;
+    assert_eq!(h.source_calls(), vec!["mic.headset", "mic.headset"]);
+    assert_eq!(h.calls(), vec!["headphones"], "the sink switched once");
+    assert_eq!(h.halves(), vec![(true, true), (false, true)]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Pausing stops source switching too; resuming adopts both answers
+#[tokio::test(start_paused = true)]
+async fn test_pause_stops_source_switching() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.pause().await;
+    h.open(1, "discord").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.desired_source.as_deref(), Some("mic.headset"));
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(h.halves(), Vec::new());
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers · Mic: Desk Mic (paused)")
+    );
+    h.resume().await;
+    h.wait_source("mic.headset").await;
+    h.wait_applied("headphones").await;
+    h.stop().await.expect("clean shutdown");
+}
+
+/// The settle delay runs per dimension: a sink flicker back to the applied sink
+/// cancels the sink switch, while the source change that held still switches
+#[tokio::test(start_paused = true)]
+async fn test_settle_delay_is_per_dimension() {
+    let mut config = source_config();
+    config.settings.switch_delay_ms = 300;
+    let h = start(
+        config,
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "discord").await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.settling, Some(names(&["headphones"])));
+    assert_eq!(snapshot.source_settling, Some(names(&["mic.headset"])));
+    // Within the delay a zoom window opens: sink back to speakers (cancels the sink
+    // wait), source to Arctis (restarts the source wait)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    h.open(2, "zoom").await;
+    let snapshot = h.wait_windows(2).await;
+    assert_eq!(snapshot.settling, None, "the sink is already right");
+    assert_eq!(
+        snapshot.source_settling,
+        Some(names(&["mic.arctis", "mic.headset"]))
+    );
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        h.source_calls(),
+        Vec::<String>::new(),
+        "not before its delay"
+    );
+    h.wait_source("mic.arctis").await;
+    assert_eq!(h.calls(), Vec::<String>::new(), "no sink switch at all");
+    assert_eq!(h.halves(), vec![(false, true)]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// `set-source` holds until the rules' source answer changes; sink changes do not end
+/// it, and a manual sink choice does not end a source rule either
+#[tokio::test(start_paused = true)]
+async fn test_manual_set_source_holds_until_the_source_answer_changes() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    let response = h
+        .switch(ManualSwitch::SetSource("Arctis Mic".to_string()))
+        .await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, node_name }
+            if desc == "Arctis Mic" && node_name == "node.mic.arctis"),
+        "{response:?}"
+    );
+    let snapshot = h.wait_source("mic.arctis").await;
+    assert!(snapshot.source_manual_override);
+    assert!(!snapshot.manual_override, "the sink lane is untouched");
+
+    // A sink-only change of the rules: the manual microphone stays
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert!(snapshot.source_manual_override);
+    assert_eq!(snapshot.applied_source.as_deref(), Some("mic.arctis"));
+
+    // Smart toggle: asking for the active source goes back to the default
+    let response = h
+        .switch(ManualSwitch::SetSource("Arctis Mic".to_string()))
+        .await;
+    assert!(
+        matches!(&response, Response::SinkSwitched { desc, .. } if desc == "Desk Mic"),
+        "{response:?}"
+    );
+    h.wait_source("mic.desk").await;
+    let response = h
+        .switch(ManualSwitch::SetSource("Headset Mic".to_string()))
+        .await;
+    assert!(
+        matches!(response, Response::SinkSwitched { .. }),
+        "{response:?}"
+    );
+
+    // The source answer changes (discord): the rules take over the mic again
+    h.open(2, "discord").await;
+    let snapshot = h
+        .wait_for("discord's mic and sink", |s, _| {
+            s.applied.as_deref() == Some("headphones")
+                && s.applied_source.as_deref() == Some("mic.headset")
+                && !s.source_manual_override
+        })
+        .await;
+    assert_eq!(snapshot.desired_source.as_deref(), Some("mic.headset"));
+    let unknown = h.switch(ManualSwitch::SetSource("Nope".to_string())).await;
+    assert!(
+        matches!(&unknown, Response::Error { message } if message.contains("Unknown source 'Nope'")),
+        "{unknown:?}"
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Sources added by a reload become a managed dimension; removing them stops it
+#[tokio::test(start_paused = true)]
+async fn test_reload_adds_and_removes_the_source_lane() {
+    let h = start(
+        base_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "discord").await;
+    h.wait_windows(1).await;
+    assert_eq!(h.source_requests(), Vec::new());
+
+    let with_sources = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\ndefault = true\n\n\
+        [[sinks]]\nname = \"headphones\"\ndesc = \"Headphones\"\n\n\
+        [[sources]]\nname = \"mic.desk\"\ndesc = \"Desk Mic\"\ndefault = true\n\n\
+        [[sources]]\nname = \"mic.headset\"\ndesc = \"Headset Mic\"\n\n\
+        [[rules]]\napp_id = \"^discord$\"\nsink = \"Headphones\"\nsource = \"Headset Mic\"\n";
+    std::fs::write(&h.config_path, with_sources).expect("write config");
+    h.signal(Signal::Hangup).await;
+    let snapshot = h.wait_source("mic.headset").await;
+    assert!(snapshot.sources_configured);
+    h.wait_applied("headphones").await;
+
+    let without = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\ndefault = true\n\n\
+        [[sinks]]\nname = \"headphones\"\ndesc = \"Headphones\"\n\n\
+        [[rules]]\napp_id = \"^discord$\"\nsink = \"Headphones\"\n";
+    std::fs::write(&h.config_path, without).expect("write config");
+    h.signal(Signal::Hangup).await;
+    let snapshot = h
+        .wait_for("sources gone", |s, _| !s.sources_configured)
+        .await;
+    assert_eq!(snapshot.applied_source, None);
+    h.close(1).await;
+    h.wait_applied("speakers").await;
+    assert_eq!(
+        h.source_calls(),
+        vec!["mic.headset"],
+        "no source switch after removal"
+    );
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Speakers")
+    );
     h.stop().await.expect("clean shutdown");
 }

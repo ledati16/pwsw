@@ -79,6 +79,22 @@ the daemon switches less eagerly than before.
   single-sink rules are saved as. In the TUI the rule editor's **Sinks** field picks
   the sinks and their order (`Space` adds/removes, `Shift+↑/↓` reorders), and the rules
   table and details show them as `BT Headphones → Headphones`.
+- **Microphone (source) switching**: an optional `[[sources]]` list (same keys as
+  `[[sinks]]`, exactly one `default`) and a rule key `source = "Headset Mic"` (or a
+  fallback list, like `sink`) make the default input follow the rules too. The
+  microphone is an independent dimension: the highest-priority matching window *whose
+  rule has a `source`* decides it, else the default source, so a sink-only rule never
+  moves the mic. Fallbacks, upgrades, retries, manual choice, pause and the settle delay
+  work for it exactly as for sinks. When one switch needs a sink and a source on the
+  same card, the card is switched once to a profile providing both (if none exists the
+  sink wins and the source is reported unreachable); a source-only switch always keeps
+  the card's current output. Without `[[sources]]` pwsw never touches the default
+  source. New `pwsw set-source <ref>`; `pwsw list-sinks` gains an *INPUT DEVICES /
+  SOURCES* section (and `*_sources` JSON fields); `status` shows the input, `status
+  --json` adds `current_source`, `sources_configured`, `pipewire.current_source`,
+  `daemon.daemon_source` and `daemon.daemon_source_fallback`; `list-windows` and
+  `test-rule` show a rule's sources; the systemd status reads `Sink: X · Mic: Y`. The
+  IPC protocol is now version 2 (restart the daemon after upgrading).
 - **Pause / resume**: `pwsw pause`, `pwsw resume` and `pwsw toggle-pause` stop and
   restart rule-driven switching. While paused the daemon keeps tracking windows and
   reloading the config, and manual switches still work; resuming switches at once if the

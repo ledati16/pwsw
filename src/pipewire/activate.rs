@@ -1,28 +1,33 @@
-//! Sink activation: resolve a configured node name against a fresh snapshot, switch
-//! the card profile if needed, wait for the sink node, set it as default.
+//! Activation: resolve configured node names against a fresh snapshot, switch the
+//! card profile if needed, wait for the node, set it as default.
 //!
-//! A rule with fallbacks hands over several candidates: [`activate_first`] resolves
-//! them in order against one snapshot and activates the first reachable one, moving
-//! on to the next reachable one if that activation fails.
+//! A job has up to two halves, the sink and the source (microphone), each a list of
+//! candidates in priority order (a rule with fallbacks). [`activate_joint`] resolves
+//! both against one snapshot ([`resolve::plan_joint`]): when both need the same card,
+//! that card is switched once, to a profile providing both. Each half activates the
+//! first reachable candidate, moving on to the next reachable one if that activation
+//! fails.
 //!
 //! Everything goes through [`AudioBackend`] and [`Clock`], so the whole flow is
 //! unit-tested without `PipeWire` and without real sleeps.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
-use color_eyre::eyre::{self, Context, Result};
+use color_eyre::eyre::{self, Result};
 use tracing::{debug, info, warn};
 
 use super::model::Snapshot;
-use super::resolve::{self, Plan, ProfileSwitch};
+use super::resolve::{self, Plan, ProfileSwitch, SinkSide, SourceStep};
+use crate::config::Endpoint;
 
 /// The operations activation needs from an audio server.
 pub(crate) trait AudioBackend {
-    /// Take a fresh snapshot of devices, sinks and defaults.
+    /// Take a fresh snapshot of devices, sinks, sources and defaults.
     fn snapshot(&self) -> Result<Snapshot>;
-    /// Set the configured default sink by node name.
-    fn set_default(&self, node_name: &str) -> Result<()>;
+    /// Set the configured default sink (or source) by node name.
+    fn set_default(&self, kind: Endpoint, node_name: &str) -> Result<()>;
     /// Switch a device to a profile (persistently).
     fn set_profile(&self, device_id: u32, profile_index: u32) -> Result<()>;
 }
@@ -113,6 +118,25 @@ pub(crate) struct Chosen {
     pub(crate) activation: Activation,
 }
 
+/// One half of a job: configured node names in priority order, and with
+/// `upgrade_from: Some(k)` the note that candidate `k` is the default already (only a
+/// reachable earlier candidate is worth a switch)
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Request<'a> {
+    pub(crate) candidates: &'a [String],
+    pub(crate) upgrade_from: Option<usize>,
+}
+
+/// What a job did for each half it was given (`None`: the half was not asked for)
+///
+/// Each result is the chosen candidate, `Ok(None)` when an upgrade check found
+/// nothing better (nothing touched), or the error.
+#[derive(Debug, Default)]
+pub(crate) struct JointOutcome {
+    pub(crate) sink: Option<Result<Option<Chosen>>>,
+    pub(crate) source: Option<Result<Option<Chosen>>>,
+}
+
 /// Make `target` (a configured node name) the default sink.
 ///
 /// The snapshot and the decision are taken here, so a caller that serialises calls
@@ -135,23 +159,14 @@ pub(crate) fn activate(
         .ok_or_else(|| eyre::eyre!("Internal error: nothing activated"))
 }
 
-/// Make the first reachable of `candidates` (configured node names, in priority
-/// order) the default sink.
-///
-/// Every candidate is resolved against one fresh snapshot, in order, and the first
-/// one that resolves (present, or reachable by a profile switch) is activated. If
-/// that activation fails (e.g. the profile switch did not produce the node), the
-/// remaining candidates are resolved against a new snapshot (the failed switch may
-/// have changed the graph) and the next reachable one is tried.
-///
-/// With `upgrade_from: Some(k)` the caller already has candidate `k` as the default:
-/// nothing is done (`Ok(None)`) unless a candidate before `k` is reachable now; if
-/// one is, activation proceeds as above over the whole list.
+/// Make the first reachable of `candidates` (configured sink node names, in priority
+/// order) the default sink: [`activate_joint`] with only a sink half.
 ///
 /// # Errors
 /// Returns an error if `candidates` is empty, a snapshot fails, or no candidate could
 /// be activated (for a single candidate, its own error; otherwise one naming every
 /// candidate and why it failed).
+#[cfg(test)]
 pub(crate) fn activate_first(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
@@ -159,66 +174,322 @@ pub(crate) fn activate_first(
     candidates: &[String],
     upgrade_from: Option<usize>,
 ) -> Result<Option<Chosen>> {
-    if candidates.is_empty() {
-        eyre::bail!("No sink to activate");
-    }
-    let mut snapshot = backend.snapshot()?;
-    if let Some(current) = upgrade_from {
-        let better = candidates[..current.min(candidates.len())]
-            .iter()
-            .any(|c| resolve::resolve(&snapshot, c).is_ok());
-        if !better {
-            return Ok(None);
-        }
-    }
-
-    let mut failures: Vec<(&str, eyre::Report)> = Vec::new();
-    for (index, target) in candidates.iter().enumerate() {
-        let plan = match resolve::resolve(&snapshot, target) {
-            Ok(plan) => plan,
-            Err(e) => {
-                debug!("Skipping '{target}': {e:#}");
-                failures.push((target, e));
-                continue;
-            }
-        };
-        match execute(backend, clock, policy, plan, target) {
-            Ok(activation) => return Ok(Some(Chosen { index, activation })),
-            Err(e) => {
-                if index + 1 < candidates.len() {
-                    warn!("Activating '{target}' failed, trying the next sink: {e:#}");
-                    snapshot = backend
-                        .snapshot()
-                        .wrap_err_with(|| format!("after activating '{target}' failed"))?;
-                }
-                failures.push((target, e));
-            }
-        }
-    }
-
-    if failures.len() == 1
-        && let Some((_, e)) = failures.pop()
-    {
-        return Err(e);
-    }
-    let mut message = String::from("every candidate failed:");
-    for (target, e) in &failures {
-        let _ = write!(message, "\n  - '{target}': {e:#}");
-    }
-    Err(eyre::eyre!(message))
+    let request = Request {
+        candidates,
+        upgrade_from,
+    };
+    activate_joint(backend, clock, policy, Some(request), None)
+        .sink
+        .unwrap_or_else(|| Err(eyre::eyre!("Internal error: no sink result")))
 }
 
-/// Carry out a resolved plan for `target`.
+/// Activate a job's sink half and source half against one fresh snapshot.
+///
+/// Each half's candidates are resolved in order and the first reachable one is
+/// activated ([`resolve::plan_joint`] decides how the two fit together: one profile
+/// switch when they share a card, the sink winning when no profile serves both). The
+/// sink half runs first. If an activation fails (e.g. the profile switch did not
+/// produce the node), the remaining candidates of that half are resolved against a
+/// new snapshot (the failed switch may have changed the graph) and the next reachable
+/// one is tried; a source half that can no longer follow the plan is planned again
+/// the same way, never switching a card this job already switched.
+///
+/// With `upgrade_from: Some(k)` a half does nothing (`Ok(None)`) unless a candidate
+/// before `k` is reachable now; if one is, it proceeds as above over its whole list.
+pub(crate) fn activate_joint(
+    backend: &dyn AudioBackend,
+    clock: &dyn Clock,
+    policy: WaitPolicy,
+    sink: Option<Request<'_>>,
+    source: Option<Request<'_>>,
+) -> JointOutcome {
+    let mut outcome = JointOutcome::default();
+    let mut halves = [sink, source];
+    for (kind, half) in Endpoint::ALL.into_iter().zip(&mut halves) {
+        if half.is_some_and(|r| r.candidates.is_empty()) {
+            *half = None;
+            *outcome.slot(kind) = Some(Err(eyre::eyre!("No {} to activate", kind.noun())));
+        }
+    }
+    if halves.iter().all(Option::is_none) {
+        return outcome;
+    }
+
+    let snapshot = match backend.snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            let message = format!("{e:#}");
+            for (kind, half) in Endpoint::ALL.into_iter().zip(&halves) {
+                if half.is_some() {
+                    *outcome.slot(kind) = Some(Err(eyre::eyre!("{message}")));
+                }
+            }
+            return outcome;
+        }
+    };
+
+    // An upgrade check that finds nothing better leaves its half alone
+    for (kind, half) in Endpoint::ALL.into_iter().zip(&mut halves) {
+        if let Some(Request {
+            candidates,
+            upgrade_from: Some(current),
+        }) = *half
+            && !candidates[..current.min(candidates.len())]
+                .iter()
+                .any(|c| resolve::resolve_endpoint(&snapshot, kind, c).is_ok())
+        {
+            *half = None;
+            *outcome.slot(kind) = Some(Ok(None));
+        }
+    }
+    let [sink, source] = halves;
+    let sinks = sink.map_or(&[][..], |r| r.candidates);
+    let sources = source.map_or(&[][..], |r| r.candidates);
+    let plan = resolve::plan_joint(&snapshot, sinks, sources, None, &HashSet::new());
+
+    // Cards switched in this job (attempted or done)
+    let mut frozen: HashSet<u32> = HashSet::new();
+    let mut sink_as_planned = true;
+    let mut sink_side = None;
+    if sink.is_some() {
+        let (result, as_planned) = run_sink(
+            backend,
+            clock,
+            policy,
+            sinks,
+            plan.sink.clone(),
+            plan.sink_skipped.clone(),
+            &mut frozen,
+        );
+        sink_as_planned = as_planned;
+        if let Ok(Some(chosen)) = &result {
+            sink_side = activated_side(&snapshot, &chosen.activation);
+        }
+        outcome.sink = Some(result);
+    }
+
+    if source.is_some() {
+        let planned = if sink_as_planned {
+            Ok((plan.source, plan.source_skipped))
+        } else {
+            // The sink went another way than planned: plan the source against what
+            // the graph looks like now
+            backend
+                .snapshot()
+                .map(|now| {
+                    if let Some(side) = &sink_side {
+                        debug!(
+                            "Planning the source again (sink on device {})",
+                            side.device_id
+                        );
+                    }
+                    let again =
+                        resolve::plan_joint(&now, &[], sources, sink_side.as_ref(), &frozen);
+                    (again.source, again.source_skipped)
+                })
+                .map_err(|e| eyre::eyre!("after the sink's activation: {e:#}"))
+        };
+        outcome.source = Some(match planned {
+            Ok(planned) => run_source(
+                backend,
+                clock,
+                policy,
+                sources,
+                planned,
+                sink_side.as_ref(),
+                &mut frozen,
+            ),
+            Err(e) => Err(e),
+        });
+    }
+    outcome
+}
+
+impl JointOutcome {
+    const fn slot(&mut self, kind: Endpoint) -> &mut Option<Result<Option<Chosen>>> {
+        match kind {
+            Endpoint::Sink => &mut self.sink,
+            Endpoint::Source => &mut self.source,
+        }
+    }
+}
+
+/// Where an activated sink lives (for planning the source around it)
+fn activated_side(snapshot: &Snapshot, activation: &Activation) -> Option<SinkSide> {
+    if let Some(sw) = &activation.profile_switch {
+        return Some(SinkSide {
+            device_id: sw.device_id,
+            mapping: sw.mapping.clone(),
+        });
+    }
+    let node = snapshot.node_by_name(Endpoint::Sink, &activation.node_name)?;
+    Some(SinkSide {
+        device_id: node.device_id?,
+        mapping: node.profile_name.clone()?,
+    })
+}
+
+/// The error for a half none of whose candidates could be activated
+fn none_activated(failures: &[(String, String)]) -> eyre::Report {
+    if let [(_, only)] = failures {
+        return eyre::eyre!("{only}");
+    }
+    let mut message = String::from("every candidate failed:");
+    for (target, e) in failures {
+        let _ = write!(message, "\n  - '{target}': {e}");
+    }
+    eyre::eyre!(message)
+}
+
+/// The first candidate from `start` on that resolves against `snapshot`, recording
+/// why the others were skipped
+fn first_reachable(
+    snapshot: &Snapshot,
+    kind: Endpoint,
+    candidates: &[String],
+    start: usize,
+    failures: &mut Vec<(String, String)>,
+) -> Option<(usize, Plan)> {
+    for (index, target) in candidates.iter().enumerate().skip(start) {
+        match resolve::resolve_endpoint(snapshot, kind, target) {
+            Ok(plan) => return Some((index, plan)),
+            Err(e) => {
+                debug!("Skipping '{target}': {e:#}");
+                failures.push((target.clone(), format!("{e:#}")));
+            }
+        }
+    }
+    None
+}
+
+/// Run the sink half from its planned candidate; returns the result and whether it
+/// went as planned (the planned candidate activated)
+fn run_sink(
+    backend: &dyn AudioBackend,
+    clock: &dyn Clock,
+    policy: WaitPolicy,
+    candidates: &[String],
+    planned: Option<(usize, Plan)>,
+    mut failures: Vec<(String, String)>,
+    frozen: &mut HashSet<u32>,
+) -> (Result<Option<Chosen>>, bool) {
+    let mut next = planned;
+    let mut as_planned = true;
+    loop {
+        let Some((index, plan)) = next.take() else {
+            return (Err(none_activated(&failures)), false);
+        };
+        let target = &candidates[index];
+        if let Plan::SwitchProfile(sw) = &plan {
+            frozen.insert(sw.device_id);
+        }
+        match execute(backend, clock, policy, Endpoint::Sink, plan, target) {
+            Ok(activation) => return (Ok(Some(Chosen { index, activation })), as_planned),
+            Err(e) => {
+                as_planned = false;
+                let more = index + 1 < candidates.len();
+                if more {
+                    warn!("Activating '{target}' failed, trying the next sink: {e:#}");
+                }
+                failures.push((target.clone(), format!("{e:#}")));
+                if !more {
+                    continue;
+                }
+                match backend.snapshot() {
+                    Ok(snapshot) => {
+                        next = first_reachable(
+                            &snapshot,
+                            Endpoint::Sink,
+                            candidates,
+                            index + 1,
+                            &mut failures,
+                        );
+                    }
+                    Err(e) => {
+                        return (
+                            Err(eyre::eyre!("after activating '{target}' failed: {e:#}")),
+                            false,
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The source half's first candidate to try (index and how), and the candidates
+/// skipped before it with why
+type PlannedSource = (Option<(usize, SourceStep)>, Vec<(String, String)>);
+
+/// Run the source half from its planned candidate (see [`activate_joint`])
+fn run_source(
+    backend: &dyn AudioBackend,
+    clock: &dyn Clock,
+    policy: WaitPolicy,
+    candidates: &[String],
+    (planned, mut failures): PlannedSource,
+    sink_side: Option<&SinkSide>,
+    frozen: &mut HashSet<u32>,
+) -> Result<Option<Chosen>> {
+    let mut next = planned;
+    loop {
+        let Some((index, step)) = next.take() else {
+            return Err(none_activated(&failures));
+        };
+        let target = &candidates[index];
+        let result = match step {
+            SourceStep::WithSinkSwitch(switch) => {
+                // The sink's half switched the card already
+                wait_for_node(backend, clock, policy, &switch, target).and_then(|node_name| {
+                    backend.set_default(Endpoint::Source, &node_name)?;
+                    Ok(Activation {
+                        node_name,
+                        profile_switch: Some(switch),
+                    })
+                })
+            }
+            SourceStep::Plan(plan) => {
+                if let Plan::SwitchProfile(sw) = &plan {
+                    frozen.insert(sw.device_id);
+                }
+                execute(backend, clock, policy, Endpoint::Source, plan, target)
+            }
+        };
+        match result {
+            Ok(activation) => return Ok(Some(Chosen { index, activation })),
+            Err(e) => {
+                let rest = index + 1;
+                if rest < candidates.len() {
+                    warn!("Activating '{target}' failed, trying the next source: {e:#}");
+                }
+                failures.push((target.clone(), format!("{e:#}")));
+                if rest >= candidates.len() {
+                    continue;
+                }
+                let snapshot = backend
+                    .snapshot()
+                    .map_err(|e| eyre::eyre!("after activating '{target}' failed: {e:#}"))?;
+                let again =
+                    resolve::plan_joint(&snapshot, &[], &candidates[rest..], sink_side, frozen);
+                failures.extend(again.source_skipped);
+                next = again.source.map(|(i, step)| (rest + i, step));
+            }
+        }
+    }
+}
+
+/// Carry out a resolved plan for `target` (a sink or a source).
 fn execute(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
     policy: WaitPolicy,
+    kind: Endpoint,
     plan: Plan,
     target: &str,
 ) -> Result<Activation> {
     let switch = match plan {
         Plan::SetDefault { node_name } => {
-            backend.set_default(&node_name)?;
+            backend.set_default(kind, &node_name)?;
             return Ok(Activation {
                 node_name,
                 profile_switch: None,
@@ -235,9 +506,9 @@ fn execute(
 
     let node_name = wait_for_node(backend, clock, policy, &switch, target)?;
     if node_name != target {
-        info!("Sink '{}' appeared as '{}'", target, node_name);
+        info!("{} '{}' appeared as '{}'", kind.title(), target, node_name);
     }
-    backend.set_default(&node_name)?;
+    backend.set_default(kind, &node_name)?;
     Ok(Activation {
         node_name,
         profile_switch: Some(switch),
@@ -268,10 +539,19 @@ fn wait_for_node(
         polls += 1;
         match backend.snapshot() {
             Ok(snapshot) => {
-                if let Some(node) = snapshot.sinks.iter().find(|n| switch.produced(n)) {
+                if let Some(node) = snapshot
+                    .nodes(switch.kind)
+                    .iter()
+                    .find(|n| switch.produced(n))
+                {
                     return Ok(node.name.clone());
                 }
-                debug!("Waiting for sink '{}' (poll {})", target, polls);
+                debug!(
+                    "Waiting for {} '{}' (poll {})",
+                    switch.kind.noun(),
+                    target,
+                    polls
+                );
             }
             Err(e) => {
                 debug!("pw-dump failed while waiting for '{}': {:#}", target, e);
@@ -282,12 +562,13 @@ fn wait_for_node(
 
     let cause = last_error.map_or_else(String::new, |e| format!("\nLast pw-dump error: {e:#}"));
     eyre::bail!(
-        "Switched {} to profile '{}' but its sink for '{}' did not appear within {} ms.\n\
+        "Switched {} to profile '{}' but its {} for '{}' did not appear within {} ms.\n\
          The device may need more time (raise PROFILE_SWITCH_DELAY_MS / \
          PROFILE_SWITCH_MAX_RETRIES; total wait is capped at {} ms), or the port may \
          have no hardware behind it. Check `pwsw list-sinks`.{cause}",
         switch.device_name,
         switch.profile_name,
+        switch.kind.noun(),
         target,
         policy.timeout.as_millis(),
         MAX_TOTAL_WAIT_MS,
@@ -301,7 +582,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::*;
-    use crate::pipewire::model::SinkNode;
+    use crate::pipewire::model::Node;
     use crate::pipewire::parse::parse_dump;
 
     const REAL: &str = include_str!("../../tests/fixtures/pwdump-alsa-profiles.json");
@@ -310,29 +591,38 @@ mod tests {
     enum Call {
         Snapshot,
         SetDefault(String),
+        SetSource(String),
         SetProfile(u32, u32),
     }
 
-    /// In-memory backend: a profile switch removes the device's sinks and makes the
-    /// new profile's sink appear after `appear_after` further snapshots.
+    /// In-memory backend: a profile switch removes the device's sinks and sources and
+    /// makes the new profile's sink and source appear after `appear_after` further
+    /// snapshots.
     struct FakeBackend {
         state: RefCell<Snapshot>,
         appear_after: Option<usize>,
         rename: Option<&'static str>,
         /// A switch to this output mapping never produces its sink
         never_appears: Option<&'static str>,
-        pending: RefCell<Option<(SinkNode, usize)>>,
+        /// A switch to this input mapping never produces its source
+        never_appears_source: Option<&'static str>,
+        pending: RefCell<Vec<(Endpoint, Node, usize)>>,
         calls: RefCell<Vec<Call>>,
     }
 
     impl FakeBackend {
         fn new(appear_after: Option<usize>) -> Self {
+            Self::with_fixture(REAL, appear_after)
+        }
+
+        fn with_fixture(json: &str, appear_after: Option<usize>) -> Self {
             Self {
-                state: RefCell::new(parse_dump(REAL.as_bytes()).expect("fixture parses")),
+                state: RefCell::new(parse_dump(json.as_bytes()).expect("fixture parses")),
                 appear_after,
                 rename: None,
                 never_appears: None,
-                pending: RefCell::new(None),
+                never_appears_source: None,
+                pending: RefCell::new(Vec::new()),
                 calls: RefCell::new(Vec::new()),
             }
         }
@@ -340,28 +630,45 @@ mod tests {
         fn calls(&self) -> Vec<Call> {
             self.calls.borrow().clone()
         }
+
+        fn switches(&self) -> Vec<Call> {
+            self.calls()
+                .into_iter()
+                .filter(|c| matches!(c, Call::SetProfile(..)))
+                .collect()
+        }
     }
 
     impl AudioBackend for FakeBackend {
         fn snapshot(&self) -> Result<Snapshot> {
             self.calls.borrow_mut().push(Call::Snapshot);
             let mut pending = self.pending.borrow_mut();
-            if let Some((node, left)) = pending.as_mut() {
-                if *left == 0 {
-                    self.state.borrow_mut().sinks.push(node.clone());
-                    *pending = None;
-                } else {
+            let mut state = self.state.borrow_mut();
+            pending.retain_mut(|(kind, node, left)| {
+                if *left > 0 {
                     *left -= 1;
+                    return true;
                 }
-            }
-            Ok(self.state.borrow().clone())
+                match kind {
+                    Endpoint::Sink => state.sinks.push(node.clone()),
+                    Endpoint::Source => state.sources.push(node.clone()),
+                }
+                false
+            });
+            Ok(state.clone())
         }
 
-        fn set_default(&self, node_name: &str) -> Result<()> {
-            self.calls
-                .borrow_mut()
-                .push(Call::SetDefault(node_name.to_string()));
-            self.state.borrow_mut().defaults.configured = Some(node_name.to_string());
+        fn set_default(&self, kind: Endpoint, node_name: &str) -> Result<()> {
+            let mut state = self.state.borrow_mut();
+            let (call, defaults) = match kind {
+                Endpoint::Sink => (Call::SetDefault(node_name.to_string()), &mut state.defaults),
+                Endpoint::Source => (
+                    Call::SetSource(node_name.to_string()),
+                    &mut state.source_defaults,
+                ),
+            };
+            self.calls.borrow_mut().push(call);
+            defaults.configured = Some(node_name.to_string());
             Ok(())
         }
 
@@ -371,6 +678,7 @@ mod tests {
                 .push(Call::SetProfile(device_id, profile_index));
             let mut state = self.state.borrow_mut();
             state.sinks.retain(|s| s.device_id != Some(device_id));
+            state.sources.retain(|s| s.device_id != Some(device_id));
             let device = state
                 .devices
                 .iter_mut()
@@ -382,22 +690,39 @@ mod tests {
                 .iter()
                 .find(|p| p.index == profile_index)
                 .expect("profile exists");
-            let mapping = profile.output_mappings().next().expect("output profile");
             let suffix = device.name.strip_prefix("alsa_card.").expect("alsa card");
-            let node = SinkNode {
-                id: 1000,
-                name: self
-                    .rename
-                    .map_or_else(|| format!("alsa_output.{suffix}.{mapping}"), String::from),
-                description: String::new(),
-                device_id: Some(device_id),
-                profile_name: Some(mapping.to_string()),
-                card_profile_device: profile.sink_card_devices.first().copied(),
+            let mut pending = self.pending.borrow_mut();
+            pending.clear();
+            let Some(n) = self.appear_after else {
+                return Ok(());
             };
-            if let Some(n) = self.appear_after
+            if let Some(mapping) = profile.output_mappings().next()
                 && self.never_appears != Some(mapping)
             {
-                *self.pending.borrow_mut() = Some((node, n));
+                let node = Node {
+                    id: 1000,
+                    name: self
+                        .rename
+                        .map_or_else(|| format!("alsa_output.{suffix}.{mapping}"), String::from),
+                    description: String::new(),
+                    device_id: Some(device_id),
+                    profile_name: Some(mapping.to_string()),
+                    card_profile_device: profile.sink_card_devices.first().copied(),
+                };
+                pending.push((Endpoint::Sink, node, n));
+            }
+            if let Some(mapping) = profile.input_mapping()
+                && self.never_appears_source != Some(mapping)
+            {
+                let node = Node {
+                    id: 1001,
+                    name: format!("alsa_input.{suffix}.{mapping}"),
+                    description: String::new(),
+                    device_id: Some(device_id),
+                    profile_name: Some(mapping.to_string()),
+                    card_profile_device: profile.source_card_devices.first().copied(),
+                };
+                pending.push((Endpoint::Source, node, n));
             }
             Ok(())
         }
@@ -629,6 +954,162 @@ mod tests {
         .expect("activates")
         .expect("upgraded");
         assert_eq!(chosen.index, 0);
+    }
+
+    const SYNTH: &str = include_str!("../../tests/fixtures/pwdump-synthetic.json");
+    const IN_ANALOG: &str = "alsa_input.pci-0000_0c_00.4.analog-stereo";
+
+    type HalfOutcome = Option<Result<Option<Chosen>>>;
+
+    fn joint(
+        backend: &FakeBackend,
+        sinks: &[&str],
+        sources: &[&str],
+    ) -> (HalfOutcome, HalfOutcome) {
+        fn half(c: &[String]) -> Option<Request<'_>> {
+            (!c.is_empty()).then_some(Request {
+                candidates: c,
+                upgrade_from: None,
+            })
+        }
+        let (sinks, sources) = (names(sinks), names(sources));
+        let outcome = activate_joint(
+            backend,
+            &FakeClock::new(),
+            POLICY,
+            half(&sinks),
+            half(&sources),
+        );
+        (outcome.sink, outcome.source)
+    }
+
+    fn chosen(result: HalfOutcome) -> Chosen {
+        result
+            .expect("half was asked for")
+            .expect("activated")
+            .expect("something chosen")
+    }
+
+    #[test]
+    fn test_joint_same_card_switches_once_to_a_duplex_profile() {
+        let backend = FakeBackend::new(Some(1));
+        let (sink, source) = joint(&backend, &[ANALOG], &[IN_ANALOG]);
+        assert_eq!(chosen(sink).activation.node_name, ANALOG);
+        let source = chosen(source);
+        assert_eq!(source.activation.node_name, IN_ANALOG);
+        assert_eq!(
+            backend.switches(),
+            vec![Call::SetProfile(43, 1)],
+            "one switch"
+        );
+        let calls = backend.calls();
+        assert_eq!(
+            calls.first(),
+            Some(&Call::Snapshot),
+            "one snapshot decides both"
+        );
+        let tail: Vec<&Call> = calls
+            .iter()
+            .filter(|c| matches!(c, Call::SetDefault(_) | Call::SetSource(_)))
+            .collect();
+        assert_eq!(tail, [
+            &Call::SetDefault(ANALOG.to_string()),
+            &Call::SetSource(IN_ANALOG.to_string())
+        ]);
+    }
+
+    #[test]
+    fn test_joint_impossible_combination_activates_the_sink_and_reports_the_source() {
+        let backend = FakeBackend::with_fixture(SYNTH, Some(0));
+        let surround = "alsa_output.pci-0000_00_1f.3.analog-surround-51";
+        let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+        let (sink, source) = joint(&backend, &[surround], &[mic]);
+        assert_eq!(chosen(sink).activation.node_name, surround);
+        let err = source.expect("asked").unwrap_err().to_string();
+        assert!(
+            err.contains("not reachable together with the sink"),
+            "{err}"
+        );
+        assert_eq!(backend.switches(), vec![Call::SetProfile(70, 9)]);
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetSource(_)))
+        );
+    }
+
+    #[test]
+    fn test_joint_different_cards_are_activated_independently() {
+        let backend = FakeBackend::with_fixture(SYNTH, Some(0));
+        let headset = "alsa_output.usb-Example_USB_Headset-00.analog-stereo";
+        let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+        let (sink, source) = joint(&backend, &[headset], &[mic]);
+        assert_eq!(chosen(sink).activation.node_name, headset);
+        let source = chosen(source);
+        assert_eq!(source.activation.node_name, mic);
+        assert_eq!(source.activation.profile_switch, None);
+        assert_eq!(backend.switches(), vec![Call::SetProfile(60, 1)]);
+    }
+
+    #[test]
+    fn test_source_alone_switches_keeping_the_output() {
+        let backend = FakeBackend::new(Some(0));
+        let (sink, source) = joint(&backend, &[], &[IN_ANALOG]);
+        assert!(sink.is_none(), "no sink half, no sink result");
+        let source = chosen(source);
+        assert_eq!(source.activation.node_name, IN_ANALOG);
+        assert_eq!(backend.switches(), vec![Call::SetProfile(43, 3)]);
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetDefault(_)))
+        );
+    }
+
+    #[test]
+    fn test_joint_source_that_never_appears_falls_through_without_another_switch() {
+        // The duplex switch produces the sink but not the input: the source half
+        // moves to its fallback, and never switches the card a second time
+        let mut backend = FakeBackend::new(Some(0));
+        backend.never_appears_source = Some("analog-stereo");
+        let (sink, source) = joint(&backend, &[ANALOG], &[IN_ANALOG, "bluez_input.gone"]);
+        assert_eq!(chosen(sink).activation.node_name, ANALOG);
+        let err = format!("{:#}", source.expect("asked").unwrap_err());
+        assert!(err.contains("every candidate failed"), "{err}");
+        assert!(err.contains("did not appear"), "{err}");
+        assert_eq!(backend.switches(), vec![Call::SetProfile(43, 1)]);
+    }
+
+    #[test]
+    fn test_joint_upgrade_checks_are_per_half() {
+        // The sink half is an upgrade check with nothing better: it is left alone,
+        // while the source half still activates
+        let backend = FakeBackend::new(Some(0));
+        let sinks = names(&["bluez_output.gone", IEC]);
+        let sources = names(&[IN_ANALOG]);
+        let outcome = activate_joint(
+            &backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(Request {
+                candidates: &sinks,
+                upgrade_from: Some(1),
+            }),
+            Some(Request {
+                candidates: &sources,
+                upgrade_from: None,
+            }),
+        );
+        assert!(matches!(outcome.sink, Some(Ok(None))));
+        assert_eq!(chosen(outcome.source).activation.node_name, IN_ANALOG);
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetDefault(_)))
+        );
     }
 
     #[rstest::rstest]

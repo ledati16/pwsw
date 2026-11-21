@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 use super::activate::AudioBackend;
 use super::model::Snapshot;
 use super::parse::parse_dump;
+use crate::config::Endpoint;
 
 /// Deadline for `pw-dump` (a full graph dump on a busy system takes well under 1 s).
 pub(crate) const PW_DUMP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -204,23 +205,23 @@ impl AudioBackend for CliBackend {
         parse_dump(&dump_bytes()?)
     }
 
-    /// Writes `default.configured.audio.sink` (as `wpctl set-default` does);
-    /// `WirePlumber` derives the effective `default.audio.sink` from it.
-    fn set_default(&self, node_name: &str) -> Result<()> {
+    /// Writes `default.configured.audio.sink` (or `….audio.source`, as `wpctl
+    /// set-default` does); `WirePlumber` derives the effective `default.audio.sink`
+    /// (`default.audio.source`) from it.
+    fn set_default(&self, kind: Endpoint, node_name: &str) -> Result<()> {
+        let key = match kind {
+            Endpoint::Sink => "default.configured.audio.sink",
+            Endpoint::Source => "default.configured.audio.source",
+        };
         let value = serde_json::json!({ "name": node_name }).to_string();
         run(
             "pw-metadata",
-            &[
-                "0",
-                "default.configured.audio.sink",
-                &value,
-                "Spa:String:JSON",
-            ],
+            &["0", key, &value, "Spa:String:JSON"],
             PW_COMMAND_TIMEOUT,
             MAX_COMMAND_BYTES,
         )
-        .with_context(|| format!("Failed to set default sink to '{node_name}'"))?;
-        debug!("Set configured default sink: {}", node_name);
+        .with_context(|| format!("Failed to set default {} to '{node_name}'", kind.noun()))?;
+        debug!("Set configured default {}: {}", kind.noun(), node_name);
         Ok(())
     }
 

@@ -1,10 +1,11 @@
-//! Manual sink switching (`set-sink`, `next-sink`, `prev-sink`)
+//! Manual switching (`set-sink`, `next-sink`, `prev-sink`, `set-source`)
 //!
 //! Which sink a request leads to is decided against what `PipeWire` reports right now
 //! (a [`Probe`]): the real default sink is the smart-toggle reference and the base for
 //! cycling, and cycling skips configured sinks that cannot be activated at the moment
 //! (e.g. a TV that is switched off). An explicit `set-sink` always tries its sink, so
-//! its error says why it is unavailable.
+//! its error says why it is unavailable. `set-source` works like `set-sink` against the
+//! configured sources and the real default source.
 //!
 //! Pure, and shared by the daemon's activation worker and the CLI's local fallback
 //! (no daemon running), so both behave the same.
@@ -13,7 +14,7 @@ use std::fmt::Write as _;
 
 use tracing::info;
 
-use crate::config::{Config, SinkConfig};
+use crate::config::{Config, Endpoint, SinkConfig};
 use crate::pipewire::{PipeWire, Snapshot};
 
 /// Reply when there is nothing to cycle through
@@ -28,6 +29,19 @@ pub enum ManualSwitch {
     Next,
     /// `prev-sink`
     Prev,
+    /// `set-source <ref>`: a source's description, node name or 1-based position
+    SetSource(String),
+}
+
+impl ManualSwitch {
+    /// Which default the request changes
+    #[must_use]
+    pub const fn kind(&self) -> Endpoint {
+        match self {
+            Self::Set(_) | Self::Next | Self::Prev => Endpoint::Sink,
+            Self::SetSource(_) => Endpoint::Source,
+        }
+    }
 }
 
 /// What `PipeWire` says right now, as far as manual switching cares
@@ -37,6 +51,8 @@ pub struct Probe {
     pub current: Option<String>,
     /// Configured sinks (node names) that cannot be activated right now, with why
     pub unreachable: Vec<(String, String)>,
+    /// The real default source's node name, if `PipeWire` has one
+    pub current_source: Option<String>,
 }
 
 impl Probe {
@@ -48,6 +64,9 @@ impl Probe {
     pub fn from_snapshot(snapshot: &Snapshot, config: &Config) -> Self {
         Self {
             current: snapshot.current_default().map(str::to_owned),
+            current_source: snapshot
+                .current_default_of(Endpoint::Source)
+                .map(str::to_owned),
             unreachable: config
                 .sinks
                 .iter()
@@ -72,7 +91,7 @@ impl Probe {
 /// Where a manual request leads
 #[derive(Debug, PartialEq, Eq)]
 pub enum ManualTarget<'a> {
-    /// Activate this sink
+    /// Activate this sink (this source, for [`ManualSwitch::SetSource`])
     Switch(&'a SinkConfig),
     /// Nothing to do; reply with this message
     Done(String),
@@ -80,14 +99,25 @@ pub enum ManualTarget<'a> {
 
 /// The error for a `set-sink` reference that names no configured sink
 fn unknown_sink(config: &Config, sink_ref: &str) -> String {
+    unknown(config, Endpoint::Sink, sink_ref)
+}
+
+/// The error for a reference that names no configured sink (source)
+fn unknown(config: &Config, kind: Endpoint, r: &str) -> String {
+    if kind == Endpoint::Source && config.sources.is_empty() {
+        return "No sources configured; add [[sources]] entries to the config to switch \
+                microphones"
+            .to_string();
+    }
     let available: Vec<String> = config
-        .sinks
+        .endpoints(kind)
         .iter()
         .enumerate()
         .map(|(i, s)| format!("{}. '{}'", i + 1, s.desc))
         .collect();
     format!(
-        "Unknown sink '{sink_ref}'. Available: [{}]",
+        "Unknown {} '{r}'. Available: [{}]",
+        kind.noun(),
         available.join(", ")
     )
 }
@@ -109,6 +139,10 @@ pub fn answer_without_pipewire(
         ManualSwitch::Next | ManualSwitch::Prev => {
             (config.sinks.len() < 2).then(|| Ok(ONE_SINK.to_string()))
         }
+        ManualSwitch::SetSource(source_ref) => config
+            .resolve_source(source_ref)
+            .is_none()
+            .then(|| Err(unknown(config, Endpoint::Source, source_ref))),
     }
 }
 
@@ -157,6 +191,21 @@ pub fn plan<'a>(
             if config.settings.set_smart_toggle
                 && probe.current.as_deref() == Some(target.name.as_str())
                 && let Some(default) = config.get_default_sink()
+            {
+                if default.name == target.name {
+                    return Ok(ManualTarget::Done(format!("Already on: {}", default.desc)));
+                }
+                return Ok(ManualTarget::Switch(default));
+            }
+            Ok(ManualTarget::Switch(target))
+        }
+        ManualSwitch::SetSource(source_ref) => {
+            let target = config
+                .resolve_source(source_ref)
+                .ok_or_else(|| unknown(config, Endpoint::Source, source_ref))?;
+            if config.settings.set_smart_toggle
+                && probe.current_source.as_deref() == Some(target.name.as_str())
+                && let Some(default) = config.get_default_source()
             {
                 if default.name == target.name {
                     return Ok(ManualTarget::Done(format!("Already on: {}", default.desc)));
@@ -217,7 +266,36 @@ mod tests {
                 .iter()
                 .map(|n| ((*n).to_string(), format!("{n} is off")))
                 .collect(),
+            current_source: None,
         }
+    }
+
+    #[test]
+    fn test_set_source_resolves_toggles_and_reports_unknown() {
+        let c = config().with_sources(vec![
+            make_sink("mic.desk", "Desk Mic", true),
+            make_sink("mic.headset", "Headset Mic", false),
+        ]);
+        let set = |r: &str| ManualSwitch::SetSource(r.to_string());
+        assert_eq!(set("x").kind(), Endpoint::Source);
+        assert_eq!(ManualSwitch::Next.kind(), Endpoint::Sink);
+        let mut p = probe(Some("speakers"), &[]);
+        assert_eq!(switch_to(plan(&c, &set("Headset Mic"), &p)), "mic.headset");
+        // Smart toggle against the real default source
+        p.current_source = Some("mic.headset".to_string());
+        assert_eq!(switch_to(plan(&c, &set("Headset Mic"), &p)), "mic.desk");
+        p.current_source = Some("mic.desk".to_string());
+        assert_eq!(
+            plan(&c, &set("Desk Mic"), &p),
+            Ok(ManualTarget::Done("Already on: Desk Mic".to_string()))
+        );
+        let err = answer_without_pipewire(&c, &set("Nope")).expect("decided without PipeWire");
+        assert_eq!(
+            err,
+            Err("Unknown source 'Nope'. Available: [1. 'Desk Mic', 2. 'Headset Mic']".to_string())
+        );
+        let err = answer_without_pipewire(&config(), &set("Mic")).expect("decided");
+        assert!(err.unwrap_err().starts_with("No sources configured"));
     }
 
     fn switch_to(result: Result<ManualTarget<'_>, String>) -> &str {

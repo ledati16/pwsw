@@ -138,7 +138,7 @@ creates the config file for you.
 | `pwsw` / `pwsw status [--json]` | Current audio output and daemon status | optional |
 | `pwsw daemon [-f/--foreground]` | Start the daemon (background by default) | - |
 | `pwsw shutdown` | Stop the daemon | required |
-| `pwsw list-sinks [--json]` | Active and profile-switchable outputs | not needed |
+| `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then input devices (sources) | not needed |
 | `pwsw list-windows [--json]` | Open windows, tracked (matching a rule) or not | required |
 | `pwsw test-rule PATTERN [--json]` | Which windows a regex matches (`app_id` or title) | required |
 | `pwsw validate` | Check the config file (never creates one) | not needed |
@@ -146,6 +146,7 @@ creates the config file for you.
 | `pwsw init [--force]` | Write the commented default config (`--force` keeps `config.toml.bak`) | not needed |
 | `pwsw set-sink SINK` | Switch to a sink by description or node name | optional |
 | `pwsw next-sink` / `prev-sink` | Cycle through configured sinks, skipping unavailable ones | optional |
+| `pwsw set-source SOURCE` | Switch the microphone to a configured source (needs `[[sources]]`) | optional |
 | `pwsw pause` / `resume` / `toggle-pause` | Stop or restart rule-driven switching (manual switches keep working) | required |
 | `pwsw tui` | Terminal UI | optional |
 | `pwsw completions SHELL` | Completion script for bash, zsh, fish, elvish, powershell | - |
@@ -203,6 +204,16 @@ icon = "audio-headphones"   # optional; otherwise picked from the description
 name = "bluez_output.40_ED_98_1C_1D_08.1"
 desc = "BT Headphones"
 
+# Optional: microphones. Without [[sources]] pwsw never touches the default input.
+[[sources]]
+name = "alsa_input.usb-SteelSeries_Arctis-00.mono-fallback"  # INPUT DEVICES in `pwsw list-sinks`
+desc = "Headset Mic"
+
+[[sources]]
+name = "alsa_input.pci-0000_0c_00.4.analog-stereo"
+desc = "Desk Mic"
+default = true          # when no rule asks for a source
+
 [[rules]]
 app_id = "^steam$"
 title = "^Steam Big Picture Mode$"   # optional
@@ -217,6 +228,7 @@ sink = "Headphones"
 [[rules]]
 app_id = "^discord$"
 sink = ["BT Headphones", "Headphones"]  # fallbacks: the first one available now wins
+source = "Headset Mic"                  # optional: also switch the microphone
 
 [[rules]]
 app_id = ".*"        # any app...
@@ -235,6 +247,15 @@ headphone/headset/Bluetooth → `audio-headphones`; otherwise `audio-speakers`).
 `desc` (recommended, what the TUI writes) or node `name`. A 1-based position
 (`sink = 2`) still works but is deprecated: it logs a warning and points at a different
 sink if you reorder sinks by hand.
+
+**Sources (optional):** `[[sources]]` has the same keys as `[[sinks]]` (exactly one
+`default`), and a rule's `source` names one (or a fallback list) like `sink` does. The
+microphone is decided independently: by the highest-priority matching window whose rule
+has a `source`, else the default source. So Discord (headset + headset mic) followed by
+Firefox (speakers, no source) plays through the speakers and keeps the headset mic.
+When a switch needs a sink and a source on the same card, the card gets one profile
+providing both (the sink wins if none exists). `pwsw set-source <ref>` switches the
+microphone by hand.
 
 **Priority:** with `match_by_index = false` the most recently opened window that matches
 a rule (or most recently started matching, e.g. after a title change) decides the sink.

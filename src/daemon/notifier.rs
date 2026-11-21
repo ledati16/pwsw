@@ -27,6 +27,8 @@ pub(crate) const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 pub(crate) enum NoticeKind {
     /// The audio output changed (rule-driven or manual)
     Switch,
+    /// The audio input (microphone) changed
+    SourceSwitch,
     /// Daemon lifecycle and config reloads
     Daemon,
 }

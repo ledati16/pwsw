@@ -221,6 +221,12 @@ async fn run(args: Args) -> Result<ExitCode> {
             success(commands::set_sink(&config, &sink).await)
         }
 
+        Some(Command::SetSource { source }) => {
+            init_logging();
+            let config = Config::load()?;
+            success(commands::set_source(&config, &source).await)
+        }
+
         Some(Command::NextSink) => {
             init_logging();
             let config = load_config_with_sinks()?;

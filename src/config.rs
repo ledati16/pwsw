@@ -149,17 +149,76 @@ impl std::error::Error for ConfigModifiedOnDisk {}
 // Public Configuration Types
 // ============================================================================
 
+/// The two kinds of audio endpoint pwsw switches: outputs (`[[sinks]]`) and inputs
+/// (`[[sources]]`, microphones)
+///
+/// Both have the same configuration shape, references, validation and mutations;
+/// the generic code takes an `Endpoint` instead of being written twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Endpoint {
+    /// An output (`Audio/Sink`), configured in `[[sinks]]`, chosen by a rule's `sink`
+    Sink,
+    /// An input (`Audio/Source`), configured in `[[sources]]`, chosen by a rule's
+    /// `source`
+    Source,
+}
+
+impl Endpoint {
+    /// Both kinds, sinks first
+    pub const ALL: [Self; 2] = [Self::Sink, Self::Source];
+
+    /// `sink` / `source` (also the rule key)
+    #[must_use]
+    pub const fn noun(self) -> &'static str {
+        match self {
+            Self::Sink => "sink",
+            Self::Source => "source",
+        }
+    }
+
+    /// `Sink` / `Source`
+    #[must_use]
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::Sink => "Sink",
+            Self::Source => "Source",
+        }
+    }
+
+    /// `sinks` / `sources` (also the array-of-tables key)
+    #[must_use]
+    pub const fn plural(self) -> &'static str {
+        match self {
+            Self::Sink => "sinks",
+            Self::Source => "sources",
+        }
+    }
+
+    /// Index for per-endpoint arrays (`0` sink, `1` source)
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Sink => 0,
+            Self::Source => 1,
+        }
+    }
+}
+
 /// Main configuration structure
 ///
 /// Besides the parsed values, a `Config` loaded from disk remembers the original
 /// document (to preserve comments on save) and what the file looked like at load (to
 /// detect external edits). Prefer the mutation methods ([`Config::add_sink`],
-/// [`Config::update_sink`], ...) over editing `sinks`/`rules` directly: they keep rule
-/// references pointing at the same sinks and let saves keep each entry's comments.
+/// [`Config::update_sink`], [`Config::add_source`], ...) over editing
+/// `sinks`/`sources`/`rules` directly: they keep rule references pointing at the same
+/// entries and let saves keep each entry's comments.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub settings: Settings,
     pub sinks: Vec<SinkConfig>,
+    /// Inputs (microphones) rules may switch to. Empty (the default) means pwsw never
+    /// touches the default source.
+    pub sources: Vec<SourceConfig>,
     pub rules: Vec<Rule>,
     origin: Origin,
 }
@@ -167,7 +226,10 @@ pub struct Config {
 impl PartialEq for Config {
     /// Compares the configuration values only (not where they were loaded from).
     fn eq(&self, other: &Self) -> bool {
-        self.settings == other.settings && self.sinks == other.sinks && self.rules == other.rules
+        self.settings == other.settings
+            && self.sinks == other.sinks
+            && self.sources == other.sources
+            && self.rules == other.rules
     }
 }
 
@@ -201,20 +263,25 @@ impl Default for Settings {
     }
 }
 
-/// Audio sink configuration
+/// Audio sink configuration (also the shape of a `[[sources]]` entry, see
+/// [`SourceConfig`])
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkConfig {
     /// `PipeWire` node name
     /// - ALSA: `"alsa_output.pci-0000_0c_00.4.iec958-stereo"`
-    /// - Bluetooth: `"bluez_output.40_ED_98_1C_1D_08.1"`
+    ///   (sources: `"alsa_input.pci-0000_0c_00.4.analog-stereo"`)
+    /// - Bluetooth: `"bluez_output.40_ED_98_1C_1D_08.1"` (sources: `bluez_input.…`)
     pub name: String,
     /// Human-readable description
     pub desc: String,
     /// Optional icon for status bars (if not set, auto-detected)
     pub icon: Option<String>,
-    /// Whether this is the default fallback sink
+    /// Whether this is the default fallback sink (source)
     pub default: bool,
 }
+
+/// Audio source (microphone) configuration: the same fields as a sink
+pub type SourceConfig = SinkConfig;
 
 /// Window matching rule
 #[derive(Debug, Clone)]
@@ -230,6 +297,10 @@ pub struct Rule {
     /// ones cannot be activated (`sink = ["A", "B"]` in the file; empty for a plain
     /// `sink = "A"`). Same reference forms as [`Rule::sink_ref`].
     pub fallback_refs: Vec<String>,
+    /// Source references in priority order (`source = "Mic"` or `source = ["A", "B"]`);
+    /// empty when the rule does not choose a microphone (it then never affects the
+    /// default source). Same reference forms as [`Rule::sink_ref`], against `sources`.
+    pub source_refs: Vec<String>,
     pub desc: Option<String>,
     pub notify: Option<bool>,
     // Original patterns for display
@@ -245,6 +316,7 @@ impl PartialEq for Rule {
             && self.title_pattern == other.title_pattern
             && self.sink_ref == other.sink_ref
             && self.fallback_refs == other.fallback_refs
+            && self.source_refs == other.source_refs
             && self.desc == other.desc
             && self.notify == other.notify
     }
@@ -260,6 +332,23 @@ impl Rule {
     fn sink_refs_mut(&mut self) -> impl Iterator<Item = &mut String> {
         std::iter::once(&mut self.sink_ref).chain(self.fallback_refs.iter_mut())
     }
+
+    /// The rule's references to `kind` endpoints, in priority order (for sources
+    /// empty when the rule has no `source`)
+    #[must_use]
+    pub fn refs(&self, kind: Endpoint) -> Vec<&str> {
+        match kind {
+            Endpoint::Sink => self.sink_refs().collect(),
+            Endpoint::Source => self.source_refs.iter().map(String::as_str).collect(),
+        }
+    }
+
+    fn refs_mut(&mut self, kind: Endpoint) -> Vec<&mut String> {
+        match kind {
+            Endpoint::Sink => self.sink_refs_mut().collect(),
+            Endpoint::Source => self.source_refs.iter_mut().collect(),
+        }
+    }
 }
 
 /// Where a `Config` came from: the loaded document and the on-disk state.
@@ -270,11 +359,20 @@ struct Origin {
     doc: Option<Arc<DocumentMut>>,
     /// For each entry of `Config::sinks`, the index of its `[[sinks]]` table in `doc`.
     sink_slots: Vec<Option<usize>>,
+    /// For each entry of `Config::sources`, the index of its `[[sources]]` table.
+    source_slots: Vec<Option<usize>>,
     /// For each entry of `Config::rules`, the index of its `[[rules]]` table in `doc`.
     rule_slots: Vec<Option<usize>>,
     /// What the file looked like when last loaded or saved. Shared between clones so a
     /// save made through one clone (e.g. the TUI's background save) is seen by all.
     disk: Arc<Mutex<Option<DiskSnapshot>>>,
+}
+
+/// Document slots of every entry (see [`Config::effective_slots`])
+struct Slots {
+    sinks: Vec<Option<usize>>,
+    sources: Vec<Option<usize>>,
+    rules: Vec<Option<usize>>,
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +394,8 @@ struct ConfigFile {
     settings: SettingsFile,
     #[serde(default)]
     sinks: Vec<SinkConfigFile>,
+    #[serde(default)]
+    sources: Vec<SinkConfigFile>,
     #[serde(default)]
     rules: Vec<RuleConfigFile>,
 }
@@ -339,6 +439,8 @@ struct RuleConfigFile {
     title: Option<String>,
     #[serde(deserialize_with = "deserialize_sink_refs")]
     sink: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_source_refs")]
+    source: Option<Vec<String>>,
     #[serde(default)]
     desc: Option<String>,
     #[serde(default)]
@@ -370,56 +472,69 @@ impl Default for SettingsFile {
 
 /// What a single sink reference may be in the file
 const SINK_REF_EXPECTED: &str = "a sink description, node name, or 1-based position";
+/// What a single source reference may be in the file
+const SOURCE_REF_EXPECTED: &str = "a source description, node name, or 1-based position";
 
-/// One sink reference: a string (`desc`/`name`/position) or an integer position.
-struct SinkRef(String);
-
-impl<'de> Deserialize<'de> for SinkRef {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        struct SinkRefVisitor;
-
-        impl Visitor<'_> for SinkRefVisitor {
-            type Value = SinkRef;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(SINK_REF_EXPECTED)
-            }
-
-            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<SinkRef, E> {
-                Ok(SinkRef(v.to_string()))
-            }
-
-            fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<SinkRef, E> {
-                Ok(SinkRef(v))
-            }
-
-            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<SinkRef, E> {
-                Ok(SinkRef(v.to_string()))
-            }
-
-            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<SinkRef, E> {
-                Ok(SinkRef(v.to_string()))
-            }
-        }
-
-        deserializer.deserialize_any(SinkRefVisitor)
+/// What a reference of the given kind may be (`SOURCE`: a source reference)
+const fn ref_expected(source: bool) -> &'static str {
+    if source {
+        SOURCE_REF_EXPECTED
+    } else {
+        SINK_REF_EXPECTED
     }
 }
 
-/// Accept a rule's `sink` as one reference or an array of them (in priority order).
+/// One sink (`SOURCE = false`) or source reference: a string (`desc`/`name`/position)
+/// or an integer position.
+struct EndpointRef<const SOURCE: bool>(String);
+
+impl<'de, const SOURCE: bool> Deserialize<'de> for EndpointRef<SOURCE> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct RefVisitor<const SOURCE: bool>;
+
+        impl<const SOURCE: bool> Visitor<'_> for RefVisitor<SOURCE> {
+            type Value = EndpointRef<SOURCE>;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(ref_expected(SOURCE))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Self::Value, E> {
+                Ok(EndpointRef(v.to_string()))
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> std::result::Result<Self::Value, E> {
+                Ok(EndpointRef(v))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> std::result::Result<Self::Value, E> {
+                Ok(EndpointRef(v.to_string()))
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> std::result::Result<Self::Value, E> {
+                Ok(EndpointRef(v.to_string()))
+            }
+        }
+
+        deserializer.deserialize_any(RefVisitor::<SOURCE>)
+    }
+}
+
+/// One reference or an array of them (in priority order), for a sink (`SOURCE =
+/// false`) or source key.
 ///
 /// An empty array is accepted here and rejected when the rule is built, so the error
 /// names the rule.
-fn deserialize_sink_refs<'de, D: Deserializer<'de>>(
+fn deserialize_refs<'de, D: Deserializer<'de>, const SOURCE: bool>(
     deserializer: D,
 ) -> std::result::Result<Vec<String>, D::Error> {
-    struct SinkRefsVisitor;
+    struct RefsVisitor<const SOURCE: bool>;
 
-    impl<'de> Visitor<'de> for SinkRefsVisitor {
+    impl<'de, const SOURCE: bool> Visitor<'de> for RefsVisitor<SOURCE> {
         type Value = Vec<String>;
 
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "{SINK_REF_EXPECTED}, or an array of them")
+            write!(f, "{}, or an array of them", ref_expected(SOURCE))
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> std::result::Result<Vec<String>, E> {
@@ -443,14 +558,28 @@ fn deserialize_sink_refs<'de, D: Deserializer<'de>>(
             mut seq: A,
         ) -> std::result::Result<Vec<String>, A::Error> {
             let mut refs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
-            while let Some(SinkRef(r)) = seq.next_element()? {
+            while let Some(EndpointRef::<SOURCE>(r)) = seq.next_element()? {
                 refs.push(r);
             }
             Ok(refs)
         }
     }
 
-    deserializer.deserialize_any(SinkRefsVisitor)
+    deserializer.deserialize_any(RefsVisitor::<SOURCE>)
+}
+
+/// Accept a rule's `sink` as one reference or an array of them (in priority order).
+fn deserialize_sink_refs<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<String>, D::Error> {
+    deserialize_refs::<D, false>(deserializer)
+}
+
+/// Accept a rule's optional `source` like `sink` (absent stays `None`).
+fn deserialize_source_refs<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error> {
+    deserialize_refs::<D, true>(deserializer).map(Some)
 }
 
 /// The 1-based position a sink reference names, if it is positional (`"2"` or `2`).
@@ -458,8 +587,8 @@ fn positional_ref(sink_ref: &str) -> Option<usize> {
     sink_ref.parse::<usize>().ok()
 }
 
-/// Resolve a sink reference (by position, desc, or name) to its 0-based index in
-/// `sinks`, the way [`Config::resolve_sink`] does.
+/// Resolve a reference (by position, desc, or name) to its 0-based index in `sinks`
+/// (or a sources list), the way [`Config::resolve_sink`] does.
 pub(crate) fn sink_index_in(sinks: &[SinkConfig], sink_ref: &str) -> Option<usize> {
     // Try position first (1-indexed)
     if let Some(pos) = positional_ref(sink_ref) {
@@ -507,6 +636,21 @@ switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle
 # desc = "HDMI"
 # icon = "video-display"  # Optional: override auto-detected icon
 
+# Microphones (optional) - only if you want rules to switch the default input too.
+# Without any [[sources]], pwsw never touches the default source.
+# Find available sources with: pwsw list-sinks (INPUT DEVICES section)
+#
+# Example:
+#
+# [[sources]]
+# name = "alsa_input.usb-SteelSeries_Arctis-00.mono-fallback"
+# desc = "Headset Mic"
+#
+# [[sources]]
+# name = "alsa_input.pci-0000_00_1f.3.analog-stereo"
+# desc = "Desk Mic"
+# default = true  # Used when no open window's rule asks for a source
+
 # Window rules - match windows to sinks
 # Find app_id and title with: pwsw list-windows (requires running daemon)
 # Or use compositor tools: swaymsg -t get_tree, hyprctl clients, niri msg windows
@@ -528,6 +672,7 @@ switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle
 # [[rules]]
 # app_id = "^discord$"
 # sink = ["Headphones", "Speakers"]  # Fallbacks: the first one available now wins
+# source = "Headset Mic"             # Optional: also switch the microphone (needs [[sources]])
 "#;
 
 // ============================================================================
@@ -549,8 +694,45 @@ impl Config {
         Self {
             settings,
             sinks,
+            sources: Vec::new(),
             rules,
             origin,
+        }
+    }
+
+    /// The same config with `sources` as its sources (in-memory configs; no
+    /// validation, like [`Config::new`])
+    #[must_use]
+    pub fn with_sources(mut self, sources: Vec<SourceConfig>) -> Self {
+        self.origin.source_slots = vec![None; sources.len()];
+        self.sources = sources;
+        self
+    }
+
+    /// The configured endpoints of `kind` (`sinks` or `sources`)
+    #[must_use]
+    pub fn endpoints(&self, kind: Endpoint) -> &[SinkConfig] {
+        match kind {
+            Endpoint::Sink => &self.sinks,
+            Endpoint::Source => &self.sources,
+        }
+    }
+
+    fn endpoints_mut(&mut self, kind: Endpoint) -> &mut Vec<SinkConfig> {
+        match kind {
+            Endpoint::Sink => &mut self.sinks,
+            Endpoint::Source => &mut self.sources,
+        }
+    }
+
+    /// The endpoints of `kind` and their document slots, borrowed together
+    fn endpoints_and_slots_mut(
+        &mut self,
+        kind: Endpoint,
+    ) -> (&mut Vec<SinkConfig>, &mut Vec<Option<usize>>) {
+        match kind {
+            Endpoint::Sink => (&mut self.sinks, &mut self.origin.sink_slots),
+            Endpoint::Source => (&mut self.sources, &mut self.origin.source_slots),
         }
     }
 
@@ -646,6 +828,7 @@ impl Config {
         let mut config = Self::from_config_file(config_file)
             .wrap_err_with(|| format!("Invalid config: {}", path.display()))?;
         config.origin.sink_slots = (0..config.sinks.len()).map(Some).collect();
+        config.origin.source_slots = (0..config.sources.len()).map(Some).collect();
         config.origin.rule_slots = (0..config.rules.len()).map(Some).collect();
         config.origin.doc = Some(Arc::new(doc));
         Ok(config)
@@ -665,16 +848,19 @@ impl Config {
             switch_delay_ms: config_file.settings.switch_delay_ms,
         };
 
-        let sinks: Vec<SinkConfig> = config_file
-            .sinks
-            .into_iter()
-            .map(|s| SinkConfig {
-                name: s.name,
-                desc: s.desc,
-                icon: s.icon,
-                default: s.default,
-            })
-            .collect();
+        let endpoints = |entries: Vec<SinkConfigFile>| -> Vec<SinkConfig> {
+            entries
+                .into_iter()
+                .map(|s| SinkConfig {
+                    name: s.name,
+                    desc: s.desc,
+                    icon: s.icon,
+                    default: s.default,
+                })
+                .collect()
+        };
+        let sinks = endpoints(config_file.sinks);
+        let sources = endpoints(config_file.sources);
 
         let mut rules = Vec::with_capacity(config_file.rules.len());
         for (i, r) in config_file.rules.into_iter().enumerate() {
@@ -693,11 +879,20 @@ impl Config {
                     i + 1
                 )
             })?;
+            let source_refs = match r.source {
+                Some(refs) if refs.is_empty() => eyre::bail!(
+                    "Rule {}: `source` is an empty list; name at least one source or remove the \
+                     key",
+                    i + 1
+                ),
+                refs => refs.unwrap_or_default(),
+            };
             rules.push(Rule {
                 app_id_regex,
                 title_regex,
                 sink_ref,
                 fallback_refs: refs.collect(),
+                source_refs,
                 desc: r.desc,
                 notify: r.notify,
                 app_id_pattern: r.app_id,
@@ -705,38 +900,57 @@ impl Config {
             });
         }
 
-        let config = Self::new(settings, sinks, rules);
+        let config = Self::new(settings, sinks, rules).with_sources(sources);
         config.validate()?;
         Ok(config)
     }
 
-    /// The 1-based numbers of the rules that reference a sink by (deprecated) position
-    #[must_use]
-    pub fn rules_with_positional_refs(&self) -> Vec<usize> {
+    /// The 1-based numbers of the rules that reference a `kind` entry by (deprecated)
+    /// position
+    fn positional_rules(&self, kind: Endpoint) -> Vec<usize> {
         self.rules
             .iter()
             .enumerate()
             .filter(|(_, r)| {
-                r.sink_refs()
-                    .any(|sink_ref| positional_ref(sink_ref).is_some())
+                r.refs(kind)
+                    .into_iter()
+                    .any(|r| positional_ref(r).is_some())
             })
             .map(|(i, _)| i + 1)
             .collect()
     }
 
-    /// Log a single deprecation warning for rules that reference sinks by position.
-    fn warn_positional_refs(&self) {
-        let positional: Vec<String> = self
-            .rules_with_positional_refs()
-            .iter()
-            .map(ToString::to_string)
+    /// The 1-based numbers of the rules that reference a sink or a source by
+    /// (deprecated) position
+    #[must_use]
+    pub fn rules_with_positional_refs(&self) -> Vec<usize> {
+        let mut rules: Vec<usize> = Endpoint::ALL
+            .into_iter()
+            .flat_map(|kind| self.positional_rules(kind))
             .collect();
-        if !positional.is_empty() {
-            warn!(
-                "Rule(s) {} reference a sink by position; positional references are deprecated \
-                 (they silently retarget when sinks are reordered). Use the sink's desc instead.",
-                positional.join(", ")
-            );
+        rules.sort_unstable();
+        rules.dedup();
+        rules
+    }
+
+    /// Log a single deprecation warning (per kind) for rules that reference sinks or
+    /// sources by position.
+    fn warn_positional_refs(&self) {
+        for kind in Endpoint::ALL {
+            let positional: Vec<String> = self
+                .positional_rules(kind)
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if !positional.is_empty() {
+                let (noun, plural) = (kind.noun(), kind.plural());
+                warn!(
+                    "Rule(s) {} reference a {noun} by position; positional references are \
+                     deprecated (they silently retarget when {plural} are reordered). Use the \
+                     {noun}'s desc instead.",
+                    positional.join(", ")
+                );
+            }
         }
     }
 
@@ -1038,29 +1252,42 @@ impl Config {
             .as_deref()
             .cloned()
             .unwrap_or_else(DocumentMut::new);
-        let (sink_slots, rule_slots) = self.effective_slots();
+        let slots = self.effective_slots();
 
         apply_settings(&mut doc, &self.settings, fresh);
-        rebuild_array(&mut doc, "sinks", &self.sinks, &sink_slots, apply_sink);
-        rebuild_array(&mut doc, "rules", &self.rules, &rule_slots, apply_rule);
+        rebuild_array(&mut doc, "sinks", &self.sinks, &slots.sinks, apply_sink);
+        rebuild_array(
+            &mut doc,
+            "sources",
+            &self.sources,
+            &slots.sources,
+            apply_sink,
+        );
+        rebuild_array(&mut doc, "rules", &self.rules, &slots.rules, apply_rule);
         doc.to_string()
     }
 
-    /// The document slot of every sink and rule.
+    /// The document slot of every sink, source and rule.
     ///
-    /// If `sinks`/`rules` were resized directly (bypassing the mutation methods), the
-    /// recorded slots no longer line up; entries are then matched to document tables by
-    /// node name (sinks) or patterns (rules), and unmatched ones are treated as new.
-    fn effective_slots(&self) -> (Vec<Option<usize>>, Vec<Option<usize>>) {
+    /// If `sinks`/`sources`/`rules` were resized directly (bypassing the mutation
+    /// methods), the recorded slots no longer line up; entries are then matched to
+    /// document tables by node name (sinks, sources) or patterns (rules), and unmatched
+    /// ones are treated as new.
+    fn effective_slots(&self) -> Slots {
         let doc = self.origin.doc.as_deref();
-        let sink_slots = if self.origin.sink_slots.len() == self.sinks.len() {
-            self.origin.sink_slots.clone()
-        } else {
-            let keys = doc_table_keys(doc, "sinks", |t| {
-                t.get("name").and_then(Item::as_str).map(str::to_string)
-            });
-            match_slots(&keys, self.sinks.iter().map(|s| s.name.clone()))
+        let endpoint_slots = |kind: Endpoint, recorded: &Vec<Option<usize>>| {
+            let entries = self.endpoints(kind);
+            if recorded.len() == entries.len() {
+                recorded.clone()
+            } else {
+                let keys = doc_table_keys(doc, kind.plural(), |t| {
+                    t.get("name").and_then(Item::as_str).map(str::to_string)
+                });
+                match_slots(&keys, entries.iter().map(|s| s.name.clone()))
+            }
         };
+        let sink_slots = endpoint_slots(Endpoint::Sink, &self.origin.sink_slots);
+        let source_slots = endpoint_slots(Endpoint::Source, &self.origin.source_slots);
         let rule_slots = if self.origin.rule_slots.len() == self.rules.len() {
             self.origin.rule_slots.clone()
         } else {
@@ -1079,7 +1306,11 @@ impl Config {
                 }),
             )
         };
-        (sink_slots, rule_slots)
+        Slots {
+            sinks: sink_slots,
+            sources: source_slots,
+            rules: rule_slots,
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -1089,61 +1320,189 @@ impl Config {
     /// Apply `f` to a copy of the config, validate it, and only then commit.
     fn transact(&mut self, f: impl FnOnce(&mut Self) -> Result<()>) -> Result<()> {
         let mut next = self.clone();
-        let (sink_slots, rule_slots) = next.effective_slots();
-        next.origin.sink_slots = sink_slots;
-        next.origin.rule_slots = rule_slots;
+        let slots = next.effective_slots();
+        next.origin.sink_slots = slots.sinks;
+        next.origin.source_slots = slots.sources;
+        next.origin.rule_slots = slots.rules;
         f(&mut next)?;
         next.validate()?;
         *self = next;
         Ok(())
     }
 
-    /// Run a change to the sinks list while keeping positional rule references pointing
-    /// at the same sink: any positional reference whose sink moved is rewritten to that
-    /// sink's `desc`.
-    fn keeping_positional_targets(&mut self, f: impl FnOnce(&mut Self)) {
+    /// Run a change to the `kind` list while keeping positional rule references pointing
+    /// at the same entry: any positional reference whose entry moved is rewritten to
+    /// that entry's `desc`.
+    fn keeping_positional_targets(&mut self, kind: Endpoint, f: impl FnOnce(&mut Self)) {
         // Every reference of every rule (fallbacks too): its target if positional
+        let entries = self.endpoints(kind);
         let targets: Vec<Option<(usize, String)>> = self
             .rules
             .iter()
-            .flat_map(Rule::sink_refs)
-            .map(|sink_ref| {
-                let pos = positional_ref(sink_ref)?;
-                let sink = self.sinks.get(pos.checked_sub(1)?)?;
-                Some((pos - 1, sink.name.clone()))
+            .flat_map(|r| r.refs(kind))
+            .map(|r| {
+                let pos = positional_ref(r)?;
+                let entry = entries.get(pos.checked_sub(1)?)?;
+                Some((pos - 1, entry.name.clone()))
             })
             .collect();
         f(self);
-        let sinks = &self.sinks;
-        let refs = self.rules.iter_mut().flat_map(Rule::sink_refs_mut);
-        for (sink_ref, target) in refs.zip(targets) {
+        let entries = match kind {
+            Endpoint::Sink => &self.sinks,
+            Endpoint::Source => &self.sources,
+        };
+        let refs = self.rules.iter_mut().flat_map(|r| r.refs_mut(kind));
+        for (r, target) in refs.zip(targets) {
             if let Some((old_index, name)) = target
-                && let Some(new_index) = sinks.iter().position(|s| s.name == name)
+                && let Some(new_index) = entries.iter().position(|s| s.name == name)
                 && new_index != old_index
             {
-                sink_ref.clone_from(&sinks[new_index].desc);
+                r.clone_from(&entries[new_index].desc);
             }
         }
     }
 
-    fn check_sink_unique(&self, sink: &SinkConfig, skip: Option<usize>) -> Result<()> {
-        for (i, other) in self.sinks.iter().enumerate() {
+    fn check_unique(&self, kind: Endpoint, entry: &SinkConfig, skip: Option<usize>) -> Result<()> {
+        let title = kind.title();
+        for (i, other) in self.endpoints(kind).iter().enumerate() {
             if Some(i) == skip {
                 continue;
             }
-            if other.name == sink.name {
+            if other.name == entry.name {
                 eyre::bail!(
-                    "Sink {} ('{}') already uses node name '{}'",
+                    "{title} {} ('{}') already uses node name '{}'",
                     i + 1,
                     other.desc,
-                    sink.name
+                    entry.name
                 );
             }
-            if other.desc == sink.desc {
-                eyre::bail!("Sink {} already uses description '{}'", i + 1, sink.desc);
+            if other.desc == entry.desc {
+                eyre::bail!(
+                    "{title} {} already uses description '{}'",
+                    i + 1,
+                    entry.desc
+                );
             }
         }
         Ok(())
+    }
+
+    fn add_endpoint(&mut self, kind: Endpoint, mut entry: SinkConfig) -> Result<()> {
+        self.transact(|c| {
+            c.check_unique(kind, &entry, None)?;
+            let (entries, slots) = c.endpoints_and_slots_mut(kind);
+            if entries.is_empty() {
+                entry.default = true;
+            }
+            if entry.default {
+                for s in entries.iter_mut() {
+                    s.default = false;
+                }
+            }
+            entries.push(entry);
+            slots.push(None);
+            Ok(())
+        })
+    }
+
+    fn update_endpoint(&mut self, kind: Endpoint, index: usize, entry: SinkConfig) -> Result<()> {
+        self.transact(|c| {
+            let old = c
+                .endpoints(kind)
+                .get(index)
+                .cloned()
+                .with_context(|| format!("No {} at position {}", kind.noun(), index + 1))?;
+            c.check_unique(kind, &entry, Some(index))?;
+            for r in c.rules.iter_mut().flat_map(|r| r.refs_mut(kind)) {
+                if *r == old.desc {
+                    r.clone_from(&entry.desc);
+                } else if *r == old.name {
+                    r.clone_from(&entry.name);
+                }
+            }
+            let entries = c.endpoints_mut(kind);
+            if entry.default {
+                for s in entries.iter_mut() {
+                    s.default = false;
+                }
+            }
+            entries[index] = entry;
+            if !entries.iter().any(|s| s.default) {
+                entries[0].default = true;
+            }
+            Ok(())
+        })
+    }
+
+    fn set_default_endpoint(&mut self, kind: Endpoint, index: usize) -> Result<()> {
+        self.transact(|c| {
+            let entries = c.endpoints_mut(kind);
+            if index >= entries.len() {
+                eyre::bail!("No {} at position {}", kind.noun(), index + 1);
+            }
+            for (i, s) in entries.iter_mut().enumerate() {
+                s.default = i == index;
+            }
+            Ok(())
+        })
+    }
+
+    fn remove_endpoint(&mut self, kind: Endpoint, index: usize) -> Result<()> {
+        self.transact(|c| {
+            let entry = c
+                .endpoints(kind)
+                .get(index)
+                .cloned()
+                .with_context(|| format!("No {} at position {}", kind.noun(), index + 1))?;
+            let users: Vec<String> = c
+                .rules
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| {
+                    r.refs(kind)
+                        .into_iter()
+                        .any(|r| c.resolve_index(kind, r) == Some(index))
+                })
+                .map(|(i, r)| format!("{} ({})", i + 1, r.app_id_pattern))
+                .collect();
+            if !users.is_empty() {
+                eyre::bail!(
+                    "Cannot remove {} '{}': used by rule {}. Retarget or delete those rules \
+                     first.",
+                    kind.noun(),
+                    entry.desc,
+                    users.join(", ")
+                );
+            }
+            c.keeping_positional_targets(kind, |c| {
+                let (entries, slots) = c.endpoints_and_slots_mut(kind);
+                entries.remove(index);
+                slots.remove(index);
+            });
+            if entry.default
+                && let Some(first) = c.endpoints_mut(kind).first_mut()
+            {
+                first.default = true;
+            }
+            Ok(())
+        })
+    }
+
+    fn move_endpoint(&mut self, kind: Endpoint, from: usize, to: usize) -> Result<()> {
+        self.transact(|c| {
+            let len = c.endpoints(kind).len();
+            if from >= len || to >= len {
+                eyre::bail!("{} position out of range", kind.title());
+            }
+            c.keeping_positional_targets(kind, |c| {
+                let (entries, slots) = c.endpoints_and_slots_mut(kind);
+                let entry = entries.remove(from);
+                entries.insert(to, entry);
+                let slot = slots.remove(from);
+                slots.insert(to, slot);
+            });
+            Ok(())
+        })
     }
 
     /// Append a sink.
@@ -1154,21 +1513,8 @@ impl Config {
     /// # Errors
     /// Returns an error (and changes nothing) if another sink has the same node name or
     /// description, or the result would be invalid (e.g. empty name).
-    pub fn add_sink(&mut self, mut sink: SinkConfig) -> Result<()> {
-        self.transact(|c| {
-            c.check_sink_unique(&sink, None)?;
-            if c.sinks.is_empty() {
-                sink.default = true;
-            }
-            if sink.default {
-                for s in &mut c.sinks {
-                    s.default = false;
-                }
-            }
-            c.sinks.push(sink);
-            c.origin.sink_slots.push(None);
-            Ok(())
-        })
+    pub fn add_sink(&mut self, sink: SinkConfig) -> Result<()> {
+        self.add_endpoint(Endpoint::Sink, sink)
     }
 
     /// Replace the sink at `index` (0-based).
@@ -1181,31 +1527,7 @@ impl Config {
     /// Returns an error (and changes nothing) if `index` is out of range, another sink
     /// has the same node name or description, or the result would be invalid.
     pub fn update_sink(&mut self, index: usize, sink: SinkConfig) -> Result<()> {
-        self.transact(|c| {
-            let old = c
-                .sinks
-                .get(index)
-                .cloned()
-                .with_context(|| format!("No sink at position {}", index + 1))?;
-            c.check_sink_unique(&sink, Some(index))?;
-            for sink_ref in c.rules.iter_mut().flat_map(Rule::sink_refs_mut) {
-                if *sink_ref == old.desc {
-                    sink_ref.clone_from(&sink.desc);
-                } else if *sink_ref == old.name {
-                    sink_ref.clone_from(&sink.name);
-                }
-            }
-            if sink.default {
-                for s in &mut c.sinks {
-                    s.default = false;
-                }
-            }
-            c.sinks[index] = sink;
-            if !c.sinks.iter().any(|s| s.default) {
-                c.sinks[0].default = true;
-            }
-            Ok(())
-        })
+        self.update_endpoint(Endpoint::Sink, index, sink)
     }
 
     /// Make the sink at `index` (0-based) the only default sink.
@@ -1213,15 +1535,7 @@ impl Config {
     /// # Errors
     /// Returns an error if `index` is out of range.
     pub fn set_default_sink(&mut self, index: usize) -> Result<()> {
-        self.transact(|c| {
-            if index >= c.sinks.len() {
-                eyre::bail!("No sink at position {}", index + 1);
-            }
-            for (i, s) in c.sinks.iter_mut().enumerate() {
-                s.default = i == index;
-            }
-            Ok(())
-        })
+        self.set_default_endpoint(Endpoint::Sink, index)
     }
 
     /// Remove the sink at `index` (0-based).
@@ -1233,41 +1547,7 @@ impl Config {
     /// Returns an error (and changes nothing) if `index` is out of range or any rule
     /// references the sink (the message names those rules).
     pub fn remove_sink(&mut self, index: usize) -> Result<()> {
-        self.transact(|c| {
-            let sink = c
-                .sinks
-                .get(index)
-                .cloned()
-                .with_context(|| format!("No sink at position {}", index + 1))?;
-            let users: Vec<String> = c
-                .rules
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| {
-                    r.sink_refs()
-                        .any(|sink_ref| c.resolve_sink_index(sink_ref) == Some(index))
-                })
-                .map(|(i, r)| format!("{} ({})", i + 1, r.app_id_pattern))
-                .collect();
-            if !users.is_empty() {
-                eyre::bail!(
-                    "Cannot remove sink '{}': used by rule {}. Retarget or delete those rules \
-                     first.",
-                    sink.desc,
-                    users.join(", ")
-                );
-            }
-            c.keeping_positional_targets(|c| {
-                c.sinks.remove(index);
-                c.origin.sink_slots.remove(index);
-            });
-            if sink.default
-                && let Some(first) = c.sinks.first_mut()
-            {
-                first.default = true;
-            }
-            Ok(())
-        })
+        self.remove_endpoint(Endpoint::Sink, index)
     }
 
     /// Move the sink at `from` to position `to` (both 0-based).
@@ -1278,34 +1558,77 @@ impl Config {
     /// # Errors
     /// Returns an error if either index is out of range.
     pub fn move_sink(&mut self, from: usize, to: usize) -> Result<()> {
-        self.transact(|c| {
-            if from >= c.sinks.len() || to >= c.sinks.len() {
-                eyre::bail!("Sink position out of range");
-            }
-            c.keeping_positional_targets(|c| {
-                let sink = c.sinks.remove(from);
-                c.sinks.insert(to, sink);
-                let slot = c.origin.sink_slots.remove(from);
-                c.origin.sink_slots.insert(to, slot);
-            });
-            Ok(())
-        })
+        self.move_endpoint(Endpoint::Sink, from, to)
     }
 
-    /// Rewrite each of a rule's sink references to the target sink's `desc`.
+    /// Append a source (microphone); same rules as [`Config::add_sink`] (the first
+    /// source becomes the default).
     ///
-    /// A fallback naming the same sink as the first choice is dropped: editing only
-    /// the first choice (as the TUI does) to a sink that was a fallback moves that sink
-    /// to the front. Other duplicates are left for validation to reject.
+    /// # Errors
+    /// Returns an error (and changes nothing) if another source has the same node name
+    /// or description, or the result would be invalid.
+    pub fn add_source(&mut self, source: SourceConfig) -> Result<()> {
+        self.add_endpoint(Endpoint::Source, source)
+    }
+
+    /// Replace the source at `index` (0-based); rules' `source` references follow a
+    /// renamed `desc` or node name (see [`Config::update_sink`]).
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if `index` is out of range, another
+    /// source has the same node name or description, or the result would be invalid.
+    pub fn update_source(&mut self, index: usize, source: SourceConfig) -> Result<()> {
+        self.update_endpoint(Endpoint::Source, index, source)
+    }
+
+    /// Make the source at `index` (0-based) the only default source.
+    ///
+    /// # Errors
+    /// Returns an error if `index` is out of range.
+    pub fn set_default_source(&mut self, index: usize) -> Result<()> {
+        self.set_default_endpoint(Endpoint::Source, index)
+    }
+
+    /// Remove the source at `index` (0-based); see [`Config::remove_sink`].
+    ///
+    /// # Errors
+    /// Returns an error (and changes nothing) if `index` is out of range or any rule
+    /// references the source.
+    pub fn remove_source(&mut self, index: usize) -> Result<()> {
+        self.remove_endpoint(Endpoint::Source, index)
+    }
+
+    /// Move the source at `from` to position `to` (both 0-based); positional `source`
+    /// references keep their target.
+    ///
+    /// # Errors
+    /// Returns an error if either index is out of range.
+    pub fn move_source(&mut self, from: usize, to: usize) -> Result<()> {
+        self.move_endpoint(Endpoint::Source, from, to)
+    }
+
+    /// Rewrite each of a rule's sink and source references to the target's `desc`.
+    ///
+    /// A fallback naming the same sink (source) as the first choice is dropped: editing
+    /// only the first choice (as the TUI does) to a sink that was a fallback moves that
+    /// sink to the front. Other duplicates are left for validation to reject.
     fn canonicalize_rule_refs(&self, rule: &mut Rule) -> Result<()> {
-        for sink_ref in rule.sink_refs_mut() {
-            let sink = self
-                .resolve_sink(sink_ref)
-                .with_context(|| format!("Rule references unknown sink '{sink_ref}'"))?;
-            sink_ref.clone_from(&sink.desc);
+        for kind in Endpoint::ALL {
+            for r in rule.refs_mut(kind) {
+                let entry = self
+                    .resolve_endpoint(kind, r)
+                    .with_context(|| format!("Rule references unknown {} '{r}'", kind.noun()))?;
+                r.clone_from(&entry.desc);
+            }
         }
         let first = rule.sink_ref.clone();
         rule.fallback_refs.retain(|r| *r != first);
+        if let Some((first, rest)) = rule.source_refs.split_first_mut() {
+            let first = first.clone();
+            let mut kept: Vec<String> = rest.iter().filter(|r| **r != first).cloned().collect();
+            kept.insert(0, first);
+            rule.source_refs = kept;
+        }
         Ok(())
     }
 
@@ -1393,70 +1716,13 @@ impl Config {
             );
         }
 
-        for (i, sink) in self.sinks.iter().enumerate() {
-            if sink.name.trim().is_empty() {
-                eyre::bail!("Sink {} has an empty name", i + 1);
-            }
-            if sink.desc.trim().is_empty() {
-                eyre::bail!("Sink {} has an empty desc", i + 1);
-            }
-            // A numeric desc would be read as a position by rule references
-            if sink.desc.trim().parse::<i128>().is_ok() {
-                eyre::bail!(
-                    "Sink {} desc '{}' is a number; it would be read as a sink position. Use a \
-                     descriptive name.",
-                    i + 1,
-                    sink.desc
-                );
-            }
-        }
-
-        // If sinks exist, exactly one must be default
-        // (Empty sinks is valid at config level - daemon will check at startup)
-        if !self.sinks.is_empty() {
-            let default_count = self.sinks.iter().filter(|s| s.default).count();
-            match default_count {
-                0 => eyre::bail!(
-                    "Sinks configured but none marked as default. Add 'default = true' to one sink."
-                ),
-                1 => {}
-                n => eyre::bail!("{n} default sinks found. Only one allowed."),
-            }
+        for kind in Endpoint::ALL {
+            self.validate_endpoints(kind)?;
         }
 
         // Rules require sinks to resolve against
         if self.sinks.is_empty() && !self.rules.is_empty() {
             eyre::bail!("Rules defined but no sinks configured. Add sinks or remove rules.");
-        }
-
-        // No duplicate descriptions or names
-        let mut seen_descs = HashSet::with_capacity(self.sinks.len());
-        let mut seen_names = HashSet::with_capacity(self.sinks.len());
-        for sink in &self.sinks {
-            if !seen_descs.insert(&sink.desc) {
-                eyre::bail!("Duplicate sink description: '{}'", sink.desc);
-            }
-            if !seen_names.insert(&sink.name) {
-                eyre::bail!("Duplicate sink name: '{}'", sink.name);
-            }
-        }
-
-        // A string that is one sink's name and another's desc makes references ambiguous
-        for (i, a) in self.sinks.iter().enumerate() {
-            if let Some(j) = self
-                .sinks
-                .iter()
-                .enumerate()
-                .position(|(j, b)| j != i && b.desc == a.name)
-            {
-                eyre::bail!(
-                    "'{}' is the name of sink {} and the desc of sink {}; rule references to it \
-                     would be ambiguous",
-                    a.name,
-                    i + 1,
-                    j + 1
-                );
-            }
         }
 
         // All rule sinks must exist and patterns must be non-empty
@@ -1468,38 +1734,123 @@ impl Config {
                     i + 1
                 );
             }
-
-            let mut targets = Vec::with_capacity(1 + rule.fallback_refs.len());
-            for sink_ref in rule.sink_refs() {
-                if sink_ref.trim().is_empty() {
-                    eyre::bail!("Rule {} has an empty sink reference", i + 1);
-                }
-
-                let Some(target) = self.resolve_sink_index(sink_ref) else {
-                    let available: Vec<_> = self
-                        .sinks
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
-                        .collect();
-                    eyre::bail!(
-                        "Rule {} references unknown sink '{}'. Available: [{}]",
-                        i + 1,
-                        sink_ref,
-                        available.join(", ")
-                    );
-                };
-                if targets.contains(&target) {
-                    eyre::bail!(
-                        "Rule {} lists sink '{}' more than once",
-                        i + 1,
-                        self.sinks[target].desc
-                    );
-                }
-                targets.push(target);
+            if !rule.source_refs.is_empty() && self.sources.is_empty() {
+                eyre::bail!(
+                    "Rule {} sets `source` but no sources are configured. Add [[sources]] \
+                     entries or remove the rule's `source`.",
+                    i + 1
+                );
+            }
+            for kind in Endpoint::ALL {
+                self.validate_rule_refs(kind, i, rule)?;
             }
         }
 
+        Ok(())
+    }
+
+    /// Check the `kind` entries: non-empty names and descs, exactly one default (when
+    /// any exist), no duplicates, no ambiguous references
+    fn validate_endpoints(&self, kind: Endpoint) -> Result<()> {
+        let entries = self.endpoints(kind);
+        let (title, noun, plural) = (kind.title(), kind.noun(), kind.plural());
+        for (i, entry) in entries.iter().enumerate() {
+            if entry.name.trim().is_empty() {
+                eyre::bail!("{title} {} has an empty name", i + 1);
+            }
+            if entry.desc.trim().is_empty() {
+                eyre::bail!("{title} {} has an empty desc", i + 1);
+            }
+            // A numeric desc would be read as a position by rule references
+            if entry.desc.trim().parse::<i128>().is_ok() {
+                eyre::bail!(
+                    "{title} {} desc '{}' is a number; it would be read as a {noun} position. \
+                     Use a descriptive name.",
+                    i + 1,
+                    entry.desc
+                );
+            }
+        }
+
+        // If entries exist, exactly one must be default
+        // (Empty sinks is valid at config level - daemon will check at startup)
+        if !entries.is_empty() {
+            let default_count = entries.iter().filter(|s| s.default).count();
+            match default_count {
+                0 => {
+                    let capitalised = format!("{title}s");
+                    eyre::bail!(
+                        "{capitalised} configured but none marked as default. Add 'default = \
+                         true' to one {noun}."
+                    )
+                }
+                1 => {}
+                n => eyre::bail!("{n} default {plural} found. Only one allowed."),
+            }
+        }
+
+        // No duplicate descriptions or names
+        let mut seen_descs = HashSet::with_capacity(entries.len());
+        let mut seen_names = HashSet::with_capacity(entries.len());
+        for entry in entries {
+            if !seen_descs.insert(&entry.desc) {
+                eyre::bail!("Duplicate {noun} description: '{}'", entry.desc);
+            }
+            if !seen_names.insert(&entry.name) {
+                eyre::bail!("Duplicate {noun} name: '{}'", entry.name);
+            }
+        }
+
+        // A string that is one entry's name and another's desc makes references ambiguous
+        for (i, a) in entries.iter().enumerate() {
+            if let Some(j) = entries
+                .iter()
+                .enumerate()
+                .position(|(j, b)| j != i && b.desc == a.name)
+            {
+                eyre::bail!(
+                    "'{}' is the name of {noun} {} and the desc of {noun} {}; rule references to \
+                     it would be ambiguous",
+                    a.name,
+                    i + 1,
+                    j + 1
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Check that every `kind` reference of rule `i` resolves, and none repeats
+    fn validate_rule_refs(&self, kind: Endpoint, i: usize, rule: &Rule) -> Result<()> {
+        let noun = kind.noun();
+        let entries = self.endpoints(kind);
+        let mut targets = Vec::new();
+        for r in rule.refs(kind) {
+            if r.trim().is_empty() {
+                eyre::bail!("Rule {} has an empty {noun} reference", i + 1);
+            }
+            let Some(target) = self.resolve_index(kind, r) else {
+                let available: Vec<_> = entries
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, s)| format!("{}. '{}'", idx + 1, s.desc))
+                    .collect();
+                eyre::bail!(
+                    "Rule {} references unknown {noun} '{}'. Available: [{}]",
+                    i + 1,
+                    r,
+                    available.join(", ")
+                );
+            };
+            if targets.contains(&target) {
+                eyre::bail!(
+                    "Rule {} lists {noun} '{}' more than once",
+                    i + 1,
+                    entries[target].desc
+                );
+            }
+            targets.push(target);
+        }
         Ok(())
     }
 
@@ -1637,29 +1988,35 @@ impl Config {
             self.settings.switch_delay_ms
         );
 
-        crate::outln!(
-            "\n{} ({}):",
-            "Sinks".header(),
-            self.sinks.len().to_string().technical()
-        );
-        for (i, sink) in self.sinks.iter().enumerate() {
-            let marker = if sink.default {
-                let mut m = String::from(" [");
-                m.push_str("DEFAULT".dim().to_string().as_str());
-                m.push(']');
-                m
-            } else {
-                String::new()
-            };
+        for kind in Endpoint::ALL {
+            let entries = self.endpoints(kind);
+            if kind == Endpoint::Source && entries.is_empty() {
+                continue;
+            }
             crate::outln!(
-                "  {}. {}{}",
-                (i + 1).to_string().dim(),
-                sink.desc.as_str().bold(),
-                marker
+                "\n{} ({}):",
+                format!("{}s", kind.title()).header(),
+                entries.len().to_string().technical()
             );
-            crate::outln!("     {}: {}", "name".dim(), sink.name);
-            if let Some(ref icon) = sink.icon {
-                crate::outln!("     {}: {}", "icon".dim(), icon.as_str().technical());
+            for (i, entry) in entries.iter().enumerate() {
+                let marker = if entry.default {
+                    let mut m = String::from(" [");
+                    m.push_str("DEFAULT".dim().to_string().as_str());
+                    m.push(']');
+                    m
+                } else {
+                    String::new()
+                };
+                crate::outln!(
+                    "  {}. {}{}",
+                    (i + 1).to_string().dim(),
+                    entry.desc.as_str().bold(),
+                    marker
+                );
+                crate::outln!("     {}: {}", "name".dim(), entry.name);
+                if let Some(ref icon) = entry.icon {
+                    crate::outln!("     {}: {}", "icon".dim(), icon.as_str().technical());
+                }
             }
         }
 
@@ -1702,6 +2059,13 @@ impl Config {
                         rule.fallback_refs.join(", ").as_str().bold()
                     );
                 }
+                if !rule.source_refs.is_empty() {
+                    crate::outln!(
+                        "     {}: {}",
+                        "source".dim(),
+                        rule.source_refs.join(", ").as_str().bold()
+                    );
+                }
             }
         }
 
@@ -1710,23 +2074,49 @@ impl Config {
         }
     }
 
-    /// Resolve a sink reference (by position, desc, or name) to its 0-based index.
-    pub(crate) fn resolve_sink_index(&self, sink_ref: &str) -> Option<usize> {
-        sink_index_in(&self.sinks, sink_ref)
+    /// Resolve a `kind` reference (by position, desc, or name) to its 0-based index.
+    pub(crate) fn resolve_index(&self, kind: Endpoint, r: &str) -> Option<usize> {
+        sink_index_in(self.endpoints(kind), r)
+    }
+
+    /// Resolve every `kind` reference of `rule`, in priority order, to 0-based indices;
+    /// `None` if any does not resolve (empty for a rule without sources)
+    pub(crate) fn resolve_rule_refs(&self, kind: Endpoint, rule: &Rule) -> Option<Vec<usize>> {
+        rule.refs(kind)
+            .into_iter()
+            .map(|r| self.resolve_index(kind, r))
+            .collect()
     }
 
     /// Resolve every sink reference of `rule`, in priority order, to 0-based sink
     /// indices; `None` if any does not resolve
     pub(crate) fn resolve_rule_sinks(&self, rule: &Rule) -> Option<Vec<usize>> {
-        rule.sink_refs()
-            .map(|sink_ref| self.resolve_sink_index(sink_ref))
-            .collect()
+        self.resolve_rule_refs(Endpoint::Sink, rule)
+    }
+
+    /// Resolve a `kind` reference (by position, desc, or name)
+    #[must_use]
+    pub fn resolve_endpoint(&self, kind: Endpoint, r: &str) -> Option<&SinkConfig> {
+        self.resolve_index(kind, r)
+            .map(|i| &self.endpoints(kind)[i])
     }
 
     /// Resolve a sink reference (by position, desc, or name)
     #[must_use]
     pub fn resolve_sink(&self, sink_ref: &str) -> Option<&SinkConfig> {
-        self.resolve_sink_index(sink_ref).map(|i| &self.sinks[i])
+        self.resolve_endpoint(Endpoint::Sink, sink_ref)
+    }
+
+    /// Resolve a source reference (by position, desc, or name)
+    #[must_use]
+    pub fn resolve_source(&self, source_ref: &str) -> Option<&SourceConfig> {
+        self.resolve_endpoint(Endpoint::Source, source_ref)
+    }
+
+    /// The configured default of `kind` (`None` when none are configured)
+    #[must_use]
+    pub fn get_default(&self, kind: Endpoint) -> Option<&SinkConfig> {
+        self.endpoints(kind).iter().find(|s| s.default)
     }
 
     /// Get the configured default sink
@@ -1735,7 +2125,22 @@ impl Config {
     /// successful config validation, but defensive programming is good practice).
     #[must_use]
     pub fn get_default_sink(&self) -> Option<&SinkConfig> {
-        self.sinks.iter().find(|s| s.default)
+        self.get_default(Endpoint::Sink)
+    }
+
+    /// Get the configured default source (`None` when no sources are configured)
+    #[must_use]
+    pub fn get_default_source(&self) -> Option<&SourceConfig> {
+        self.get_default(Endpoint::Source)
+    }
+
+    /// The `desc` of the configured `kind` entry with node name `name`, else `name`
+    #[must_use]
+    pub fn endpoint_desc(&self, kind: Endpoint, name: &str) -> String {
+        self.endpoints(kind)
+            .iter()
+            .find(|s| s.name == name)
+            .map_or_else(|| name.to_string(), |s| s.desc.clone())
     }
 }
 
@@ -1965,6 +2370,20 @@ fn apply_rule(table: &mut Table, rule: &Rule) {
             set_value(table, "sink", refs.iter().copied().collect::<Array>());
         }
     }
+    // `source` after `sink`, kept as written when it says the same
+    let sources: Vec<&str> = rule.source_refs.iter().map(String::as_str).collect();
+    let unchanged = table
+        .get("source")
+        .and_then(Item::as_value)
+        .is_some_and(|v| sink_value_says(v, &sources));
+    match sources.as_slice() {
+        [] => {
+            table.remove("source");
+        }
+        _ if unchanged => {}
+        [single] => set_value(table, "source", *single),
+        several => set_value(table, "source", several.iter().copied().collect::<Array>()),
+    }
     set_optional(table, "desc", rule.desc.as_deref());
     match rule.notify {
         Some(notify) => set_value(table, "notify", notify),
@@ -1974,7 +2393,8 @@ fn apply_rule(table: &mut Table, rule: &Rule) {
     }
 }
 
-/// Whether a rule's `sink` value in the document names exactly `refs`, in order
+/// Whether a rule's `sink` (or `source`) value in the document names exactly `refs`,
+/// in order
 fn sink_value_says(value: &Value, refs: &[&str]) -> bool {
     fn one(value: &Value, sink_ref: &str) -> bool {
         match value {
@@ -3315,5 +3735,293 @@ sink = "HDMI"
         assert_eq!(reloaded, cfg);
         assert_eq!(refs(&reloaded, 0), ["BT Headphones", "Television"]);
         assert_eq!(refs(&reloaded, 1), ["Television", "Speakers"]);
+    }
+
+    // ------------------------------------------------------------------------
+    // Sources (microphones)
+    // ------------------------------------------------------------------------
+
+    const WITH_SOURCES: &str = r#"[[sinks]]
+name = "alsa_output.speakers"
+desc = "Speakers"
+default = true
+
+[[sinks]]
+name = "alsa_output.headset"
+desc = "Headset"
+
+# Microphones
+[[sources]]
+name = "alsa_input.headset.mono-fallback"
+desc = "Headset Mic" # USB headset
+
+[[sources]]
+name = "alsa_input.desk.analog-stereo"
+desc = "Desk Mic"
+default = true
+
+[[rules]]
+app_id = "^(discord|vesktop)$"
+sink = "Headset"
+source = "Headset Mic"
+
+[[rules]]
+app_id = "^zoom$"
+sink = "Speakers"
+source = ["Headset Mic", "Desk Mic"]
+
+[[rules]]
+app_id = "^firefox$"
+sink = "Headset"
+"#;
+
+    #[test]
+    fn test_sources_parse_and_round_trip_byte_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", WITH_SOURCES);
+        let cfg = Config::load_from_path(&path).unwrap();
+        assert_eq!(cfg.sources.len(), 2);
+        assert_eq!(
+            cfg.get_default_source().map(|s| s.desc.as_str()),
+            Some("Desk Mic")
+        );
+        assert_eq!(cfg.rules[0].source_refs, ["Headset Mic"]);
+        assert_eq!(cfg.rules[1].refs(Endpoint::Source), [
+            "Headset Mic",
+            "Desk Mic"
+        ]);
+        assert_eq!(cfg.rules[2].source_refs, Vec::<String>::new());
+        assert_eq!(
+            cfg.resolve_rule_refs(Endpoint::Source, &cfg.rules[1]),
+            Some(vec![0, 1])
+        );
+        assert_eq!(
+            cfg.resolve_source("alsa_input.desk.analog-stereo")
+                .map(|s| s.desc.as_str()),
+            Some("Desk Mic")
+        );
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), WITH_SOURCES);
+    }
+
+    #[test]
+    fn test_no_sources_is_valid_and_saves_no_sources_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", TWO_SINKS);
+        let cfg = Config::load_from_path(&path).unwrap();
+        assert_eq!(cfg.sources, Vec::<SinkConfig>::new());
+        assert_eq!(cfg.get_default_source(), None);
+        cfg.save_to(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), TWO_SINKS);
+    }
+
+    #[rstest]
+    #[case::source_without_sources(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\n\
+         sink = \"S\"\nsource = \"Mic\"\n",
+        "Rule 1 sets `source` but no sources are configured"
+    )]
+    #[case::no_default_source(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
+         desc = \"Mic\"\n",
+        "Sources configured but none marked as default. Add 'default = true' to one source."
+    )]
+    #[case::two_default_sources(
+        "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\n\n[[sources]]\nname = \"n\"\n\
+         desc = \"Other\"\ndefault = true\n",
+        "2 default sources found"
+    )]
+    #[case::duplicate_source_desc(
+        "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\n\n[[sources]]\nname = \"n\"\n\
+         desc = \"Mic\"\n",
+        "Duplicate source description: 'Mic'"
+    )]
+    #[case::unknown_source_ref(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
+         desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\n\
+         source = \"Nope\"\n",
+        "Rule 1 references unknown source 'Nope'. Available: [1. 'Mic']"
+    )]
+    #[case::source_listed_twice(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
+         desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\n\
+         source = [\"Mic\", \"m\"]\n",
+        "Rule 1 lists source 'Mic' more than once"
+    )]
+    #[case::empty_source_list(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
+         desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\nsource = []\n",
+        "`source` is an empty list"
+    )]
+    #[case::source_wrong_type(
+        "[[sinks]]\nname = \"s\"\ndesc = \"S\"\ndefault = true\n\n[[sources]]\nname = \"m\"\n\
+         desc = \"Mic\"\ndefault = true\n\n[[rules]]\napp_id = \"x\"\nsink = \"S\"\nsource = true\n",
+        "a source description, node name, or 1-based position"
+    )]
+    #[case::unknown_source_key(
+        "[[sources]]\nname = \"m\"\ndesc = \"Mic\"\ndefault = true\nvolume = 3\n",
+        "volume"
+    )]
+    fn test_source_validation_errors(#[case] contents: &str, #[case] expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(&dir, "c.toml", contents);
+        let err = format!("{:#}", Config::load_from_path(&path).unwrap_err());
+        assert!(err.contains(expected), "expected {expected:?} in: {err}");
+    }
+
+    #[test]
+    fn test_positional_source_refs_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = WITH_SOURCES.replace("source = \"Headset Mic\"", "source = 1");
+        let path = write(&dir, "c.toml", &contents);
+        let cfg = Config::load_from_path(&path).unwrap();
+        assert_eq!(cfg.rules[0].source_refs, ["1"]);
+        assert_eq!(
+            cfg.resolve_rule_refs(Endpoint::Source, &cfg.rules[0]),
+            Some(vec![0])
+        );
+    }
+
+    #[test]
+    fn test_source_mutations_cascade_into_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = WITH_SOURCES.replace("source = \"Headset Mic\"", "source = 1");
+        let path = write(&dir, "c.toml", &contents);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+
+        // Rename: references by desc follow
+        let mut headset = cfg.sources[0].clone();
+        headset.desc = "Arctis Mic".to_string();
+        cfg.update_source(0, headset).unwrap();
+        assert_eq!(cfg.rules[1].source_refs, ["Arctis Mic", "Desk Mic"]);
+
+        // Move: the positional reference keeps its target
+        cfg.move_source(0, 1).unwrap();
+        assert_eq!(cfg.sources[1].desc, "Arctis Mic");
+        assert_eq!(cfg.rules[0].source_refs, ["Arctis Mic"]);
+        assert_eq!(
+            cfg.resolve_rule_refs(Endpoint::Source, &cfg.rules[1]),
+            Some(vec![1, 0])
+        );
+
+        // Remove: refused while used, with the rules named
+        let err = cfg.remove_source(1).unwrap_err().to_string();
+        assert!(
+            err.contains("Cannot remove source 'Arctis Mic': used by rule 1"),
+            "{err}"
+        );
+        assert_eq!(cfg.sources.len(), 2, "refused removals change nothing");
+
+        // Sinks are a separate namespace: a sink rename leaves sources alone
+        let mut sink = cfg.sinks[1].clone();
+        sink.desc = "Desk Mic".to_string();
+        cfg.update_sink(1, sink).unwrap();
+        assert_eq!(cfg.rules[1].source_refs, ["Arctis Mic", "Desk Mic"]);
+        assert_eq!(cfg.rules[0].sink_ref, "Desk Mic");
+
+        // Default handling mirrors sinks
+        cfg.set_default_source(1).unwrap();
+        let defaults: Vec<bool> = cfg.sources.iter().map(|s| s.default).collect();
+        assert_eq!(defaults, [false, true]);
+        let err = cfg
+            .add_source(make_sink("alsa_input.desk.analog-stereo", "Dup", false))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Source 1 ('Desk Mic') already uses node name"),
+            "{err}"
+        );
+
+        cfg.save_to(&path).unwrap();
+        let reloaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(reloaded, cfg);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("desc = \"Arctis Mic\" # USB headset"),
+            "{text}"
+        );
+        assert!(text.contains("# Microphones"), "{text}");
+    }
+
+    #[test]
+    fn test_add_rule_canonicalizes_source_refs_and_removing_unused_source_works() {
+        let mut cfg =
+            make_config(vec![make_sink("out", "Speakers", true)], vec![]).with_sources(vec![
+                make_sink("alsa_input.a", "Mic A", true),
+                make_sink("alsa_input.b", "Mic B", false),
+            ]);
+        let rule = crate::test_utils::fixtures::with_sources(make_rule("x", None, "out"), &[
+            "alsa_input.b",
+            "1",
+            "Mic B",
+        ]);
+        cfg.add_rule(rule).unwrap();
+        assert_eq!(cfg.rules[0].source_refs, ["Mic B", "Mic A"]);
+        // A rule with a source cannot outlive the sources it needs
+        let mut bare = cfg.clone();
+        bare.rules[0].source_refs.clear();
+        bare.remove_source(1).unwrap();
+        bare.remove_source(0).unwrap();
+        assert_eq!(bare.sources, Vec::<SinkConfig>::new());
+        let err = cfg
+            .add_rule(crate::test_utils::fixtures::with_sources(
+                make_rule("y", None, "out"),
+                &["Mic C"],
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown source 'Mic C'"), "{err}");
+    }
+
+    #[test]
+    fn test_new_sources_and_source_keys_are_written_on_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let contents = format!("{TWO_SINKS}\n[[rules]]\napp_id = \"x\"\nsink = \"HDMI\"\n");
+        let path = write(&dir, "c.toml", &contents);
+        let mut cfg = Config::load_from_path(&path).unwrap();
+        cfg.add_source(make_sink("alsa_input.mic", "Mic", false))
+            .unwrap();
+        assert!(cfg.sources[0].default, "first source becomes default");
+        let mut rule = cfg.rules[0].clone();
+        rule.source_refs = vec!["alsa_input.mic".to_string()];
+        cfg.update_rule(0, rule).unwrap();
+        cfg.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[[sources]]"), "{text}");
+        assert!(text.contains("source = \"Mic\""), "{text}");
+        let reloaded = Config::load_from_path(&path).unwrap();
+        assert_eq!(reloaded, cfg);
+
+        // Dropping the rule's source removes the key
+        let mut rule = cfg.rules[0].clone();
+        rule.source_refs.clear();
+        cfg.update_rule(0, rule).unwrap();
+        cfg.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("source ="), "{text}");
+    }
+
+    #[test]
+    fn test_fresh_config_with_sources_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("fresh.toml");
+        let mut cfg = make_config(vec![make_sink("out", "Speakers", true)], vec![
+            crate::test_utils::fixtures::with_sources(make_rule("x", None, "Speakers"), &[
+                "Mic B", "Mic A",
+            ]),
+        ])
+        .with_sources(vec![
+            make_sink("alsa_input.a", "Mic A", true),
+            make_sink("alsa_input.b", "Mic B", false),
+        ]);
+        cfg.settings.log_level = "debug".to_string();
+        cfg.save_to(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let sinks = text.find("[[sinks]]").unwrap();
+        let sources = text.find("[[sources]]").unwrap();
+        let rules = text.find("[[rules]]").unwrap();
+        assert!(sinks < sources && sources < rules, "{text}");
+        assert!(text.contains("source = [\"Mic B\", \"Mic A\"]"), "{text}");
+        assert_eq!(Config::load_from_path(&path).unwrap(), cfg);
     }
 }

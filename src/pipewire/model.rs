@@ -3,15 +3,23 @@
 //! Built from `pw-dump` output by [`super::parse`]; consumed by the pure
 //! resolution logic in [`super::resolve`]. Nothing here talks to `PipeWire`.
 
-/// A point-in-time view of the audio devices, sink nodes and default-sink metadata.
+use crate::config::Endpoint;
+
+/// A point-in-time view of the audio devices, sink and source nodes and the
+/// default-sink/-source metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
     /// Audio devices (cards) with their profile lists.
     pub(crate) devices: Vec<Device>,
     /// Nodes whose `media.class` is `Audio/Sink`.
-    pub(crate) sinks: Vec<SinkNode>,
+    pub(crate) sinks: Vec<Node>,
+    /// Nodes whose `media.class` is exactly `Audio/Source` (microphones), monitors
+    /// excluded.
+    pub(crate) sources: Vec<Node>,
     /// Default-sink keys from the `default` metadata object.
     pub(crate) defaults: Defaults,
+    /// Default-source keys (`default.configured.audio.source`, `default.audio.source`).
+    pub(crate) source_defaults: Defaults,
 }
 
 /// An audio device (`PipeWire:Interface:Device`), e.g. an ALSA card.
@@ -51,6 +59,8 @@ pub struct Profile {
     /// `card.profile.devices` of the `Audio/Sink` class entries: the card-internal
     /// device numbers that become sink nodes (`card.profile.device` on the node).
     pub(crate) sink_card_devices: Vec<u32>,
+    /// The same for the `Audio/Source` class entries (source nodes).
+    pub(crate) source_card_devices: Vec<u32>,
     /// Whether the profile provides a capture (`Audio/Source`) side.
     pub(crate) has_input: bool,
 }
@@ -77,11 +87,32 @@ impl Profile {
     pub(crate) fn provides_output(&self, mapping: &str) -> bool {
         self.output_mappings().any(|m| m == mapping)
     }
+
+    /// The mappings of `kind` (outputs for sinks, the input for sources).
+    pub(crate) fn mappings(&self, kind: Endpoint) -> Vec<&str> {
+        match kind {
+            Endpoint::Sink => self.output_mappings().collect(),
+            Endpoint::Source => self.input_mapping().into_iter().collect(),
+        }
+    }
+
+    /// Whether this profile provides mapping `mapping` of `kind`.
+    pub(crate) fn provides(&self, kind: Endpoint, mapping: &str) -> bool {
+        self.mappings(kind).contains(&mapping)
+    }
+
+    /// The `card.profile.devices` of the nodes of `kind` this profile creates.
+    pub(crate) fn card_devices(&self, kind: Endpoint) -> &[u32] {
+        match kind {
+            Endpoint::Sink => &self.sink_card_devices,
+            Endpoint::Source => &self.source_card_devices,
+        }
+    }
 }
 
-/// An `Audio/Sink` node.
+/// An `Audio/Sink` or `Audio/Source` node.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SinkNode {
+pub struct Node {
     /// Global object id.
     pub(crate) id: u32,
     /// `node.name`.
@@ -90,18 +121,20 @@ pub struct SinkNode {
     pub(crate) description: String,
     /// `device.id`: the owning device's global id.
     pub(crate) device_id: Option<u32>,
-    /// `device.profile.name`: the output mapping that created the node (`ACP` cards).
+    /// `device.profile.name`: the output (input) mapping that created the node (`ACP`
+    /// cards).
     pub(crate) profile_name: Option<String>,
     /// `card.profile.device`: the card-internal device number.
     pub(crate) card_profile_device: Option<u32>,
 }
 
-/// Default-sink metadata.
+/// Default-sink (or default-source) metadata.
 ///
 /// `configured` (`default.configured.audio.sink`) is the user's choice, written by
 /// `wpctl set-default`, `pactl` and `pwsw`. `effective` (`default.audio.sink`) is what
 /// `WirePlumber` derived from it (it falls back to another sink when the configured
-/// one does not exist) and recomputes on every rescan.
+/// one does not exist) and recomputes on every rescan. Sources use the
+/// `….audio.source` keys the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Defaults {
     pub(crate) configured: Option<String>,
@@ -109,9 +142,25 @@ pub struct Defaults {
 }
 
 impl Snapshot {
-    /// Find a sink node by `node.name`.
-    pub(crate) fn sink_by_name(&self, name: &str) -> Option<&SinkNode> {
-        self.sinks.iter().find(|s| s.name == name)
+    /// The nodes of `kind` (sinks or sources).
+    pub(crate) fn nodes(&self, kind: Endpoint) -> &[Node] {
+        match kind {
+            Endpoint::Sink => &self.sinks,
+            Endpoint::Source => &self.sources,
+        }
+    }
+
+    /// Find a node of `kind` by `node.name`.
+    pub(crate) fn node_by_name(&self, kind: Endpoint, name: &str) -> Option<&Node> {
+        self.nodes(kind).iter().find(|s| s.name == name)
+    }
+
+    /// The default metadata of `kind`.
+    pub(crate) const fn defaults(&self, kind: Endpoint) -> &Defaults {
+        match kind {
+            Endpoint::Sink => &self.defaults,
+            Endpoint::Source => &self.source_defaults,
+        }
     }
 
     /// Find a device by global id.
@@ -138,12 +187,19 @@ impl Snapshot {
     /// effective key (what is actually playing), otherwise whatever is configured.
     #[must_use]
     pub fn current_default(&self) -> Option<&str> {
-        let configured = self.defaults.configured.as_deref();
+        self.current_default_of(Endpoint::Sink)
+    }
+
+    /// The default sink or source as the user sees it (see [`Self::current_default`]).
+    #[must_use]
+    pub fn current_default_of(&self, kind: Endpoint) -> Option<&str> {
+        let defaults = self.defaults(kind);
+        let configured = defaults.configured.as_deref();
         if let Some(name) = configured
-            && self.sink_by_name(name).is_some()
+            && self.node_by_name(kind, name).is_some()
         {
             return Some(name);
         }
-        self.defaults.effective.as_deref().or(configured)
+        defaults.effective.as_deref().or(configured)
     }
 }

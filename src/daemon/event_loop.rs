@@ -39,6 +39,14 @@
 //! back to the rules as if their answer had just changed: if it is not what is applied,
 //! pwsw switches at once (no settle delay), also over a manual choice. The pause state
 //! is kept in memory only; a restarted daemon starts unpaused.
+//!
+//! *Sources* (microphones, only when `[[sources]]` are configured) are a second,
+//! independent dimension with exactly the same machinery: each [`Endpoint`] has its
+//! own [`Lane`] (applied value, last answer, retries, settle wait, upgrade checks,
+//! manual choice). The source answer comes from the highest-priority matching window
+//! whose rule has a `source`, so a rule without one never moves the microphone. Jobs
+//! of both lanes submitted in the same step reach the worker together and are
+//! activated jointly (one snapshot, one profile switch for a shared card).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -50,12 +58,12 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
 
 use super::notifier::{Notice, NoticeKind, Notifier};
-use super::worker::{self, Job, JobResult, Outcome, SinkSwitcher, Target};
+use super::worker::{self, Job, JobResult, Outcome, Pending, SinkSwitcher, Target};
 use crate::compositor::WindowEvent;
-use crate::config::{Config, ConfigNotFound};
+use crate::config::{Config, ConfigNotFound, Endpoint, SinkConfig};
 use crate::ipc::{FallbackSink, Response, TrackedInfo, WindowInfo};
 pub(crate) use crate::manual::ManualSwitch;
-use crate::notification::{get_app_icon, get_sink_icon};
+use crate::notification::{get_app_icon, get_sink_icon, get_source_icon};
 use crate::state::{Departure, State};
 
 /// Quiet period after the last config-file event before reloading (trailing edge)
@@ -70,6 +78,8 @@ pub(crate) const UPGRADE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Notification title for sink switches
 const SWITCH_TITLE: &str = "Audio Output";
+/// Notification title for source (microphone) switches
+const SOURCE_SWITCH_TITLE: &str = "Audio Input";
 
 /// A signal the loop reacts to
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,7 +97,8 @@ pub(crate) enum Signal {
 pub(crate) enum Command {
     /// Read-only view of the daemon's state
     Query(oneshot::Sender<Snapshot>),
-    /// Switch sinks; the reply is sent once the activation finished
+    /// Switch sinks (or the source, for [`ManualSwitch::SetSource`]); the reply is
+    /// sent once the activation finished
     Switch {
         request: ManualSwitch,
         reply: oneshot::Sender<Response>,
@@ -134,6 +145,21 @@ pub(crate) struct Snapshot {
     /// The candidates of a switch waiting for the settle delay
     #[cfg(test)]
     pub settling: Option<Vec<String>>,
+    /// Source pwsw last applied (or found at startup); `None` while unknown
+    pub applied_source: Option<String>,
+    /// Whether `applied_source` is a fallback a rule settled for
+    pub source_fallback: bool,
+    /// Whether sources are configured (pwsw manages the default source)
+    pub sources_configured: bool,
+    /// The rules' first-choice source right now (`None` without sources)
+    #[cfg(test)]
+    pub desired_source: Option<String>,
+    /// Whether a manual source choice currently holds
+    #[cfg(test)]
+    pub source_manual_override: bool,
+    /// The candidates of a source switch waiting for the settle delay
+    #[cfg(test)]
+    pub source_settling: Option<Vec<String>>,
 }
 
 /// Everything the loop listens to
@@ -222,44 +248,73 @@ struct Superseded {
     notice: Option<RuleNotice>,
 }
 
-/// The daemon's event loop state
-pub(crate) struct Daemon {
-    state: State,
-    config_path: PathBuf,
-    jobs: watch::Sender<Option<Job>>,
-    results: mpsc::Receiver<JobResult>,
-    notifier: Notifier,
-    hooks: Hooks,
-    /// Sink pwsw last activated successfully (or found at startup)
+/// One default pwsw manages: the sink, or the source when sources are configured
+///
+/// Everything the loop keeps per dimension lives here; the two lanes never look at
+/// each other (except that their jobs travel to the worker together).
+#[derive(Debug, Default)]
+struct Lane {
+    /// What pwsw last activated successfully (or found at startup)
     applied: Option<String>,
     /// `applied` is a lower-priority candidate a rule-driven switch settled for
     applied_fallback: bool,
     /// When the last upgrade check was submitted (see [`UPGRADE_CHECK_INTERVAL`])
     last_upgrade_check: Option<Instant>,
-    /// The rules' candidates at the last reconcile; a change marks a rule-driven switch
+    /// The rules' candidates at the last reconcile; a change marks a rule-driven
+    /// switch. `None` before the first answer (and for an inactive source lane).
     last_desired: Option<Vec<String>>,
-    /// A manual switch holds until the desired sink changes
+    /// A manual switch holds until the desired answer changes
     manual_override: bool,
-    /// The rules' sink failed and retries ran out: try once more on the next event
+    /// The rules' target failed and retries ran out: try once more on the next event
     stalled: bool,
     /// A rule-driven job that a manual request replaced (or that failed while the
     /// manual request was queued behind it): if the manual request switches nothing,
     /// it is submitted again at once, since no later change of the rules' answer
     /// would bring it back
     superseded: Option<Superseded>,
-    /// Last status line published
-    status: Option<String>,
-    /// Rule-driven switching is paused (in memory only)
-    paused: bool,
     /// A changed answer of the rules waiting for the settle delay
     settle: Option<Settle>,
-    next_generation: u64,
+    /// The latest job of this lane handed to the worker, until its result arrives
     submitted: Option<Submitted>,
     retry: Option<Retry>,
     /// Retries scheduled for the current target so far
     retries: usize,
-    /// `IPC` replies waiting for the job of that generation
-    replies: Vec<(u64, oneshot::Sender<Response>)>,
+}
+
+impl Lane {
+    /// Forget the rules' answer (the lane has none any more: sources were removed)
+    fn deactivate(&mut self) {
+        self.last_desired = None;
+        self.applied_fallback = false;
+        self.manual_override = false;
+        self.stalled = false;
+        self.superseded = None;
+        self.settle = None;
+        self.retry = None;
+        self.retries = 0;
+    }
+}
+
+/// The daemon's event loop state
+pub(crate) struct Daemon {
+    state: State,
+    config_path: PathBuf,
+    jobs: watch::Sender<Pending>,
+    results: mpsc::Receiver<JobResult>,
+    notifier: Notifier,
+    hooks: Hooks,
+    /// Per [`Endpoint`] (index [`Endpoint::index`]): the sink lane, the source lane
+    lanes: [Lane; 2],
+    /// Jobs submitted since the last hand-over to the worker (sent together, so the
+    /// worker activates both halves of one step jointly)
+    outbox: Pending,
+    /// Last status line published
+    status: Option<String>,
+    /// Rule-driven switching is paused (in memory only)
+    paused: bool,
+    next_generation: u64,
+    /// `IPC` replies waiting for the job of that lane and generation
+    replies: Vec<(Endpoint, u64, oneshot::Sender<Response>)>,
 }
 
 impl Daemon {
@@ -275,6 +330,8 @@ impl Daemon {
         applied: Option<String>,
     ) -> Self {
         let (jobs, results) = worker::spawn(switcher);
+        let mut lanes: [Lane; 2] = Default::default();
+        lanes[Endpoint::Sink.index()].applied = applied;
         Self {
             state,
             config_path,
@@ -282,22 +339,34 @@ impl Daemon {
             results,
             notifier,
             hooks,
-            applied,
-            applied_fallback: false,
-            last_upgrade_check: None,
-            last_desired: None,
-            manual_override: false,
-            stalled: false,
-            superseded: None,
+            lanes,
+            outbox: [None, None],
             status: None,
             paused: false,
-            settle: None,
             next_generation: 0,
-            submitted: None,
-            retry: None,
-            retries: 0,
             replies: Vec::new(),
         }
+    }
+
+    /// The current default source, if known (queried at startup)
+    #[must_use]
+    pub(crate) fn with_applied_source(mut self, source: Option<String>) -> Self {
+        self.lane_mut(Endpoint::Source).applied = source;
+        self
+    }
+
+    fn lane(&self, kind: Endpoint) -> &Lane {
+        &self.lanes[kind.index()]
+    }
+
+    fn lane_mut(&mut self, kind: Endpoint) -> &mut Lane {
+        &mut self.lanes[kind.index()]
+    }
+
+    /// The rules' candidates for `kind` right now; `None` when the lane is inactive
+    /// (no sources configured)
+    fn desired_names(&self, kind: Endpoint) -> Option<Vec<String>> {
+        self.state.desired_for(kind).map(|d| d.names())
     }
 
     /// Run until shutdown
@@ -310,8 +379,17 @@ impl Daemon {
         let mut reload_at: Option<Instant> = None;
 
         let result = loop {
-            let retry_at = self.retry.as_ref().map(|r| r.at);
-            let settle_at = self.settle.as_ref().map(|s| s.at);
+            self.flush_jobs();
+            let retry_at = self
+                .lanes
+                .iter()
+                .filter_map(|l| l.retry.as_ref().map(|r| r.at))
+                .min();
+            let settle_at = self
+                .lanes
+                .iter()
+                .filter_map(|l| l.settle.as_ref().map(|s| s.at))
+                .min();
             tokio::select! {
                 event = inputs.windows.recv() => {
                     let Some(event) = event else {
@@ -380,116 +458,172 @@ impl Daemon {
         result
     }
 
-    /// Startup: take the rules' answer as the baseline and, with
-    /// `default_on_startup`, activate it (failures retry with backoff)
+    /// Hand the jobs submitted since the last call to the worker, all at once
+    fn flush_jobs(&mut self) {
+        if self.outbox.iter().all(Option::is_none) {
+            return;
+        }
+        let outbox = std::mem::take(&mut self.outbox);
+        self.jobs.send_modify(|pending| {
+            for (slot, job) in pending.iter_mut().zip(outbox) {
+                if job.is_some() {
+                    *slot = job;
+                }
+            }
+        });
+    }
+
+    /// Startup: take the rules' answers as the baseline and, with
+    /// `default_on_startup`, activate them (failures retry with backoff)
     fn start(&mut self) {
-        let names = self.state.desired().names();
-        self.last_desired = Some(names.clone());
-        if self.state.config().settings.default_on_startup
-            && self.applied.as_deref() != names.first().map(String::as_str)
-        {
-            info!(
-                "Startup: switching to {} (what the rules want now)",
-                self.candidates_desc(&names)
-            );
-            self.submit(names, None);
+        for kind in Endpoint::ALL {
+            let Some(names) = self.desired_names(kind) else {
+                continue;
+            };
+            self.lane_mut(kind).last_desired = Some(names.clone());
+            if self.state.config().settings.default_on_startup
+                && self.lane(kind).applied.as_deref() != names.first().map(String::as_str)
+            {
+                info!(
+                    "Startup: switching to {} (what the rules want now)",
+                    self.candidates_desc(kind, &names)
+                );
+                self.submit(kind, names, None);
+            }
         }
         self.publish_status();
     }
 
-    /// Whether the default sink is, or is about to be, what `candidates` asks for: a
-    /// pending rule-driven job serves that list, or (nothing pending) `applied` is its
-    /// first choice
-    fn serves(&self, candidates: &[String]) -> bool {
-        match &self.submitted {
+    /// Whether the `kind` default is, or is about to be, what `candidates` asks for:
+    /// a pending rule-driven job serves that list, or (nothing pending) `applied` is
+    /// its first choice
+    fn serves(&self, kind: Endpoint, candidates: &[String]) -> bool {
+        let lane = self.lane(kind);
+        match &lane.submitted {
             Some(Submitted {
                 origin: Origin::Rule | Origin::Upgrade,
                 candidates: Some(pending),
                 ..
             }) => pending == candidates,
-            // A manual job: its sink is not chosen yet
+            // A manual job: its target is not chosen yet
             Some(_) => false,
-            None => self.applied.as_deref() == candidates.first().map(String::as_str),
+            None => lane.applied.as_deref() == candidates.first().map(String::as_str),
         }
     }
 
-    /// Candidates for the log: `Desc (name)`, or `first reachable of A, B`
-    fn candidates_desc(&self, candidates: &[String]) -> String {
+    /// Candidates for the log: `Desc (name)`, or `first reachable of A, B` (sources:
+    /// `source Desc (name)`)
+    fn candidates_desc(&self, kind: Endpoint, candidates: &[String]) -> String {
+        let prefix = match kind {
+            Endpoint::Sink => "",
+            Endpoint::Source => "source ",
+        };
         match candidates {
-            [single] => format!("{} ({single})", self.sink_desc(single)),
+            [single] => format!("{prefix}{} ({single})", self.endpoint_desc(kind, single)),
             _ => format!(
-                "first reachable of {}",
+                "first reachable {prefix}of {}",
                 candidates
                     .iter()
-                    .map(|c| self.sink_desc(c))
+                    .map(|c| self.endpoint_desc(kind, c))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
         }
     }
 
-    /// Where the applied sink is in the rules' current candidates, when it is a
+    /// Where the applied value is in the rules' current candidates, when it is a
     /// fallback a rule-driven switch settled for
-    fn applied_fallback_rank(&self) -> Option<usize> {
-        if !self.applied_fallback {
+    fn applied_fallback_rank(&self, kind: Endpoint) -> Option<usize> {
+        let lane = self.lane(kind);
+        if !lane.applied_fallback {
             return None;
         }
-        let applied = self.applied.as_deref()?;
-        self.last_desired
+        let applied = lane.applied.as_deref()?;
+        lane.last_desired
             .as_ref()?
             .iter()
             .position(|c| c == applied)
             .filter(|&rank| rank > 0)
     }
 
-    fn sink_desc(&self, name: &str) -> String {
+    fn endpoint_desc(&self, kind: Endpoint, name: &str) -> String {
+        self.state.config().endpoint_desc(kind, name)
+    }
+
+    /// The configured entry of `kind` named `name`
+    fn configured(&self, kind: Endpoint, name: &str) -> Option<&SinkConfig> {
         self.state
             .config()
-            .sinks
+            .endpoints(kind)
             .iter()
             .find(|s| s.name == name)
-            .map_or_else(|| name.to_string(), |s| s.desc.clone())
+    }
+
+    /// Whether the status line may be refreshed now: nothing in flight and the
+    /// default sink known
+    fn settled(&self) -> bool {
+        self.lanes.iter().all(|l| l.submitted.is_none())
+            && self.lane(Endpoint::Sink).applied.is_some()
     }
 
     /// Switch when the rules changed their mind (or a stalled target gets another try,
-    /// or an applied fallback may be upgraded)
+    /// or an applied fallback may be upgraded), for each lane
     fn reconcile(&mut self, departure: Option<&Departure>) {
-        if self.paused {
-            // Windows and config stay current; `resume` compares with them
-            if self.submitted.is_none() && self.applied.is_some() {
-                self.publish_status();
+        if !self.paused {
+            for kind in Endpoint::ALL {
+                self.reconcile_lane(kind, departure);
+            }
+        }
+        // Windows and config stay current while paused; `resume` compares with them.
+        // Nothing to switch: keep the status line current (e.g. a reload renamed it).
+        if self.settled() {
+            self.publish_status();
+        }
+    }
+
+    fn reconcile_lane(&mut self, kind: Endpoint, departure: Option<&Departure>) {
+        let Some(names) = self.desired_names(kind) else {
+            if self.lane(kind).last_desired.is_some() {
+                debug!(
+                    "No {} configured any more; not managing them",
+                    kind.plural()
+                );
+                self.lane_mut(kind).deactivate();
             }
             return;
-        }
-        let names = self.state.desired().names();
-        if self.last_desired.as_deref() != Some(names.as_slice()) {
+        };
+        let lane = self.lane(kind);
+        if lane.last_desired.as_deref() != Some(names.as_slice()) {
             debug!(
-                "Desired sinks changed: [{}] → [{}]",
-                self.last_desired
+                "Desired {} changed: [{}] → [{}]",
+                kind.plural(),
+                lane.last_desired
                     .as_deref()
                     .map_or_else(|| "(none)".to_string(), |d| d.join(", ")),
                 names.join(", ")
             );
             let delay = self.switch_delay();
-            if self.adopt(names, departure, delay) {
-                return;
-            }
-        } else if self.stalled
-            && !self.manual_override
-            && self.submitted.is_none()
-            && self.retry.is_none()
+            self.adopt(kind, names, departure, delay);
+        } else if lane.stalled
+            && !lane.manual_override
+            && lane.submitted.is_none()
+            && lane.retry.is_none()
         {
-            info!("Trying {} again", self.candidates_desc(&names));
-            self.stalled = false;
-            self.retries = 0;
-            let notice = self.rule_notice(departure);
-            self.submit(names, notice);
-            return;
-        } else if let Some(rank) = self.upgrade_due() {
-            debug!("Applied sink is fallback #{rank}; checking for a higher-priority one");
-            self.last_upgrade_check = Some(Instant::now());
-            let notice = self.rule_notice(departure);
+            info!("Trying {} again", self.candidates_desc(kind, &names));
+            let lane = self.lane_mut(kind);
+            lane.stalled = false;
+            lane.retries = 0;
+            let notice = self.rule_notice(kind, departure);
+            self.submit(kind, names, notice);
+        } else if let Some(rank) = self.upgrade_due(kind) {
+            debug!(
+                "Applied {} is fallback #{rank}; checking for a higher-priority one",
+                kind.noun()
+            );
+            self.lane_mut(kind).last_upgrade_check = Some(Instant::now());
+            let notice = self.rule_notice(kind, departure);
             self.submit_job(
+                kind,
                 Target::Rule {
                     candidates: names.clone(),
                     upgrade_from: Some(rank),
@@ -498,11 +632,6 @@ impl Daemon {
                 Origin::Upgrade,
                 notice,
             );
-            return;
-        }
-        // Nothing to switch: keep the status line current (e.g. a reload renamed it)
-        if self.submitted.is_none() && self.applied.is_some() {
-            self.publish_status();
         }
     }
 
@@ -514,70 +643,84 @@ impl Daemon {
         }
     }
 
-    /// Take `names` as the rules' new answer (it changed, or `resume` hands control
-    /// back to the rules): what held for the old answer (manual choice, retries, a
-    /// settle wait) is dropped, and unless the default sink already is (or is about to
-    /// be) `names`' first choice, a switch is submitted, after `delay` if given
+    /// Take `names` as the rules' new answer for `kind` (it changed, or `resume` hands
+    /// control back to the rules): what held for the old answer (manual choice,
+    /// retries, a settle wait) is dropped, and unless the default already is (or is
+    /// about to be) `names`' first choice, a switch is submitted, after `delay` if
+    /// given
     ///
     /// Returns whether a job was submitted now.
     fn adopt(
         &mut self,
+        kind: Endpoint,
         names: Vec<String>,
         departure: Option<&Departure>,
         delay: Option<Duration>,
     ) -> bool {
-        self.last_desired = Some(names.clone());
-        self.manual_override = false;
-        self.retry = None;
-        self.stalled = false;
-        self.superseded = None;
-        self.retries = 0;
-        let settling = self.settle.take();
-        if self.serves(&names) {
+        let lane = self.lane_mut(kind);
+        lane.last_desired = Some(names.clone());
+        lane.manual_override = false;
+        lane.retry = None;
+        lane.stalled = false;
+        lane.superseded = None;
+        lane.retries = 0;
+        let settling = lane.settle.take();
+        if self.serves(kind, &names) {
             if let Some(settle) = settling {
                 debug!(
-                    "Rules want the current sink again; not switching to {}",
-                    self.candidates_desc(&settle.candidates)
+                    "Rules want the current {} again; not switching to {}",
+                    kind.noun(),
+                    self.candidates_desc(kind, &settle.candidates)
                 );
             }
-            if self.submitted.is_none() {
-                // The applied sink is the new list's first choice
-                self.applied_fallback = false;
+            let lane = self.lane_mut(kind);
+            if lane.submitted.is_none() {
+                // The applied value is the new list's first choice
+                lane.applied_fallback = false;
             }
             return false;
         }
-        let notice = self.rule_notice(departure);
+        let notice = self.rule_notice(kind, departure);
         if let Some(delay) = delay {
             debug!(
                 "Switching to {} in {} ms if the rules still want it then",
-                self.candidates_desc(&names),
+                self.candidates_desc(kind, &names),
                 delay.as_millis()
             );
-            self.settle = Some(Settle {
+            self.lane_mut(kind).settle = Some(Settle {
                 candidates: names,
                 at: Instant::now() + delay,
                 notice,
             });
             return false;
         }
-        self.submit(names, notice);
+        self.submit(kind, names, notice);
         true
     }
 
-    /// The settle delay passed: switch if the rules' answer is still the one that
-    /// started it (any change since replaced or cancelled the wait)
+    /// A settle delay passed: switch if the rules' answer is still the one that
+    /// started it (any change since replaced or cancelled the wait); each lane waits
+    /// on its own
     fn on_settle_due(&mut self) {
-        let Some(settle) = self.settle.take() else {
-            return;
-        };
-        if self.paused
-            || self.manual_override
-            || self.last_desired.as_ref() != Some(&settle.candidates)
-            || self.serves(&settle.candidates)
-        {
-            return;
+        let now = Instant::now();
+        for kind in Endpoint::ALL {
+            let lane = self.lane_mut(kind);
+            if lane.settle.as_ref().is_none_or(|s| s.at > now) {
+                continue;
+            }
+            let Some(settle) = lane.settle.take() else {
+                continue;
+            };
+            let lane = self.lane(kind);
+            if self.paused
+                || lane.manual_override
+                || lane.last_desired.as_ref() != Some(&settle.candidates)
+                || self.serves(kind, &settle.candidates)
+            {
+                continue;
+            }
+            self.submit(kind, settle.candidates, settle.notice);
         }
-        self.submit(settle.candidates, settle.notice);
     }
 
     /// Pause or resume rule-driven switching
@@ -606,10 +749,12 @@ impl Daemon {
     /// job already handed to the worker still completes)
     fn pause(&mut self) {
         info!("Paused: no rule-driven switches until resumed (windows are still tracked)");
-        self.settle = None;
-        self.retry = None;
-        self.stalled = false;
-        self.superseded = None;
+        for lane in &mut self.lanes {
+            lane.settle = None;
+            lane.retry = None;
+            lane.stalled = false;
+            lane.superseded = None;
+        }
         if self.state.config().settings.notify_manual {
             self.notify_daemon("Switching Paused", "Rules will not switch the audio output");
         }
@@ -624,35 +769,39 @@ impl Daemon {
         if self.state.config().settings.notify_manual {
             self.notify_daemon("Switching Resumed", "Rules switch the audio output again");
         }
-        let names = self.state.desired().names();
-        self.adopt(names, None, None);
+        for kind in Endpoint::ALL {
+            if let Some(names) = self.desired_names(kind) {
+                self.adopt(kind, names, None, None);
+            }
+        }
         self.publish_status();
     }
 
     /// The applied fallback's rank, when it is time to look for a better candidate:
     /// nothing pending or held, and the last check is [`UPGRADE_CHECK_INTERVAL`] ago
-    fn upgrade_due(&self) -> Option<usize> {
-        if self.manual_override
+    fn upgrade_due(&self, kind: Endpoint) -> Option<usize> {
+        let lane = self.lane(kind);
+        if lane.manual_override
             || self.paused
-            || self.settle.is_some()
-            || self.stalled
-            || self.submitted.is_some()
-            || self.retry.is_some()
-            || self
+            || lane.settle.is_some()
+            || lane.stalled
+            || lane.submitted.is_some()
+            || lane.retry.is_some()
+            || lane
                 .last_upgrade_check
                 .is_some_and(|at| at.elapsed() < UPGRADE_CHECK_INTERVAL)
         {
             return None;
         }
-        self.applied_fallback_rank()
+        self.applied_fallback_rank(kind)
     }
 
-    /// The notification for a rule-driven switch to the desired sinks, if wanted
+    /// The notification for a rule-driven switch to the desired `kind`, if wanted
     ///
     /// The flag and the reason come from the window that decides the target; when
     /// falling back to the default, from the window that departed.
-    fn rule_notice(&self, departure: Option<&Departure>) -> Option<RuleNotice> {
-        if let Some(window) = self.state.desired().window {
+    fn rule_notice(&self, kind: Endpoint, departure: Option<&Departure>) -> Option<RuleNotice> {
+        if let Some(window) = self.state.desired_for(kind).and_then(|d| d.window) {
             return window.notify.then(|| RuleNotice {
                 reason: Some(window.trigger.to_string()),
                 app_icon: Some(get_app_icon(window.app_id)),
@@ -668,17 +817,39 @@ impl Daemon {
         })
     }
 
-    /// Complete a rule-driven switch's notification for the sink it activated
-    fn complete_notice(&self, notice: &RuleNotice, sink: &str, fallback: bool) -> Notice {
-        let config = self.state.config();
-        let configured = config.sinks.iter().find(|s| s.name == sink);
-        let mut desc = configured.map_or_else(|| sink.to_string(), |s| s.desc.clone());
+    /// The icon of a configured sink or source
+    fn endpoint_icon(kind: Endpoint, entry: &SinkConfig) -> String {
+        match kind {
+            Endpoint::Sink => get_sink_icon(entry),
+            Endpoint::Source => get_source_icon(entry),
+        }
+    }
+
+    /// Notification kind and title for switches of `kind`
+    const fn switch_notice(kind: Endpoint) -> (NoticeKind, &'static str) {
+        match kind {
+            Endpoint::Sink => (NoticeKind::Switch, SWITCH_TITLE),
+            Endpoint::Source => (NoticeKind::SourceSwitch, SOURCE_SWITCH_TITLE),
+        }
+    }
+
+    /// Complete a rule-driven switch's notification for what it activated
+    fn complete_notice(
+        &self,
+        kind: Endpoint,
+        notice: &RuleNotice,
+        name: &str,
+        fallback: bool,
+    ) -> Notice {
+        let configured = self.configured(kind, name);
+        let mut desc = configured.map_or_else(|| name.to_string(), |s| s.desc.clone());
         if fallback {
             desc.push_str(" (fallback)");
         }
+        let (notice_kind, title) = Self::switch_notice(kind);
         Notice {
-            kind: NoticeKind::Switch,
-            summary: SWITCH_TITLE.to_string(),
+            kind: notice_kind,
+            summary: title.to_string(),
             body: match &notice.reason {
                 Some(reason) => format!("{desc} → {reason}"),
                 None => desc,
@@ -686,29 +857,35 @@ impl Daemon {
             icon: notice
                 .app_icon
                 .clone()
-                .or_else(|| configured.map(get_sink_icon)),
+                .or_else(|| configured.map(|c| Self::endpoint_icon(kind, c))),
         }
     }
 
-    /// The notification for a manual switch to `sink`, if wanted
-    fn manual_notice(&self, sink: &str) -> Option<Notice> {
-        let config = self.state.config();
-        if !config.settings.notify_manual {
+    /// The notification for a manual switch to `name`, if wanted
+    fn manual_notice(&self, kind: Endpoint, name: &str) -> Option<Notice> {
+        if !self.state.config().settings.notify_manual {
             return None;
         }
-        let sink = config.sinks.iter().find(|s| s.name == sink)?;
+        let entry = self.configured(kind, name)?;
+        let (notice_kind, title) = Self::switch_notice(kind);
         Some(Notice {
-            kind: NoticeKind::Switch,
-            summary: SWITCH_TITLE.to_string(),
-            body: sink.desc.clone(),
-            icon: Some(get_sink_icon(sink)),
+            kind: notice_kind,
+            summary: title.to_string(),
+            body: entry.desc.clone(),
+            icon: Some(Self::endpoint_icon(kind, entry)),
         })
     }
 
     /// Submit a rule-driven activation of the first reachable of `candidates`
-    fn submit(&mut self, candidates: Vec<String>, notice: Option<RuleNotice>) -> u64 {
-        info!("Switching: {}", self.candidates_desc(&candidates));
+    fn submit(
+        &mut self,
+        kind: Endpoint,
+        candidates: Vec<String>,
+        notice: Option<RuleNotice>,
+    ) -> u64 {
+        info!("Switching: {}", self.candidates_desc(kind, &candidates));
         self.submit_job(
+            kind,
             Target::Rule {
                 candidates: candidates.clone(),
                 upgrade_from: None,
@@ -719,9 +896,11 @@ impl Daemon {
         )
     }
 
-    /// Hand a job to the worker (replacing any not yet started) and return its generation
+    /// Queue a job for the worker (replacing any of the lane not yet started; sent at
+    /// the end of this step) and return its generation
     fn submit_job(
         &mut self,
+        kind: Endpoint,
         target: Target,
         candidates: Option<Vec<String>>,
         origin: Origin,
@@ -729,8 +908,12 @@ impl Daemon {
     ) -> u64 {
         self.next_generation += 1;
         let generation = self.next_generation;
-        self.jobs.send_replace(Some(Job { generation, target }));
-        self.submitted = Some(Submitted {
+        self.outbox[kind.index()] = Some(Job {
+            generation,
+            kind,
+            target,
+        });
+        self.lane_mut(kind).submitted = Some(Submitted {
             generation,
             candidates,
             origin,
@@ -740,36 +923,44 @@ impl Daemon {
     }
 
     fn on_result(&mut self, result: JobResult) {
+        let kind = result.kind;
+        let noun = kind.noun();
         let is_latest = self
+            .lane(kind)
             .submitted
             .as_ref()
             .is_some_and(|s| s.generation == result.generation);
         let submitted = if is_latest {
-            self.submitted.take()
+            self.lane_mut(kind).submitted.take()
         } else {
             None
         };
 
         // A manual request looked at the real default first: that is the truth now
         if let Some(observed) = result.observed
-            && self.applied.as_deref() != Some(observed.as_str())
+            && self.lane(kind).applied.as_deref() != Some(observed.as_str())
         {
             debug!(
-                "Default sink is {observed} (last known: {})",
-                self.applied.as_deref().unwrap_or("unknown")
+                "Default {noun} is {observed} (last known: {})",
+                self.lane(kind).applied.as_deref().unwrap_or("unknown")
             );
-            self.applied = Some(observed);
-            self.applied_fallback = false;
+            let lane = self.lane_mut(kind);
+            lane.applied = Some(observed);
+            lane.applied_fallback = false;
         }
 
         let tried = result.tried;
         let response = match result.outcome {
             Outcome::Activated { index, node_name } if index < tried.len() => {
-                let sink = tried[index].clone();
+                let name = tried[index].clone();
                 let fallback = index > 0;
-                let mut desc = self.sink_desc(&sink);
+                let mut desc = self.endpoint_desc(kind, &name);
+                let what = match kind {
+                    Endpoint::Sink => "Audio output",
+                    Endpoint::Source => "Audio input",
+                };
                 info!(
-                    "Audio output is now {desc}{} ({node_name})",
+                    "{what} is now {desc}{} ({node_name})",
                     if fallback { " (fallback)" } else { "" }
                 );
                 let notice = match &submitted {
@@ -778,39 +969,41 @@ impl Daemon {
                         notice,
                         ..
                     }) => {
-                        self.stalled = false;
-                        // An upgrade whose fallback chain ended on the same sink
+                        self.lane_mut(kind).stalled = false;
+                        // An upgrade whose fallback chain ended on the same target
                         // changed nothing audible
                         let changed = *origin == Origin::Rule
-                            || self.applied.as_deref() != Some(sink.as_str());
+                            || self.lane(kind).applied.as_deref() != Some(name.as_str());
                         notice
                             .as_ref()
                             .filter(|_| changed)
-                            .map(|n| self.complete_notice(n, &sink, fallback))
+                            .map(|n| self.complete_notice(kind, n, &name, fallback))
                     }
                     Some(Submitted {
                         origin: Origin::Manual { .. },
                         ..
                     }) => {
                         // The user's choice holds now, until the rules' answer changes
-                        self.superseded = None;
-                        self.manual_notice(&sink)
+                        self.lane_mut(kind).superseded = None;
+                        self.manual_notice(kind, &name)
                     }
                     None => None,
                 };
-                if self
+                let lane = self.lane_mut(kind);
+                if lane
                     .superseded
                     .as_ref()
                     .is_some_and(|s| s.candidates == tried)
                 {
                     // The superseded rule job had already started, and it succeeded
-                    self.superseded = None;
+                    lane.superseded = None;
                 }
                 if let Some(notice) = notice {
                     self.notifier.send(notice);
                 }
-                self.applied = Some(sink);
-                self.applied_fallback = fallback;
+                let lane = self.lane_mut(kind);
+                lane.applied = Some(name);
+                lane.applied_fallback = fallback;
                 if fallback {
                     desc.push_str(" (fallback)");
                 }
@@ -818,40 +1011,41 @@ impl Daemon {
             }
             Outcome::Activated { node_name, .. } => {
                 // Not produced by the worker; keep the loop consistent anyway
-                warn!("Activation result without its sink (node {node_name})");
+                warn!("Activation result without its {noun} (node {node_name})");
                 Response::Error {
-                    message: "Internal error: activation result without its sink".to_string(),
+                    message: format!("Internal error: activation result without its {noun}"),
                 }
             }
             Outcome::Unchanged => {
                 let message = format!(
-                    "No higher-priority sink reachable; staying on {}",
-                    self.applied
-                        .as_deref()
-                        .map_or_else(|| "the current sink".to_string(), |a| self.sink_desc(a))
+                    "No higher-priority {noun} reachable; staying on {}",
+                    self.lane(kind).applied.as_deref().map_or_else(
+                        || format!("the current {noun}"),
+                        |a| self.endpoint_desc(kind, a)
+                    )
                 );
                 debug!("{message}");
                 Response::Ok { message }
             }
             Outcome::Done(message) => {
                 info!("{message}");
-                self.settle_manual(submitted.as_ref());
+                self.settle_manual(kind, submitted.as_ref());
                 Response::Ok { message }
             }
             Outcome::Failed(message) => {
                 let message = match tried.as_slice() {
                     [] => message,
-                    [sink] => {
+                    [single] => {
                         format!(
-                            "Failed to activate sink '{}': {message}",
-                            self.sink_desc(sink)
+                            "Failed to activate {noun} '{}': {message}",
+                            self.endpoint_desc(kind, single)
                         )
                     }
                     several => format!(
                         "Failed to activate any of {}: {message}",
                         several
                             .iter()
-                            .map(|s| format!("'{}'", self.sink_desc(s)))
+                            .map(|s| format!("'{}'", self.endpoint_desc(kind, s)))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -863,27 +1057,27 @@ impl Daemon {
                         candidates: Some(candidates),
                         notice,
                         ..
-                    }) => self.schedule_retry(candidates, notice),
+                    }) => self.schedule_retry(kind, candidates, notice),
                     manual @ Some(Submitted {
                         origin: Origin::Manual { .. },
                         ..
-                    }) => self.settle_manual(manual.as_ref()),
+                    }) => self.settle_manual(kind, manual.as_ref()),
                     _ => {}
                 }
                 Response::Error { message }
             }
         };
         self.publish_status();
-        self.answer(result.generation, &response);
+        self.answer(kind, result.generation, &response);
     }
 
-    /// A manual request that switched nothing: audio stays where it was, and so does
-    /// the override state from before the request
+    /// A manual request that switched nothing: the default stays where it was, and
+    /// so does the override state from before the request
     ///
     /// If the request had replaced a rule-driven switch (or that switch failed while
     /// the request waited behind it), that switch is submitted again now: the rules'
     /// answer already changed, so no later reconcile would bring it back.
-    fn settle_manual(&mut self, submitted: Option<&Submitted>) {
+    fn settle_manual(&mut self, kind: Endpoint, submitted: Option<&Submitted>) {
         let Some(Submitted {
             origin: Origin::Manual { restore_override },
             ..
@@ -891,72 +1085,91 @@ impl Daemon {
         else {
             return;
         };
-        self.manual_override = *restore_override;
-        let Some(superseded) = self.superseded.take() else {
+        let lane = self.lane_mut(kind);
+        lane.manual_override = *restore_override;
+        let Some(superseded) = lane.superseded.take() else {
             return;
         };
-        if !self.manual_override
+        let lane = self.lane(kind);
+        if !lane.manual_override
             && !self.paused
-            && self.submitted.is_none()
-            && self.last_desired.as_ref() == Some(&superseded.candidates)
-            && self.applied.as_deref() != superseded.candidates.first().map(String::as_str)
+            && lane.submitted.is_none()
+            && lane.last_desired.as_ref() == Some(&superseded.candidates)
+            && lane.applied.as_deref() != superseded.candidates.first().map(String::as_str)
         {
             info!(
                 "Resuming the switch to {} the manual request replaced",
-                self.candidates_desc(&superseded.candidates)
+                self.candidates_desc(kind, &superseded.candidates)
             );
-            self.submit(superseded.candidates, superseded.notice);
+            self.submit(kind, superseded.candidates, superseded.notice);
         }
     }
 
-    fn schedule_retry(&mut self, candidates: Vec<String>, notice: Option<RuleNotice>) {
+    fn schedule_retry(
+        &mut self,
+        kind: Endpoint,
+        candidates: Vec<String>,
+        notice: Option<RuleNotice>,
+    ) {
+        let lane = self.lane(kind);
         // Paused: `resume` switches again if the rules still want it
-        if self.manual_override || self.paused || self.last_desired.as_ref() != Some(&candidates) {
+        if lane.manual_override || self.paused || lane.last_desired.as_ref() != Some(&candidates) {
             return;
         }
-        let what = self.candidates_desc(&candidates);
-        if let Some(delay) = RETRY_BACKOFF.get(self.retries) {
-            self.retries += 1;
+        let what = self.candidates_desc(kind, &candidates);
+        let lane = self.lane_mut(kind);
+        if let Some(delay) = RETRY_BACKOFF.get(lane.retries) {
+            lane.retries += 1;
             warn!(
                 "Retrying {what} in {}s (attempt {} of {})",
                 delay.as_secs(),
-                self.retries + 1,
+                lane.retries + 1,
                 RETRY_BACKOFF.len() + 1
             );
-            self.retry = Some(Retry {
+            lane.retry = Some(Retry {
                 candidates,
                 at: Instant::now() + *delay,
                 notice,
             });
         } else {
             warn!("Giving up on {what} until the next window event or reload");
-            self.stalled = true;
+            lane.stalled = true;
         }
     }
 
+    /// A retry is due: submit it if the rules still want its target (per lane)
     fn on_retry_due(&mut self) {
-        let Some(retry) = self.retry.take() else {
-            return;
-        };
-        if self.manual_override
-            || self.paused
-            || self.last_desired.as_ref() != Some(&retry.candidates)
-            || self.serves(&retry.candidates)
-        {
-            return;
+        let now = Instant::now();
+        for kind in Endpoint::ALL {
+            let lane = self.lane_mut(kind);
+            if lane.retry.as_ref().is_none_or(|r| r.at > now) {
+                continue;
+            }
+            let Some(retry) = lane.retry.take() else {
+                continue;
+            };
+            let lane = self.lane(kind);
+            if lane.manual_override
+                || self.paused
+                || lane.last_desired.as_ref() != Some(&retry.candidates)
+                || self.serves(kind, &retry.candidates)
+            {
+                continue;
+            }
+            self.submit(kind, retry.candidates, retry.notice);
         }
-        self.submit(retry.candidates, retry.notice);
     }
 
-    /// Reply to every `IPC` request settled by the job of `generation`
+    /// Reply to every `IPC` request of lane `kind` settled by the job of `generation`
     ///
-    /// Older requests were coalesced away (the worker only runs the latest job).
-    fn answer(&mut self, generation: u64, response: &Response) {
+    /// Older requests were coalesced away (the worker only runs the latest job of a
+    /// lane).
+    fn answer(&mut self, kind: Endpoint, generation: u64, response: &Response) {
         let (settled, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.replies)
             .into_iter()
-            .partition(|(g, _)| *g <= generation);
+            .partition(|(k, g, _)| *k == kind && *g <= generation);
         self.replies = waiting;
-        for (g, reply) in settled {
+        for (_, g, reply) in settled {
             let response = if g == generation {
                 response.clone()
             } else {
@@ -969,7 +1182,7 @@ impl Daemon {
     }
 
     /// A manual request: answered at once if the config alone decides it, otherwise
-    /// handed to the worker, which decides against the real default sink
+    /// handed to the worker, which decides against the real default
     fn on_manual(&mut self, request: ManualSwitch, reply: oneshot::Sender<Response>) {
         let config = Arc::clone(self.state.config());
         if let Some(answer) = crate::manual::answer_without_pipewire(&config, &request) {
@@ -981,20 +1194,22 @@ impl Daemon {
         }
 
         info!("Manual switch requested: {request:?}");
+        let kind = request.kind();
+        let lane = self.lane_mut(kind);
         // Coalesced manual requests share the state from before the first of them
-        let restore_override = match &self.submitted {
+        let restore_override = match &lane.submitted {
             Some(Submitted {
                 origin: Origin::Manual { restore_override },
                 ..
             }) => *restore_override,
-            _ => self.manual_override,
+            _ => lane.manual_override,
         };
-        self.manual_override = true;
+        lane.manual_override = true;
         // A rule job not yet settled is replaced (if queued) or may still fail (if
         // running), and a switch waiting for the settle delay is newer still: remember
         // it, so a manual request that switches nothing resumes it
-        if let Some(settle) = self.settle.take() {
-            self.superseded = Some(Superseded {
+        if let Some(settle) = lane.settle.take() {
+            lane.superseded = Some(Superseded {
                 candidates: settle.candidates,
                 notice: settle.notice,
             });
@@ -1003,37 +1218,51 @@ impl Daemon {
             candidates: Some(candidates),
             notice,
             ..
-        }) = &self.submitted
+        }) = &lane.submitted
         {
-            self.superseded = Some(Superseded {
+            lane.superseded = Some(Superseded {
                 candidates: candidates.clone(),
                 notice: notice.clone(),
             });
         }
         // A pending rule retry becomes a stall: if this request switches nothing,
-        // the rules' sink gets its next try on the next event
-        if self.retry.take().is_some() {
-            self.stalled = true;
+        // the rules' target gets its next try on the next event
+        if lane.retry.take().is_some() {
+            lane.stalled = true;
         }
         let generation = self.submit_job(
+            kind,
             Target::Manual { request, config },
             None,
             Origin::Manual { restore_override },
             None,
         );
-        self.replies.push((generation, reply));
+        self.replies.push((kind, generation, reply));
     }
 
-    /// The status line for the sink pwsw believes is the default
-    fn status_text(&self) -> String {
-        let mut text = match self.applied.as_deref() {
-            Some(name) => match self.state.config().sinks.iter().find(|s| s.name == name) {
-                Some(sink) if self.applied_fallback => format!("Sink: {} (fallback)", sink.desc),
-                Some(sink) => format!("Sink: {}", sink.desc),
-                None => format!("Sink: {name} (not in config)"),
+    /// `Sink: X`, `Mic: Y`: one part of the status line
+    fn status_part(&self, kind: Endpoint, label: &str) -> String {
+        let lane = self.lane(kind);
+        match lane.applied.as_deref() {
+            Some(name) => match self.configured(kind, name) {
+                Some(entry) if lane.applied_fallback => {
+                    format!("{label}: {} (fallback)", entry.desc)
+                }
+                Some(entry) => format!("{label}: {}", entry.desc),
+                None => format!("{label}: {name} (not in config)"),
             },
-            None => "Sink: unknown".to_string(),
-        };
+            None => format!("{label}: unknown"),
+        }
+    }
+
+    /// The status line for what pwsw believes are the defaults (the microphone only
+    /// when sources are configured)
+    fn status_text(&self) -> String {
+        let mut text = self.status_part(Endpoint::Sink, "Sink");
+        if !self.state.config().sources.is_empty() {
+            text.push_str(" · ");
+            text.push_str(&self.status_part(Endpoint::Source, "Mic"));
+        }
         if self.paused {
             text.push_str(" (paused)");
         }
@@ -1055,17 +1284,33 @@ impl Daemon {
 
     fn snapshot(&self) -> Snapshot {
         let desired = self.state.desired();
+        let sink = self.lane(Endpoint::Sink);
+        let source = self.lane(Endpoint::Source);
         // Name the candidate actually in use when it is the rules' fallback
-        let deciding_sink = match (self.applied_fallback_rank(), self.applied.as_deref()) {
+        let deciding_sink = match (
+            self.applied_fallback_rank(Endpoint::Sink),
+            sink.applied.as_deref(),
+        ) {
             (Some(_), Some(applied)) => format!("{applied} (fallback)"),
             _ => desired.first().name.clone(),
         };
+        let config = self.state.config();
+        let sources_configured = !config.sources.is_empty();
+        let fallbacks = |entries: &[&SinkConfig]| -> Vec<FallbackSink> {
+            entries
+                .iter()
+                .map(|s| FallbackSink {
+                    name: s.name.clone(),
+                    desc: s.desc.clone(),
+                })
+                .collect()
+        };
         Snapshot {
-            config: Arc::clone(self.state.config()),
-            applied: self.applied.clone(),
+            config: Arc::clone(config),
+            applied: sink.applied.clone(),
             #[cfg(test)]
             desired: desired.first().name.clone(),
-            fallback: self.applied_fallback,
+            fallback: sink.applied_fallback,
             active_window: desired
                 .window
                 .map(|w| format!("{}: {deciding_sink}", w.trigger)),
@@ -1082,21 +1327,28 @@ impl Daemon {
                     tracked: w.sinks.split_first().map(|(first, rest)| TrackedInfo {
                         sink_name: first.name.clone(),
                         sink_desc: first.desc.clone(),
-                        fallbacks: rest
-                            .iter()
-                            .map(|s| FallbackSink {
-                                name: s.name.clone(),
-                                desc: s.desc.clone(),
-                            })
-                            .collect(),
+                        fallbacks: fallbacks(rest),
+                        sources: fallbacks(&w.sources),
                     }),
                 })
                 .collect(),
             #[cfg(test)]
-            manual_override: self.manual_override,
+            manual_override: sink.manual_override,
             paused: self.paused,
             #[cfg(test)]
-            settling: self.settle.as_ref().map(|s| s.candidates.clone()),
+            settling: sink.settle.as_ref().map(|s| s.candidates.clone()),
+            applied_source: source.applied.clone().filter(|_| sources_configured),
+            source_fallback: sources_configured && source.applied_fallback,
+            sources_configured,
+            #[cfg(test)]
+            desired_source: self
+                .state
+                .desired_for(Endpoint::Source)
+                .map(|d| d.first().name.clone()),
+            #[cfg(test)]
+            source_manual_override: source.manual_override,
+            #[cfg(test)]
+            source_settling: source.settle.as_ref().map(|s| s.candidates.clone()),
         }
     }
 
@@ -1141,8 +1393,13 @@ impl Daemon {
                     if let Some(set_level) = &self.hooks.set_log_level {
                         set_level(&config.settings.log_level);
                     }
+                    let sources = if config.sources.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {} sources", config.sources.len())
+                    };
                     info!(
-                        "Configuration reloaded: {} sinks, {} rules",
+                        "Configuration reloaded: {} sinks{sources}, {} rules",
                         config.sinks.len(),
                         config.rules.len()
                     );

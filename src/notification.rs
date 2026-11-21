@@ -71,6 +71,16 @@ fn supports_markup<S: AsRef<str>>(capabilities: &[S]) -> bool {
     capabilities.iter().any(|c| c.as_ref() == BODY_MARKUP)
 }
 
+/// Determine icon for a source (microphone): its configured `icon`, else the
+/// `FreeDesktop` standard `audio-input-microphone`
+#[must_use]
+pub fn get_source_icon(source: &SinkConfig) -> String {
+    source
+        .icon
+        .clone()
+        .unwrap_or_else(|| "audio-input-microphone".to_string())
+}
+
 /// Determine icon for a sink (custom or auto-detected using `FreeDesktop` standard names)
 #[must_use]
 pub fn get_sink_icon(sink: &SinkConfig) -> String {

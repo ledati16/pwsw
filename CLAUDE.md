@@ -5,7 +5,8 @@ file, the code wins; fix the file in the same change.
 
 ## What pwsw is
 
-A Rust daemon that sets the PipeWire default sink from rules that match Wayland windows
+A Rust daemon that sets the PipeWire default sink (and, with `[[sources]]` configured,
+the default source) from rules that match Wayland windows
 (`ext-foreign-toplevel-list-v1` or `wlr-foreign-toplevel-management`), plus a CLI that
 talks to it over a Unix socket and a `ratatui` TUI for configuration and monitoring.
 Single crate, library + one binary (`src/bin/pwsw.rs`); the library's only consumer is
@@ -19,8 +20,8 @@ that binary.
 | `src/cli.rs` | `clap` definitions (`--config`, `--color`, subcommands, help text) |
 | `src/commands.rs` | CLI commands (`status` incl. `--json`, `list-*`, `test-rule`, `validate`, manual switches) |
 | `src/config.rs` | Schema, path selection, validation, all mutations, comment-preserving atomic saves, `init` |
-| `src/state.rs` | Pure reducer: window events → tracked windows and rule matches; `desired()` |
-| `src/manual.rs` | Pure decision for `set-sink`/`next-sink`/`prev-sink` against a PipeWire probe (daemon and CLI fallback) |
+| `src/state.rs` | Pure reducer: window events → tracked windows and rule matches; `desired()`, `desired_for(Endpoint)` |
+| `src/manual.rs` | Pure decision for `set-sink`/`next-sink`/`prev-sink`/`set-source` against a PipeWire probe (daemon and CLI fallback) |
 | `src/daemon.rs` | Daemon startup: lock, detach, logging, compositor, IPC server, config watcher, wiring |
 | `src/daemon/` | `event_loop.rs` (the `select!` loop: reconcile, reload, retries, `sd_notify`), `worker.rs` (activations), `ipc_handler.rs` (per-connection tasks), `notifier.rs` (notification thread), `lock.rs` (`flock` instance lock) |
 | `src/daemon_manager.rs` | systemd vs direct detection (`/proc/self/cgroup`), `systemctl` queries with timeouts |
@@ -48,6 +49,14 @@ answer is an ordered candidate list: the winning rule's sink and fallbacks
 (`sink = ["A", "B"]`), or the default sink alone. Each window is matched by the first
 rule that matches it. Nothing in `state.rs` does I/O; reachability is the worker's call.
 
+**Sources are a second, independent dimension** (`config::Endpoint::{Sink, Source}`).
+`State::desired_for(Source)` applies the same priority but only over matching windows
+whose rule has a `source` (else the default source; `None` without `[[sources]]`, and
+then nothing ever touches the default source). The event loop keeps one `Lane` per
+endpoint (applied, last answer, retries, settle, upgrade check, manual override,
+superseded job); every rule below holds per lane, and a lane never looks at the other.
+Pause stops both. Shared code takes an `Endpoint` instead of being duplicated.
+
 **Switch only when the rules' answer changes.** After every input the event loop
 reconciles: if `desired()` differs from the previous answer (or a switch the rules still
 want failed), it submits a job. It never compares against the real PipeWire default, so a
@@ -72,7 +81,10 @@ Manual requests, retries, upgrades, startup and resume are never delayed.
 
 **Never await PipeWire in the `select!`.** The loop submits to the worker
 (`daemon/worker.rs`), which runs activations one at a time in `spawn_blocking`; results
-come back as another input. IPC, signals and window events must keep flowing during a
+come back as another input. The worker's `watch` channel has one slot per endpoint
+("latest wins" per slot); the loop queues jobs in an outbox flushed once per loop
+iteration, so a sink job and a source job of the same step reach the worker together
+and run as one joint activation (`pipewire::activate::activate_joint`). IPC, signals and window events must keep flowing during a
 slow profile switch. Manual requests are planned in the worker against a fresh probe
 (`manual::plan`), not on the loop. Notifications go to the notifier thread (`try_send`,
 never wait).
@@ -87,18 +99,35 @@ inside it.
   `device.profile.name` (or `card.profile.device`), never by name (WirePlumber may rename
   nodes). Profile choice keeps the card's current input mapping when possible; only
   available profiles are used; UCM (`HiFi`) and `pro-audio` are never switched to.
-- The default is written to `default.configured.audio.sink` (like `wpctl set-default`),
-  never `default.audio.sink`. Profile switches are sent with `save: true`.
+- The default is written to `default.configured.audio.sink` /
+  `default.configured.audio.source` (like `wpctl set-default`), never
+  `default.audio.sink`/`.source`. Profile switches are sent with `save: true`.
+- Sources: `Audio/Source` nodes exactly (`*.monitor` and `Audio/Source/Virtual` are
+  skipped), predicted `alsa_input.<card>.<mapping>` from `input:` profile parts, same
+  identity matching. A source-only switch must keep the card's current outputs.
+- Joint jobs (`resolve::plan_joint`): one snapshot for both halves; the sink is chosen as
+  on its own. If the sink's card switch is on the source's card, one profile providing
+  both mappings replaces the sink's profile (the card switches once); if none exists the
+  sink wins and that source candidate is skipped as unreachable. A source switch on the
+  sink's card must keep the sink's output. A job never switches a card twice for its
+  two halves (cards switched for the sink are frozen for the source's fallthrough).
 - Post-switch wait: `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES`, capped at 5 s.
 - `activate.rs` runs over the `AudioBackend` and `Clock` traits so the whole flow is
   tested with fakes; put new logic there or in `resolve.rs`, not in `cli.rs`.
 
 **Config layer invariants** (`config.rs`):
 - All mutations go through `Config` methods (`add_sink`, `update_sink`, `set_default_sink`,
-  `remove_sink`, `move_sink`, `add_rule`, `update_rule`, `remove_rule`, `move_rule`). They
-  run on a clone, validate, then commit; renames and moves keep rules pointing at the same
-  sink; a sink still referenced by rules (as first choice or fallback) cannot be removed.
-  The TUI uses only these.
+  `remove_sink`, `move_sink`, the same five for sources (`add_source`, ...), `add_rule`,
+  `update_rule`, `remove_rule`, `move_rule`). They run on a clone, validate, then commit;
+  renames and moves keep rules pointing at the same sink/source; one still referenced by
+  rules (as first choice or fallback) cannot be removed. Sink and source variants share
+  the generic `*_endpoint(Endpoint, ..)` implementations. The TUI uses only these.
+- `[[sources]]` is optional; when present exactly one is `default`. A rule's
+  `Rule::source_refs` (ordered, empty = no source) may only be non-empty when sources
+  exist; refs resolve, cascade and round-trip exactly like sink refs (`source` key kept
+  as written when unchanged). `update_rule` replaces `source_refs` too: a caller that
+  does not edit sources must pass the old ones along (the TUI does not yet; see
+  limitations).
 - A rule's targets are `Rule::sink_ref` (first choice) plus `Rule::fallback_refs`
   (`Rule::sink_refs()` yields both, in order); cascades cover every entry. `add_rule` /
   `update_rule` store all of them as `desc`s and drop a fallback equal to the first
@@ -269,5 +298,7 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked
 - Default-sink changes made outside pwsw are not tracked; pwsw re-reads the real default
   only for manual operations (`set-sink`, `next-sink`, `prev-sink`).
 - The daemon needs at least one configured sink to start.
+- The TUI does not show or edit `[[sources]]` or rule `source` yet; its rule editor
+  builds rules with empty `source_refs`, so editing a rule there drops its `source`.
 - The code was written by LLMs and overhauled through an orchestrated multi-agent review;
   no human Rust expert has reviewed it. Validate changes thoroughly.

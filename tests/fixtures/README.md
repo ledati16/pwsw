@@ -25,4 +25,7 @@ Clients, modules, factories, ports, links and application streams were removed e
 Hand-written. Covers what the real dump lacks: a USB headset whose duplex profile is
 `output:analog-stereo+input:mono-fallback` (currently on its input-only profile), a PCI
 card where several profiles provide the same output with different inputs and
-availabilities, a UCM (`HiFi`) card, and a Bluetooth card.
+availabilities, a UCM (`HiFi`) card, and a Bluetooth card. For source parsing it also has
+a sink monitor (`Audio/Source` named `*.monitor`) and an `Audio/Source/Virtual` node, both
+of which must not be read as microphones, and `default.configured.audio.source` /
+`default.audio.source` metadata.

@@ -8,7 +8,8 @@ use serde_json::{Map, Value};
 use tracing::trace;
 
 use super::GraphInfo;
-use super::model::{Availability, Defaults, Device, Profile, SinkNode, Snapshot};
+use super::model::{Availability, Device, Node, Profile, Snapshot};
+use crate::config::Endpoint;
 
 const TYPE_DEVICE: &str = "PipeWire:Interface:Device";
 const TYPE_NODE: &str = "PipeWire:Interface:Node";
@@ -18,6 +19,11 @@ const TYPE_CLIENT: &str = "PipeWire:Interface:Client";
 
 const KEY_CONFIGURED_SINK: &str = "default.configured.audio.sink";
 const KEY_EFFECTIVE_SINK: &str = "default.audio.sink";
+const KEY_CONFIGURED_SOURCE: &str = "default.configured.audio.source";
+const KEY_EFFECTIVE_SOURCE: &str = "default.audio.source";
+
+/// Node-name suffix of monitor sources (a sink's output offered as an input)
+const MONITOR_SUFFIX: &str = ".monitor";
 
 /// Parse raw `pw-dump` output.
 ///
@@ -79,12 +85,12 @@ pub(crate) fn snapshot_from_objects(objects: &[Value]) -> Snapshot {
                     snapshot.devices.push(device);
                 }
             }
-            TYPE_NODE => {
-                if let Some(sink) = parse_sink_node(obj) {
-                    snapshot.sinks.push(sink);
-                }
-            }
-            TYPE_METADATA => parse_default_metadata(obj, &mut snapshot.defaults),
+            TYPE_NODE => match parse_node(obj) {
+                Some((Endpoint::Sink, node)) => snapshot.sinks.push(node),
+                Some((Endpoint::Source, node)) => snapshot.sources.push(node),
+                None => {}
+            },
+            TYPE_METADATA => parse_default_metadata(obj, &mut snapshot),
             _ => {}
         }
     }
@@ -163,80 +169,99 @@ fn parse_profile(value: &Value) -> Option<Profile> {
         _ => Availability::Unknown,
     };
     let priority = value.get("priority").and_then(Value::as_i64).unwrap_or(0);
-    let (sink_card_devices, has_source_class) = parse_profile_classes(value.get("classes"));
-    let has_input = has_source_class || name.split('+').any(|p| p.starts_with("input:"));
+    let classes = parse_profile_classes(value.get("classes"));
+    let has_input = classes.has_source || name.split('+').any(|p| p.starts_with("input:"));
     Some(Profile {
         index,
         name,
         description,
         available,
         priority,
-        sink_card_devices,
+        sink_card_devices: classes.sink_devices,
+        source_card_devices: classes.source_devices,
         has_input,
     })
 }
 
+/// What a profile's `classes` say
+#[derive(Debug, Default)]
+struct ProfileClasses {
+    /// `card.profile.devices` of the `Audio/Sink` entries
+    sink_devices: Vec<u32>,
+    /// `card.profile.devices` of the `Audio/Source` entries
+    source_devices: Vec<u32>,
+    /// Whether an `Audio/Source` entry exists
+    has_source: bool,
+}
+
 /// Parse `EnumProfile.classes`:
 /// `[count, ["Audio/Sink", n, "card.profile.devices", [ids…]], ["Audio/Source", …]]`.
-///
-/// Returns the `card.profile.devices` of the `Audio/Sink` entries and whether an
-/// `Audio/Source` entry exists.
-fn parse_profile_classes(classes: Option<&Value>) -> (Vec<u32>, bool) {
-    let mut sink_devices = Vec::new();
-    let mut has_source = false;
+fn parse_profile_classes(classes: Option<&Value>) -> ProfileClasses {
+    let mut out = ProfileClasses::default();
     let Some(entries) = classes.and_then(Value::as_array) else {
-        return (sink_devices, has_source);
+        return out;
     };
     for entry in entries.iter().filter_map(Value::as_array) {
         let Some(class) = entry.first().and_then(Value::as_str) else {
             continue;
         };
+        // Key/value pairs follow the class name and its node count.
+        let devices = || {
+            entry
+                .get(2..)
+                .unwrap_or_default()
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .find(|[key, _]| key.as_str() == Some("card.profile.devices"))
+                .and_then(|[_, value]| value.as_array())
+                .map_or_default(|ids| ids.iter().filter_map(as_u32).collect::<Vec<_>>())
+        };
         match class {
-            "Audio/Source" => has_source = true,
-            "Audio/Sink" => {
-                // Key/value pairs follow the class name and its node count.
-                let devices = entry
-                    .get(2..)
-                    .unwrap_or_default()
-                    .as_chunks::<2>()
-                    .0
-                    .iter()
-                    .find(|[key, _]| key.as_str() == Some("card.profile.devices"))
-                    .and_then(|[_, value]| value.as_array())
-                    .map_or_default(|ids| ids.iter().filter_map(as_u32).collect::<Vec<_>>());
-                sink_devices.extend(devices);
+            "Audio/Source" => {
+                out.has_source = true;
+                out.source_devices.extend(devices());
             }
+            "Audio/Sink" => out.sink_devices.extend(devices()),
             _ => {}
         }
     }
-    (sink_devices, has_source)
+    out
 }
 
-fn parse_sink_node(obj: &Value) -> Option<SinkNode> {
+/// An `Audio/Sink` node, or an `Audio/Source` node that is not a monitor
+fn parse_node(obj: &Value) -> Option<(Endpoint, Node)> {
     let id = object_id(obj)?;
     let props = props(obj)?;
-    if prop_str(props, "media.class") != Some("Audio/Sink") {
-        return None;
-    }
+    let kind = match prop_str(props, "media.class") {
+        Some("Audio/Sink") => Endpoint::Sink,
+        // Exactly `Audio/Source`: not `Audio/Source/Virtual` and similar
+        Some("Audio/Source") => Endpoint::Source,
+        _ => return None,
+    };
     let Some(name) = prop_str(props, "node.name") else {
-        trace!("Skipping Audio/Sink node {id} without node.name");
+        trace!("Skipping {} node {id} without node.name", kind.noun());
         return None;
     };
+    if kind == Endpoint::Source && name.ends_with(MONITOR_SUFFIX) {
+        trace!("Skipping monitor source {id}");
+        return None;
+    }
     let description = prop_str(props, "node.description")
         .or_else(|| prop_str(props, "node.nick"))
         .unwrap_or(name)
         .to_string();
-    Some(SinkNode {
+    Some((kind, Node {
         id,
         name: name.to_string(),
         description,
         device_id: prop_u32(props, "device.id"),
         profile_name: prop_str(props, "device.profile.name").map(String::from),
         card_profile_device: prop_u32(props, "card.profile.device"),
-    })
+    }))
 }
 
-fn parse_default_metadata(obj: &Value, defaults: &mut Defaults) {
+fn parse_default_metadata(obj: &Value, snapshot: &mut Snapshot) {
     let Some(props) = props(obj) else { return };
     if prop_str(props, "metadata.name") != Some("default") {
         return;
@@ -250,8 +275,10 @@ fn parse_default_metadata(obj: &Value, defaults: &mut Defaults) {
             continue;
         }
         let slot = match entry.get("key").and_then(Value::as_str) {
-            Some(KEY_CONFIGURED_SINK) => &mut defaults.configured,
-            Some(KEY_EFFECTIVE_SINK) => &mut defaults.effective,
+            Some(KEY_CONFIGURED_SINK) => &mut snapshot.defaults.configured,
+            Some(KEY_EFFECTIVE_SINK) => &mut snapshot.defaults.effective,
+            Some(KEY_CONFIGURED_SOURCE) => &mut snapshot.source_defaults.configured,
+            Some(KEY_EFFECTIVE_SOURCE) => &mut snapshot.source_defaults.effective,
             _ => continue,
         };
         *slot = entry.get("value").and_then(metadata_name);
@@ -377,6 +404,51 @@ mod tests {
         assert_eq!(snap.sinks.len(), 1);
         assert_eq!(snap.sinks[0].description, "Nick");
         assert_eq!(snap.sinks[0].device_id, Some(7));
+    }
+
+    const SYNTH: &str = include_str!("../../tests/fixtures/pwdump-synthetic.json");
+
+    #[test]
+    fn test_parse_real_fixture_sources() {
+        // The onboard card sits on an output-only profile: no input node exists, but
+        // the configured default source still names its analog input
+        let snap = parse_dump(REAL_FIXTURE.as_bytes()).expect("fixture parses");
+        assert_eq!(snap.sources, Vec::new());
+        assert_eq!(
+            snap.source_defaults.configured.as_deref(),
+            Some("alsa_input.pci-0000_0c_00.4.analog-stereo")
+        );
+        assert_eq!(
+            snap.current_default_of(Endpoint::Source),
+            Some("alsa_input.pci-0000_0c_00.4.analog-stereo")
+        );
+        let duplex = &snap.device(43).expect("device 43").profiles[1];
+        assert_eq!(duplex.source_card_devices, vec![0]);
+        assert_eq!(duplex.mappings(Endpoint::Source), ["analog-stereo"]);
+        assert!(duplex.provides(Endpoint::Sink, "analog-stereo"));
+    }
+
+    #[test]
+    fn test_parse_sources_excludes_monitors_and_virtual() {
+        let snap = parse_dump(SYNTH.as_bytes()).expect("fixture parses");
+        let names: Vec<&str> = snap.sources.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, [
+            "alsa_input.usb-Example_USB_Headset-00.mono-fallback",
+            "alsa_input.pci-0000_00_1f.3.analog-stereo",
+        ]);
+        let headset = &snap.sources[0];
+        assert_eq!(headset.device_id, Some(60));
+        assert_eq!(headset.profile_name.as_deref(), Some("mono-fallback"));
+        assert_eq!(
+            snap.current_default_of(Endpoint::Source),
+            Some("alsa_input.pci-0000_00_1f.3.analog-stereo")
+        );
+        // Sinks are unaffected by the source nodes
+        assert!(
+            snap.sinks
+                .iter()
+                .all(|n| n.name.starts_with("alsa_output."))
+        );
     }
 
     #[test]

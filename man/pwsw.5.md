@@ -4,7 +4,7 @@
 pwsw.toml - PWSW configuration file format
 
 ## DESCRIPTION
-PWSW uses a TOML configuration file, by default *$XDG_CONFIG_HOME/pwsw/config.toml* (normally *~/.config/pwsw/config.toml*). **pwsw --config** *PATH* or the **PWSW_CONFIG** environment variable select a different file. The file defines global settings, audio sinks, and window matching rules.
+PWSW uses a TOML configuration file, by default *$XDG_CONFIG_HOME/pwsw/config.toml* (normally *~/.config/pwsw/config.toml*). **pwsw --config** *PATH* or the **PWSW_CONFIG** environment variable select a different file. The file defines global settings, audio sinks, optionally audio sources (microphones), and window matching rules.
 
 Create it with **pwsw init** (a commented template) or **pwsw tui**; no other command creates it. Check it with **pwsw validate**. Unknown keys are an error: a typo such as `defualt = true` is reported with the key name, its line, and the file path.
 
@@ -17,7 +17,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 :   Whether to switch when the daemon starts to the sink the rules want (the default sink if no open window matches). If false, the current sink stays until the rules want a different sink (e.g. a matching window opens; windows already open when the daemon starts count as opening).
 
 **set_smart_toggle** (boolean, default: true)
-:   If true, calling `set-sink` on a sink that is already the PipeWire default will toggle back to the default sink.
+:   If true, calling `set-sink` on a sink that is already the PipeWire default will toggle back to the default sink (`set-source` likewise for sources).
 
     *Example:* If "Headphones" are active, `pwsw set-sink "Headphones"` switches back to the default sink (e.g., "Speakers").
 
@@ -36,7 +36,7 @@ The **[settings]** section controls global daemon behavior. The section and ever
 :   Verbosity of the daemon log. One of `error`, `warn`, `info`, `debug`, `trace`. Applied on reload without a restart; the **RUST_LOG** environment variable overrides it.
 
 **switch_delay_ms** (integer, default: 0)
-:   Settle delay for rule-driven switches, in milliseconds (0 to 5000). With 0 the daemon switches as soon as the sink its rules want changes. With a positive value it waits this long and switches only if the rules still want the same sink then: another change restarts the wait, and a change back to the current sink cancels the switch. Use it when a window matches only for a moment, such as a splash screen or a launcher, or when an application's title flickers between values that match different rules. Manual switches, retries of failed switches, the start-up switch (*default_on_startup*) and **pwsw resume** are never delayed.
+:   Settle delay for rule-driven switches, in milliseconds (0 to 5000). With 0 the daemon switches as soon as the sink its rules want changes. With a positive value it waits this long and switches only if the rules still want the same sink then (sources wait the same way, each dimension on its own: a sink change never delays or cancels a source switch, and vice versa): another change restarts the wait, and a change back to the current sink cancels the switch. Use it when a window matches only for a moment, such as a splash screen or a launcher, or when an application's title flickers between values that match different rules. Manual switches, retries of failed switches, the start-up switch (*default_on_startup*) and **pwsw resume** are never delayed.
 
 ## SINKS
 The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty list is a valid file (so **pwsw tui** can start from it), but the daemon refuses to start without sinks. When sinks are configured, exactly one must have `default = true`.
@@ -52,6 +52,13 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty li
 
 **icon** (string, optional)
 :   The icon name to use in notifications. Without it, the icon is chosen from the description and node name: `video-display` for HDMI/TV/display, `audio-headphones` for headphones, headsets and Bluetooth, otherwise `audio-speakers`.
+
+## SOURCES
+The optional **[[sources]]** list defines the audio inputs (microphones) PWSW may switch, with the same keys as **[[sinks]]**: **name** (the `Audio/Source` node name, e.g. `alsa_input.pci-0000_00_1f.3.analog-stereo` or `bluez_input.*`, as shown in the *INPUT DEVICES / SOURCES* section of **pwsw list-sinks**; monitors of sinks are not sources), **desc**, **default** and **icon** (default icon: `audio-input-microphone`). The same uniqueness rules apply within the list (a source may share a description with a sink). When sources are configured, exactly one must have `default = true`: it is used when no open window's rule asks for a source.
+
+Without any **[[sources]]** (the default), pwsw never touches the default source; existing configurations keep working unchanged. The default is written to `default.configured.audio.source`, like **wpctl set-default** does.
+
+A source that is not present yet can be reached by switching its ALSA card's profile (predicted name `alsa_input.<card>.<input>`, recognised afterwards by device and profile like sinks). Such a switch always keeps the card's current output: pwsw never takes the audio output away to get a microphone. Renaming, reordering and deleting sources in the configuration keeps rule references pointing at the same source, and a source a rule uses cannot be deleted.
 
 ## RULES
 The **[[rules]]** list defines window-to-sink mappings. Rules require at least one sink. Each window is matched by the first rule in the list that matches it.
@@ -69,6 +76,9 @@ The **[[rules]]** list defines window-to-sink mappings. Rules require at least o
 
     When the daemon had to settle for a fallback, it checks again on the next window event or configuration reload (at most every 2 seconds) and switches up if an earlier sink of the list can be activated by then; it does not poll in between. A manual switch is never undone by this check. Status output, notifications and logs name the sink actually used and mark it *(fallback)*.
 
+**source** (string, integer, or array of them, optional)
+:   The microphone this rule wants, referenced like **sink** (by `desc`, `name`, or a deprecated position) against **[[sources]]**; an array lists fallback sources in priority order, with the same rules as fallback sinks. Allowed only when sources are configured. A rule without **source** never affects the microphone: see **PRIORITY**.
+
 **desc** (string, optional)
 :   A custom label for this rule used in notifications.
 
@@ -83,6 +93,10 @@ The daemon tracks every open window and which rule it matches. The sink it wants
 *   When no window matches any rule: the default sink.
 
 The answer is the winning rule's list of sinks (see **sink** above); which of them is used is decided when switching. The daemon switches only when this answer *changes*. A sink selected elsewhere (e.g. with **pavucontrol**) or with **pwsw set-sink** stays until then.
+
+The source is an independent second answer: the same priority applies, but only among windows whose rule has a **source**; when none matches, the default source. So with Discord (sink *Headset*, source *Headset Mic*) open and then Firefox (sink *Speakers*, no source), the output follows Firefox and the microphone stays with Discord. Retries, fallbacks and upgrades, manual choices (**pwsw set-source**), pausing and the settle delay work for the source exactly as for the sink, each on its own.
+
+When one switch needs both a sink and a source on the same ALSA card, the card's profile is switched once, to an available profile that provides the sink's output *and* the source's input (e.g. `output:analog-stereo+input:analog-stereo`). If no such profile exists, the sink wins: its profile is used and that source is reported as unreachable (a fallback source on another card is still used). Sinks and sources on different cards are switched independently.
 
 ## HOT RELOAD
 The running daemon applies changes automatically shortly after the file is saved, and on **SIGHUP**. If the file is a symlink (e.g. managed by **stow** or **chezmoi**), changes to its target are seen too, also after the symlink is pointed elsewhere. A file that fails validation, or that has no sinks, is rejected and the previous configuration stays in effect (the error is logged and, with *notify_manual*, shown as a notification). Restarting the daemon is never needed for configuration changes.
@@ -128,9 +142,19 @@ desc = "Headset"
 name = "bluez_output.40_ED_98_1C_1D_08.1"
 desc = "BT Headphones"
 
+[[sources]]
+name = "alsa_input.usb-Logitech_G_Pro-00.mono-fallback"
+desc = "Headset Mic"
+
+[[sources]]
+name = "alsa_input.pci-0000_00_1f.3.analog-stereo"
+desc = "Desk Mic"
+default = true          # when no rule asks for a source
+
 [[rules]]
 app_id = "discord"
 sink = ["BT Headphones", "Headset"]  # Bluetooth when connected, else the headset
+source = "Headset Mic"
 
 [[rules]]
 app_id = "firefox"

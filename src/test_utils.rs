@@ -71,6 +71,7 @@ pub(crate) mod fixtures {
                 .map(|t| compile_rule_regex(t).expect("Invalid title regex in test fixture")),
             sink_ref: sink_ref.to_string(),
             fallback_refs: Vec::new(),
+            source_refs: Vec::new(),
             desc: None,
             notify: None,
             app_id_pattern: app_id.to_string(),
@@ -87,6 +88,13 @@ pub(crate) mod fixtures {
         let (first, rest) = sinks.split_first().expect("at least one sink");
         let mut rule = make_rule(app_id, title, first);
         rule.fallback_refs = rest.iter().map(|s| (*s).to_string()).collect();
+        rule
+    }
+
+    /// `rule` with these source references (first choice, then fallbacks)
+    #[must_use]
+    pub fn with_sources(mut rule: Rule, sources: &[&str]) -> Rule {
+        rule.source_refs = sources.iter().map(|s| (*s).to_string()).collect();
         rule
     }
 }

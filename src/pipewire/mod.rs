@@ -1,12 +1,14 @@
 //! `PipeWire` integration
 //!
-//! Provides audio sink discovery and control via `PipeWire` native tools:
+//! Provides audio sink and source discovery and control via `PipeWire` native tools:
 //! - `pw-dump`: JSON snapshot of devices, nodes and metadata
 //! - `pw-metadata`: setting the configured default sink (`default.configured.audio.sink`)
+//!   and source (`default.configured.audio.source`)
 //! - `pw-cli`: profile switching for ALSA cards (saved, so `WirePlumber` keeps it)
 //!
-//! Supports both ALSA and Bluetooth audio sinks. ALSA cards support profile
-//! switching (e.g., analog ↔ digital); Bluetooth sinks are listed while connected.
+//! Supports both ALSA and Bluetooth audio sinks and sources. ALSA cards support
+//! profile switching (e.g., analog ↔ digital); Bluetooth nodes are listed while
+//! connected. A job that wants a sink and a source on the same card switches it once.
 //!
 //! Layout:
 //! - `model`: typed [`Snapshot`] of the graph
@@ -30,15 +32,17 @@ mod model;
 mod parse;
 mod resolve;
 
-use activate::{SystemClock, WaitPolicy};
+use activate::{Request, SystemClock, WaitPolicy};
 use cli::CliBackend;
 pub use model::Snapshot;
+
+use crate::config::Endpoint;
 
 // ============================================================================
 // Sink Discovery Types
 // ============================================================================
 
-/// A sink currently available in `PipeWire`
+/// A sink (or source) currently available in `PipeWire`
 #[derive(Debug, Clone)]
 pub struct ActiveSink {
     pub name: String,
@@ -46,7 +50,7 @@ pub struct ActiveSink {
     pub is_default: bool,
 }
 
-/// A sink that requires profile switching to become available
+/// A sink (or source) that requires profile switching to become available
 #[derive(Debug)]
 pub struct ProfileSink {
     /// Predicted node name (based on device name + profile)
@@ -97,6 +101,14 @@ pub struct ListSinksJson {
     pub profile_sinks: Vec<ProfileSinkJson>,
     pub configured_sinks: Vec<ConfiguredSinkJson>,
     pub current_default: Option<String>,
+    /// Input devices (`Audio/Source` nodes, monitors excluded), same shape as sinks
+    pub active_sources: Vec<ActiveSinkJson>,
+    /// Sources reachable by a profile switch that keeps the card's output
+    pub profile_sources: Vec<ProfileSinkJson>,
+    /// `[[sources]]` from the config
+    pub configured_sources: Vec<ConfiguredSinkJson>,
+    /// The default source as the user sees it
+    pub current_default_source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,7 +146,11 @@ pub struct ConfiguredSinkJson {
 /// `PipeWire` interface for audio control
 pub struct PipeWire;
 
-/// Serialises all sink activations in this process, so each one takes its snapshot
+/// What one activation half did: the index of the candidate made default and its
+/// node name, `None` when an upgrade check found nothing better
+pub type Activated = Option<(usize, String)>;
+
+/// Serialises all sink and source activations in this process, so each one takes its snapshot
 /// and makes its decision with no other switch in flight. Guards no data, so a
 /// poisoned lock (a panicking activation) is simply taken over.
 static ACTIVATION_LOCK: Mutex<()> = Mutex::new(());
@@ -199,9 +215,15 @@ impl PipeWire {
     /// Get currently active audio sinks from a snapshot
     #[must_use]
     pub fn get_active_sinks(snapshot: &Snapshot) -> Vec<ActiveSink> {
-        let default_name = snapshot.current_default();
+        Self::get_active(snapshot, Endpoint::Sink)
+    }
+
+    /// Get currently active sinks or sources (monitors excluded) from a snapshot
+    #[must_use]
+    pub fn get_active(snapshot: &Snapshot, kind: Endpoint) -> Vec<ActiveSink> {
+        let default_name = snapshot.current_default_of(kind);
         snapshot
-            .sinks
+            .nodes(kind)
             .iter()
             .map(|node| ActiveSink {
                 name: node.name.clone(),
@@ -223,6 +245,18 @@ impl PipeWire {
         resolve::list_profile_sinks(snapshot, &active_names)
     }
 
+    /// Get sources (microphones) available through profile switching: one entry per
+    /// input of an ALSA card that has no source node yet, with the profile activation
+    /// would switch to (keeping the card's current output)
+    #[must_use]
+    pub fn get_profile_sources(
+        snapshot: &Snapshot,
+        active_sources: &[ActiveSink],
+    ) -> Vec<ProfileSink> {
+        let active_names: HashSet<&str> = active_sources.iter().map(|s| s.name.as_str()).collect();
+        resolve::list_profile_nodes(snapshot, Endpoint::Source, &active_names)
+    }
+
     /// Get the current default sink name (fresh query)
     ///
     /// Prefers `default.configured.audio.sink` when that sink exists, falling back
@@ -238,6 +272,23 @@ impl PipeWire {
             .ok_or_else(|| eyre::eyre!("No default sink found in PipeWire metadata"))
     }
 
+    /// The current default sink and source as the user sees them (one `pw-dump`;
+    /// see [`Snapshot::current_default`])
+    ///
+    /// # Errors
+    /// Returns an error if `pw-dump` fails.
+    pub fn get_defaults() -> Result<(Option<String>, Option<String>)> {
+        let snapshot = Self::dump()?;
+        Ok((
+            snapshot
+                .current_default_of(Endpoint::Sink)
+                .map(String::from),
+            snapshot
+                .current_default_of(Endpoint::Source)
+                .map(String::from),
+        ))
+    }
+
     /// Check whether a configured sink could be made the default right now
     ///
     /// Decided by the same resolver activation uses: the node exists, or an available
@@ -247,7 +298,7 @@ impl PipeWire {
     /// Returns why the sink cannot be activated (not found, or every profile
     /// providing it is marked unavailable).
     pub fn check_reachable(snapshot: &Snapshot, sink_name: &str) -> Result<()> {
-        resolve::resolve(snapshot, sink_name).map(|_| ())
+        Self::check_reachable_endpoint(snapshot, Endpoint::Sink, sink_name)
     }
 
     /// Like [`Self::check_reachable`], saying how the sink would be activated
@@ -255,76 +306,121 @@ impl PipeWire {
     /// # Errors
     /// Returns why the sink cannot be activated (see [`Self::check_reachable`]).
     pub fn reachability(snapshot: &Snapshot, sink_name: &str) -> Result<Reachability> {
-        Ok(match resolve::resolve(snapshot, sink_name)? {
-            resolve::Plan::SetDefault { node_name } => Reachability::Present { node_name },
-            resolve::Plan::SwitchProfile(switch) => Reachability::ProfileSwitch {
-                device_name: switch.device_name,
-                profile_name: switch.profile_name,
+        Ok(
+            match resolve::resolve_endpoint(snapshot, Endpoint::Sink, sink_name)? {
+                resolve::Plan::SetDefault { node_name } => Reachability::Present { node_name },
+                resolve::Plan::SwitchProfile(switch) => Reachability::ProfileSwitch {
+                    device_name: switch.device_name,
+                    profile_name: switch.profile_name,
+                },
             },
-        })
+        )
     }
 
-    /// Activate a sink by its configured node name, switching profiles if necessary
+    /// Check whether a configured sink or source could be made the default right now
+    /// (see [`Self::check_reachable`])
+    ///
+    /// # Errors
+    /// Returns why the node cannot be activated.
+    pub fn check_reachable_endpoint(snapshot: &Snapshot, kind: Endpoint, name: &str) -> Result<()> {
+        resolve::resolve_endpoint(snapshot, kind, name).map(|_| ())
+    }
+
+    /// Activate a sink by its configured node name (see [`PipeWire::activate`])
+    ///
+    /// # Errors
+    /// As [`PipeWire::activate`].
+    pub fn activate_sink(sink_name: &str) -> Result<String> {
+        Self::activate(Endpoint::Sink, sink_name)
+    }
+
+    /// Activate a sink or source by its configured node name, switching profiles if
+    /// necessary
     ///
     /// Activations are serialised process-wide; the snapshot and the decision are
     /// taken while holding the lock. After a profile switch, waits (bounded by
     /// `PROFILE_SWITCH_DELAY_MS` × `PROFILE_SWITCH_MAX_RETRIES`, at most 5 s) for the
-    /// new sink node, then sets it as the configured default.
+    /// new node, then sets it as the configured default.
     ///
-    /// Returns the node name that was made the default (it can differ from
-    /// `sink_name` when the sink was resolved by device identity).
+    /// Returns the node name that was made the default (it can differ from `name`
+    /// when the node was resolved by device identity).
     ///
     /// # Errors
-    /// Returns an error if the sink is not found, a `PipeWire` tool fails or times
-    /// out, or the sink node does not appear after the profile switch.
-    pub fn activate_sink(sink_name: &str) -> Result<String> {
-        let chosen = Self::activate_first_sink(&[sink_name.to_string()], None)?;
-        chosen
+    /// Returns an error if the node is not found, a `PipeWire` tool fails or times
+    /// out, or the node does not appear after the profile switch.
+    pub fn activate(kind: Endpoint, name: &str) -> Result<String> {
+        let candidates = [name.to_string()];
+        let request = Some((&candidates[..], None));
+        let (sink, source) = match kind {
+            Endpoint::Sink => Self::activate_joint(request, None),
+            Endpoint::Source => Self::activate_joint(None, request),
+        };
+        sink.or(source)
+            .unwrap_or_else(|| Err(eyre::eyre!("Internal error: no result")))?
             .map(|(_, node_name)| node_name)
-            .ok_or_else(|| eyre::eyre!("Internal error: no sink activated"))
+            .ok_or_else(|| eyre::eyre!("Internal error: nothing activated"))
     }
 
-    /// Activate the first reachable of `candidates` (configured node names, in
-    /// priority order), falling through to the next reachable one if an activation
-    /// fails
+    /// Activate a job: the first reachable of the sink candidates and the first
+    /// reachable of the source candidates (configured node names in priority order;
+    /// `None` leaves that half alone), resolved together against one snapshot
     ///
-    /// All candidates are resolved against one snapshot taken under the activation
-    /// lock. With `upgrade_from: Some(k)` (candidate `k` is the current default),
-    /// nothing is done unless a candidate before `k` is reachable now.
+    /// Each half falls through to its next reachable candidate if an activation
+    /// fails. When both halves need the same card, the card is switched once, to a
+    /// profile providing both; if none does, the sink wins and the source half
+    /// reports the source as unreachable. With `upgrade_from: Some(k)` (candidate `k`
+    /// is that half's current default), the half does nothing unless an earlier
+    /// candidate is reachable now.
     ///
-    /// Returns the index of the activated candidate and the node name made the
-    /// default, or `None` if an upgrade check found nothing better.
-    ///
-    /// # Errors
-    /// Returns an error if no candidate could be activated (see
-    /// [`PipeWire::activate_sink`] for the causes).
-    pub fn activate_first_sink(
-        candidates: &[String],
-        upgrade_from: Option<usize>,
-    ) -> Result<Option<(usize, String)>> {
+    /// Returns each half's result: the index of the activated candidate and the node
+    /// made default, `Ok(None)` when an upgrade check found nothing better, or why no
+    /// candidate could be activated (see [`PipeWire::activate`] for the causes).
+    #[must_use]
+    pub fn activate_joint(
+        sink: Option<(&[String], Option<usize>)>,
+        source: Option<(&[String], Option<usize>)>,
+    ) -> (Option<Result<Activated>>, Option<Result<Activated>>) {
+        fn request((candidates, upgrade_from): (&[String], Option<usize>)) -> Request<'_> {
+            Request {
+                candidates,
+                upgrade_from,
+            }
+        }
         let _guard = ACTIVATION_LOCK
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let Some(chosen) = activate::activate_first(
+        let outcome = activate::activate_joint(
             &CliBackend,
             &SystemClock,
             WaitPolicy::from_env(),
-            candidates,
-            upgrade_from,
-        )?
-        else {
-            return Ok(None);
+            sink.map(request),
+            source.map(request),
+        );
+        let report = |kind: Endpoint, result: Option<Result<Option<activate::Chosen>>>| {
+            result.map(|r| {
+                r.map(|chosen| {
+                    chosen.map(|chosen| {
+                        let activation = chosen.activation;
+                        if let Some(switch) = &activation.profile_switch {
+                            info!(
+                                "Switched {} to profile {} and set default {} {}",
+                                switch.device_name,
+                                switch.profile_name,
+                                kind.noun(),
+                                activation.node_name
+                            );
+                        } else {
+                            debug!("Set default {} {}", kind.noun(), activation.node_name);
+                        }
+                        (chosen.index, activation.node_name)
+                    })
+                })
+            })
         };
-        let activation = chosen.activation;
-        if let Some(switch) = &activation.profile_switch {
-            info!(
-                "Switched {} to profile {} and set default sink {}",
-                switch.device_name, switch.profile_name, activation.node_name
-            );
-        } else {
-            debug!("Set default sink {}", activation.node_name);
-        }
-        Ok(Some((chosen.index, activation.node_name)))
+        (
+            report(Endpoint::Sink, outcome.sink),
+            report(Endpoint::Source, outcome.source),
+        )
     }
 }
 

@@ -97,7 +97,7 @@ pub enum Command {
     /// Stop the daemon gracefully
     Shutdown,
 
-    /// List available `PipeWire` audio outputs (no daemon needed)
+    /// List available `PipeWire` audio outputs, then input devices (no daemon needed)
     ListSinks {
         /// Output in `JSON` format
         #[arg(long)]
@@ -138,6 +138,17 @@ pub enum Command {
     SetSink {
         /// Sink reference (description or node name; a position still works but is deprecated)
         sink: String,
+    },
+
+    /// Set the default microphone to a configured source (by desc or node name)
+    ///
+    /// Needs `[[sources]]` in the config. With `set_smart_toggle`, asking for the
+    /// source that is already active switches back to the default source. Goes through
+    /// the daemon when it runs (the choice holds until the rules want another source).
+    SetSource {
+        /// Source reference (description or node name; a position still works but is
+        /// deprecated)
+        source: String,
     },
 
     /// Cycle to the next configured sink (wraps around)

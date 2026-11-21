@@ -37,7 +37,7 @@ const CLIENT_CONNECT_TIMEOUT_SECS: u64 = 5;
 /// Bump it whenever a message is added or changed incompatibly. The daemon reports it
 /// in [`Response::Status`]; daemons from before versioning report nothing, which
 /// reads as `0`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// How to get a daemon that speaks the current protocol, appended to `IPC` errors
 pub const RESTART_HINT: &str = "if pwsw was upgraded, restart the daemon: \
@@ -64,6 +64,10 @@ pub enum Request {
     NextSink,
     /// Manually switch to the previous configured sink (wrapping)
     PrevSink,
+    /// Manually switch the default source (microphone) to a configured source (by
+    /// description, node name or position); honours `set_smart_toggle` like
+    /// [`Request::SetSink`]. Answered with [`Response::SinkSwitched`] (protocol 2).
+    SetSource { source: String },
     /// Get daemon manager information (systemd vs direct)
     GetManagerInfo,
     /// Gracefully shutdown the daemon
@@ -103,6 +107,17 @@ pub enum Response {
         /// Rule-driven switching is paused (`false` from daemons without pause support)
         #[serde(default)]
         paused: bool,
+        /// The source (microphone) the daemon last applied (or found at startup), by
+        /// configured description; `None` while unknown or when no sources are
+        /// configured (and from daemons without source support)
+        #[serde(default)]
+        current_source: Option<String>,
+        /// `current_source` is a fallback a rule-driven switch settled for
+        #[serde(default)]
+        current_source_fallback: bool,
+        /// Whether `[[sources]]` are configured (pwsw manages the default source)
+        #[serde(default)]
+        sources_configured: bool,
     },
     /// Generic success response
     Ok { message: String },
@@ -119,9 +134,10 @@ pub enum Response {
     ManagerInfo {
         daemon_manager: crate::daemon_manager::DaemonManager,
     },
-    /// A manual switch finished: the configured sink and the node made default
+    /// A manual switch finished: the configured sink (or source, for
+    /// [`Request::SetSource`]) and the node made default
     SinkSwitched {
-        /// Configured sink description
+        /// Configured sink (source) description
         desc: String,
         /// `PipeWire` node name that was made the default
         node_name: String,
@@ -158,9 +174,13 @@ pub struct TrackedInfo {
     /// The rule's fallback sinks, in priority order (absent from older daemons)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallbacks: Vec<FallbackSink>,
+    /// The rule's sources (microphones), first choice then fallbacks; empty when the
+    /// rule has no `source` (absent from older daemons)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<FallbackSink>,
 }
 
-/// A fallback sink of a rule
+/// A configured sink (or source) a rule names: a fallback sink, or one of its sources
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FallbackSink {
     pub name: String,
@@ -1346,6 +1366,9 @@ mod tests {
             active_window: Some("firefox".to_string()),
             tracked_windows: 2,
             paused: true,
+            current_source: Some("Headset Mic".to_string()),
+            current_source_fallback: true,
+            sources_configured: true,
         };
         let json = serde_json::to_string(&response).unwrap();
         let deserialized: Response = serde_json::from_str(&json).unwrap();
@@ -1358,8 +1381,13 @@ mod tests {
             active_window,
             tracked_windows,
             paused,
+            current_source,
+            current_source_fallback,
+            sources_configured,
         } = deserialized
         {
+            assert_eq!(current_source.as_deref(), Some("Headset Mic"));
+            assert!(current_source_fallback && sources_configured);
             assert!(current_sink_fallback);
             assert!(paused);
             assert_eq!(version, "0.3.1");
@@ -1382,8 +1410,22 @@ mod tests {
             protocol: 0,
             current_sink_fallback: false,
             paused: false,
+            current_source: None,
+            current_source_fallback: false,
+            sources_configured: false,
             ..
         }));
+    }
+
+    #[test]
+    fn test_set_source_request_roundtrip() {
+        let json = serde_json::to_string(&Request::SetSource {
+            source: "Headset Mic".to_string(),
+        })
+        .unwrap();
+        assert_eq!(json, r#"{"type":"SetSource","source":"Headset Mic"}"#);
+        let back: Request = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, Request::SetSource { source } if source == "Headset Mic"));
     }
 
     #[test]
@@ -1451,6 +1493,10 @@ mod tests {
                     name: "speakers".to_string(),
                     desc: "Speakers".to_string(),
                 }],
+                sources: vec![FallbackSink {
+                    name: "mic".to_string(),
+                    desc: "Mic".to_string(),
+                }],
             }),
         };
         let response = Response::Windows {
@@ -1464,6 +1510,7 @@ mod tests {
             assert_eq!(windows[0].title, "Mozilla Firefox");
             let tracked = windows[0].tracked.as_ref().expect("tracked");
             assert_eq!(tracked.fallbacks[0].desc, "Speakers");
+            assert_eq!(tracked.sources[0].desc, "Mic");
         } else {
             panic!("Expected Windows variant");
         }

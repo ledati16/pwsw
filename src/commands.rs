@@ -10,10 +10,10 @@ use std::fmt::Write;
 use color_eyre::eyre::{self, Result};
 use tracing::{info, warn};
 
-use crate::config::Config;
+use crate::config::{Config, Endpoint};
 use crate::ipc::{self, Request, Response};
 use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
-use crate::notification::{get_sink_icon, send_notification};
+use crate::notification::{get_sink_icon, get_source_icon, send_notification};
 use crate::pipewire::{
     ActiveSink, ActiveSinkJson, ConfiguredSinkJson, ListSinksJson, PipeWire, ProfileSink,
     ProfileSinkJson,
@@ -39,140 +39,200 @@ fn get_sink_status(
     }
 }
 
-/// List all available sinks (active and profile-switch)
-///
-/// # Errors
-/// Returns an error if `PipeWire` query fails or `JSON` serialization fails.
-// Sink listing with both `JSON` and human-readable formatting - cohesive output logic
-pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
-    let objects = PipeWire::dump()?;
-    let active = PipeWire::get_active_sinks(&objects);
-    let profile = PipeWire::get_profile_sinks(&objects, &active);
+/// What `PipeWire` offers for one kind of endpoint (sinks or sources)
+struct Listing {
+    kind: Endpoint,
+    active: Vec<ActiveSink>,
+    profile: Vec<ProfileSink>,
+}
 
-    let current_default = active.iter().find(|s| s.is_default).map(|s| s.name.clone());
-
-    if json_output {
-        let configured_names: HashSet<&str> =
-            config.map_or_default(|c| c.sinks.iter().map(|s| s.name.as_str()).collect());
-
-        let output = ListSinksJson {
-            active_sinks: active
-                .iter()
-                .map(|s| ActiveSinkJson {
-                    name: s.name.clone(),
-                    description: s.description.clone(),
-                    is_default: s.is_default,
-                    configured: configured_names.contains(s.name.as_str()),
-                })
-                .collect(),
-            profile_sinks: profile
-                .iter()
-                .map(|s| ProfileSinkJson {
-                    predicted_name: s.predicted_name.clone(),
-                    description: s.description.clone(),
-                    device_name: s.device_name.clone(),
-                    profile_name: s.profile_name.clone(),
-                    profile_index: s.profile_index,
-                })
-                .collect(),
-            configured_sinks: config.map_or_default(|c| {
-                c.sinks
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| {
-                        let status = get_sink_status(&s.name, &active, &profile);
-                        ConfiguredSinkJson {
-                            index: i + 1,
-                            name: s.name.clone(),
-                            desc: s.desc.clone(),
-                            icon: s.icon.clone(),
-                            is_default_config: s.default,
-                            status: status.to_string(),
-                        }
-                    })
-                    .collect()
-            }),
-            current_default,
+impl Listing {
+    fn new(snapshot: &crate::pipewire::Snapshot, kind: Endpoint) -> Self {
+        let active = PipeWire::get_active(snapshot, kind);
+        let profile = match kind {
+            Endpoint::Sink => PipeWire::get_profile_sinks(snapshot, &active),
+            Endpoint::Source => PipeWire::get_profile_sources(snapshot, &active),
         };
+        Self {
+            kind,
+            active,
+            profile,
+        }
+    }
 
-        crate::outln!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        // Human-readable output
-        crate::outln!("{}", "ACTIVE SINKS:".header());
-        crate::outln!("{}", "-".repeat(13));
-        if active.is_empty() {
+    fn current_default(&self) -> Option<String> {
+        self.active
+            .iter()
+            .find(|s| s.is_default)
+            .map(|s| s.name.clone())
+    }
+
+    fn active_json(&self, config: Option<&Config>) -> Vec<ActiveSinkJson> {
+        let configured: HashSet<&str> = config.map_or_default(|c| {
+            c.endpoints(self.kind)
+                .iter()
+                .map(|s| s.name.as_str())
+                .collect()
+        });
+        self.active
+            .iter()
+            .map(|s| ActiveSinkJson {
+                name: s.name.clone(),
+                description: s.description.clone(),
+                is_default: s.is_default,
+                configured: configured.contains(s.name.as_str()),
+            })
+            .collect()
+    }
+
+    fn profile_json(&self) -> Vec<ProfileSinkJson> {
+        self.profile
+            .iter()
+            .map(|s| ProfileSinkJson {
+                predicted_name: s.predicted_name.clone(),
+                description: s.description.clone(),
+                device_name: s.device_name.clone(),
+                profile_name: s.profile_name.clone(),
+                profile_index: s.profile_index,
+            })
+            .collect()
+    }
+
+    fn configured_json(&self, config: Option<&Config>) -> Vec<ConfiguredSinkJson> {
+        config.map_or_default(|c| {
+            c.endpoints(self.kind)
+                .iter()
+                .enumerate()
+                .map(|(i, s)| ConfiguredSinkJson {
+                    index: i + 1,
+                    name: s.name.clone(),
+                    desc: s.desc.clone(),
+                    icon: s.icon.clone(),
+                    is_default_config: s.default,
+                    status: get_sink_status(&s.name, &self.active, &self.profile).to_string(),
+                })
+                .collect()
+        })
+    }
+
+    /// The human-readable sections: active, reachable by profile switch, configured
+    fn print(&self, config: Option<&Config>, titles: [&str; 3]) {
+        let [active_title, profile_title, configured_title] = titles;
+        let configured_marker = |name: &str| {
+            config
+                .and_then(|c| c.endpoints(self.kind).iter().find(|s| s.name == name))
+                .map_or_default(|s| {
+                    let mut m = String::with_capacity(3 + s.desc.len());
+                    m.push_str(" [");
+                    m.push_str(&s.desc);
+                    m.push(']');
+                    m
+                })
+        };
+        crate::outln!("{}", active_title.header());
+        crate::outln!("{}", "-".repeat(active_title.chars().count()));
+        if self.active.is_empty() {
             crate::outln!("  {}", "(none)".dim());
         } else {
-            for sink in &active {
-                let marker = if sink.is_default { "* " } else { "  " };
-                let configured = config
-                    .and_then(|c| c.sinks.iter().find(|s| s.name == sink.name))
-                    .map_or_default(|s| {
-                        let mut m = String::with_capacity(3 + s.desc.len());
-                        m.push_str(" [");
-                        m.push_str(&s.desc);
-                        m.push(']');
-                        m
-                    });
-                crate::outln!("{}{}{}", marker, sink.name.as_str().bold(), configured);
-                crate::outln!("    {}", sink.description.as_str().dim());
+            for node in &self.active {
+                let marker = if node.is_default { "* " } else { "  " };
+                crate::outln!(
+                    "{}{}{}",
+                    marker,
+                    node.name.as_str().bold(),
+                    configured_marker(&node.name)
+                );
+                crate::outln!("    {}", node.description.as_str().dim());
             }
             crate::outln!("\n  {} = current default", "*".dim());
         }
 
-        if !profile.is_empty() {
-            crate::outln!("\n{}", "AVAILABLE VIA PROFILE SWITCH:".header());
-            crate::outln!("{}", "-".repeat(30));
-            for sink in &profile {
-                let configured = config
-                    .and_then(|c| c.sinks.iter().find(|s| s.name == sink.predicted_name))
-                    .map_or_default(|s| {
-                        let mut m = String::with_capacity(3 + s.desc.len());
-                        m.push_str(" [");
-                        m.push_str(&s.desc);
-                        m.push(']');
-                        m
-                    });
+        if !self.profile.is_empty() {
+            crate::outln!("\n{}", profile_title.header());
+            crate::outln!("{}", "-".repeat(profile_title.chars().count()));
+            for node in &self.profile {
                 crate::outln!(
                     "  {} {}{}",
                     "~".dim(),
-                    sink.predicted_name.as_str().bold(),
-                    configured
+                    node.predicted_name.as_str().bold(),
+                    configured_marker(&node.predicted_name)
                 );
                 crate::outln!(
                     "    {} (profile: {})",
-                    sink.description.as_str().dim(),
-                    sink.profile_name.as_str().technical()
+                    node.description.as_str().dim(),
+                    node.profile_name.as_str().technical()
                 );
             }
         }
 
-        if let Some(cfg) = config {
-            crate::outln!("\n{}", "CONFIGURED SINKS:".header());
-            crate::outln!("{}", "-".repeat(17));
-            for (i, sink) in cfg.sinks.iter().enumerate() {
-                let default_marker = if sink.default {
-                    let mut m = String::with_capacity(3 + "DEFAULT".len());
-                    let _ = write!(m, " [{}]", "DEFAULT".dim());
-                    m
-                } else {
-                    String::new()
-                };
-                let status = match get_sink_status(&sink.name, &active, &profile) {
-                    "active" => "active".success().to_string(),
-                    "requires_profile_switch" => "profile switch".warning().to_string(),
-                    _ => "not found".error().to_string(),
-                };
-                crate::outln!(
-                    "  {}. \"{}\"{} - {}",
-                    (i + 1).to_string().dim(),
-                    sink.desc,
-                    default_marker,
-                    status
-                );
-                crate::outln!("     {}", sink.name.as_str().bold());
-            }
+        let Some(cfg) = config else {
+            return;
+        };
+        let entries = cfg.endpoints(self.kind);
+        if self.kind == Endpoint::Source && entries.is_empty() {
+            return;
         }
+        crate::outln!("\n{}", configured_title.header());
+        crate::outln!("{}", "-".repeat(configured_title.chars().count()));
+        for (i, entry) in entries.iter().enumerate() {
+            let default_marker = if entry.default {
+                let mut m = String::with_capacity(3 + "DEFAULT".len());
+                let _ = write!(m, " [{}]", "DEFAULT".dim());
+                m
+            } else {
+                String::new()
+            };
+            let status = match get_sink_status(&entry.name, &self.active, &self.profile) {
+                "active" => "active".success().to_string(),
+                "requires_profile_switch" => "profile switch".warning().to_string(),
+                _ => "not found".error().to_string(),
+            };
+            crate::outln!(
+                "  {}. \"{}\"{} - {}",
+                (i + 1).to_string().dim(),
+                entry.desc,
+                default_marker,
+                status
+            );
+            crate::outln!("     {}", entry.name.as_str().bold());
+        }
+    }
+}
+
+/// List all available sinks (active and profile-switch), then the input devices
+/// (sources), so one command shows everything a config can name
+///
+/// # Errors
+/// Returns an error if `PipeWire` query fails or `JSON` serialization fails.
+pub fn list_sinks(config: Option<&Config>, json_output: bool) -> Result<()> {
+    let snapshot = PipeWire::dump()?;
+    let sinks = Listing::new(&snapshot, Endpoint::Sink);
+    let sources = Listing::new(&snapshot, Endpoint::Source);
+
+    if json_output {
+        let output = ListSinksJson {
+            active_sinks: sinks.active_json(config),
+            profile_sinks: sinks.profile_json(),
+            configured_sinks: sinks.configured_json(config),
+            current_default: sinks.current_default(),
+            active_sources: sources.active_json(config),
+            profile_sources: sources.profile_json(),
+            configured_sources: sources.configured_json(config),
+            current_default_source: sources.current_default(),
+        };
+        crate::outln!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        sinks.print(config, [
+            "ACTIVE SINKS:",
+            "AVAILABLE VIA PROFILE SWITCH:",
+            "CONFIGURED SINKS:",
+        ]);
+        crate::outln!();
+        sources.print(config, [
+            "INPUT DEVICES / SOURCES:",
+            "INPUTS AVAILABLE VIA PROFILE SWITCH:",
+            "CONFIGURED SOURCES:",
+        ]);
 
         if let Ok(path) = Config::get_config_path() {
             crate::outln!("\n{} {}", "Config:".dim(), path.display());
@@ -206,6 +266,25 @@ pub async fn set_sink(config: &Config, sink_ref: &str) -> Result<()> {
         .await;
     }
     set_sink_smart(config, sink_ref)
+}
+
+/// Switch the default source (microphone) to a configured source (`set-source`), with
+/// smart toggle support like [`set_sink`]
+///
+/// Goes through the daemon when it runs (its rules then see the manual choice),
+/// otherwise switches locally.
+///
+/// # Errors
+/// Returns an error if no sources are configured, the reference names no configured
+/// source, the daemon reports a failure, or local activation fails.
+pub async fn set_source(config: &Config, source_ref: &str) -> Result<()> {
+    if ipc::is_daemon_running().await {
+        return switch_via_daemon(Request::SetSource {
+            source: source_ref.to_string(),
+        })
+        .await;
+    }
+    switch_locally(config, &ManualSwitch::SetSource(source_ref.to_string()))
 }
 
 /// Cycle to the next/previous sink (`next-sink` / `prev-sink`)
@@ -311,8 +390,9 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
         Err(message) => eyre::bail!("{message}"),
     };
 
+    let kind = request.kind();
     info!("Switching to: {}", target.desc);
-    PipeWire::activate_sink(&target.name)?;
+    PipeWire::activate(kind, &target.name)?;
     crate::outln!(
         "{} {}",
         "Switched to:".success(),
@@ -320,8 +400,11 @@ fn switch_locally(config: &Config, request: &ManualSwitch) -> Result<()> {
     );
 
     if config.settings.notify_manual {
-        let icon = get_sink_icon(target);
-        if let Err(e) = send_notification("Audio Output", &target.desc, Some(&icon)) {
+        let (title, icon) = match kind {
+            Endpoint::Sink => ("Audio Output", get_sink_icon(target)),
+            Endpoint::Source => ("Audio Input", get_source_icon(target)),
+        };
+        if let Err(e) = send_notification(title, &target.desc, Some(&icon)) {
             warn!("Notification failed: {}", e);
         }
     }
@@ -342,6 +425,8 @@ struct DaemonStatus {
     uptime_secs: Option<u64>,
     daemon_sink: Option<String>,
     daemon_sink_fallback: Option<bool>,
+    daemon_source: Option<String>,
+    daemon_source_fallback: Option<bool>,
     active_window: Option<String>,
     tracked_windows: Option<usize>,
     paused: Option<bool>,
@@ -368,6 +453,9 @@ impl DaemonStatus {
                 active_window,
                 tracked_windows,
                 paused,
+                current_source,
+                current_source_fallback,
+                sources_configured: _,
             }) => Self {
                 running: true,
                 error: (protocol != ipc::PROTOCOL_VERSION).then(|| {
@@ -383,6 +471,8 @@ impl DaemonStatus {
                 uptime_secs: Some(uptime_secs),
                 daemon_sink_fallback: current_sink.as_ref().map(|_| current_sink_fallback),
                 daemon_sink: current_sink,
+                daemon_source_fallback: current_source.as_ref().map(|_| current_source_fallback),
+                daemon_source: current_source,
                 active_window,
                 tracked_windows: Some(tracked_windows),
                 paused: Some(paused),
@@ -403,6 +493,8 @@ impl DaemonStatus {
             "uptime_human": self.uptime_secs.map(crate::format_uptime),
             "daemon_sink": self.daemon_sink,
             "daemon_sink_fallback": self.daemon_sink_fallback,
+            "daemon_source": self.daemon_source,
+            "daemon_source_fallback": self.daemon_source_fallback,
             "active_window": self.active_window,
             "tracked_windows": self.tracked_windows,
             "paused": self.paused,
@@ -428,34 +520,51 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     };
 
     // `PipeWire` is queried directly (works with or without daemon)
-    let current_sink = match tokio::task::spawn_blocking(PipeWire::get_default_sink_name).await {
+    let defaults = match tokio::task::spawn_blocking(PipeWire::get_defaults).await {
         Ok(result) => result,
         Err(e) => Err(eyre::eyre!("PipeWire query task failed: {e}")),
     };
-    let (current_sink, pipewire_error) = match current_sink {
-        Ok(name) => {
-            let description = config
-                .as_ref()
-                .and_then(|c| c.sinks.iter().find(|s| s.name == name))
-                .map_or_else(|| name.clone(), |s| s.desc.clone());
-            (Some((name, description)), None)
-        }
-        Err(e) => (None, Some(format!("{e:#}"))),
+    let describe = |kind: Endpoint, name: String| {
+        let description = config
+            .as_ref()
+            .map_or_else(|| name.clone(), |c| c.endpoint_desc(kind, &name));
+        (name, description)
     };
+    let (current_sink, current_source, pipewire_error) = match defaults {
+        Ok((Some(sink), source)) => (
+            Some(describe(Endpoint::Sink, sink)),
+            source.map(|s| describe(Endpoint::Source, s)),
+            None,
+        ),
+        Ok((None, source)) => (
+            None,
+            source.map(|s| describe(Endpoint::Source, s)),
+            Some("No default sink found in PipeWire metadata".to_string()),
+        ),
+        Err(e) => (None, None, Some(format!("{e:#}"))),
+    };
+    let sources_configured = config.as_ref().is_some_and(|c| !c.sources.is_empty());
 
     let daemon = DaemonStatus::query().await;
 
     let healthy = config_error.is_none() && pipewire_error.is_none() && daemon.error.is_none();
 
     if json_output {
-        let current_sink_json = current_sink.as_ref().map(
-            |(name, description)| serde_json::json!({ "name": name, "description": description }),
-        );
+        let named = |pair: &Option<(String, String)>| {
+            pair.as_ref().map(
+                |(name, description)| serde_json::json!({ "name": name, "description": description }),
+            )
+        };
+        let current_sink_json = named(&current_sink);
+        let current_source_json = named(&current_source);
         let output = serde_json::json!({
             "current_sink": current_sink_json,
+            "current_source": current_source_json,
+            "sources_configured": sources_configured,
             "daemon": daemon.to_json(),
             "pipewire": {
                 "current_sink": current_sink_json,
+                "current_source": current_source_json,
                 "error": pipewire_error,
             },
             "config": {
@@ -488,6 +597,14 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             "unavailable (PipeWire error)".error()
         ),
     }
+    if sources_configured {
+        match &current_source {
+            Some((_, description)) => {
+                crate::outln!("{} {}", "Input:".dim(), description.as_str().bold());
+            }
+            None => crate::outln!("{} {}", "Input:".dim(), "unknown".dim()),
+        }
+    }
     crate::outln!();
     crate::outln!("{}", "Daemon".header());
     crate::outln!("{}", "-".repeat(6));
@@ -519,6 +636,18 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
         }
         if let Some(rule) = &daemon.active_window {
             crate::outln!("{} {}", "Active Rule:".dim(), rule.as_str().technical());
+        }
+        if let Some(source) = &daemon.daemon_source {
+            let fallback = if daemon.daemon_source_fallback == Some(true) {
+                " (fallback)"
+            } else {
+                ""
+            };
+            crate::outln!(
+                "{} {}{fallback}",
+                "Microphone:".dim(),
+                source.as_str().technical()
+            );
         }
         if let Some(tracked) = daemon.tracked_windows {
             crate::outln!(
@@ -657,6 +786,7 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                                 track_info.sink_desc.as_str().bold()
                             );
                             print_fallbacks(track_info, "    ");
+                            print_sources(track_info, "    ");
                         }
                     }
                 }
@@ -692,6 +822,21 @@ fn print_fallbacks(tracked: &ipc::TrackedInfo, indent: &str) {
         "{indent}  {}: {}",
         "then".dim(),
         descs.join(", ").as_str().bold()
+    );
+}
+
+/// Print a tracked window's sources (first choice, then fallbacks), if its rule has
+/// any
+fn print_sources(tracked: &ipc::TrackedInfo, indent: &str) {
+    if tracked.sources.is_empty() {
+        return;
+    }
+    let descs: Vec<&str> = tracked.sources.iter().map(|f| f.desc.as_str()).collect();
+    crate::outln!(
+        "{indent}{} {}: {}",
+        "→".success(),
+        "source".dim(),
+        descs.join(", then ").as_str().bold()
     );
 }
 
@@ -761,6 +906,7 @@ pub async fn test_rule(pattern: &str, json_output: bool) -> Result<()> {
                                 tracked.sink_desc.as_str().bold()
                             );
                             print_fallbacks(tracked, "   ");
+                            print_sources(tracked, "   ");
                         }
                     }
                 }

@@ -2,7 +2,10 @@
 //!
 //! A pure reducer: [`State::apply`] folds compositor [`WindowEvent`]s into the set of
 //! open windows and their rule matches, and [`State::desired`] answers which sinks the
-//! rules want right now, in priority order (a rule may list fallbacks). Nothing here
+//! rules want right now, in priority order (a rule may list fallbacks).
+//! [`State::desired_for`] answers the same for sources (microphones), independently:
+//! the highest-priority matching window *whose rule has a `source`* decides it, else
+//! the default source; a rule without `source` never affects the microphone. Nothing here
 //! talks to `PipeWire` or sends notifications: which candidate can actually be
 //! activated is decided by the daemon's activation worker, and the daemon reconciles
 //! the desired candidates with what it last activated (see `daemon`).
@@ -18,13 +21,14 @@ use color_eyre::eyre::{self, Result};
 use tracing::{debug, info};
 
 use crate::compositor::WindowEvent;
-use crate::config::{Config, Rule, SinkConfig};
+use crate::config::{Config, Endpoint, Rule, SinkConfig, SourceConfig};
 use crate::sanitize::for_log;
 
 /// Window-tracking state for daemon mode
 ///
 /// Invariant (checked by [`State::new`] and [`State::reconfigure`]): the config has at
-/// least one sink, a default sink, and every sink reference of every rule resolves.
+/// least one sink, a default sink, and every sink reference of every rule resolves;
+/// with sources configured, a default source and every source reference resolves.
 pub struct State {
     config: Arc<Config>,
     /// Index into `config.sinks` of the default sink
@@ -32,6 +36,12 @@ pub struct State {
     /// For each rule (same index), the indices into `config.sinks` of its candidates
     /// in priority order (never empty)
     rule_sinks: Vec<Vec<usize>>,
+    /// Index into `config.sources` of the default source; `None` when no sources are
+    /// configured (pwsw then never touches the default source)
+    default_source: Option<usize>,
+    /// For each rule, the indices into `config.sources` of its source candidates
+    /// (empty for a rule without `source`)
+    rule_sources: Vec<Vec<usize>>,
     /// Every open window the compositor told us about, matched or not
     windows: HashMap<u64, Window>,
     /// Next sequence number to hand out (monotonic, never reused)
@@ -57,13 +67,13 @@ struct Match {
     trigger: String,
 }
 
-/// The sinks the rules currently want, and the window that decided it
+/// The sinks (or sources) the rules currently want, and the window that decided it
 #[derive(Debug, Clone)]
 pub struct Desired<'a> {
-    /// Candidate sinks in priority order, never empty: the winning rule's sink and its
-    /// fallbacks, or just the default sink when no window matches. The first one that
+    /// Candidates in priority order, never empty: the winning rule's sink (source) and
+    /// its fallbacks, or just the default when no window decides. The first one that
     /// can be activated is the one to use; that is for the activation worker to find.
-    pub sinks: Vec<&'a SinkConfig>,
+    pub candidates: Vec<&'a SinkConfig>,
     /// The matching window that won, or `None` when falling back to the default
     pub window: Option<Winner<'a>>,
 }
@@ -72,13 +82,13 @@ impl<'a> Desired<'a> {
     /// The first choice
     #[must_use]
     pub fn first(&self) -> &'a SinkConfig {
-        self.sinks[0]
+        self.candidates[0]
     }
 
     /// The candidates' node names, in priority order
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.sinks.iter().map(|s| s.name.clone()).collect()
+        self.candidates.iter().map(|s| s.name.clone()).collect()
     }
 }
 
@@ -115,10 +125,21 @@ pub struct WindowView<'a> {
     /// The sinks this window's rule points at in priority order (its sink, then its
     /// fallbacks); empty if it matches no rule
     pub sinks: Vec<&'a SinkConfig>,
+    /// The sources this window's rule points at in priority order; empty if it
+    /// matches no rule or its rule has no `source`
+    pub sources: Vec<&'a SourceConfig>,
 }
 
-/// Check the state invariant and index the config: (default sink, sinks of each rule)
-fn index_config(config: &Config) -> Result<(usize, Vec<Vec<usize>>)> {
+/// The config indexed for the reducer (see [`index_config`])
+struct Index {
+    default_sink: usize,
+    rule_sinks: Vec<Vec<usize>>,
+    default_source: Option<usize>,
+    rule_sources: Vec<Vec<usize>>,
+}
+
+/// Check the state invariant and index the config
+fn index_config(config: &Config) -> Result<Index> {
     if config.sinks.is_empty() {
         eyre::bail!("No sinks configured");
     }
@@ -140,7 +161,44 @@ fn index_config(config: &Config) -> Result<(usize, Vec<Vec<usize>>)> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok((default_sink, rule_sinks))
+    let default_source = if config.sources.is_empty() {
+        None
+    } else {
+        Some(
+            config
+                .sources
+                .iter()
+                .position(|s| s.default)
+                .ok_or_else(|| eyre::eyre!("No default source configured"))?,
+        )
+    };
+    let rule_sources = config
+        .rules
+        .iter()
+        .map(|rule| {
+            if !rule.source_refs.is_empty() && default_source.is_none() {
+                eyre::bail!(
+                    "Rule '{}' sets a source but no sources are configured",
+                    rule.app_id_pattern
+                );
+            }
+            config
+                .resolve_rule_refs(Endpoint::Source, rule)
+                .ok_or_else(|| {
+                    eyre::eyre!(
+                        "Rule '{}' references an unknown source ({})",
+                        rule.app_id_pattern,
+                        rule.source_refs.join(", ")
+                    )
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Index {
+        default_sink,
+        rule_sinks,
+        default_source,
+        rule_sources,
+    })
 }
 
 impl State {
@@ -150,11 +208,13 @@ impl State {
     /// Returns an error if the config has no sinks, no default sink, or a rule that
     /// does not resolve to a sink (config validation normally prevents all three).
     pub fn new(config: Arc<Config>) -> Result<Self> {
-        let (default_sink, rule_sinks) = index_config(&config)?;
+        let index = index_config(&config)?;
         Ok(Self {
             config,
-            default_sink,
-            rule_sinks,
+            default_sink: index.default_sink,
+            rule_sinks: index.rule_sinks,
+            default_source: index.default_source,
+            rule_sources: index.rule_sources,
             windows: HashMap::new(),
             next_seq: 0,
         })
@@ -175,27 +235,34 @@ impl State {
     /// Returns an error (and keeps the current config) if the new config breaks the
     /// invariant described on [`State`].
     pub fn reconfigure(&mut self, config: Arc<Config>) -> Result<()> {
-        let (default_sink, rule_sinks) = index_config(&config)?;
+        let index = index_config(&config)?;
         let before = self.match_sinks();
         self.config = config;
-        self.default_sink = default_sink;
-        self.rule_sinks = rule_sinks;
+        self.default_sink = index.default_sink;
+        self.rule_sinks = index.rule_sinks;
+        self.default_source = index.default_source;
+        self.rule_sources = index.rule_sources;
         self.rematch(&before);
         Ok(())
     }
 
     /// For each matching window, its trigger and the names of the sinks it points at
+    /// (then its sources)
     fn match_sinks(&self) -> HashMap<u64, (String, Vec<String>)> {
         self.windows
             .iter()
             .filter_map(|(id, w)| {
                 let m = w.matched.as_ref()?;
-                let names = self
-                    .rule_sinks(m.rule_index)
-                    .map(|s| s.name.clone())
-                    .collect();
-                Some((*id, (m.trigger.clone(), names)))
+                Some((*id, (m.trigger.clone(), self.target_names(m.rule_index))))
             })
+            .collect()
+    }
+
+    /// A rule's sink names, then its source names (to notice a retargeted rule)
+    fn target_names(&self, rule_index: usize) -> Vec<String> {
+        self.rule_sinks(rule_index)
+            .chain(self.rule_sources(rule_index))
+            .map(|s| s.name.clone())
             .collect()
     }
 
@@ -224,11 +291,8 @@ impl State {
                     for_log(&window.app_id),
                     for_log(&window.title)
                 ),
-                (Some((_, old_sinks)), Some(m))
-                    if !self
-                        .rule_sinks(m.rule_index)
-                        .map(|s| &s.name)
-                        .eq(old_sinks.iter()) =>
+                (Some((_, old_targets)), Some(m))
+                    if self.target_names(m.rule_index) != *old_targets =>
                 {
                     info!(
                         "Rule matched: '{}' → {}",
@@ -288,15 +352,31 @@ impl State {
         indices.iter().map(|&i| &self.config.sinks[i])
     }
 
-    /// A rule's candidates for the log: `Desc`, or `Desc (fallback: Other, Third)`
+    /// The source candidates of a rule, in priority order (empty without `source`)
+    fn rule_sources(&self, rule_index: usize) -> impl Iterator<Item = &SourceConfig> {
+        self.rule_sources
+            .get(rule_index)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .map(|&i| &self.config.sources[i])
+    }
+
+    /// A rule's candidates for the log: `Desc`, or `Desc (fallback: Other, Third)`,
+    /// then `, mic: Desc (fallback: …)` when the rule has a source
     fn targets_desc(&self, rule_index: usize) -> String {
-        let mut sinks = self.rule_sinks(rule_index).map(|s| s.desc.as_str());
-        let first = sinks.next().unwrap_or_default().to_string();
-        let rest: Vec<&str> = sinks.collect();
-        if rest.is_empty() {
-            first
-        } else {
-            format!("{first} (fallback: {})", rest.join(", "))
+        fn chain<'a>(mut descs: impl Iterator<Item = &'a str>) -> Option<String> {
+            let first = descs.next()?.to_string();
+            let rest: Vec<&str> = descs.collect();
+            Some(if rest.is_empty() {
+                first
+            } else {
+                format!("{first} (fallback: {})", rest.join(", "))
+            })
+        }
+        let sinks = chain(self.rule_sinks(rule_index).map(|s| s.desc.as_str())).unwrap_or_default();
+        match chain(self.rule_sources(rule_index).map(|s| s.desc.as_str())) {
+            Some(sources) => format!("{sinks}, mic: {sources}"),
+            None => sinks,
         }
     }
 
@@ -403,33 +483,58 @@ impl State {
     /// Which candidate is reachable is not decided here.
     #[must_use]
     pub fn desired(&self) -> Desired<'_> {
-        let candidates = self
-            .windows
-            .iter()
-            .filter_map(|(id, w)| w.matched.as_ref().map(|m| (*id, w, m)));
+        self.decide(|rule_index| self.rule_sinks(rule_index).collect())
+            .unwrap_or_else(|| Desired {
+                candidates: vec![self.default_sink()],
+                window: None,
+            })
+    }
+
+    /// What the rules want for `kind`: [`State::desired`] for sinks; for sources the
+    /// same priority over the matching windows whose rule has a `source`, else the
+    /// default source, and `None` when no sources are configured
+    #[must_use]
+    pub fn desired_for(&self, kind: Endpoint) -> Option<Desired<'_>> {
+        match kind {
+            Endpoint::Sink => Some(self.desired()),
+            Endpoint::Source => {
+                let default = self.default_source?;
+                Some(
+                    self.decide(|rule_index| self.rule_sources(rule_index).collect())
+                        .unwrap_or_else(|| Desired {
+                            candidates: vec![&self.config.sources[default]],
+                            window: None,
+                        }),
+                )
+            }
+        }
+    }
+
+    /// The winning window among those whose rule has candidates (`targets` of its
+    /// rule index, empty for "this rule has no say"), by the priority mode
+    fn decide<'a>(&'a self, targets: impl Fn(usize) -> Vec<&'a SinkConfig>) -> Option<Desired<'a>> {
+        let candidates = self.windows.iter().filter_map(|(id, w)| {
+            let m = w.matched.as_ref()?;
+            let targets = targets(m.rule_index);
+            (!targets.is_empty()).then_some((*id, w, m, targets))
+        });
         let winner = if self.config.settings.match_by_index {
-            candidates.min_by_key(|(_, w, m)| (m.rule_index, std::cmp::Reverse(w.seq)))
+            candidates.min_by_key(|(_, w, m, _)| (m.rule_index, std::cmp::Reverse(w.seq)))
         } else {
-            candidates.max_by_key(|(_, w, _)| w.seq)
+            candidates.max_by_key(|(_, w, ..)| w.seq)
         };
 
-        match winner {
-            Some((id, w, m)) => Desired {
-                sinks: self.rule_sinks(m.rule_index).collect(),
-                window: Some(Winner {
-                    id,
-                    app_id: &w.app_id,
-                    title: &w.title,
-                    rule_index: m.rule_index,
-                    trigger: &m.trigger,
-                    notify: self.rule_notify(m.rule_index),
-                }),
-            },
-            None => Desired {
-                sinks: vec![self.default_sink()],
-                window: None,
-            },
-        }
+        winner.map(|(id, w, m, targets)| Desired {
+            candidates: targets,
+            window: Some(Winner {
+                id,
+                app_id: &w.app_id,
+                title: &w.title,
+                rule_index: m.rule_index,
+                trigger: &m.trigger,
+                notify: self.rule_notify(m.rule_index),
+            }),
+        })
     }
 
     /// The rules' first choice right now (see [`State::desired`])
@@ -467,6 +572,10 @@ impl State {
                     .matched
                     .as_ref()
                     .map_or_else(Vec::new, |m| self.rule_sinks(m.rule_index).collect()),
+                sources: w
+                    .matched
+                    .as_ref()
+                    .map_or_else(Vec::new, |m| self.rule_sources(m.rule_index).collect()),
             })
             .collect();
         views.sort_by_key(|v| v.id);
@@ -495,7 +604,7 @@ mod tests {
 
     use super::*;
     use crate::test_utils::fixtures::{
-        make_config, make_rule, make_rule_with_fallbacks, make_sink,
+        make_config, make_rule, make_rule_with_fallbacks, make_sink, with_sources,
     };
 
     fn opened(id: u64, app_id: &str, title: &str) -> WindowEvent {
@@ -944,5 +1053,140 @@ mod tests {
         let views = s.windows();
         let sinks: Vec<&str> = views[0].sinks.iter().map(|k| k.name.as_str()).collect();
         assert_eq!(sinks, ["headphones", "hdmi"]);
+    }
+
+    /// Sinks Speakers (default), Headset; sources Desk Mic (default), Headset Mic;
+    /// discord → Headset + Headset Mic, firefox → Speakers (no source),
+    /// zoom → Speakers + [Headset Mic, Desk Mic]
+    fn source_config(match_by_index: bool) -> Config {
+        let mut config = make_config(
+            vec![
+                make_sink("speakers", "Speakers", true),
+                make_sink("headset", "Headset", false),
+            ],
+            vec![
+                with_sources(make_rule("^discord$", None, "headset"), &["Headset Mic"]),
+                make_rule("^firefox$", None, "speakers"),
+                with_sources(make_rule("^zoom$", None, "speakers"), &[
+                    "Headset Mic",
+                    "Desk Mic",
+                ]),
+            ],
+        )
+        .with_sources(vec![
+            make_sink("mic.desk", "Desk Mic", true),
+            make_sink("mic.headset", "Headset Mic", false),
+        ]);
+        config.settings.match_by_index = match_by_index;
+        config
+    }
+
+    fn source_names(s: &State) -> Vec<String> {
+        s.desired_for(Endpoint::Source)
+            .expect("sources configured")
+            .names()
+    }
+
+    #[test]
+    fn test_no_sources_configured_means_no_source_answer() {
+        let mut s = state(three_sink_config(false));
+        assert!(s.desired_for(Endpoint::Source).is_none());
+        s.apply(opened(1, "firefox", "x"));
+        assert!(s.desired_for(Endpoint::Source).is_none());
+        assert_eq!(
+            s.desired_for(Endpoint::Sink).map(|d| d.names()),
+            Some(vec!["headphones".to_string()])
+        );
+        assert_eq!(s.windows()[0].sources, Vec::<&SinkConfig>::new());
+    }
+
+    #[test]
+    fn test_sink_and_source_are_independent_dimensions() {
+        let mut s = state(source_config(false));
+        assert_eq!(source_names(&s), ["mic.desk"], "default source");
+
+        s.apply(opened(1, "discord", "Voice"));
+        assert_eq!(names(&s.desired()), ["headset"]);
+        assert_eq!(source_names(&s), ["mic.headset"]);
+
+        // Firefox wins the sink but has no say about the microphone
+        s.apply(opened(2, "firefox", "Video"));
+        assert_eq!(names(&s.desired()), ["speakers"]);
+        assert_eq!(source_names(&s), ["mic.headset"]);
+        let source = s.desired_for(Endpoint::Source).expect("sources");
+        assert_eq!(
+            source.window.map(|w| w.id),
+            Some(1),
+            "Discord decides the mic"
+        );
+
+        // Zoom decides both, with a fallback microphone
+        s.apply(opened(3, "zoom", "Meeting"));
+        assert_eq!(source_names(&s), ["mic.headset", "mic.desk"]);
+        s.apply(WindowEvent::Closed { id: 3 });
+        assert_eq!(source_names(&s), ["mic.headset"]);
+
+        // Closing Discord: no rule with a source left → default source
+        s.apply(WindowEvent::Closed { id: 1 });
+        assert_eq!(source_names(&s), ["mic.desk"]);
+        assert!(
+            s.desired_for(Endpoint::Source)
+                .expect("sources")
+                .window
+                .is_none()
+        );
+        assert_eq!(names(&s.desired()), ["speakers"]);
+    }
+
+    #[test]
+    fn test_source_priority_follows_match_by_index() {
+        let mut s = state(source_config(true));
+        s.apply(opened(1, "zoom", "Meeting"));
+        s.apply(opened(2, "discord", "Voice"));
+        // Rule 0 (discord) outranks rule 2 (zoom) for both dimensions
+        assert_eq!(names(&s.desired()), ["headset"]);
+        assert_eq!(source_names(&s), ["mic.headset"]);
+        // Firefox (rule 1) outranks zoom for the sink only; discord still decides both
+        s.apply(WindowEvent::Closed { id: 2 });
+        s.apply(opened(3, "firefox", "x"));
+        assert_eq!(names(&s.desired()), ["speakers"]);
+        assert_eq!(s.desired().window.map(|w| w.id), Some(3));
+        assert_eq!(source_names(&s), ["mic.headset", "mic.desk"]);
+        assert_eq!(
+            s.desired_for(Endpoint::Source)
+                .and_then(|d| d.window)
+                .map(|w| w.id),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_windows_view_lists_sources_and_reconfigure_logs_them() {
+        let mut s = state(source_config(false));
+        s.apply(opened(1, "zoom", "Meeting"));
+        let views = s.windows();
+        let sources: Vec<&str> = views[0].sources.iter().map(|k| k.desc.as_str()).collect();
+        assert_eq!(sources, ["Headset Mic", "Desk Mic"]);
+
+        // Retargeting only the rule's source is a change worth logging
+        let mut config = source_config(false);
+        config.rules[2].source_refs = vec!["Desk Mic".to_string()];
+        let logs = capture_info_logs(|| {
+            s.reconfigure(Arc::new(config)).expect("valid config");
+        });
+        assert!(
+            logs.contains("Rule matched: 'zoom' → Speakers, mic: Desk Mic"),
+            "{logs}"
+        );
+        assert_eq!(source_names(&s), ["mic.desk"]);
+    }
+
+    #[test]
+    fn test_state_rejects_source_rule_without_sources() {
+        let config = make_config(vec![make_sink("a", "A", true)], vec![with_sources(
+            make_rule("x", None, "a"),
+            &["Mic"],
+        )]);
+        assert!(State::new(Arc::new(config)).is_err());
     }
 }
