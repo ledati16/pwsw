@@ -140,6 +140,9 @@ pub enum AppUpdate {
         service_enabled: Option<bool>,
         /// Whether rule-driven switching is paused (`false` while not running)
         paused: bool,
+        /// Whether the daemon's compositor protocol reports monitors (`wlr`);
+        /// `false` while not running
+        monitor_info: bool,
     },
     /// Answer to [`BgCommand::TogglePause`]: whether rule-driven switching is
     /// paused now, or why the request failed
@@ -287,6 +290,8 @@ pub struct App {
     windows_generation: u64,
     /// Whether the daemon's rule-driven switching is paused (as last reported by it)
     pub(crate) daemon_paused: bool,
+    /// Whether the running daemon reports which monitors windows are on (`wlr`)
+    pub(crate) daemon_monitor_info: bool,
     /// Whether a pause/resume request sent to the background worker has not
     /// reported back yet
     pub(crate) pause_pending: bool,
@@ -392,6 +397,7 @@ impl App {
             profile_source_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
             daemon_paused: false,
+            daemon_monitor_info: false,
             pause_pending: false,
             daemon_action_pending: false,
             save_pending: false,
@@ -893,8 +899,10 @@ impl App {
                 unit_installed,
                 service_enabled,
                 paused,
+                monitor_info,
             } => {
                 self.daemon_paused = running && paused;
+                self.daemon_monitor_info = running && monitor_info;
                 if running != self.daemon_running || !self.daemon_state_seen {
                     self.dashboard_screen.preselect_action(running);
                 }

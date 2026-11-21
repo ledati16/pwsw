@@ -35,6 +35,7 @@ impl Backend for Fake {
             unit_installed: false,
             service_enabled: None,
             paused,
+            monitor_info: false,
         }
     }
 

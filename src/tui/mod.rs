@@ -336,6 +336,7 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
             screen_state: &mut app.rules_screen,
             preview: app.preview.view(),
             daemon_running: app.daemon_running,
+            monitor_info: app.daemon_monitor_info,
         }),
         Screen::Settings => render_settings(
             frame,

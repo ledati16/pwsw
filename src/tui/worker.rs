@@ -110,18 +110,22 @@ impl Backend for System {
         } else {
             None
         };
-        let (windows, paused) = if running {
+        let (windows, paused, monitor_info) = if running {
             let windows = match send_request(Request::ListWindows).await {
                 Ok(Response::Windows { windows }) => windows,
                 _ => Vec::new(),
             };
-            let paused = matches!(
-                send_request(Request::Status).await,
-                Ok(Response::Status { paused: true, .. })
-            );
-            (windows, paused)
+            let (paused, monitor_info) = match send_request(Request::Status).await {
+                Ok(Response::Status {
+                    paused,
+                    monitor_info,
+                    ..
+                }) => (paused, monitor_info),
+                _ => (false, false),
+            };
+            (windows, paused, monitor_info)
         } else {
-            (Vec::new(), false)
+            (Vec::new(), false, false)
         };
         AppUpdate::DaemonState {
             running,
@@ -129,6 +133,7 @@ impl Backend for System {
             unit_installed,
             service_enabled,
             paused,
+            monitor_info,
         }
     }
 

@@ -383,9 +383,17 @@ fn wayland_checks(
                     "The daemon will use {}",
                     capabilities.backend().interface()
                 )));
-                checks.push(if monitor_info_offered(&probe) {
+                checks.push(if monitor_info_offered(&probe) && output_rules {
                     Check::ok(format!(
                         "Monitor rules: available ({})",
+                        Backend::Wlr.name()
+                    ))
+                } else if monitor_info_offered(&probe) {
+                    // Without `output` rules the daemon takes ext, which reports no
+                    // monitors (the TUI's rule form says so and points here)
+                    Check::ok(format!(
+                        "Monitor rules: available: the daemon uses {} once a rule has \
+                         `output` (restart it after adding the first)",
                         Backend::Wlr.name()
                     ))
                 } else if output_rules {
@@ -1054,7 +1062,8 @@ mod tests {
             "Compositor advertises zwlr_foreign_toplevel_manager_v1 v3, \
              ext_foreign_toplevel_list_v1 v1",
             "The daemon will use ext_foreign_toplevel_list_v1",
-            "Monitor rules: available (wlr)",
+            "Monitor rules: available: the daemon uses wlr once a rule has `output` \
+             (restart it after adding the first)",
         ]);
         assert!(good.checks.iter().all(|c| c.level == Level::Ok));
 
@@ -1065,6 +1074,7 @@ mod tests {
             "The daemon will use zwlr_foreign_toplevel_manager_v1"
         );
         assert_eq!(monitor.checks[3].level, Level::Ok);
+        assert_eq!(monitor.checks[3].message, "Monitor rules: available (wlr)");
 
         let gnome = wayland_checks(
             Some(&display),

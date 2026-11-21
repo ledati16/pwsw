@@ -279,6 +279,7 @@ fn test_conflict_cancel_keeps_edits_and_file() {
 fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly() {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: Vec::new(),
         unit_installed: true,
@@ -288,6 +289,7 @@ fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly(
     assert_eq!(app.dashboard_screen.max_action_index, 4);
 
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: Vec::new(),
         unit_installed: false,
@@ -447,6 +449,7 @@ fn windows_app(
 ) -> App {
     let mut app = App::with_config(make_config(sinks, rules));
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows,
         unit_installed: false,
@@ -579,6 +582,7 @@ fn test_new_rule_follows_the_window_selection() {
     simulate_key_event(&mut app, key(KeyCode::Down));
     // The list refreshes with the same windows: the selection stays on mpv
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: vec![
             window(3, "mpv", "video", false),
@@ -630,6 +634,7 @@ fn test_new_rule_without_windows_only_says_why() {
 /// The daemon's state as the status poll reports it
 fn daemon_state(running: bool, paused: bool) -> AppUpdate {
     AppUpdate::DaemonState {
+        monitor_info: false,
         running,
         windows: Vec::new(),
         unit_installed: false,
@@ -1048,6 +1053,7 @@ fn test_rule_preview_uses_output_matching() {
 
     // firefox moves onto the HDMI monitor: the preview follows
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: vec![
             on(1, "mpv", &["HDMI-A-1"], false),

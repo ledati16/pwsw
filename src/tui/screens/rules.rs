@@ -411,6 +411,8 @@ pub struct RulesRenderContext<'a> {
     /// Live preview of the editor's patterns (kept current by `App::refresh_preview`)
     pub preview: &'a PreviewView,
     pub daemon_running: bool,
+    /// Whether the daemon's protocol reports monitors (`wlr`; `ext` never does)
+    pub monitor_info: bool,
 }
 
 /// Rows of the rule form (one per field)
@@ -772,17 +774,28 @@ fn seen_monitors(windows: &[WindowInfo]) -> Vec<&str> {
 }
 
 /// The hint under the form naming the monitors an Output pattern can match
-fn monitors_hint(windows: &[WindowInfo], daemon_running: bool, width: usize) -> Line<'static> {
+///
+/// With no monitors seen it says why: the daemon is on `ext` (which never reports
+/// them; it uses `wlr` only when `output` rules exist at its start), or `wlr` has
+/// reported none yet, or the daemon is stopped.
+fn monitors_hint(
+    windows: &[WindowInfo],
+    daemon_running: bool,
+    monitor_info: bool,
+    width: usize,
+) -> Line<'static> {
     const LABEL: &str = "Monitors: ";
     let monitors = seen_monitors(windows);
     let room = width.saturating_sub(text_width(LABEL));
     let value = if !monitors.is_empty() {
         Span::raw(ellipsize(&monitors.join(", "), room).into_owned())
     } else if daemon_running {
-        Span::styled(
-            ellipsize("none reported (wlr only)", room).into_owned(),
-            theme::dim(),
-        )
+        let why = if monitor_info {
+            "none reported yet"
+        } else {
+            "not tracked: the daemon uses ext (pwsw doctor explains)"
+        };
+        Span::styled(ellipsize(why, room).into_owned(), theme::dim())
     } else {
         Span::styled(
             ellipsize("unknown while the daemon is stopped", room).into_owned(),
@@ -932,7 +945,12 @@ fn render_editor(frame: &mut Frame, area: Rect, ctx: &RulesRenderContext) {
     };
 
     hint_row(
-        monitors_hint(ctx.windows, ctx.daemon_running, usize::from(inner.width)),
+        monitors_hint(
+            ctx.windows,
+            ctx.daemon_running,
+            ctx.monitor_info,
+            usize::from(inner.width),
+        ),
         &mut used,
     );
     // The window the form was opened from: its title, to copy part of it

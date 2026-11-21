@@ -129,6 +129,7 @@ fn fixture() -> App {
         profile_sources: Vec::new(),
     });
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: vec![
             window("firefox", "Rust Book — Mozilla Firefox", Some(SONY_DESC)),
@@ -207,6 +208,7 @@ fn with_mics_and_monitors(app: &mut App) {
         w
     };
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: vec![
             placed(
@@ -984,6 +986,7 @@ fn test_dashboard_preselects_the_sensible_action() {
         "start when stopped"
     );
     let state = |running| AppUpdate::DaemonState {
+        monitor_info: false,
         running,
         windows: Vec::new(),
         unit_installed: true,
@@ -1165,6 +1168,7 @@ fn test_rule_editor_preview_follows_window_updates() {
     app.rules_screen.editor.app_id_pattern = tui_input::Input::new("^mpv$".to_string());
 
     let state = |windows| AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows,
         unit_installed: false,
@@ -1223,6 +1227,7 @@ fn test_esc_with_edits_asks_before_discarding() {
 fn windows_app(count: u64) -> App {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: (0..count)
             .map(|i| WindowInfo {
@@ -1397,6 +1402,7 @@ fn test_tiny_terminals_render_without_panic() {
 fn test_dashboard_shows_enable_with_installed_unit() {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
+        monitor_info: false,
         running: true,
         windows: Vec::new(),
         unit_installed: true,
@@ -1620,8 +1626,20 @@ fn test_rule_form_without_mics_says_to_configure_them() {
         rows.join("\n")
     );
     assert!(row_with(&rows, "Output ").contains("any monitor"));
-    // The daemon reports no monitors (the fixture's windows have none)
-    assert!(row_with(&rows, "Monitors: ").contains("none reported"));
+    // The fixture's daemon is on ext: monitors are not tracked, and it says why
+    assert!(row_with(&rows, "Monitors: ").contains("not tracked: the daemon uses ext"));
+}
+
+#[test]
+fn test_rule_form_monitors_hint_on_wlr_without_monitors() {
+    let mut app = state("rule edit");
+    app.daemon_monitor_info = true;
+    let rows = draw_rows(&mut app, 80, 24);
+    assert!(
+        row_with(&rows, "Monitors: ").contains("none reported yet"),
+        "{}",
+        rows.join("\n")
+    );
 }
 
 #[test]
