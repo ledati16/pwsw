@@ -4,14 +4,13 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph, Wrap,
-};
+use ratatui::widgets::{HighlightSpacing, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::config::Settings;
 use crate::tui::theme;
 use crate::tui::widgets::{
-    border_hints, dialog_block, modal_rect, render_scrollbar, rounded_block, text_width,
+    border_hints, pick_list_rect, render_pick_list, render_scrollbar, rounded_block, text_width,
+    wrap_line,
 };
 
 /// Log levels offered by the dropdown, least verbose first
@@ -159,8 +158,6 @@ pub struct SettingsScreen {
     pub editing_log_level: bool,
     /// Selected log level index (0-4 for error/warn/info/debug/trace)
     pub log_level_index: usize,
-    /// Cached padded display names for settings (left-aligned)
-    pub padded_names: Vec<String>,
     /// List scroll state
     pub state: ListState,
     /// Description panel scroll offset
@@ -176,22 +173,10 @@ impl SettingsScreen {
             .position(|l| *l == settings.log_level)
             .unwrap_or(2);
 
-        // Build padded names cache based on longest setting name
-        let names: Vec<String> = SettingItem::all()
-            .iter()
-            .map(|i| i.name().to_string())
-            .collect();
-        let max_len = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
-        let padded_names = names
-            .into_iter()
-            .map(|n| format!("{n:<max_len$}"))
-            .collect::<Vec<_>>();
-
         Self {
             selected: 0,
             editing_log_level: false,
             log_level_index,
-            padded_names,
             state: ListState::default(),
             desc_scroll: 0,
         }
@@ -303,22 +288,23 @@ fn render_settings_list(
     settings: &Settings,
     screen_state: &mut SettingsScreen,
 ) {
+    let name_width = SettingItem::all()
+        .iter()
+        .map(|i| text_width(i.name()))
+        .max()
+        .unwrap_or(0);
     let items: Vec<ListItem> = SettingItem::all()
         .iter()
-        .enumerate()
-        .map(|(i, item)| {
-            let padded_name = screen_state
-                .padded_names
-                .get(i)
-                .map_or(item.name(), String::as_str);
+        .map(|item| {
+            let pad = name_width - text_width(item.name()) + 3;
             let value = match bool_value(*item, settings) {
                 Some(true) => Span::styled("[x] on", theme::success()),
                 Some(false) => Span::styled("[ ] off", theme::dim()),
                 None => Span::styled(settings.log_level.clone(), theme::accent()),
             };
             ListItem::new(Line::from(vec![
-                Span::raw(padded_name.to_string()),
-                Span::raw("   "),
+                Span::raw(item.name()),
+                Span::raw(" ".repeat(pad)),
                 value,
             ]))
         })
@@ -345,23 +331,18 @@ fn render_settings_list(
 /// Render the log level dropdown, sized to its levels, centred on `area`
 fn render_log_level_dropdown(frame: &mut Frame, area: Rect, screen_state: &SettingsScreen) {
     const TITLE: &str = "Log Level";
-    let hints = border_hints(&[("Enter", "apply"), ("Esc", "cancel")]);
-    let selection = text_width(theme::SELECTED_SYMBOL);
-    let widest = LOG_LEVELS.iter().map(|l| text_width(l)).max().unwrap_or(0) + selection;
-    let width =
-        u16::try_from(widest.max(hints.width()).max(text_width(TITLE) + 4) + 4).unwrap_or(u16::MAX);
-    let height = u16::try_from(LOG_LEVELS.len() + 2).unwrap_or(u16::MAX);
-    let rect = modal_rect(area, width, height);
-
+    const HINTS: &[(&str, &str)] = &[("Enter", "apply"), ("Esc", "cancel")];
+    let widest = LOG_LEVELS.iter().map(|l| text_width(l)).max().unwrap_or(0);
+    let min_width = border_hints(HINTS).width().max(text_width(TITLE) + 4) + 4;
+    let (rect, _) = pick_list_rect(
+        area,
+        widest,
+        LOG_LEVELS.len(),
+        u16::try_from(min_width).unwrap_or(u16::MAX),
+    );
     let items: Vec<ListItem> = LOG_LEVELS.iter().map(|l| ListItem::new(*l)).collect();
-    let list = List::new(items)
-        .block(dialog_block(TITLE).title_bottom(hints))
-        .highlight_style(theme::selected())
-        .highlight_symbol(theme::SELECTED_SYMBOL)
-        .highlight_spacing(HighlightSpacing::Always);
     let mut state = ListState::default().with_selected(Some(screen_state.log_level_index));
-    frame.render_widget(Clear, rect);
-    frame.render_stateful_widget(list, rect, &mut state);
+    render_pick_list(frame, rect, TITLE, HINTS, items, &mut state);
 }
 
 /// Render the description panel
@@ -407,28 +388,27 @@ fn render_description(frame: &mut Frame, area: Rect, screen_state: &mut Settings
         .padding(Padding::horizontal(1))
         .title(Span::styled(" About this setting ", theme::bold()));
 
+    // Wrapped here rather than by the paragraph, so the scroll limit counts
+    // exactly the rows drawn
     let inner_area = block.inner(area);
-    // A zero-width panel (tiny terminal) still counts one row per line
-    let width = usize::from(inner_area.width).max(1);
-    let height = usize::from(inner_area.height);
-
-    // Rows the text takes once wrapped (word wrapping may need a few more than
-    // this estimate; the paragraph decides)
-    let total_visual_lines: usize = lines.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
-    let max_scroll = u16::try_from(total_visual_lines.saturating_sub(height)).unwrap_or(u16::MAX);
+    let rows: Vec<Line> = lines
+        .iter()
+        .flat_map(|l| wrap_line(l, usize::from(inner_area.width)))
+        .collect();
+    let total_rows = rows.len();
+    let max_scroll = u16::try_from(total_rows.saturating_sub(usize::from(inner_area.height)))
+        .unwrap_or(u16::MAX);
     screen_state.desc_scroll = screen_state.desc_scroll.min(max_scroll);
 
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(rows)
         .block(block)
-        .wrap(Wrap { trim: false })
         .scroll((screen_state.desc_scroll, 0));
-
     frame.render_widget(paragraph, area);
     render_scrollbar(
         frame,
         area,
         0,
-        total_visual_lines,
+        total_rows,
         usize::from(screen_state.desc_scroll),
     );
 }

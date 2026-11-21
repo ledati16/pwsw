@@ -5,11 +5,12 @@
 use std::path::{Path, PathBuf};
 
 use color_eyre::eyre::Result;
-use throbber_widgets_tui::ThrobberState;
 
+use super::chrome::SPINNER;
 use super::keymap::Context;
 use super::preview::LivePreview;
-use super::screens::{DashboardScreen, RulesScreen, SettingsScreen, SinksScreen};
+use super::screens::list::FormEditor;
+use super::screens::{DashboardScreen, HelpScroll, RulesScreen, SettingsScreen, SinksScreen};
 use crate::config::{Config, ConfigModifiedOnDisk};
 
 /// Longest paste accepted into a text field (characters).
@@ -230,8 +231,8 @@ pub struct App {
     status: Option<Status>,
     /// Live preview of the rule editor's patterns
     pub(crate) preview: LivePreview,
-    /// State for throbber animation
-    throbber_state: ThrobberState,
+    /// Frame of the footer spinner (advanced only while busy)
+    spinner_frame: usize,
     /// Dashboard screen state
     pub(crate) dashboard_screen: DashboardScreen,
     /// Settings screen state
@@ -244,20 +245,14 @@ pub struct App {
     pub(crate) config_dirty: bool,
     /// Whether to show help overlay
     pub(crate) show_help: bool,
-    /// Scroll state for help overlay
-    pub(crate) help_scroll_state: ratatui::widgets::TableState,
-    /// Viewport height for help overlay (updated during rendering)
-    pub(crate) help_viewport_height: usize,
-    /// Collapsed sections in help overlay (section names)
-    pub(crate) help_collapsed_sections: std::collections::HashSet<String>,
+    /// Scroll position of the help overlay
+    pub(crate) help: HelpScroll,
     /// Whether user requested quit (waiting for confirmation if `config_dirty`)
     pub(crate) confirm_quit: bool,
     /// Cached daemon running status (updated by background worker)
     pub(crate) daemon_running: bool,
     /// Whether a daemon state snapshot arrived yet
     daemon_state_seen: bool,
-    /// Cached window count (updated by background worker)
-    pub(crate) window_count: usize,
     /// Cached window list for live preview (updated by background worker)
     pub(crate) windows: Vec<crate::ipc::WindowInfo>,
     /// Bumped whenever `windows` changes `app_id`/title content (drives preview recompute)
@@ -339,20 +334,17 @@ impl App {
             original_config,
             status: None,
             preview: LivePreview::default(),
-            throbber_state: ThrobberState::default(),
+            spinner_frame: 0,
             dashboard_screen,
             settings_screen,
             sinks_screen,
             rules_screen,
             config_dirty: false,
             show_help: false,
-            help_scroll_state: ratatui::widgets::TableState::default(),
-            help_viewport_height: 30, // Default value, updated during first render
-            help_collapsed_sections: std::collections::HashSet::new(),
+            help: HelpScroll::new(),
             confirm_quit: false,
             daemon_running: false,
             daemon_state_seen: false,
-            window_count: 0,
             windows: Vec::new(),
             windows_generation: 0,
             active_sink_list: Vec::new(),
@@ -390,21 +382,10 @@ impl App {
 
     /// Check if any text input field is currently focused
     pub(crate) fn is_input_focused(&self) -> bool {
-        use super::screens::rules::RulesMode;
-        use super::screens::sinks::SinksMode;
-
         match self.current_screen {
             Screen::Dashboard | Screen::Settings => false,
-            Screen::Sinks => {
-                self.sinks_screen.mode == SinksMode::AddEdit
-                    && !self.sinks_screen.confirm_discard
-                    && self.sinks_screen.editor.focused_field.is_text()
-            }
-            Screen::Rules => {
-                self.rules_screen.mode == RulesMode::AddEdit
-                    && !self.rules_screen.confirm_discard
-                    && self.rules_screen.editor.focused_field.is_text()
-            }
+            Screen::Sinks => self.sinks_screen.text_focused(),
+            Screen::Rules => self.rules_screen.text_focused(),
         }
     }
 
@@ -500,9 +481,6 @@ impl App {
 
     /// The key binding contexts active now (they decide the footer hints)
     pub(crate) fn active_contexts(&self) -> Vec<Context> {
-        use super::screens::rules::RulesMode;
-        use super::screens::sinks::SinksMode;
-
         if self.show_help {
             return vec![Context::Help];
         }
@@ -512,24 +490,8 @@ impl App {
         let screen = self.current_screen;
         let modal = match screen {
             Screen::Dashboard => None,
-            Screen::Sinks => match self.sinks_screen.mode {
-                SinksMode::List => None,
-                SinksMode::AddEdit if self.sinks_screen.confirm_discard => {
-                    Some(Context::Discard(screen))
-                }
-                SinksMode::AddEdit => Some(Context::Editor(screen)),
-                SinksMode::SelectSink => Some(Context::Dropdown(screen)),
-                SinksMode::Delete | SinksMode::Inspect => Some(Context::Dialog(screen)),
-            },
-            Screen::Rules => match self.rules_screen.mode {
-                RulesMode::List => None,
-                RulesMode::AddEdit if self.rules_screen.confirm_discard => {
-                    Some(Context::Discard(screen))
-                }
-                RulesMode::AddEdit => Some(Context::Editor(screen)),
-                RulesMode::SelectSink => Some(Context::Dropdown(screen)),
-                RulesMode::Delete | RulesMode::Inspect => Some(Context::Dialog(screen)),
-            },
+            Screen::Sinks => self.sinks_screen.context(screen),
+            Screen::Rules => self.rules_screen.context(screen),
             Screen::Settings => self
                 .settings_screen
                 .editing_log_level
@@ -545,16 +507,16 @@ impl App {
     }
 
     /// Advance the footer spinner by one frame.
-    pub(crate) fn advance_throbber(&mut self) {
-        self.throbber_state.calc_next();
+    pub(crate) const fn advance_spinner(&mut self) {
+        self.spinner_frame = (self.spinner_frame + 1) % SPINNER.len();
         self.dirty = true;
     }
 
-    /// Borrow what the footer renders: the status message, whether to spin,
-    /// and the spinner state.
-    pub(crate) fn footer_parts(&mut self) -> (Option<&Status>, bool, &mut ThrobberState) {
-        let busy = self.is_busy();
-        (self.status.as_ref(), busy, &mut self.throbber_state)
+    /// What the footer renders: the status message and the spinner frame
+    /// (`None` while nothing runs).
+    pub(crate) fn footer_parts(&self) -> (Option<&Status>, Option<&'static str>) {
+        let spinner = self.is_busy().then(|| SPINNER[self.spinner_frame]);
+        (self.status.as_ref(), spinner)
     }
 
     /// Queue a command for the background worker.
@@ -591,9 +553,9 @@ impl App {
     /// Recompute the rule editor's live preview if its patterns or the window
     /// list changed. Cheap when nothing changed; call before drawing.
     pub(crate) fn refresh_preview(&mut self) {
-        use super::screens::rules::RulesMode;
-
-        if self.current_screen != Screen::Rules || self.rules_screen.mode != RulesMode::AddEdit {
+        if self.current_screen != Screen::Rules
+            || self.rules_screen.mode != super::screens::list::ListMode::AddEdit
+        {
             return;
         }
         let editor = &self.rules_screen.editor;
@@ -682,10 +644,10 @@ impl App {
         self.dirty = true;
     }
 
-    /// Reset help overlay scroll position to top
-    pub(crate) const fn reset_help_scroll(&mut self) {
-        self.help_scroll_state.select(Some(0));
-        *self.help_scroll_state.offset_mut() = 0;
+    /// Show the help overlay, scrolled to the top
+    pub(crate) const fn open_help(&mut self) {
+        self.show_help = true;
+        self.help.offset = 0;
     }
 
     /// Mark config as potentially modified (compares to original)
@@ -778,7 +740,6 @@ impl App {
                 }
                 self.daemon_state_seen = true;
                 self.daemon_running = running;
-                self.window_count = windows.len();
                 let changed = windows.len() != self.windows.len()
                     || windows
                         .iter()

@@ -13,11 +13,10 @@ use crate::ipc::{TrackedInfo, WindowInfo};
 use crate::pipewire::{ActiveSink, ProfileSink};
 use crate::test_utils::fixtures::{make_config, make_rule, make_sink, make_sink_with_icon};
 use crate::tui::app::{App, AppUpdate, Screen, StatusKind};
-use crate::tui::editor_state::EditorState;
 use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::BINDINGS;
-use crate::tui::screens::rules::RulesMode;
-use crate::tui::screens::sinks::{SinkField, SinksMode, selector_names};
+use crate::tui::screens::list::ListMode;
+use crate::tui::screens::sinks::{SinkField, selector_names};
 use crate::tui::{render_ui, theme};
 
 /// The sizes every state is drawn at
@@ -776,8 +775,8 @@ fn test_rule_editor_shows_invalid_title_regex() {
     let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
     app.current_screen = Screen::Rules;
     app.rules_screen.start_add();
-    app.rules_screen.editor.app_id_pattern = EditorState::from_string("firefox".to_string());
-    app.rules_screen.editor.title_pattern = EditorState::from_string("(oops".to_string());
+    app.rules_screen.editor.app_id_pattern = tui_input::Input::new("firefox".to_string());
+    app.rules_screen.editor.title_pattern = tui_input::Input::new("(oops".to_string());
 
     let screen = draw(&mut app);
     assert!(screen.contains("Invalid title regex"), "{screen}");
@@ -789,7 +788,7 @@ fn test_rule_editor_preview_follows_window_updates() {
     let mut app = App::with_config(make_config(vec![make_sink("s1", "d1", true)], vec![]));
     app.current_screen = Screen::Rules;
     app.rules_screen.start_add();
-    app.rules_screen.editor.app_id_pattern = EditorState::from_string("^mpv$".to_string());
+    app.rules_screen.editor.app_id_pattern = tui_input::Input::new("^mpv$".to_string());
 
     let state = |windows| AppUpdate::DaemonState {
         running: true,
@@ -818,7 +817,7 @@ fn test_esc_with_edits_asks_before_discarding() {
     // Unchanged: Esc closes at once
     let mut app = state("sink edit");
     simulate_key_event(&mut app, esc);
-    assert_eq!(app.sinks_screen.mode, SinksMode::List);
+    assert_eq!(app.sinks_screen.mode, ListMode::List);
 
     // Changed: asks; n keeps editing (and the edit), y discards
     let mut app = state("sink edit");
@@ -826,7 +825,7 @@ fn test_esc_with_edits_asks_before_discarding() {
     simulate_key_event(&mut app, key('!'));
     simulate_key_event(&mut app, esc);
     assert!(app.sinks_screen.confirm_discard);
-    assert_eq!(app.sinks_screen.mode, SinksMode::AddEdit);
+    assert_eq!(app.sinks_screen.mode, ListMode::AddEdit);
     simulate_key_event(&mut app, key('x'));
     assert!(app.sinks_screen.confirm_discard, "other keys are ignored");
     simulate_key_event(&mut app, key('n'));
@@ -834,7 +833,7 @@ fn test_esc_with_edits_asks_before_discarding() {
     assert!(app.sinks_screen.editor.desc.value().ends_with('!'));
     simulate_key_event(&mut app, esc);
     simulate_key_event(&mut app, key('y'));
-    assert_eq!(app.sinks_screen.mode, SinksMode::List);
+    assert_eq!(app.sinks_screen.mode, ListMode::List);
     assert_eq!(app.config.sinks[1].desc, SONY_DESC);
 
     let mut app = state("rule add");
@@ -843,7 +842,7 @@ fn test_esc_with_edits_asks_before_discarding() {
     assert!(app.rules_screen.confirm_discard);
     simulate_key_event(&mut app, esc);
     assert!(!app.rules_screen.confirm_discard, "Esc keeps editing");
-    assert_eq!(app.rules_screen.mode, RulesMode::AddEdit);
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
 }
 
 fn windows_app(count: u64) -> App {

@@ -9,7 +9,6 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use throbber_widgets_tui::{Throbber, ThrobberState};
 
 use crate::tui::app::{Screen, Status, StatusKind};
 use crate::tui::keymap::{Context, footer_hints};
@@ -18,6 +17,9 @@ use crate::tui::widgets::{ellipsize, text_width};
 
 /// The marker shown in the header while the config has unsaved changes
 pub(crate) const UNSAVED_MARKER: &str = "● unsaved";
+
+/// Frames of the footer spinner shown while background work runs
+pub(crate) const SPINNER: [&str; 6] = ["⠷", "⠯", "⠟", "⠻", "⠽", "⠾"];
 
 /// Columns between two footer hints
 pub(crate) const HINT_GAP: &str = "  ";
@@ -96,7 +98,8 @@ fn status_look(kind: StatusKind) -> (&'static str, ratatui::style::Style) {
 /// Everything the footer shows
 pub(crate) struct Footer<'a> {
     pub(crate) status: Option<&'a Status>,
-    pub(crate) busy: bool,
+    /// The spinner frame to show (`None`: nothing is running)
+    pub(crate) spinner: Option<&'static str>,
     pub(crate) contexts: &'a [Context],
     pub(crate) unsaved: bool,
 }
@@ -104,20 +107,15 @@ pub(crate) struct Footer<'a> {
 /// Draw the footer: spinner, status message on the left, key hints on the
 /// right in whatever room the message leaves (hints are dropped whole, least
 /// important first).
-pub(crate) fn render_footer(
-    frame: &mut Frame,
-    area: Rect,
-    footer: &Footer,
-    throbber: &mut ThrobberState,
-) {
+pub(crate) fn render_footer(frame: &mut Frame, area: Rect, footer: &Footer) {
     let mut x = area.x;
     let mut width = usize::from(area.width);
-    if footer.busy && width >= 2 {
-        let spinner = Rect::new(x, area.y, 2, 1);
-        frame.render_stateful_widget(
-            Throbber::default().style(theme::warning()),
-            spinner,
-            throbber,
+    if let Some(spinner) = footer.spinner
+        && width >= 2
+    {
+        frame.render_widget(
+            Span::styled(spinner, theme::warning()),
+            Rect::new(x, area.y, 2, 1),
         );
         x += 2;
         width -= 2;
@@ -187,5 +185,5 @@ pub(crate) fn render_too_small(frame: &mut Frame, area: Rect) {
             theme::dim(),
         )),
     ];
-    crate::tui::screens::sinks::render_centered(frame, area, lines);
+    crate::tui::widgets::render_centered(frame, area, lines);
 }

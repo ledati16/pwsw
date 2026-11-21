@@ -190,7 +190,6 @@ pub struct DashboardRenderContext<'a> {
     /// Rendering records viewport sizes in it for scrolling
     pub screen_state: &'a mut DashboardScreen,
     pub daemon_running: bool,
-    pub window_count: usize,
     pub daemon_logs: &'a [String],
     pub windows: &'a [crate::ipc::WindowInfo],
     /// Active sinks from the last `PipeWire` snapshot (one has `is_default`)
@@ -296,7 +295,7 @@ fn render_daemon_card(
     lines.push(if ctx.daemon_running {
         Line::from(vec![
             Span::styled(
-                format!("{matched_count}/{}", ctx.window_count),
+                format!("{matched_count}/{}", ctx.windows.len()),
                 theme::bold(),
             ),
             Span::styled(" windows matched", theme::dim()),

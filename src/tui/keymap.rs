@@ -1,11 +1,10 @@
 //! The key bindings of the TUI, in one table.
 //!
-//! The help overlay is rendered from [`BINDINGS`] (and its section navigation
-//! counts rows of the same table), so documentation cannot drift from what the
-//! overlay shows. Each binding also lists the concrete key presses it documents;
-//! a test feeds every one of them to the input handler in the binding's context
-//! and fails if any does nothing, so documented keys cannot drift from the code
-//! either.
+//! The help overlay is rendered from [`BINDINGS`], so documentation cannot
+//! drift from what the overlay shows. Each binding also lists the concrete key
+//! presses it documents; a test feeds every one of them to the input handler in
+//! the binding's context and fails if any does nothing, so documented keys
+//! cannot drift from the code either.
 //!
 //! The footer's key hints come from the same table: a binding with a [`Hint`]
 //! shows it in the footer whenever its context is active (see [`footer_hints`]).
@@ -602,15 +601,14 @@ pub(crate) static BINDINGS: &[Binding] = &[
         (KeyCode::Char('?'), NONE),
     ])
     .hint("?", "help", 3),
-    b(Context::Help, "↑/↓", "Previous/next section", UP_DOWN).hint("↑/↓", "sections", 2),
-    b(Context::Help, "Space", "Collapse/expand section", SPACE).hint("Space", "fold", 3),
-    b(Context::Help, "PgUp/PgDn, Home/End", "Scroll help", &[
-        (KeyCode::PageUp, NONE),
-        (KeyCode::PageDown, NONE),
-        (KeyCode::Home, NONE),
-        (KeyCode::End, NONE),
-    ])
-    .hint("PgUp/PgDn", "scroll", 4),
+    b(Context::Help, "↑/↓", "Scroll one line", UP_DOWN).hint("↑/↓", "scroll", 2),
+    b(Context::Help, "PgUp/PgDn", "Scroll one page", PAGE),
+    b(
+        Context::Help,
+        "Home/End",
+        "Jump to the top/bottom",
+        HOME_END,
+    ),
     b(Context::Help, "Esc, q, F1, ?", "Close help", &[
         (KeyCode::Esc, NONE),
         (KeyCode::Char('q'), NONE),

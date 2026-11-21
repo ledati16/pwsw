@@ -5,35 +5,20 @@ use std::borrow::Cow;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{
-    Cell, Clear, HighlightSpacing, List, ListItem, ListState, Paragraph, Row, Table, TableState,
-};
+use ratatui::widgets::{Cell, ListItem, ListState, Paragraph, Row};
 use tui_input::Input;
 
-use crate::config::{Rule, SinkConfig};
-use crate::tui::editor_state::EditorState;
+use crate::config::{Rule, SinkConfig, compile_rule_regex};
 use crate::tui::preview::{MAX_SHOWN, PreviewView, build_preview_lines};
-use crate::tui::screens::sinks::render_centered;
+use crate::tui::screens::list::{
+    FormEditor, ListMode, ListScreen, open_editor_dialog, optional, render_delete_dialog,
+    render_discard_dialog, render_empty, render_table, table_columns,
+};
 use crate::tui::theme;
 use crate::tui::widgets::{
-    FieldValue, FormField, MAX_DIALOG_WIDTH, border_hints, column_widths, detail_lines,
-    dialog_block, ellipsize, modal_rect, open_dialog, picker_lines, render_form, render_scrollbar,
-    render_text_dialog, rounded_block, text_width,
+    FieldValue, FormField, MAX_DIALOG_WIDTH, detail_lines, ellipsize, pick_list_rect, picker_lines,
+    render_form, render_pick_list, render_text_dialog, rounded_block, text_width,
 };
-
-/// Rows of the rules table above the first rule (the header)
-const TABLE_HEADER_ROWS: u16 = 1;
-
-/// Rules screen mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RulesMode {
-    #[default]
-    List,
-    AddEdit,
-    Delete,
-    SelectSink, // Dropdown for sink selection
-    Inspect,
-}
 
 /// Field of the rule editor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -66,24 +51,20 @@ impl RuleField {
             Self::Notify => Self::Desc,
         }
     }
-
-    /// Whether the field is a text input
-    pub(crate) const fn is_text(self) -> bool {
-        matches!(self, Self::AppId | Self::Title | Self::Desc)
-    }
 }
 
-/// Editor state for add/edit modal
-#[derive(Debug, Clone)]
+/// The rule add/edit form
+#[derive(Debug, Clone, Default)]
 pub struct RuleEditor {
-    pub app_id_pattern: EditorState,
-    pub title_pattern: EditorState,
+    pub app_id_pattern: Input,
+    pub title_pattern: Input,
     pub sink_ref: String,
-    pub desc: EditorState,
+    pub desc: Input,
     pub notify: Option<bool>,
     pub focused_field: RuleField,
+    /// Sink highlighted in the target sink selector
     pub sink_dropdown_index: usize,
-    /// State for sink selector dropdown
+    /// Scroll state of the target sink selector
     pub sink_selector_state: ListState,
     /// App ID, title, sink, description and notify when the editor opened
     initial: RuleValues,
@@ -93,36 +74,6 @@ pub struct RuleEditor {
 type RuleValues = (String, String, String, String, Option<bool>);
 
 impl RuleEditor {
-    pub(crate) fn new() -> Self {
-        Self {
-            app_id_pattern: EditorState::new(),
-            title_pattern: EditorState::new(),
-            sink_ref: String::new(),
-            desc: EditorState::new(),
-            notify: None,
-            focused_field: RuleField::AppId,
-            sink_dropdown_index: 0,
-            sink_selector_state: ListState::default(),
-            initial: RuleValues::default(),
-        }
-    }
-
-    pub(crate) fn from_rule(rule: &Rule) -> Self {
-        let mut editor = Self {
-            app_id_pattern: EditorState::from_string(rule.app_id_pattern.clone()),
-            title_pattern: EditorState::from_string(rule.title_pattern.clone().unwrap_or_default()),
-            sink_ref: rule.sink_ref.clone(),
-            desc: EditorState::from_string(rule.desc.clone().unwrap_or_default()),
-            notify: rule.notify,
-            focused_field: RuleField::AppId,
-            sink_dropdown_index: 0,
-            sink_selector_state: ListState::default(),
-            initial: RuleValues::default(),
-        };
-        editor.initial = editor.values();
-        editor
-    }
-
     fn values(&self) -> RuleValues {
         (
             self.app_id_pattern.value().to_string(),
@@ -133,92 +84,102 @@ impl RuleEditor {
         )
     }
 
-    /// Whether anything was changed since the editor opened
-    pub(crate) fn is_modified(&self) -> bool {
+    /// The rule the form describes, its patterns compiled the way config
+    /// loading compiles them
+    ///
+    /// # Errors
+    /// When the app ID pattern or the target sink is missing, or a pattern is
+    /// not a valid regex
+    pub(crate) fn to_rule(&self) -> Result<Rule, String> {
+        let app_id = self.app_id_pattern.value();
+        if app_id.is_empty() {
+            return Err("App ID pattern is required".to_string());
+        }
+        if self.sink_ref.is_empty() {
+            return Err("Target sink is required".to_string());
+        }
+        let app_id_regex =
+            compile_rule_regex(app_id).map_err(|e| format!("Invalid app_id regex: {e}"))?;
+        let title_pattern = optional(&self.title_pattern);
+        let title_regex = title_pattern
+            .as_deref()
+            .map(compile_rule_regex)
+            .transpose()
+            .map_err(|e| format!("Invalid title regex: {e}"))?;
+        Ok(Rule {
+            app_id_regex,
+            title_regex,
+            sink_ref: self.sink_ref.clone(),
+            desc: optional(&self.desc),
+            notify: self.notify,
+            app_id_pattern: app_id.to_string(),
+            title_pattern,
+        })
+    }
+
+    /// Space on the Notify field: default → on → off → default
+    pub(crate) const fn cycle_notify(&mut self) {
+        self.notify = match self.notify {
+            None => Some(true),
+            Some(true) => Some(false),
+            Some(false) => None,
+        };
+    }
+}
+
+impl FormEditor for RuleEditor {
+    type Item = Rule;
+
+    fn blank() -> Self {
+        Self::default()
+    }
+
+    fn from_item(rule: &Rule) -> Self {
+        let mut editor = Self {
+            app_id_pattern: Input::new(rule.app_id_pattern.clone()),
+            title_pattern: Input::new(rule.title_pattern.clone().unwrap_or_default()),
+            sink_ref: rule.sink_ref.clone(),
+            desc: Input::new(rule.desc.clone().unwrap_or_default()),
+            notify: rule.notify,
+            ..Self::default()
+        };
+        editor.initial = editor.values();
+        editor
+    }
+
+    fn is_modified(&self) -> bool {
         self.values() != self.initial
     }
 
-    pub(crate) const fn next_field(&mut self) {
+    fn next_field(&mut self) {
         self.focused_field = self.focused_field.next();
     }
 
-    pub(crate) const fn prev_field(&mut self) {
+    fn prev_field(&mut self) {
         self.focused_field = self.focused_field.prev();
     }
 
-    /// The text input of the focused field (`None` on the selector and toggle)
-    pub(crate) const fn focused_input_mut(&mut self) -> Option<&mut Input> {
+    fn text_focused(&self) -> bool {
+        matches!(
+            self.focused_field,
+            RuleField::AppId | RuleField::Title | RuleField::Desc
+        )
+    }
+
+    fn focused_input_mut(&mut self) -> Option<&mut Input> {
         match self.focused_field {
-            RuleField::AppId => Some(&mut self.app_id_pattern.input),
-            RuleField::Title => Some(&mut self.title_pattern.input),
-            RuleField::Desc => Some(&mut self.desc.input),
+            RuleField::AppId => Some(&mut self.app_id_pattern),
+            RuleField::Title => Some(&mut self.title_pattern),
+            RuleField::Desc => Some(&mut self.desc),
             RuleField::Sink | RuleField::Notify => None,
         }
     }
 }
 
 /// Rules screen state
-#[derive(Debug)]
-pub struct RulesScreen {
-    pub mode: RulesMode,
-    pub selected: usize,
-    pub editor: RuleEditor,
-    pub editing_index: Option<usize>,
-    /// Table scroll state
-    pub state: TableState,
-    /// The editor asks "discard changes?" (Esc was pressed with edits)
-    pub confirm_discard: bool,
-}
+pub type RulesScreen = ListScreen<RuleEditor>;
 
 impl RulesScreen {
-    pub(crate) fn new() -> Self {
-        Self {
-            mode: RulesMode::List,
-            selected: 0,
-            editor: RuleEditor::new(),
-            editing_index: None,
-            state: TableState::default(),
-            confirm_discard: false,
-        }
-    }
-
-    pub(crate) const fn select_previous(&mut self, rule_count: usize) {
-        if rule_count > 0 && self.selected > 0 {
-            self.selected -= 1;
-        }
-    }
-
-    pub(crate) const fn select_next(&mut self, rule_count: usize) {
-        if rule_count > 0 && self.selected < rule_count - 1 {
-            self.selected += 1;
-        }
-    }
-
-    /// Keep the selection inside a list of `rule_count` rules.
-    pub(crate) const fn clamp_selection(&mut self, rule_count: usize) {
-        if self.selected >= rule_count {
-            self.selected = rule_count.saturating_sub(1);
-        }
-    }
-
-    pub(crate) fn start_add(&mut self) {
-        self.mode = RulesMode::AddEdit;
-        self.editor = RuleEditor::new();
-        self.editing_index = None;
-    }
-
-    pub(crate) fn start_edit(&mut self, rules: &[Rule]) {
-        if self.selected < rules.len() {
-            self.mode = RulesMode::AddEdit;
-            self.editor = RuleEditor::from_rule(&rules[self.selected]);
-            self.editing_index = Some(self.selected);
-        }
-    }
-
-    pub(crate) const fn start_delete(&mut self) {
-        self.mode = RulesMode::Delete;
-    }
-
     /// Open the target sink selector on the sink the rule currently targets.
     pub(crate) fn open_sink_selector(&mut self, sinks: &[SinkConfig]) {
         let current = &self.editor.sink_ref;
@@ -226,16 +187,7 @@ impl RulesScreen {
             .iter()
             .position(|s| s.desc == *current || s.name == *current)
             .unwrap_or(0);
-        self.mode = RulesMode::SelectSink;
-    }
-
-    pub(crate) const fn start_inspect(&mut self) {
-        self.mode = RulesMode::Inspect;
-    }
-
-    pub(crate) const fn cancel(&mut self) {
-        self.mode = RulesMode::List;
-        self.confirm_discard = false;
+        self.mode = ListMode::SelectSink;
     }
 }
 
@@ -259,8 +211,8 @@ pub fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext)
 
     // Overlay modal on top if active
     match ctx.screen_state.mode {
-        RulesMode::List => {}
-        RulesMode::AddEdit => {
+        ListMode::List => {}
+        ListMode::AddEdit => {
             render_editor(
                 frame,
                 area,
@@ -270,23 +222,33 @@ pub fn render_rules(frame: &mut Frame, area: Rect, ctx: &mut RulesRenderContext)
                 ctx.daemon_running,
             );
             if ctx.screen_state.confirm_discard {
-                render_text_dialog(
-                    frame,
-                    area,
-                    "Discard changes?",
-                    vec![Line::from("Your changes to this rule are not saved.")],
-                    &[("y", "discard"), ("n", "keep editing")],
-                );
+                render_discard_dialog(frame, area, "rule");
             }
         }
-        RulesMode::Delete => render_delete_confirmation(frame, area, ctx.rules, ctx.screen_state),
-        RulesMode::SelectSink => {
+        ListMode::Delete => {
+            if let Some(rule) = ctx.rules.get(ctx.screen_state.selected) {
+                let (title, any_title) = title_text(rule);
+                render_delete_dialog(frame, area, "Rule", &[
+                    ("App ID", &rule.app_id_pattern, false),
+                    ("Title", title, any_title),
+                    ("Sink", &rule.sink_ref, false),
+                ]);
+            }
+        }
+        ListMode::SelectSink => {
             render_sink_selector(frame, area, ctx.sinks, &mut ctx.screen_state.editor);
         }
-        RulesMode::Inspect => {
+        ListMode::Inspect => {
             render_inspect_popup(frame, area, ctx.rules, ctx.sinks, ctx.screen_state);
         }
     }
+}
+
+/// A rule's title pattern, or "any title" (a placeholder: `true`)
+fn title_text(rule: &Rule) -> (&str, bool) {
+    rule.title_pattern
+        .as_deref()
+        .map_or(("any title", true), |t| (t, false))
 }
 
 /// The description of the sink a rule's `sink_ref` names (or the reference itself)
@@ -316,8 +278,6 @@ fn render_list(
     let block = rounded_block().title(title);
 
     if rules.is_empty() {
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
         let lines = if sinks.is_empty() {
             vec![
                 Line::from(Span::styled("No rules yet", theme::bold())),
@@ -345,7 +305,7 @@ fn render_list(
                 )),
             ]
         };
-        render_centered(frame, inner, lines);
+        render_empty(frame, area, block, lines);
         return;
     }
 
@@ -358,8 +318,7 @@ fn render_list(
         Constraint::Fill(3),
         Constraint::Fill(2),
     ];
-    let selection = u16::try_from(text_width(theme::SELECTED_SYMBOL)).unwrap_or(2);
-    let cols = column_widths(&widths, area.width.saturating_sub(2), selection);
+    let cols = table_columns(&widths, area);
     let cut = |text: &str, col: usize| ellipsize(text, cols[col]).into_owned();
 
     let rows: Vec<Row> = rules
@@ -386,21 +345,14 @@ fn render_list(
         })
         .collect();
 
-    let table = Table::new(rows, widths)
-        .header(Row::new(vec!["#", "App ID", "Title", "Sink", "Description"]).style(theme::bold()))
-        .block(block)
-        .row_highlight_style(theme::selected())
-        .highlight_symbol(theme::SELECTED_SYMBOL)
-        .highlight_spacing(HighlightSpacing::Always);
-
-    screen_state.state.select(Some(screen_state.selected));
-    frame.render_stateful_widget(table, area, &mut screen_state.state);
-    render_scrollbar(
+    render_table(
         frame,
         area,
-        TABLE_HEADER_ROWS,
-        rules.len(),
-        screen_state.state.offset(),
+        block,
+        vec!["#", "App ID", "Title", "Sink", "Description"],
+        rows,
+        &widths,
+        screen_state,
     );
 }
 
@@ -424,10 +376,7 @@ fn render_inspect_popup(
     let Some(rule) = rules.get(screen_state.selected) else {
         return;
     };
-    let (title, any_title) = rule
-        .title_pattern
-        .as_deref()
-        .map_or(("any title", true), |t| (t, false));
+    let (title, any_title) = title_text(rule);
     let (desc, no_desc) = rule.desc.as_deref().map_or(("none", true), |d| (d, false));
     let lines = detail_lines(&[
         ("App ID", &rule.app_id_pattern, false),
@@ -460,11 +409,6 @@ fn render_editor(
     daemon_running: bool,
 ) {
     let editor = &screen_state.editor;
-    let title = if screen_state.editing_index.is_some() {
-        "Edit Rule"
-    } else {
-        "Add Rule"
-    };
     let focused = |field| editor.focused_field == field && !screen_state.confirm_discard;
     let hint = |field, text| focused(field).then(|| Span::styled(text, theme::dim()));
 
@@ -492,7 +436,7 @@ fn render_editor(
         FormField {
             label: "App ID",
             value: FieldValue::Text {
-                input: &editor.app_id_pattern.input,
+                input: &editor.app_id_pattern,
                 placeholder: Cow::Borrowed("regex, e.g. ^firefox$"),
             },
             trailing: validation_mark(editor.app_id_pattern.value(), preview.app_error.is_some()),
@@ -501,7 +445,7 @@ fn render_editor(
         FormField {
             label: "Title",
             value: FieldValue::Text {
-                input: &editor.title_pattern.input,
+                input: &editor.title_pattern,
                 placeholder: Cow::Borrowed("any title (optional regex)"),
             },
             trailing: validation_mark(editor.title_pattern.value(), preview.title_error.is_some()),
@@ -516,7 +460,7 @@ fn render_editor(
         FormField {
             label: "Description",
             value: FieldValue::Text {
-                input: &editor.desc.input,
+                input: &editor.desc,
                 placeholder: Cow::Borrowed("optional note"),
             },
             trailing: None,
@@ -537,10 +481,8 @@ fn render_editor(
     );
     // Fields, a separator row, the preview
     let wanted = FORM_ROWS + 1 + u16::try_from(preview_lines.len()).unwrap_or(u16::MAX) + 2;
-    let rect = modal_rect(area, MAX_DIALOG_WIDTH, wanted);
-    let block =
-        dialog_block(title).title_bottom(border_hints(&[("Enter", "save"), ("Esc", "cancel")]));
-    let inner = open_dialog(frame, rect, block);
+    let title = screen_state.editor_title("Rule");
+    let inner = open_editor_dialog(frame, area, &title, MAX_DIALOG_WIDTH, wanted);
 
     let form_rows = inner.height.min(FORM_ROWS);
     render_form(
@@ -632,36 +574,20 @@ fn render_sink_selector(
     sinks: &[SinkConfig],
     editor: &mut RuleEditor,
 ) {
-    let selection = text_width(theme::SELECTED_SYMBOL);
-    let widest = sinks
-        .iter()
-        .map(|s| text_width(&s.desc) + 2 + text_width(&s.name))
-        .max()
-        .unwrap_or(0);
-    let width = u16::try_from(widest + selection + 4)
-        .unwrap_or(u16::MAX)
-        .clamp(30, MAX_DIALOG_WIDTH);
-    let height = u16::try_from(sinks.len().max(1) + 2).unwrap_or(u16::MAX);
-    let rect = modal_rect(area, width, height);
-    let content_width = usize::from(rect.width.saturating_sub(4)).saturating_sub(selection);
-
     let entries: Vec<(&str, &str)> = sinks
         .iter()
         .map(|s| (s.desc.as_str(), s.name.as_str()))
         .collect();
+    let widest = entries
+        .iter()
+        .map(|(d, n)| text_width(d) + 2 + text_width(n))
+        .max()
+        .unwrap_or(0);
+    let (rect, content_width) = pick_list_rect(area, widest, sinks.len().max(1), 30);
     let items: Vec<ListItem> = picker_lines(&entries, content_width)
         .into_iter()
         .map(ListItem::new)
         .collect();
-
-    let block = dialog_block("Choose a Sink")
-        .title_bottom(border_hints(&[("Enter", "use"), ("Esc", "back")]));
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(theme::selected())
-        .highlight_symbol(theme::SELECTED_SYMBOL)
-        .highlight_spacing(HighlightSpacing::Always)
-        .scroll_padding(1);
 
     // Sync state (the sink list may have shrunk since the index was chosen)
     editor.sink_dropdown_index = editor
@@ -670,42 +596,12 @@ fn render_sink_selector(
     editor
         .sink_selector_state
         .select((!sinks.is_empty()).then_some(editor.sink_dropdown_index));
-    frame.render_widget(Clear, rect);
-    frame.render_stateful_widget(list, rect, &mut editor.sink_selector_state);
-    render_scrollbar(
+    render_pick_list(
         frame,
         rect,
-        0,
-        sinks.len(),
-        editor.sink_selector_state.offset(),
+        "Choose a Sink",
+        &[("Enter", "use"), ("Esc", "back")],
+        items,
+        &mut editor.sink_selector_state,
     );
-}
-
-/// Render delete confirmation
-fn render_delete_confirmation(
-    frame: &mut Frame,
-    area: Rect,
-    rules: &[Rule],
-    screen_state: &RulesScreen,
-) {
-    let Some(rule) = rules.get(screen_state.selected) else {
-        return;
-    };
-    let (title, any_title) = rule
-        .title_pattern
-        .as_deref()
-        .map_or(("any title", true), |t| (t, false));
-    let mut lines = vec![
-        Line::from(Span::styled("Delete this rule?", theme::bold())),
-        Line::from(""),
-    ];
-    lines.extend(detail_lines(&[
-        ("App ID", &rule.app_id_pattern, false),
-        ("Title", title, any_title),
-        ("Sink", &rule.sink_ref, false),
-    ]));
-    render_text_dialog(frame, area, "Delete Rule", lines, &[
-        ("Enter", "delete"),
-        ("Esc", "cancel"),
-    ]);
 }

@@ -14,8 +14,9 @@ use crate::config::Config;
 use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
 use crate::tui::app::{App, AppUpdate, BgCommand, SaveOutcome, Screen};
 use crate::tui::input::{handle_event, simulate_key_event};
-use crate::tui::screens::rules::{RuleField, RulesMode};
-use crate::tui::screens::sinks::{SinkField, SinksMode};
+use crate::tui::screens::list::ListMode;
+use crate::tui::screens::rules::RuleField;
+use crate::tui::screens::sinks::SinkField;
 
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
@@ -152,7 +153,7 @@ fn test_ctrl_c_asks_before_discarding_changes() {
     assert!(app.confirm_quit);
     simulate_key_event(&mut app, key(KeyCode::Esc));
     assert!(!app.confirm_quit);
-    assert_eq!(app.sinks_screen.mode, SinksMode::AddEdit);
+    assert_eq!(app.sinks_screen.mode, ListMode::AddEdit);
 
     // q while the prompt is up in an editor is text, not a confirmation
     simulate_key_event(&mut app, ctrl('c'));
@@ -179,7 +180,7 @@ fn test_paste_goes_into_focused_field_without_control_chars() {
     assert_eq!(app.rules_screen.editor.title_pattern.value(), "Firefoxq[x");
     assert_eq!(
         app.rules_screen.mode,
-        RulesMode::AddEdit,
+        ListMode::AddEdit,
         "newline did not save"
     );
     assert!(!app.should_quit);
@@ -196,7 +197,7 @@ fn test_paste_without_focused_field_is_ignored() {
 
     // List view: the paste must not act as key presses (x deletes, q quits)
     handle_event(&mut app, &Event::Paste("xq\n".to_string()));
-    assert_eq!(app.rules_screen.mode, RulesMode::List);
+    assert_eq!(app.rules_screen.mode, ListMode::List);
     assert!(!app.should_quit);
     assert_eq!(app.config, before);
 
@@ -303,10 +304,10 @@ fn test_rule_sink_dropdown_accepts_enter_and_survives_shrunk_list() {
     app.rules_screen.start_add();
     app.rules_screen.editor.focused_field = RuleField::Sink;
     simulate_key_event(&mut app, key(KeyCode::Char(' ')));
-    assert_eq!(app.rules_screen.mode, RulesMode::SelectSink);
+    assert_eq!(app.rules_screen.mode, ListMode::SelectSink);
     simulate_key_event(&mut app, key(KeyCode::Down));
     simulate_key_event(&mut app, key(KeyCode::Enter));
-    assert_eq!(app.rules_screen.mode, RulesMode::AddEdit);
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
     assert_eq!(app.rules_screen.editor.sink_ref, "d2");
 }
 

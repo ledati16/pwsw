@@ -1,268 +1,178 @@
 //! Help overlay - Context-aware keyboard shortcut reference
 //!
-//! Everything shown comes from [`crate::tui::keymap::BINDINGS`]; the row layout
-//! computed by [`help_layout`] is shared by rendering and section navigation.
-
-use std::collections::HashSet;
+//! A scrolled text view generated from [`crate::tui::keymap::BINDINGS`]: the
+//! current screen's bindings, then the text input and global ones.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Clear, Row, Table, TableState};
+use ratatui::widgets::{Clear, Paragraph};
 
 use crate::tui::app::Screen;
 use crate::tui::keymap::{BINDINGS, Binding, Context, REGEX_EXAMPLES};
 use crate::tui::theme;
-use crate::tui::widgets::{border_hints, dialog_block, modal_rect, render_scrollbar};
+use crate::tui::widgets::{
+    border_hints, dialog_block, modal_rect, render_scrollbar, text_width, wrap_line,
+};
 
 /// Widest the help overlay gets
 const HELP_WIDTH: u16 = 100;
 
-/// Width of the key column
-const KEY_COLUMN_WIDTH: u16 = 22;
+/// Width of the key column, and the gap after it
+const KEY_COLUMN_WIDTH: usize = 22;
+const KEY_GAP: usize = 2;
 
-/// Name of the shared text-input section
-const TEXT_INPUT_SECTION: &str = "Text Input Fields";
-/// Name of the shared global section
-const GLOBAL_SECTION: &str = "Global Shortcuts";
-
-/// One row of the help table.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum HelpRow {
-    /// Collapsible section header
-    Section { name: String, collapsed: bool },
-    /// Sub-heading or spacer inside a section
-    Hint(&'static str),
-    /// A key binding
-    Key(&'static str, &'static str),
+/// Scroll position of the help overlay. The page size and the scroll limit
+/// depend on the viewport, so rendering records them here.
+#[derive(Debug)]
+pub struct HelpScroll {
+    /// First line shown
+    pub offset: usize,
+    /// Lines of the viewport at the last render
+    page: usize,
+    /// Largest useful `offset` at the last render
+    max_offset: usize,
 }
 
-/// Name of the screen-specific section
-fn screen_section(screen: Screen) -> String {
-    format!("{} Screen", screen.name())
+impl HelpScroll {
+    pub(crate) const fn new() -> Self {
+        Self {
+            offset: 0,
+            page: 10,
+            max_offset: usize::MAX,
+        }
+    }
+
+    /// Lines one page scrolls by
+    pub(crate) const fn page(&self) -> usize {
+        if self.page == 0 { 1 } else { self.page }
+    }
+
+    pub(crate) const fn up(&mut self, lines: usize) {
+        self.offset = self.offset.saturating_sub(lines);
+    }
+
+    pub(crate) fn down(&mut self, lines: usize) {
+        self.offset = self.offset.saturating_add(lines).min(self.max_offset);
+    }
+
+    pub(crate) const fn scroll_to_end(&mut self) {
+        self.offset = self.max_offset;
+    }
 }
 
-fn push_bindings<'a>(rows: &mut Vec<HelpRow>, bindings: impl Iterator<Item = &'a Binding>) {
+/// A section heading
+fn section(name: &str) -> Line<'static> {
+    Line::from(Span::styled(
+        name.to_string(),
+        theme::bold().add_modifier(Modifier::UNDERLINED),
+    ))
+}
+
+/// A line in the description column (sub-heading)
+fn hint(text: &'static str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(" ".repeat(KEY_COLUMN_WIDTH + KEY_GAP)),
+        Span::styled(text, theme::dim()),
+    ])
+}
+
+/// `keys` in the key column, `description` wrapped in the description column
+fn key_lines(lines: &mut Vec<Line<'static>>, keys: &'static str, description: &str, width: usize) {
+    let indent = KEY_COLUMN_WIDTH + KEY_GAP;
+    for (i, row) in wrap_line(&Line::from(description), width.saturating_sub(indent))
+        .into_iter()
+        .enumerate()
+    {
+        let mut spans = if i == 0 {
+            let pad = indent.saturating_sub(text_width(keys)).max(1);
+            vec![Span::styled(keys, theme::key()), Span::raw(" ".repeat(pad))]
+        } else {
+            vec![Span::raw(" ".repeat(indent))]
+        };
+        spans.extend(row.spans);
+        lines.push(Line::from(spans));
+    }
+}
+
+/// Lines for `bindings`, a sub-heading above each context that has one
+fn push_bindings<'a>(
+    lines: &mut Vec<Line<'static>>,
+    bindings: impl Iterator<Item = &'a Binding>,
+    width: usize,
+) {
     let mut last_heading = None;
     for binding in bindings {
         let heading = binding.context.heading();
         if heading.is_some() && heading != last_heading {
-            rows.push(HelpRow::Hint(""));
-            rows.extend(heading.map(HelpRow::Hint));
+            lines.push(Line::from(""));
+            lines.extend(heading.map(hint));
         }
         last_heading = heading;
-        rows.push(HelpRow::Key(binding.keys, binding.description));
+        key_lines(lines, binding.keys, binding.description, width);
     }
 }
 
-/// The rows of the help overlay for `screen` with `collapsed` sections folded.
-fn help_layout(screen: Screen, collapsed: &HashSet<String>) -> Vec<HelpRow> {
-    let mut rows = Vec::new();
-    let section = |rows: &mut Vec<HelpRow>, name: String| -> bool {
-        let is_collapsed = collapsed.contains(&name);
-        rows.push(HelpRow::Section {
-            name,
-            collapsed: is_collapsed,
-        });
-        !is_collapsed
-    };
-
-    if section(&mut rows, screen_section(screen)) {
-        push_bindings(
-            &mut rows,
-            BINDINGS
-                .iter()
-                .filter(|b| b.context.screen() == Some(screen)),
-        );
-        if screen == Screen::Rules {
-            rows.push(HelpRow::Hint(""));
-            rows.push(HelpRow::Hint("Regex Examples:"));
-            rows.extend(REGEX_EXAMPLES.iter().map(|(p, d)| HelpRow::Key(p, d)));
+/// The help text for `screen`, `width` columns wide: the screen's bindings,
+/// then text input and global ones
+fn help_lines(screen: Screen, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![section(&format!("{} Screen", screen.name()))];
+    push_bindings(
+        &mut lines,
+        BINDINGS
+            .iter()
+            .filter(|b| b.context.screen() == Some(screen)),
+        width,
+    );
+    if screen == Screen::Rules {
+        lines.push(Line::from(""));
+        lines.push(hint("Regex Examples:"));
+        for (pattern, description) in REGEX_EXAMPLES {
+            key_lines(&mut lines, pattern, description, width);
         }
     }
-    if section(&mut rows, TEXT_INPUT_SECTION.to_string()) {
-        push_bindings(
-            &mut rows,
-            BINDINGS.iter().filter(|b| b.context == Context::TextInput),
-        );
-    }
-    if section(&mut rows, GLOBAL_SECTION.to_string()) {
-        push_bindings(
-            &mut rows,
-            BINDINGS
-                .iter()
-                .filter(|b| matches!(b.context, Context::Global | Context::Help)),
-        );
-    }
-    rows
-}
-
-/// Get the number of rows in the help content for a given screen
-pub fn get_help_row_count(current_screen: Screen, collapsed_sections: &HashSet<String>) -> usize {
-    help_layout(current_screen, collapsed_sections).len()
-}
-
-/// Get the maximum scroll offset for the help screen given viewport height
-pub fn get_help_max_offset(
-    current_screen: Screen,
-    collapsed_sections: &HashSet<String>,
-    viewport_height: usize,
-) -> usize {
-    get_help_row_count(current_screen, collapsed_sections).saturating_sub(viewport_height)
-}
-
-/// Find the next section header row index starting from current row
-pub fn find_next_section_header(
-    current_screen: Screen,
-    collapsed_sections: &HashSet<String>,
-    current_row: usize,
-) -> Option<usize> {
-    help_layout(current_screen, collapsed_sections)
-        .iter()
-        .enumerate()
-        .skip(current_row + 1)
-        .find(|(_, row)| matches!(row, HelpRow::Section { .. }))
-        .map(|(i, _)| i)
-}
-
-/// Find the previous section header row index starting from current row
-pub fn find_prev_section_header(
-    current_screen: Screen,
-    collapsed_sections: &HashSet<String>,
-    current_row: usize,
-) -> Option<usize> {
-    help_layout(current_screen, collapsed_sections)
-        .iter()
-        .enumerate()
-        .take(current_row)
-        .rev()
-        .find(|(_, row)| matches!(row, HelpRow::Section { .. }))
-        .map(|(i, _)| i)
-}
-
-/// Get the section name at a given row index if it's a section header
-pub fn get_section_at_row(
-    current_screen: Screen,
-    collapsed_sections: &HashSet<String>,
-    row_index: usize,
-) -> Option<String> {
-    match help_layout(current_screen, collapsed_sections)
-        .into_iter()
-        .nth(row_index)
-    {
-        Some(HelpRow::Section { name, .. }) => Some(name),
-        _ => None,
-    }
-}
-
-/// Word-wrap `text` to `width` columns; returns the text and its row count.
-fn wrap_text(text: &str, width: usize) -> (String, u16) {
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0;
-    for word in text.split_whitespace() {
-        let word_width = word.chars().count();
-        let space = usize::from(current_width != 0);
-        if current_width + space + word_width <= width || current_width == 0 {
-            if space > 0 {
-                current.push(' ');
-            }
-            current.push_str(word);
-            current_width += space + word_width;
-        } else {
-            lines.push(std::mem::take(&mut current));
-            current.push_str(word);
-            current_width = word_width;
-        }
-    }
-    lines.push(current);
-    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
-    (lines.join("\n"), height)
-}
-
-/// Turn the layout into table rows, wrapping descriptions to `desc_width`
-fn build_help_rows(layout: Vec<HelpRow>, desc_width: usize) -> Vec<Row<'static>> {
-    layout
-        .into_iter()
-        .map(|row| match row {
-            HelpRow::Section { name, collapsed } => {
-                let indicator = if collapsed { "›" } else { "▾" };
-                let action = if collapsed { "expand" } else { "collapse" };
-                let hint_style = theme::dim().add_modifier(Modifier::ITALIC);
-                Row::new(vec![
-                    Cell::from(Span::styled(
-                        format!("{indicator} {name}"),
-                        theme::bold().add_modifier(Modifier::UNDERLINED),
-                    )),
-                    Cell::from(Line::from(vec![
-                        Span::styled("Space", theme::key()),
-                        Span::styled(format!(" to {action}"), hint_style),
-                    ])),
-                ])
-            }
-            HelpRow::Hint(text) => Row::new(vec![
-                Cell::from(""),
-                Cell::from(Span::styled(text, theme::dim())),
-            ]),
-            HelpRow::Key(keys, description) => {
-                let (wrapped, height) = wrap_text(description, desc_width);
-                Row::new(vec![
-                    Cell::from(Span::styled(keys, theme::key())),
-                    Cell::from(wrapped),
-                ])
-                .height(height)
-            }
-        })
-        .collect()
+    lines.push(Line::from(""));
+    lines.push(section("Text Input Fields"));
+    push_bindings(
+        &mut lines,
+        BINDINGS.iter().filter(|b| b.context == Context::TextInput),
+        width,
+    );
+    lines.push(Line::from(""));
+    lines.push(section("Global Shortcuts"));
+    push_bindings(
+        &mut lines,
+        BINDINGS
+            .iter()
+            .filter(|b| matches!(b.context, Context::Global | Context::Help)),
+        width,
+    );
+    lines
 }
 
 /// Render help overlay on top of the current screen
-pub fn render_help(
-    frame: &mut Frame,
-    area: Rect,
-    current_screen: Screen,
-    scroll_state: &mut TableState,
-    viewport_height: &mut usize,
-    collapsed_sections: &HashSet<String>,
-) {
+pub fn render_help(frame: &mut Frame, area: Rect, screen: Screen, scroll: &mut HelpScroll) {
     // As wide as useful, as tall as the screen allows (it scrolls)
-    let popup_area = modal_rect(area, HELP_WIDTH, area.height);
+    let popup = modal_rect(area, HELP_WIDTH, area.height);
+    let block =
+        dialog_block("Help").title_bottom(border_hints(&[("↑/↓", "scroll"), ("Esc", "close")]));
+    let inner = block.inner(popup);
+    let lines = help_lines(screen, usize::from(inner.width));
 
-    // Clear background to prevent bleed-through from underlying screens
-    frame.render_widget(Clear, popup_area);
+    scroll.page = usize::from(inner.height);
+    scroll.max_offset = lines.len().saturating_sub(scroll.page);
+    scroll.offset = scroll.offset.min(scroll.max_offset);
 
-    // Description column width: border (2) + padding (2) + key column + spacing (2)
-    let desc_width = usize::from(
-        popup_area
-            .width
-            .saturating_sub(2 + 2 + KEY_COLUMN_WIDTH + 2),
-    )
-    .max(1);
-
-    let rows = build_help_rows(help_layout(current_screen, collapsed_sections), desc_width);
-    let total_rows = rows.len();
-
-    let table = Table::new(rows, [
-        Constraint::Length(KEY_COLUMN_WIDTH),
-        Constraint::Fill(1), // Description column (take remaining space and wrap)
-    ])
-    .block(
-        dialog_block("Help").title_bottom(border_hints(&[("↑/↓", "sections"), ("Esc", "close")])),
-    )
-    .column_spacing(2)
-    .row_highlight_style(theme::selected());
-
-    // Ensure a row is selected for cursor visibility
-    if scroll_state.selected().is_none() {
-        scroll_state.select(Some(0));
-    }
-
-    frame.render_stateful_widget(table, popup_area, scroll_state);
-
-    // Cache the viewport height for scroll handling
-    *viewport_height = usize::from(popup_area.height.saturating_sub(2));
-    render_scrollbar(frame, popup_area, 0, total_rows, scroll_state.offset());
+    let total = lines.len();
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((u16::try_from(scroll.offset).unwrap_or(u16::MAX), 0)),
+        popup,
+    );
+    render_scrollbar(frame, popup, 0, total, scroll.offset);
 }
 
 #[cfg(test)]
@@ -271,69 +181,57 @@ mod tests {
 
     use super::*;
 
-    fn sections(screen: Screen, collapsed: &HashSet<String>) -> Vec<(usize, String)> {
-        (0..get_help_row_count(screen, collapsed))
-            .filter_map(|row| get_section_at_row(screen, collapsed, row).map(|s| (row, s)))
-            .collect()
-    }
-
     #[test]
-    fn test_sections_follow_the_keymap() {
-        let none = HashSet::new();
+    fn test_help_shows_every_binding_of_the_screen() {
         for &screen in Screen::all() {
-            let found = sections(screen, &none);
-            let names: Vec<&str> = found.iter().map(|(_, n)| n.as_str()).collect();
-            assert_eq!(names, vec![
-                screen_section(screen).as_str(),
-                TEXT_INPUT_SECTION,
-                GLOBAL_SECTION
-            ]);
-
-            // The global section holds exactly the global and help bindings
-            let global_row = found[2].0;
-            let global_keys = BINDINGS
+            // Wide enough that no description wraps
+            let text: Vec<String> = help_lines(screen, 400)
                 .iter()
-                .filter(|b| matches!(b.context, Context::Global | Context::Help))
-                .count();
-            assert_eq!(
-                get_help_row_count(screen, &none) - global_row - 1,
-                global_keys,
-                "{screen:?}"
-            );
-
-            // Collapsing a section removes exactly its rows and keeps the others found
-            let mut collapsed = HashSet::new();
-            collapsed.insert(screen_section(screen));
-            let folded = sections(screen, &collapsed);
-            assert_eq!(folded[0], (0, screen_section(screen)));
-            assert_eq!(folded[1].0, 1);
-            assert_eq!(folded[2].1, GLOBAL_SECTION);
+                .map(ToString::to_string)
+                .collect();
+            let headings: Vec<&str> = text
+                .iter()
+                .filter(|l| {
+                    l.ends_with("Screen") || l.ends_with("Fields") || l.ends_with("Shortcuts")
+                })
+                .map(String::as_str)
+                .collect();
+            let screen_heading = format!("{} Screen", screen.name());
+            assert_eq!(headings, vec![
+                screen_heading.as_str(),
+                "Text Input Fields",
+                "Global Shortcuts"
+            ]);
+            let shown = BINDINGS.iter().filter(|b| {
+                b.context.screen() == Some(screen)
+                    || matches!(
+                        b.context,
+                        Context::TextInput | Context::Global | Context::Help
+                    )
+            });
+            for binding in shown {
+                assert!(
+                    text.iter()
+                        .any(|l| l.starts_with(binding.keys) && l.contains(binding.description)),
+                    "{screen:?}: {}",
+                    binding.keys
+                );
+            }
         }
     }
 
     #[test]
-    fn test_section_navigation() {
-        let none = HashSet::new();
-        let found = sections(Screen::Sinks, &none);
-        assert_eq!(
-            find_next_section_header(Screen::Sinks, &none, 0),
-            Some(found[1].0)
+    fn test_long_descriptions_wrap_under_the_description_column() {
+        let lines = help_lines(Screen::Dashboard, 60);
+        for line in &lines {
+            assert!(text_width(line.to_string().trim_end()) <= 60, "{line}");
+        }
+        let indent = " ".repeat(KEY_COLUMN_WIDTH + KEY_GAP);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.to_string().starts_with(&indent) && !l.to_string().trim().is_empty()),
+            "a wrapped continuation line"
         );
-        assert_eq!(
-            find_prev_section_header(Screen::Sinks, &none, found[2].0),
-            Some(found[1].0)
-        );
-        assert_eq!(find_prev_section_header(Screen::Sinks, &none, 0), None);
-        assert_eq!(
-            find_next_section_header(Screen::Sinks, &none, found[2].0),
-            None
-        );
-    }
-
-    #[test]
-    fn test_wrap_text() {
-        assert_eq!(wrap_text("aa bb cc", 5), ("aa bb\ncc".to_string(), 2));
-        assert_eq!(wrap_text("ääää ö", 4), ("ääää\nö".to_string(), 2));
-        assert_eq!(wrap_text("", 4), (String::new(), 1));
     }
 }

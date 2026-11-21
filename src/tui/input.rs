@@ -1,13 +1,14 @@
 //! Input handling for keyboard events
 
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use super::app::{App, BgCommand, DaemonAction, Screen, StatusKind};
-use super::screens::rules::{RuleField, RulesMode};
+use super::screens::list::{FormEditor, ListMode, ListScreen};
+use super::screens::rules::RuleField;
 use super::screens::settings::LOG_LEVELS;
-use super::screens::sinks::{SinkField, SinksMode, selector_names};
-use crate::config::{Rule, SinkConfig, compile_rule_regex};
+use super::screens::sinks::{SinkField, selector_names};
 
 /// Handle a single input event and update app state
 ///
@@ -47,8 +48,8 @@ pub fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event:
 fn is_modal_active(app: &App) -> bool {
     // Check screen-specific modals
     match app.current_screen {
-        Screen::Sinks => app.sinks_screen.mode != SinksMode::List,
-        Screen::Rules => app.rules_screen.mode != RulesMode::List,
+        Screen::Sinks => app.sinks_screen.mode != ListMode::List,
+        Screen::Rules => app.rules_screen.mode != ListMode::List,
         Screen::Settings => app.settings_screen.editing_log_level,
         Screen::Dashboard => false,
     }
@@ -117,144 +118,26 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
 
     // Help overlay input (blocks everything else)
     if app.show_help {
-        // One page = the help viewport measured at the last render
-        let page = app.help_viewport_height.max(1);
+        let help = &mut app.help;
         match key.code {
-            KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?' | 'q') => {
-                app.show_help = false;
-            }
-            KeyCode::Char(' ') => {
-                // Toggle section at current selected row
-                if let Some(selected_row) = app.help_scroll_state.selected()
-                    && let Some(section_name) = crate::tui::screens::help::get_section_at_row(
-                        app.current_screen,
-                        &app.help_collapsed_sections,
-                        selected_row,
-                    )
-                {
-                    if app.help_collapsed_sections.contains(&section_name) {
-                        app.help_collapsed_sections.remove(&section_name);
-                    } else {
-                        app.help_collapsed_sections.insert(section_name);
-                    }
-                    app.dirty = true;
-                }
-            }
-            KeyCode::Up => {
-                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                if let Some(prev_section) = crate::tui::screens::help::find_prev_section_header(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                    current_selected,
-                ) {
-                    app.help_scroll_state.select(Some(prev_section));
-
-                    // Adjust scroll offset if cursor moves above viewport
-                    let current_offset = app.help_scroll_state.offset();
-                    if prev_section < current_offset {
-                        *app.help_scroll_state.offset_mut() = prev_section;
-                    }
-                }
-            }
-            KeyCode::Down => {
-                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                if let Some(next_section) = crate::tui::screens::help::find_next_section_header(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                    current_selected,
-                ) {
-                    app.help_scroll_state.select(Some(next_section));
-
-                    // Adjust scroll offset if cursor moves below viewport
-                    let current_offset = app.help_scroll_state.offset();
-                    let viewport_bottom = current_offset + app.help_viewport_height;
-                    if next_section >= viewport_bottom {
-                        *app.help_scroll_state.offset_mut() = current_offset + 1;
-                    }
-                }
-            }
-            KeyCode::Home => {
-                // Jump to first section header (row 0)
-                app.reset_help_scroll();
-            }
-            KeyCode::End => {
-                let row_count = crate::tui::screens::help::get_help_row_count(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                );
-
-                // Find last section header by searching backwards from end
-                let mut last_section = row_count.saturating_sub(1);
-                for row in (0..row_count).rev() {
-                    if crate::tui::screens::help::get_section_at_row(
-                        app.current_screen,
-                        &app.help_collapsed_sections,
-                        row,
-                    )
-                    .is_some()
-                    {
-                        last_section = row;
-                        break;
-                    }
-                }
-
-                app.help_scroll_state.select(Some(last_section));
-
-                let max_offset = crate::tui::screens::help::get_help_max_offset(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                    app.help_viewport_height,
-                );
-                *app.help_scroll_state.offset_mut() = max_offset;
-            }
-            KeyCode::PageUp => {
-                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                let new_selected = current_selected.saturating_sub(page);
-                app.help_scroll_state.select(Some(new_selected));
-
-                let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_sub(page);
-                *app.help_scroll_state.offset_mut() = new_offset;
-            }
-            KeyCode::PageDown => {
-                let row_count = crate::tui::screens::help::get_help_row_count(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                );
-                let current_selected = app.help_scroll_state.selected().unwrap_or(0);
-                let new_selected = current_selected
-                    .saturating_add(page)
-                    .min(row_count.saturating_sub(1));
-                app.help_scroll_state.select(Some(new_selected));
-
-                let max_offset = crate::tui::screens::help::get_help_max_offset(
-                    app.current_screen,
-                    &app.help_collapsed_sections,
-                    app.help_viewport_height,
-                );
-                let current_offset = app.help_scroll_state.offset();
-                let new_offset = current_offset.saturating_add(page).min(max_offset);
-                *app.help_scroll_state.offset_mut() = new_offset;
-            }
+            KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('?' | 'q') => app.show_help = false,
+            KeyCode::Up => help.up(1),
+            KeyCode::Down => help.down(1),
+            KeyCode::PageUp => help.up(help.page()),
+            KeyCode::PageDown => help.down(help.page()),
+            KeyCode::Home => help.offset = 0,
+            KeyCode::End => help.scroll_to_end(),
             _ => {}
         }
-        app.dirty = true;
         return;
     }
 
     // If a modal is active (other than help), pass most keys to screen-specific handlers
     if is_modal_active(app) {
         match key.code {
-            // F1: Toggle help overlay (global)
-            KeyCode::F(1) => {
-                app.show_help = true;
-                app.reset_help_scroll();
-            }
-            // ? opens help over a modal too, unless it is being typed into a field
-            KeyCode::Char('?') if !app.is_input_focused() => {
-                app.show_help = true;
-                app.reset_help_scroll();
-            }
+            // F1 opens help over a modal; so does ?, unless it is typed into a field
+            KeyCode::F(1) => app.open_help(),
+            KeyCode::Char('?') if !app.is_input_focused() => app.open_help(),
             _ => handle_screen_specific_input(app, key),
         }
         return;
@@ -291,18 +174,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         // Escape: clear status message
         (KeyCode::Esc, KeyModifiers::NONE) => app.clear_status(),
 
-        // F1: Always toggle help overlay (global)
-        (KeyCode::F(1), _) => {
-            app.show_help = true;
-            app.reset_help_scroll();
-        }
-
-        // ?: Toggle help overlay (only if no input focused)
+        // F1, or ? while no text field has focus: help overlay
+        (KeyCode::F(1), _) => app.open_help(),
         (KeyCode::Char('?'), KeyModifiers::NONE | KeyModifiers::SHIFT)
             if !app.is_input_focused() =>
         {
-            app.show_help = true;
-            app.reset_help_scroll();
+            app.open_help();
         }
 
         // Screen-specific input
@@ -420,128 +297,174 @@ fn handle_settings_input(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// What a key on the sink or rule list asks of the config
+enum ListKey {
+    /// Nothing more to do
+    Done,
+    /// Move item `from` to `to`
+    Move { from: usize, to: usize },
+    /// Remove item `index` (the delete dialog was confirmed)
+    Delete(usize),
+    /// Not a shared key: the screen handles it
+    Unhandled,
+}
+
+/// The keys the sink and rule screens share: list navigation, add/edit/delete,
+/// the delete and details dialogs.
+fn list_keys<E: FormEditor>(
+    screen: &mut ListScreen<E>,
+    items: &[E::Item],
+    key: KeyEvent,
+) -> ListKey {
+    let len = items.len();
+    match (screen.mode, key.code, key.modifiers) {
+        (ListMode::List, KeyCode::Up, KeyModifiers::NONE) => screen.select_previous(),
+        (ListMode::List, KeyCode::Down, KeyModifiers::NONE) => screen.select_next(len),
+        (ListMode::List, KeyCode::Up, KeyModifiers::SHIFT) if screen.selected > 0 => {
+            if screen.selected < len {
+                return ListKey::Move {
+                    from: screen.selected,
+                    to: screen.selected - 1,
+                };
+            }
+        }
+        (ListMode::List, KeyCode::Down, KeyModifiers::SHIFT) if screen.selected + 1 < len => {
+            return ListKey::Move {
+                from: screen.selected,
+                to: screen.selected + 1,
+            };
+        }
+        (ListMode::List, KeyCode::Char('a'), KeyModifiers::NONE) => screen.start_add(),
+        (ListMode::List, KeyCode::Char('e'), KeyModifiers::NONE) => screen.start_edit(items),
+        // 'x' for delete (avoids conflict with Dashboard shortcut 'd')
+        (ListMode::List, KeyCode::Char('x'), KeyModifiers::NONE) if len > 0 => {
+            screen.start_delete();
+        }
+        (ListMode::List, KeyCode::Enter, KeyModifiers::NONE) if len > 0 => screen.start_inspect(),
+        (ListMode::Delete, KeyCode::Enter, _) => {
+            screen.cancel();
+            if screen.selected < len {
+                return ListKey::Delete(screen.selected);
+            }
+        }
+        (ListMode::Delete, KeyCode::Esc, _)
+        | (ListMode::Inspect, KeyCode::Enter | KeyCode::Esc, _) => screen.cancel(),
+        _ => return ListKey::Unhandled,
+    }
+    ListKey::Done
+}
+
+/// Report the result of moving the selected sink or rule `what` to `to`
+fn moved(app: &mut App, result: color_eyre::Result<()>, what: &str, to: usize) {
+    match result {
+        Ok(()) => {
+            match app.current_screen {
+                Screen::Sinks => app.sinks_screen.selected = to,
+                Screen::Rules => app.rules_screen.selected = to,
+                Screen::Dashboard | Screen::Settings => {}
+            }
+            app.mark_dirty();
+        }
+        Err(e) => app.set_status(StatusKind::Error, format!("Cannot move {what}: {e}")),
+    }
+}
+
+/// Report the result of a config change made from a form or dialog: `done`
+/// on success, the reason (keeping the form open) on failure
+fn changed(app: &mut App, result: color_eyre::Result<()>, done: &str) -> bool {
+    match result {
+        Ok(()) => {
+            app.mark_dirty();
+            app.set_status(StatusKind::Success, done);
+            true
+        }
+        Err(e) => {
+            app.set_status(StatusKind::Warning, format!("{e}"));
+            false
+        }
+    }
+}
+
+/// Answer to the "discard changes?" question: `Some(true)` discard, `Some(false)`
+/// keep editing, `None` for any other key (ignored).
+const fn discard_answer(key: KeyEvent) -> Option<bool> {
+    match key.code {
+        KeyCode::Char('y' | 'Y') => Some(true),
+        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
+        _ => None,
+    }
+}
+
+/// The keys every form handles alike: the discard question, switching fields,
+/// Esc and typing into the focused field. Space and Enter are left to the
+/// form's own handler (returns `false`).
+fn form_keys<E: FormEditor>(screen: &mut ListScreen<E>, key: KeyEvent) -> bool {
+    if screen.confirm_discard {
+        match discard_answer(key) {
+            Some(true) => screen.cancel(),
+            Some(false) => screen.confirm_discard = false,
+            None => {}
+        }
+        return true;
+    }
+    match key.code {
+        KeyCode::Up | KeyCode::BackTab => screen.editor.prev_field(),
+        KeyCode::Down | KeyCode::Tab => screen.editor.next_field(),
+        KeyCode::Esc => screen.close_editor(),
+        KeyCode::Char(' ') | KeyCode::Enter => return false,
+        // Selectors and toggles only respond to Space
+        _ => type_key(&mut screen.editor, key),
+    }
+    true
+}
+
+/// Type `key` into the focused text field of `editor`, if any
+fn type_key<E: FormEditor>(editor: &mut E, key: KeyEvent) {
+    if let Some(input) = editor.focused_input_mut() {
+        input.handle_event(&Event::Key(key));
+    }
+}
+
 /// Handle sinks screen input
-// Sinks screen input handling - modal and list modes with many keybindings
 fn handle_sinks_input(app: &mut App, key: KeyEvent) {
-    match app.sinks_screen.mode {
-        SinksMode::List => {
-            match (key.code, key.modifiers) {
-                (KeyCode::Up, KeyModifiers::NONE) => {
-                    app.sinks_screen.select_previous(app.config.sinks.len());
-                }
-                (KeyCode::Down, KeyModifiers::NONE) => {
-                    app.sinks_screen.select_next(app.config.sinks.len());
-                }
-                // Shift+Up: Move sink up in list
-                (KeyCode::Up, KeyModifiers::SHIFT) => {
-                    let idx = app.sinks_screen.selected;
-                    if idx > 0 && idx < app.config.sinks.len() {
-                        match app.config.move_sink(idx, idx - 1) {
-                            Ok(()) => {
-                                app.sinks_screen.selected = idx - 1;
-                                app.mark_dirty();
-                            }
-                            Err(e) => {
-                                app.set_status(StatusKind::Error, format!("Cannot move sink: {e}"));
-                            }
-                        }
+    match list_keys(&mut app.sinks_screen, &app.config.sinks, key) {
+        ListKey::Done => {}
+        ListKey::Move { from, to } => {
+            let result = app.config.move_sink(from, to);
+            moved(app, result, "sink", to);
+        }
+        ListKey::Delete(index) => {
+            // Refuses (with the referencing rules named) if any rule uses it
+            let result = app.config.remove_sink(index);
+            app.sinks_screen.clamp_selection(app.config.sinks.len());
+            changed(app, result, "Sink deleted");
+        }
+        ListKey::Unhandled => match app.sinks_screen.mode {
+            // Space: make the selected sink the fallback
+            ListMode::List if key.code == KeyCode::Char(' ') && key.modifiers.is_empty() => {
+                let idx = app.sinks_screen.selected;
+                if idx < app.config.sinks.len() {
+                    match app.config.set_default_sink(idx) {
+                        Ok(()) => app.mark_dirty(),
+                        Err(e) => app.set_status(
+                            StatusKind::Error,
+                            format!("Cannot make it the fallback: {e}"),
+                        ),
                     }
                 }
-                // Shift+Down: Move sink down in list
-                (KeyCode::Down, KeyModifiers::SHIFT) => {
-                    let idx = app.sinks_screen.selected;
-                    if idx + 1 < app.config.sinks.len() {
-                        match app.config.move_sink(idx, idx + 1) {
-                            Ok(()) => {
-                                app.sinks_screen.selected = idx + 1;
-                                app.mark_dirty();
-                            }
-                            Err(e) => {
-                                app.set_status(StatusKind::Error, format!("Cannot move sink: {e}"));
-                            }
-                        }
-                    }
+            }
+            ListMode::AddEdit => handle_sink_editor_input(app, key),
+            ListMode::SelectSink => match key.code {
+                KeyCode::Up | KeyCode::Down => {
+                    // The lists are replaced by every poll: move by node name
+                    let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
+                    app.sinks_screen
+                        .move_selector(&names, key.code == KeyCode::Down);
                 }
-                (KeyCode::Char('a'), KeyModifiers::NONE) => {
-                    app.sinks_screen.start_add();
-                }
-                (KeyCode::Char('e'), KeyModifiers::NONE) => {
-                    app.sinks_screen.start_edit(&app.config.sinks);
-                }
-                (KeyCode::Char('x'), KeyModifiers::NONE) => {
-                    // 'x' for delete (avoids conflict with Dashboard shortcut 'd')
-                    if !app.config.sinks.is_empty() {
-                        app.sinks_screen.start_delete();
-                    }
-                }
-                (KeyCode::Char(' '), KeyModifiers::NONE) => {
-                    // Toggle default status
-                    let idx = app.sinks_screen.selected;
-                    if idx < app.config.sinks.len() {
-                        match app.config.set_default_sink(idx) {
-                            Ok(()) => {
-                                app.mark_dirty();
-                            }
-                            Err(e) => app.set_status(
-                                StatusKind::Error,
-                                format!("Cannot make it the fallback: {e}"),
-                            ),
-                        }
-                    }
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) if !app.config.sinks.is_empty() => {
-                    app.sinks_screen.start_inspect();
-                }
+                KeyCode::Char(' ') | KeyCode::Enter => pick_selected_node(app),
+                KeyCode::Esc => app.sinks_screen.mode = ListMode::AddEdit,
                 _ => {}
-            }
-        }
-        SinksMode::AddEdit => {
-            handle_sink_editor_input(app, key);
-        }
-        SinksMode::Delete => {
-            match key.code {
-                KeyCode::Enter => {
-                    // Confirm deletion
-                    let idx = app.sinks_screen.selected;
-                    if idx < app.config.sinks.len() {
-                        // Refuses (with the referencing rules named) if any rule uses it
-                        if let Err(e) = app.config.remove_sink(idx) {
-                            app.set_status(StatusKind::Warning, format!("{e}"));
-                            app.sinks_screen.cancel();
-                            return;
-                        }
-
-                        app.sinks_screen.clamp_selection(app.config.sinks.len());
-
-                        app.mark_dirty();
-                        app.set_status(StatusKind::Success, "Sink deleted");
-                    }
-                    app.sinks_screen.cancel();
-                }
-                KeyCode::Esc => {
-                    app.sinks_screen.cancel();
-                }
-                _ => {}
-            }
-        }
-        SinksMode::SelectSink => match key.code {
-            KeyCode::Up | KeyCode::Down => {
-                // The lists are replaced by every poll: move by node name
-                let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
-                app.sinks_screen
-                    .move_selector(&names, key.code == KeyCode::Down);
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => pick_selected_node(app),
-            KeyCode::Esc => {
-                // Cancel and return to editor
-                app.sinks_screen.mode = SinksMode::AddEdit;
-            }
-            _ => {}
-        },
-        SinksMode::Inspect => match key.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                app.sinks_screen.cancel();
-            }
+            },
             _ => {}
         },
     }
@@ -552,7 +475,7 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
 /// The node is looked up by name in the current lists, so a list refresh while
 /// the selector was open cannot substitute a different node.
 fn pick_selected_node(app: &mut App) {
-    let Some(node) = app.sinks_screen.selector_node.clone() else {
+    let Some(node) = app.sinks_screen.editor.selector_node.clone() else {
         app.set_status(StatusKind::Warning, "No node selected");
         return;
     };
@@ -574,245 +497,87 @@ fn pick_selected_node(app: &mut App) {
         );
         return;
     };
-    app.sinks_screen.editor.name.set_value(node);
-    app.sinks_screen.editor.desc.set_value(description);
-    app.sinks_screen.mode = SinksMode::AddEdit;
-}
-
-/// Answer to the "discard changes?" question: `Some(true)` discard, `Some(false)`
-/// keep editing, `None` for any other key (ignored).
-const fn discard_answer(key: KeyEvent) -> Option<bool> {
-    match key.code {
-        KeyCode::Char('y' | 'Y') => Some(true),
-        KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(false),
-        _ => None,
-    }
+    app.sinks_screen.editor.name = Input::new(node);
+    app.sinks_screen.editor.desc = Input::new(description);
+    app.sinks_screen.mode = ListMode::AddEdit;
 }
 
 /// Handle sink editor input (add/edit modal)
 fn handle_sink_editor_input(app: &mut App, key: KeyEvent) {
-    if app.sinks_screen.confirm_discard {
-        match discard_answer(key) {
-            Some(true) => app.sinks_screen.cancel(),
-            Some(false) => app.sinks_screen.confirm_discard = false,
-            None => {}
-        }
+    if form_keys(&mut app.sinks_screen, key) {
         return;
     }
-    match key.code {
-        // --- Navigation (Field Switching) ---
-        KeyCode::Up => {
-            // Move focus to previous field in the editor (arrow up behaves like Shift+Tab)
-            app.sinks_screen.editor.prev_field();
+    let editor = &mut app.sinks_screen.editor;
+    match (key.code, editor.focused_field) {
+        (KeyCode::Char(' '), SinkField::Name) => {
+            let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
+            app.sinks_screen.open_selector(&names);
         }
-        KeyCode::Down => {
-            // Move focus to next field in the editor (arrow down behaves like Tab)
-            app.sinks_screen.editor.next_field();
-        }
-        KeyCode::Tab => {
-            app.sinks_screen.editor.next_field();
-        }
-        KeyCode::BackTab => {
-            app.sinks_screen.editor.prev_field();
-        }
-
-        // --- Field Actions (Space) ---
-        KeyCode::Char(' ') => match app.sinks_screen.editor.focused_field {
-            SinkField::Name => {
-                // Open the node selector on the Name field
-                let names = selector_names(&app.active_sink_list, &app.profile_sink_list);
-                app.sinks_screen.open_selector(&names);
-            }
-            SinkField::Default => app.sinks_screen.editor.default.toggle(),
-            SinkField::Desc | SinkField::Icon => {
-                // Text fields: type a space
-                if let Some(input) = app.sinks_screen.editor.focused_input_mut() {
-                    input.handle_event(&Event::Key(key));
-                }
-            }
-        },
-
-        // --- Actions (Save/Cancel) ---
-        KeyCode::Enter => {
-            // Save the sink
-            if app.sinks_screen.editor.name.value().is_empty()
-                || app.sinks_screen.editor.desc.value().is_empty()
-            {
-                app.set_status(StatusKind::Warning, "Node and Description are required");
-                return;
-            }
-
-            let new_sink = SinkConfig {
-                name: app.sinks_screen.editor.name.value().to_string(),
-                desc: app.sinks_screen.editor.desc.value().to_string(),
-                icon: if app.sinks_screen.editor.icon.value().is_empty() {
-                    None
-                } else {
-                    Some(app.sinks_screen.editor.icon.value().to_string())
-                },
-                default: app.sinks_screen.editor.default,
+        (KeyCode::Char(' '), SinkField::Default) => editor.default.toggle(),
+        (KeyCode::Char(' '), _) => type_key(editor, key),
+        (KeyCode::Enter, _) => {
+            let sink = match editor.to_sink() {
+                Ok(sink) => sink,
+                Err(e) => return app.set_status(StatusKind::Warning, e),
             };
-
-            // The config methods keep the invariants: exactly one default (the first sink
-            // added becomes it), unique names/descs, and rules following renames.
-            let result = if let Some(idx) = app.sinks_screen.editing_index {
-                app.config
-                    .update_sink(idx, new_sink)
-                    .map(|()| "Sink updated")
-            } else {
-                app.config.add_sink(new_sink).map(|()| "Sink added")
+            // The config methods keep the invariants: exactly one default (the first
+            // sink added becomes it), unique names/descs, and rules following renames.
+            let (result, done) = match app.sinks_screen.editing_index {
+                Some(idx) => (app.config.update_sink(idx, sink), "Sink updated"),
+                None => (app.config.add_sink(sink), "Sink added"),
             };
-            match result {
-                Ok(msg) => app.set_status(StatusKind::Success, msg),
-                Err(e) => {
-                    // Keep the editor open so the user can fix the input
-                    app.set_status(StatusKind::Warning, format!("{e}"));
-                    return;
-                }
-            }
-
-            app.mark_dirty();
-            app.sinks_screen.cancel();
-        }
-        KeyCode::Esc => {
-            if app.sinks_screen.editor.is_modified() {
-                app.sinks_screen.confirm_discard = true;
-            } else {
+            if changed(app, result, done) {
                 app.sinks_screen.cancel();
             }
         }
-        // --- Field Specific Input (the Default checkbox only responds to Space) ---
-        _ => {
-            if let Some(input) = app.sinks_screen.editor.focused_input_mut() {
-                input.handle_event(&Event::Key(key));
-            }
-        }
+        _ => {}
     }
 }
 
 /// Handle rules screen input
 fn handle_rules_input(app: &mut App, key: KeyEvent) {
-    match app.rules_screen.mode {
-        RulesMode::List => {
-            match (key.code, key.modifiers) {
-                (KeyCode::Up, KeyModifiers::NONE) => {
-                    app.rules_screen.select_previous(app.config.rules.len());
-                }
-                (KeyCode::Down, KeyModifiers::NONE) => {
-                    app.rules_screen.select_next(app.config.rules.len());
-                }
-                // Shift+Up: Move rule up in list
-                (KeyCode::Up, KeyModifiers::SHIFT) => {
-                    let idx = app.rules_screen.selected;
-                    if idx > 0 && idx < app.config.rules.len() {
-                        match app.config.move_rule(idx, idx - 1) {
-                            Ok(()) => {
-                                app.rules_screen.selected = idx - 1;
-                                app.mark_dirty();
-                            }
-                            Err(e) => {
-                                app.set_status(StatusKind::Error, format!("Cannot move rule: {e}"));
-                            }
+    // Rules need a sink to send windows to
+    if app.rules_screen.mode == ListMode::List
+        && key.modifiers.is_empty()
+        && matches!(key.code, KeyCode::Char('a' | 'e'))
+        && app.config.sinks.is_empty()
+    {
+        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
+        return;
+    }
+    match list_keys(&mut app.rules_screen, &app.config.rules, key) {
+        ListKey::Done => {}
+        ListKey::Move { from, to } => {
+            let result = app.config.move_rule(from, to);
+            moved(app, result, "rule", to);
+        }
+        ListKey::Delete(index) => {
+            let result = app.config.remove_rule(index);
+            app.rules_screen.clamp_selection(app.config.rules.len());
+            changed(app, result, "Rule deleted");
+        }
+        ListKey::Unhandled => match app.rules_screen.mode {
+            ListMode::AddEdit => handle_rule_editor_input(app, key),
+            ListMode::SelectSink => {
+                let editor = &mut app.rules_screen.editor;
+                match key.code {
+                    KeyCode::Up => {
+                        editor.sink_dropdown_index = editor.sink_dropdown_index.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        if editor.sink_dropdown_index + 1 < app.config.sinks.len() {
+                            editor.sink_dropdown_index += 1;
                         }
                     }
-                }
-                // Shift+Down: Move rule down in list
-                (KeyCode::Down, KeyModifiers::SHIFT) => {
-                    let idx = app.rules_screen.selected;
-                    if idx + 1 < app.config.rules.len() {
-                        match app.config.move_rule(idx, idx + 1) {
-                            Ok(()) => {
-                                app.rules_screen.selected = idx + 1;
-                                app.mark_dirty();
-                            }
-                            Err(e) => {
-                                app.set_status(StatusKind::Error, format!("Cannot move rule: {e}"));
-                            }
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        if let Some(sink) = app.config.sinks.get(editor.sink_dropdown_index) {
+                            editor.sink_ref.clone_from(&sink.desc);
                         }
+                        app.rules_screen.mode = ListMode::AddEdit;
                     }
+                    KeyCode::Esc => app.rules_screen.mode = ListMode::AddEdit,
+                    _ => {}
                 }
-                (KeyCode::Char('a'), KeyModifiers::NONE) => {
-                    // Rules require sinks to reference
-                    if app.config.sinks.is_empty() {
-                        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
-                        return;
-                    }
-                    app.rules_screen.start_add();
-                }
-                (KeyCode::Char('e'), KeyModifiers::NONE) => {
-                    // Rules require sinks to reference
-                    if app.config.sinks.is_empty() {
-                        app.set_status(StatusKind::Warning, "Add a sink first (2 Sinks → a)");
-                        return;
-                    }
-                    app.rules_screen.start_edit(&app.config.rules);
-                }
-                (KeyCode::Char('x'), KeyModifiers::NONE) => {
-                    // 'x' for delete (avoids conflict with Dashboard shortcut 'd')
-                    if !app.config.rules.is_empty() {
-                        app.rules_screen.start_delete();
-                    }
-                }
-                (KeyCode::Enter, KeyModifiers::NONE) if !app.config.rules.is_empty() => {
-                    app.rules_screen.start_inspect();
-                }
-                _ => {}
-            }
-        }
-        RulesMode::AddEdit => {
-            handle_rule_editor_input(app, key);
-        }
-        RulesMode::Delete => match key.code {
-            KeyCode::Enter => {
-                let idx = app.rules_screen.selected;
-                if idx < app.config.rules.len() {
-                    if let Err(e) = app.config.remove_rule(idx) {
-                        app.set_status(StatusKind::Warning, format!("{e}"));
-                        app.rules_screen.cancel();
-                        return;
-                    }
-
-                    app.rules_screen.clamp_selection(app.config.rules.len());
-
-                    app.mark_dirty();
-                    app.set_status(StatusKind::Success, "Rule deleted");
-                }
-                app.rules_screen.cancel();
-            }
-            KeyCode::Esc => {
-                app.rules_screen.cancel();
-            }
-            _ => {}
-        },
-        RulesMode::SelectSink => match key.code {
-            KeyCode::Up => {
-                if app.rules_screen.editor.sink_dropdown_index > 0 {
-                    app.rules_screen.editor.sink_dropdown_index -= 1;
-                }
-            }
-            KeyCode::Down => {
-                // Use saturating_sub to prevent underflow when sinks is empty
-                // (shouldn't happen due to guards, but defensive)
-                let max_idx = app.config.sinks.len().saturating_sub(1);
-                if app.rules_screen.editor.sink_dropdown_index < max_idx {
-                    app.rules_screen.editor.sink_dropdown_index += 1;
-                }
-            }
-            KeyCode::Char(' ') | KeyCode::Enter => {
-                let idx = app.rules_screen.editor.sink_dropdown_index;
-                if let Some(sink) = app.config.sinks.get(idx) {
-                    app.rules_screen.editor.sink_ref.clone_from(&sink.desc);
-                }
-                app.rules_screen.mode = RulesMode::AddEdit;
-            }
-            KeyCode::Esc => {
-                app.rules_screen.mode = RulesMode::AddEdit;
-            }
-            _ => {}
-        },
-        RulesMode::Inspect => match key.code {
-            KeyCode::Enter | KeyCode::Esc => {
-                app.rules_screen.cancel();
             }
             _ => {}
         },
@@ -820,126 +585,31 @@ fn handle_rules_input(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle rule editor input (add/edit modal)
-// Match arms handle conceptually different field types despite similar-looking actions
 fn handle_rule_editor_input(app: &mut App, key: KeyEvent) {
-    if app.rules_screen.confirm_discard {
-        match discard_answer(key) {
-            Some(true) => app.rules_screen.cancel(),
-            Some(false) => app.rules_screen.confirm_discard = false,
-            None => {}
-        }
+    if form_keys(&mut app.rules_screen, key) {
         return;
     }
-    match key.code {
-        // --- Navigation (Field Switching) ---
-        KeyCode::Up | KeyCode::BackTab => app.rules_screen.editor.prev_field(),
-        KeyCode::Down | KeyCode::Tab => app.rules_screen.editor.next_field(),
-
-        // --- Field Actions (Space) ---
-        KeyCode::Char(' ') => match app.rules_screen.editor.focused_field {
-            RuleField::Sink => app.rules_screen.open_sink_selector(&app.config.sinks),
-            RuleField::Notify => {
-                // Cycle notify setting: None -> Some(true) -> Some(false) -> None
-                app.rules_screen.editor.notify = match app.rules_screen.editor.notify {
-                    None => Some(true),
-                    Some(true) => Some(false),
-                    Some(false) => None,
-                };
-            }
-            RuleField::AppId | RuleField::Title | RuleField::Desc => {
-                // Text fields: type a space
-                if let Some(input) = app.rules_screen.editor.focused_input_mut() {
-                    input.handle_event(&Event::Key(key));
-                }
-            }
-        },
-
-        // --- Actions (Save/Cancel) ---
-        KeyCode::Enter => {
-            // Save the rule
-            if app.rules_screen.editor.app_id_pattern.value().is_empty() {
-                app.set_status(StatusKind::Warning, "App ID pattern is required");
-                return;
-            }
-
-            if app.rules_screen.editor.sink_ref.is_empty() {
-                app.set_status(StatusKind::Warning, "Target sink is required");
-                return;
-            }
-
-            // Validate regexes with the same builder config loading uses
-            let app_id_regex =
-                match compile_rule_regex(app.rules_screen.editor.app_id_pattern.value()) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        app.set_status(StatusKind::Warning, format!("Invalid app_id regex: {e}"));
-                        return;
-                    }
-                };
-
-            let title_regex = if app.rules_screen.editor.title_pattern.value().is_empty() {
-                None
-            } else {
-                match compile_rule_regex(app.rules_screen.editor.title_pattern.value()) {
-                    Ok(r) => Some(r),
-                    Err(e) => {
-                        app.set_status(StatusKind::Warning, format!("Invalid title regex: {e}"));
-                        return;
-                    }
-                }
-            };
-
-            let new_rule = Rule {
-                app_id_regex,
-                title_regex,
-                sink_ref: app.rules_screen.editor.sink_ref.clone(),
-                desc: if app.rules_screen.editor.desc.value().is_empty() {
-                    None
-                } else {
-                    Some(app.rules_screen.editor.desc.value().to_string())
-                },
-                notify: app.rules_screen.editor.notify,
-                app_id_pattern: app.rules_screen.editor.app_id_pattern.value().to_string(),
-                title_pattern: if app.rules_screen.editor.title_pattern.value().is_empty() {
-                    None
-                } else {
-                    Some(app.rules_screen.editor.title_pattern.value().to_string())
-                },
-            };
-
-            // Stored with a `desc` sink reference; refused if it would make the config invalid
-            let result = if let Some(idx) = app.rules_screen.editing_index {
-                app.config
-                    .update_rule(idx, new_rule)
-                    .map(|()| "Rule updated")
-            } else {
-                app.config.add_rule(new_rule).map(|()| "Rule added")
-            };
-            match result {
-                Ok(msg) => app.set_status(StatusKind::Success, msg),
-                Err(e) => {
-                    // Keep the editor open so the user can fix the input
-                    app.set_status(StatusKind::Warning, format!("{e}"));
-                    return;
-                }
-            }
-
-            app.mark_dirty();
-            app.rules_screen.cancel();
+    let editor = &mut app.rules_screen.editor;
+    match (key.code, editor.focused_field) {
+        (KeyCode::Char(' '), RuleField::Sink) => {
+            app.rules_screen.open_sink_selector(&app.config.sinks);
         }
-        KeyCode::Esc => {
-            if app.rules_screen.editor.is_modified() {
-                app.rules_screen.confirm_discard = true;
-            } else {
+        (KeyCode::Char(' '), RuleField::Notify) => editor.cycle_notify(),
+        (KeyCode::Char(' '), _) => type_key(editor, key),
+        (KeyCode::Enter, _) => {
+            let rule = match editor.to_rule() {
+                Ok(rule) => rule,
+                Err(e) => return app.set_status(StatusKind::Warning, e),
+            };
+            // Stored with a `desc` sink reference; refused if it would make the config invalid
+            let (result, done) = match app.rules_screen.editing_index {
+                Some(idx) => (app.config.update_rule(idx, rule), "Rule updated"),
+                None => (app.config.add_rule(rule), "Rule added"),
+            };
+            if changed(app, result, done) {
                 app.rules_screen.cancel();
             }
         }
-        // --- Field Specific Input (sink and notify only respond to Space) ---
-        // (the live preview follows the pattern text by itself; see `App::refresh_preview`)
-        _ => {
-            if let Some(input) = app.rules_screen.editor.focused_input_mut() {
-                input.handle_event(&Event::Key(key));
-            }
-        }
+        _ => {}
     }
 }

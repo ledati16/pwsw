@@ -11,7 +11,7 @@ categories = ["multimedia::audio", "command-line-utilities"]
 
 [features]
 default = ["tui"]
-tui = ["dep:ratatui", "dep:tui-input", "dep:throbber-widgets-tui", "dep:futures-util", "crossterm/event-stream"]
+tui = ["dep:ratatui", "dep:tui-input", "dep:futures-core", "crossterm/event-stream"]
 
 [dependencies]
 # CLI argument parsing
@@ -65,8 +65,7 @@ rustix = { version = "1", default-features = false, features = ["fs", "process"]
 # TUI dependencies (optional - enabled by default via "tui" feature)
 ratatui = { version = "0.30", optional = true, default-features = false, features = ["crossterm"] }
 tui-input = { version = "0.15", optional = true }
-throbber-widgets-tui = { version = "0.11", optional = true }
-futures-util = { version = "0.3", optional = true }
+futures-core = { version = "0.3", optional = true, default-features = false }   # `Stream` for crossterm's `EventStream`
 
 [profile.release]
 lto = "fat"         # Full link-time optimization for maximum performance

@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use color_eyre::eyre::{self, Result};
 use crossterm::event::EventStream;
-use futures_util::StreamExt;
+use futures_core::Stream;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::{Frame, Terminal};
@@ -26,7 +26,6 @@ use crate::tui::app::{AppUpdate, BgCommand, StatusKind};
 mod app;
 mod chrome;
 mod daemon_control;
-mod editor_state;
 mod input;
 mod keymap;
 mod log_tailer;
@@ -228,8 +227,8 @@ where
             // A success/info message has been shown long enough
             () = tokio::time::sleep_until(status_deadline.unwrap_or_else(Instant::now)),
                 if status_deadline.is_some() => app.expire_status(),
-            _ = anim.tick(), if animating => app.advance_throbber(),
-            event = events.next() => match event {
+            _ = anim.tick(), if animating => app.advance_spinner(),
+            event = next_event(&mut events) => match event {
                 Some(Ok(event)) => {
                     handle_event(app, &event);
                     let shows = shows_sinks(app.current_screen);
@@ -248,6 +247,13 @@ where
             joined = &mut *worker => return Err(worker_ended(joined)),
         }
     }
+}
+
+/// The next terminal event (`None` once input is closed)
+fn next_event(
+    events: &mut EventStream,
+) -> impl Future<Output = Option<std::io::Result<crossterm::event::Event>>> + '_ {
+    std::future::poll_fn(|cx| std::pin::Pin::new(&mut *events).poll_next(cx))
 }
 
 /// The error for a background worker that ended while the UI was running.
@@ -290,7 +296,6 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
                 config: &app.config,
                 screen_state: &mut app.dashboard_screen,
                 daemon_running: app.daemon_running,
-                window_count: app.window_count,
                 daemon_logs: &app.daemon_log_lines,
                 windows: &app.windows,
                 active_sinks: &app.active_sink_list,
@@ -324,27 +329,20 @@ pub(crate) fn render_ui(frame: &mut ratatui::Frame, app: &mut App) {
         render_conflict_dialog(frame, main_area);
     }
     if app.show_help {
-        render_help(
-            frame,
-            main_area,
-            app.current_screen,
-            &mut app.help_scroll_state,
-            &mut app.help_viewport_height,
-            &app.help_collapsed_sections,
-        );
+        render_help(frame, main_area, app.current_screen, &mut app.help);
     }
 
     // Footer last: its hints describe whatever is on top
     let contexts = app.active_contexts();
     let unsaved = app.config_dirty;
-    let (status, busy, throbber) = app.footer_parts();
+    let (status, spinner) = app.footer_parts();
     let footer = chrome::Footer {
         status,
-        busy,
+        spinner,
         contexts: &contexts,
         unsaved,
     };
-    chrome::render_footer(frame, footer_area, &footer, throbber);
+    chrome::render_footer(frame, footer_area, &footer);
 }
 
 /// Render the "config changed on disk" dialog shown when a save was refused

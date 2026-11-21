@@ -22,8 +22,9 @@ use crate::tui::input::simulate_key_event;
 use crate::tui::keymap::{BINDINGS, Context};
 use crate::tui::render_ui;
 use crate::tui::screens::dashboard::DashboardView;
-use crate::tui::screens::rules::{RuleField, RulesMode};
-use crate::tui::screens::sinks::{SinkField, SinksMode, selector_names};
+use crate::tui::screens::list::{FormEditor, ListMode};
+use crate::tui::screens::rules::RuleField;
+use crate::tui::screens::sinks::{SinkField, selector_names};
 
 fn draw(app: &mut App) {
     let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
@@ -203,14 +204,14 @@ fn setups(context: Context) -> Vec<Setup> {
                     app.sinks_screen.selected = 1;
                     app.rules_screen.selected = 1;
                     app.sinks_screen.mode = if inspect {
-                        SinksMode::Inspect
+                        ListMode::Inspect
                     } else {
-                        SinksMode::Delete
+                        ListMode::Delete
                     };
                     app.rules_screen.mode = if inspect {
-                        RulesMode::Inspect
+                        ListMode::Inspect
                     } else {
-                        RulesMode::Delete
+                        ListMode::Delete
                     };
                 }));
             }
@@ -269,12 +270,10 @@ fn setups(context: Context) -> Vec<Setup> {
             for middle in [false, true] {
                 out.push(Box::new(move |app: &mut App| {
                     app.current_screen = Screen::Rules;
-                    app.show_help = true;
-                    app.reset_help_scroll();
-                    draw(app);
+                    app.open_help();
+                    draw(app); // records the scroll limits
                     if middle {
-                        app.help_scroll_state.select(Some(8));
-                        *app.help_scroll_state.offset_mut() = 4;
+                        app.help.offset = 4;
                     }
                 }));
             }
@@ -285,10 +284,8 @@ fn setups(context: Context) -> Vec<Setup> {
 
 /// Everything a key press could observably change.
 fn fingerprint(app: &App) -> String {
-    let mut collapsed: Vec<&String> = app.help_collapsed_sections.iter().collect();
-    collapsed.sort();
     format!(
-        "{:?}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
+        "{:?}|{}|{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
         app.current_screen,
         app.should_quit,
         app.show_help,
@@ -303,8 +300,7 @@ fn fingerprint(app: &App) -> String {
         app.rules_screen,
         app.settings_screen,
         app.dashboard_screen,
-        app.help_scroll_state,
-        collapsed,
+        app.help,
     )
 }
 

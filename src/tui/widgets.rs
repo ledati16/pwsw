@@ -7,7 +7,8 @@ use ratatui::layout::{Alignment, Constraint, Flex, Layout, Rect};
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Clear, Padding, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Clear, HighlightSpacing, List, ListItem, ListState, Padding, Paragraph,
+    Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use ratatui::{Frame, symbols};
 use tui_input::Input;
@@ -108,6 +109,58 @@ pub fn render_text_dialog<'a>(
         lines.extend(hints);
     }
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Draw `lines` centred horizontally and vertically in `area`
+pub fn render_centered(frame: &mut Frame, area: Rect, lines: Vec<Line>) {
+    let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let [middle] = Layout::vertical([Constraint::Length(height)])
+        .flex(Flex::Center)
+        .areas(area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        middle,
+    );
+}
+
+/// Area of a selection list dialog of `rows` rows, the widest `widest`
+/// columns (at least `min_width` wide), centred in `area`; and the columns an
+/// entry gets beside the highlight symbol
+#[must_use]
+pub fn pick_list_rect(area: Rect, widest: usize, rows: usize, min_width: u16) -> (Rect, usize) {
+    let selection = text_width(theme::SELECTED_SYMBOL);
+    // Borders and padding take 4 columns, the borders 2 rows
+    let width = u16::try_from(widest + selection + 4)
+        .unwrap_or(u16::MAX)
+        .clamp(min_width, MAX_DIALOG_WIDTH.max(min_width));
+    let height = u16::try_from(rows + 2).unwrap_or(u16::MAX);
+    let rect = modal_rect(area, width, height);
+    let content = usize::from(rect.width.saturating_sub(4)).saturating_sub(selection);
+    (rect, content)
+}
+
+/// Draw a selection list dialog of `items` in `rect` (see [`pick_list_rect`]),
+/// highlighting the row `state` selects, with `hints` on the bottom border
+pub fn render_pick_list(
+    frame: &mut Frame,
+    rect: Rect,
+    title: &str,
+    hints: &[(&str, &str)],
+    items: Vec<ListItem>,
+    state: &mut ListState,
+) {
+    let total = items.len();
+    let list = List::new(items)
+        .block(dialog_block(title).title_bottom(border_hints(hints)))
+        .highlight_style(theme::selected())
+        .highlight_symbol(theme::SELECTED_SYMBOL)
+        .highlight_spacing(HighlightSpacing::Always)
+        .scroll_padding(1);
+    frame.render_widget(Clear, rect);
+    frame.render_stateful_widget(list, rect, state);
+    render_scrollbar(frame, rect, 0, total, state.offset());
 }
 
 /// "Label  value" rows for detail and confirmation dialogs, labels aligned;
@@ -318,6 +371,51 @@ pub fn text_width(text: &str) -> usize {
     Span::raw(text).width()
 }
 
+/// Byte index in `text` after the characters that fit in `width` columns (at
+/// least one character, so cutting always makes progress)
+fn fitting_prefix(text: &str, width: usize) -> usize {
+    let mut used = 0;
+    for (i, c) in text.char_indices() {
+        used += char_width(c);
+        if used > width && i > 0 {
+            return i;
+        }
+    }
+    text.len()
+}
+
+/// `line` word-wrapped to rows of at most `width` columns, keeping its styles.
+/// Words wider than a row are cut across rows; an empty line stays one row.
+/// Render the rows unwrapped: their number is then exactly the rows drawn.
+#[must_use]
+pub fn wrap_line(line: &Line, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut used = 0;
+    for span in &line.spans {
+        for word in span.content.split_inclusive(' ') {
+            let word_width = |w: &str| text_width(w.trim_end_matches(' '));
+            if used > 0 && used + word_width(word) > width {
+                rows.push(Line::from(std::mem::take(&mut row)).style(line.style));
+                used = 0;
+            }
+            let mut rest = word;
+            while used == 0 && word_width(rest) > width {
+                let (head, tail) = rest.split_at(fitting_prefix(rest, width));
+                rows.push(Line::from(Span::styled(head.to_string(), span.style)).style(line.style));
+                rest = tail;
+            }
+            used += text_width(rest);
+            row.push(Span::styled(rest.to_string(), span.style));
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(Line::from(row).style(line.style));
+    }
+    rows
+}
+
 /// `text` cut to at most `max` columns, ending in `…` when it was cut.
 #[must_use]
 pub fn ellipsize(text: &str, max: usize) -> Cow<'_, str> {
@@ -455,6 +553,39 @@ mod tests {
             "Sony…",
             "no space before …"
         );
+    }
+
+    #[test]
+    fn test_wrap_line_by_words_and_width() {
+        let text =
+            |rows: Vec<Line>| -> Vec<String> { rows.iter().map(ToString::to_string).collect() };
+        let styled = Line::from(vec![
+            Span::styled("When enabled:", theme::success()),
+            Span::raw(" it works well"),
+        ]);
+        assert_eq!(text(wrap_line(&styled, 14)), vec![
+            "When enabled: ",
+            "it works well"
+        ]);
+        assert_eq!(wrap_line(&styled, 14)[0].spans[0].style, theme::success());
+        assert_eq!(text(wrap_line(&Line::from("aa bb cc"), 5)), vec![
+            "aa bb ", "cc"
+        ]);
+        assert_eq!(text(wrap_line(&Line::from("abcdefg h"), 3)), vec![
+            "abc", "def", "g h"
+        ]);
+        assert_eq!(text(wrap_line(&Line::from("日本語"), 4)), vec![
+            "日本", "語"
+        ]);
+        assert_eq!(text(wrap_line(&Line::from(""), 4)), vec![""]);
+        for width in [1, 2, 7] {
+            for row in wrap_line(&Line::from("ääää ö long-word-here x"), width) {
+                assert!(
+                    text_width(row.to_string().trim_end()) <= width,
+                    "{row} at {width}"
+                );
+            }
+        }
     }
 
     #[test]
