@@ -749,7 +749,7 @@ pub(crate) static BINDINGS: &[Binding] = &[
     b(
         Context::Global,
         "p",
-        "Pause / resume rule-driven switching (output and mic); manual switches still work",
+        "Pause / resume rule-driven audio switching; manual switches still work",
         &[(KeyCode::Char('p'), NONE)],
     )
     .hint_when("p", "pause", 7, Show::Pause),

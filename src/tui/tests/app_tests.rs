@@ -279,7 +279,7 @@ fn test_conflict_cancel_keeps_edits_and_file() {
 fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly() {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: Vec::new(),
         unit_installed: true,
@@ -289,7 +289,7 @@ fn test_enable_disable_offered_when_unit_installed_even_if_daemon_runs_directly(
     assert_eq!(app.dashboard_screen.max_action_index, 4);
 
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: Vec::new(),
         unit_installed: false,
@@ -449,7 +449,7 @@ fn windows_app(
 ) -> App {
     let mut app = App::with_config(make_config(sinks, rules));
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows,
         unit_installed: false,
@@ -582,7 +582,7 @@ fn test_new_rule_follows_the_window_selection() {
     simulate_key_event(&mut app, key(KeyCode::Down));
     // The list refreshes with the same windows: the selection stays on mpv
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: vec![
             window(3, "mpv", "video", false),
@@ -634,7 +634,7 @@ fn test_new_rule_without_windows_only_says_why() {
 /// The daemon's state as the status poll reports it
 fn daemon_state(running: bool, paused: bool) -> AppUpdate {
     AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running,
         windows: Vec::new(),
         unit_installed: false,
@@ -932,7 +932,8 @@ fn test_mics_are_managed_through_the_sinks_screen_and_saved() {
     assert_eq!(app.endpoint_screen().mode, ListMode::List, "no dialog");
     let status = app.status_message().expect("says why");
     assert!(
-        status.starts_with("Used by rule 1 (") && status.contains("cannot delete"),
+        status.starts_with("Used by rule 1 (")
+            && status.ends_with("): retarget or delete it first"),
         "{status}"
     );
     assert_eq!(app.config.sources.len(), 2, "refused");
@@ -1053,7 +1054,7 @@ fn test_rule_preview_uses_output_matching() {
 
     // firefox moves onto the HDMI monitor: the preview follows
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: vec![
             on(1, "mpv", &["HDMI-A-1"], false),
@@ -1143,6 +1144,42 @@ fn test_quit_prompt_s_saves_then_quits() {
     assert_eq!(
         saved.settings.notify_rules, app.config.settings.notify_rules,
         "the edit is on disk"
+    );
+}
+
+/// With a form open, `s` and `q` are typed into it rather than answering the
+/// unsaved-changes prompt: the prompt then names only Ctrl+C
+#[test]
+fn test_quit_prompt_in_a_form_names_only_ctrl_c() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, _) = file_app(&dir);
+    edit(&mut app);
+    app.current_screen = Screen::Rules;
+    simulate_key_event(&mut app, key(KeyCode::Char('e')));
+    assert_eq!(app.rules_screen.mode, ListMode::AddEdit);
+    simulate_key_event(&mut app, ctrl('c'));
+    assert!(app.confirm_quit);
+    assert_eq!(
+        app.status_message(),
+        Some("Unsaved changes: Ctrl+C again quits without saving · other keys stay")
+    );
+    // `s` goes to the form (and dismisses the prompt), it does not save and quit
+    simulate_key_event(&mut app, key(KeyCode::Char('s')));
+    assert!(!app.should_quit);
+    assert!(!app.confirm_quit);
+    assert_eq!(app.rules_screen.editor.app_id_pattern.value(), "firefoxs");
+
+    simulate_key_event(&mut app, ctrl('c'));
+    simulate_key_event(&mut app, ctrl('c'));
+    assert!(app.should_quit, "Ctrl+C twice quits");
+
+    // On a list the prompt offers s and q
+    let (mut app, _) = file_app(&dir);
+    edit(&mut app);
+    simulate_key_event(&mut app, ctrl('c'));
+    assert_eq!(
+        app.status_message(),
+        Some("Unsaved changes: s save and quit · q/Ctrl+C quit unsaved · other keys stay")
     );
 }
 
@@ -1259,6 +1296,31 @@ fn test_applied_edits_remind_to_save() {
     simulate_key_event(&mut app, key(KeyCode::Enter));
     assert_eq!(app.config.sinks.len(), 3);
     assert_eq!(app.status_message(), Some("Sink added · Ctrl+S to save"));
+}
+
+/// An applied edit that leaves the config as saved does not ask for Ctrl+S (which
+/// would answer "No unsaved changes")
+#[test]
+fn test_unchanged_edit_does_not_remind_to_save() {
+    let dir = TempDir::new().expect("tempdir");
+    let (mut app, _) = file_app(&dir);
+    app.current_screen = Screen::Sinks;
+    simulate_key_event(&mut app, key(KeyCode::Char('e')));
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(!app.config_dirty);
+    assert_eq!(app.status_message(), Some("Sink updated"));
+
+    // Undoing an edit by hand: the config equals the saved one again
+    app.current_screen = Screen::Rules;
+    simulate_key_event(&mut app, key(KeyCode::Char('e')));
+    simulate_key_event(&mut app, key(KeyCode::Char('$')));
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert_eq!(app.status_message(), Some("Rule updated · Ctrl+S to save"));
+    simulate_key_event(&mut app, key(KeyCode::Char('e')));
+    simulate_key_event(&mut app, key(KeyCode::Backspace));
+    simulate_key_event(&mut app, key(KeyCode::Enter));
+    assert!(!app.config_dirty);
+    assert_eq!(app.status_message(), Some("Rule updated"));
 }
 
 /// Start and Restart are refused when they cannot work: no sinks, or unsaved

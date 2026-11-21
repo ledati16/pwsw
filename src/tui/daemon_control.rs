@@ -302,8 +302,13 @@ fn summarize_stderr(stderr: &[u8]) -> String {
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .take_while(|l| !l.starts_with("Stack backtrace:"))
-        // Advice to run the TUI, which is already running (the no-sinks error)
-        .filter(|l| !l.contains("pwsw tui") && *l != "Add sinks via:")
+        // Advice to run the TUI, which is already running (the no-sinks error), and
+        // the pointer to `pwsw doctor` (the TUI's message names it itself)
+        .filter(|l| {
+            !l.contains("pwsw tui")
+                && *l != "Add sinks via:"
+                && !l.starts_with("Check the whole setup with:")
+        })
         .collect();
     if lines.is_empty() {
         return "no error output".to_string();
@@ -344,6 +349,19 @@ mod tests {
             summarize_stderr(stderr.as_bytes()),
             "error: No sinks configured. The daemon cannot start without sinks. | pwsw \
              list-sinks (discover available sinks)"
+        );
+    }
+
+    /// The daemon's own "Check the whole setup with: pwsw doctor" is dropped: the
+    /// TUI's message already says so once
+    #[test]
+    fn test_summarize_stderr_drops_doctor_line() {
+        let stderr = "error: Daemon failed to start within 5 seconds.\n\
+                      Log: /x/daemon.log\n\
+                      Check the whole setup with: pwsw doctor\n";
+        assert_eq!(
+            summarize_stderr(stderr.as_bytes()),
+            "error: Daemon failed to start within 5 seconds. | Log: /x/daemon.log"
         );
     }
 

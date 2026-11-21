@@ -498,6 +498,11 @@ impl DaemonStatus {
 /// of the document, and status bars treat a failing command as "hide the module".
 pub async fn status(config: Result<Config>, json_output: bool) -> bool {
     let config_path = Config::get_config_path().ok();
+    // A config that does not exist yet is not broken: `pwsw tui` creates it
+    let config_ok = config.as_ref().map_or_else(
+        |e| e.downcast_ref::<crate::config::ConfigNotFound>().is_some(),
+        |_| true,
+    );
     let (config, config_error) = match config {
         Ok(config) => (Some(config), None),
         Err(e) => (None, Some(format!("{e:#}"))),
@@ -600,7 +605,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             && tokio::task::spawn_blocking(crate::daemon_manager::DaemonManager::unit_installed)
                 .await
                 .unwrap_or(false);
-        let hint = crate::daemon_manager::StartHint::new(has_sinks, unit_installed);
+        let hint = crate::daemon_manager::StartHint::new(config_ok, has_sinks, unit_installed);
         crate::outln!("  {}", hint.text().technical());
     } else if let Some(uptime_secs) = daemon.uptime_secs {
         crate::outln!(
@@ -623,8 +628,7 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             crate::outln!(
                 "{} {}",
                 "Switching:".dim(),
-                "Paused (rules do not switch the output or mic; resume with: pwsw resume)"
-                    .warning()
+                paused_line(sources_configured).warning()
             );
         }
         if daemon.error.is_some() {
@@ -642,7 +646,11 @@ pub async fn status(config: Result<Config>, json_output: bool) -> bool {
             } else {
                 ""
             };
-            crate::outln!("{} {}{fallback}", "Mic:".dim(), source.as_str().technical());
+            crate::outln!(
+                "{} {}{fallback}",
+                "Applied Mic:".dim(),
+                source.as_str().technical()
+            );
         }
         if let Some(tracked) = daemon.tracked_windows {
             crate::outln!(
@@ -717,15 +725,24 @@ pub async fn pause(action: PauseAction) -> Result<()> {
     }
 }
 
-/// The line `pause`/`resume`/`toggle-pause` print for the daemon's answer
+/// `pwsw status`'s `Switching:` value while paused; names the mic only when sources
+/// are configured
+const fn paused_line(sources_configured: bool) -> &'static str {
+    if sources_configured {
+        "Paused (rules do not switch the output or mic; resume with: pwsw resume)"
+    } else {
+        "Paused (rules do not switch the audio output; resume with: pwsw resume)"
+    }
+}
+
+/// The line `pause`/`resume`/`toggle-pause` print for the daemon's answer (worded
+/// for any setup: these commands do not load the config)
 fn pause_message(paused: bool, changed: bool) -> crate::style::Painted<&'static str> {
     match (paused, changed) {
-        (true, true) => {
-            "Paused: rules will not switch the output or mic (resume with: pwsw resume)".warning()
-        }
+        (true, true) => "Paused: rules will not switch audio (resume with: pwsw resume)".warning(),
         (true, false) => "Already paused (resume with: pwsw resume)".warning(),
-        (false, true) => "Resumed: rules switch the output and mic again".success(),
-        (false, false) => "Not paused: rules are switching the output and mic".success(),
+        (false, true) => "Resumed: rules switch audio again".success(),
+        (false, false) => "Not paused: rules are switching audio".success(),
     }
 }
 
@@ -1011,6 +1028,16 @@ mod tests {
             matched_on: None,
             tracked: None,
         }
+    }
+
+    /// `pwsw status` names the mic while paused only when sources are configured
+    #[test]
+    fn test_paused_line_fits_the_setup() {
+        assert_eq!(
+            paused_line(false),
+            "Paused (rules do not switch the audio output; resume with: pwsw resume)"
+        );
+        assert!(paused_line(true).contains("output or mic"));
     }
 
     #[test]

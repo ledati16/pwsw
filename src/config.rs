@@ -231,28 +231,54 @@ pub struct PositionalRef {
     pub position: String,
     /// The `desc` of the entry it points at now (`None`: no entry at that position)
     pub desc: Option<String>,
+    /// The rule lists several references of this kind (fallbacks): the advice then
+    /// replaces this one inside the list instead of the whole key
+    pub in_list: bool,
+    /// How the file writes the key when this is its only value (`sink = 2` or
+    /// `sink = "2"`); `None` when unknown (a config built in memory) or in a list
+    pub written: Option<String>,
 }
 
 impl PositionalRef {
-    /// `sink = "Speakers"`: what to write instead (`None` when the position names
-    /// no entry)
+    /// What to write instead (`None` when the position names no entry): the whole
+    /// key for a rule's only reference (`sink = "Speakers"`), the list element for one
+    /// among fallbacks (`"2" → "Speakers"`)
     #[must_use]
     pub fn replacement(&self) -> Option<String> {
-        self.desc
-            .as_ref()
-            .map(|desc| format!("{} = {desc:?}", self.kind.noun()))
+        let desc = self.desc.as_ref()?;
+        Some(if self.in_list {
+            format!("{:?} → {desc:?}", self.position)
+        } else {
+            format!("{} = {desc:?}", self.kind.noun())
+        })
     }
 
     /// The deprecation warning logged on load: `rule 2 refers to its sink by position
-    /// (sink = 1); use the sink's desc (sink = "Speakers")`
+    /// (sink = 1); use the sink's desc (sink = "Speakers")`, or for one reference
+    /// among fallbacks `rule 2 refers to a sink by position ("1" in sink = [...]);
+    /// write its desc instead: "Speakers"`
     #[must_use]
     pub fn warning(&self) -> String {
         let noun = self.kind.human_noun();
+        if self.in_list {
+            let text = format!(
+                "rule {} refers to a {noun} by position ({:?} in {} = [...])",
+                self.rule,
+                self.position,
+                self.kind.noun()
+            );
+            return match &self.desc {
+                Some(desc) => format!("{text}; write its desc instead: {desc:?}"),
+                None => format!("{text}; write the {noun}'s desc instead"),
+            };
+        }
+        let written = self
+            .written
+            .clone()
+            .unwrap_or_else(|| format!("{:?}", self.position));
         let text = format!(
-            "rule {} refers to its {noun} by position ({} = {}); use the {noun}'s desc",
-            self.rule,
-            self.kind.noun(),
-            self.position
+            "rule {} refers to its {noun} by position ({written}); use the {noun}'s desc",
+            self.rule
         );
         match self.replacement() {
             Some(replacement) => format!("{text} ({replacement})"),
@@ -1067,19 +1093,49 @@ impl Config {
         let mut found = Vec::new();
         for (i, rule) in self.rules.iter().enumerate() {
             for kind in Endpoint::ALL {
-                for r in rule.refs(kind) {
+                let refs = rule.refs(kind);
+                let in_list = refs.len() > 1;
+                for r in &refs {
                     if positional_ref(r).is_some() {
                         found.push(PositionalRef {
                             rule: i + 1,
                             kind,
-                            position: r.to_string(),
+                            position: (*r).to_string(),
                             desc: self.resolve_endpoint(kind, r).map(|e| e.desc.clone()),
+                            in_list,
+                            written: if in_list {
+                                None
+                            } else {
+                                self.written_ref(i, kind, r)
+                            },
                         });
                     }
                 }
             }
         }
         found
+    }
+
+    /// How the loaded file writes rule `index`'s `kind` key when its only value is
+    /// `reference`: `sink = 2` or `sink = "2"` (`None` for a config built in memory, a
+    /// one-element array, or a document that no longer matches the rule)
+    fn written_ref(&self, index: usize, kind: Endpoint, reference: &str) -> Option<String> {
+        let slot = (*self.origin.rule_slots.get(index)?)?;
+        let table = self
+            .origin
+            .doc
+            .as_deref()?
+            .get("rules")?
+            .as_array_of_tables()?
+            .get(slot)?;
+        let key = kind.noun();
+        match table.get(key)?.as_value()? {
+            Value::Integer(n) if n.value().to_string() == reference => {
+                Some(format!("{key} = {}", n.value()))
+            }
+            Value::String(s) if s.value() == reference => Some(format!("{key} = {:?}", s.value())),
+            _ => None,
+        }
     }
 
     /// Log one deprecation warning per positional sink or source reference.
@@ -3571,6 +3627,40 @@ notify = false
             .to_string();
         assert!(err.contains("3 (by_pos)"), "{err}");
         assert_eq!(cfg.sinks.len(), 3);
+    }
+
+    /// The deprecation warning quotes the reference as the file writes it, and for a
+    /// position among fallbacks replaces only that element (not the whole list)
+    #[test]
+    fn test_positional_ref_warnings_quote_the_file() {
+        let text = "[[sinks]]\nname = \"a\"\ndesc = \"Speakers\"\ndefault = true\n\n\
+                    [[sinks]]\nname = \"b\"\ndesc = \"Headphones\"\n\n\
+                    [[rules]]\napp_id = \"x\"\nsink = 2\n\n\
+                    [[rules]]\napp_id = \"y\"\nsink = \"2\"\n\n\
+                    [[rules]]\napp_id = \"z\"\nsink = [\"2\", \"Speakers\"]\n";
+        let cfg = Config::parse_str(text, Path::new("test")).expect("valid config");
+        let warnings: Vec<String> = cfg
+            .positional_refs()
+            .iter()
+            .map(PositionalRef::warning)
+            .collect();
+        assert_eq!(warnings, [
+            "rule 1 refers to its sink by position (sink = 2); use the sink's desc (sink = \
+             \"Headphones\")",
+            "rule 2 refers to its sink by position (sink = \"2\"); use the sink's desc (sink = \
+             \"Headphones\")",
+            "rule 3 refers to a sink by position (\"2\" in sink = [...]); write its desc \
+             instead: \"Headphones\"",
+        ]);
+
+        // Built in memory, the file's spelling is unknown: the neutral form
+        let mut cfg = three_sinks();
+        cfg.rules = vec![make_rule("p", None, "3")];
+        assert_eq!(
+            cfg.positional_refs()[0].warning(),
+            "rule 1 refers to its sink by position (\"3\"); use the sink's desc (sink = \
+             \"Headphones\")"
+        );
     }
 
     #[test]

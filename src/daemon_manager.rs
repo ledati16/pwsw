@@ -57,7 +57,11 @@ impl DaemonManager {
 /// How to get a stopped daemon running, for hints that must be able to succeed
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartHint {
-    /// No sinks are configured: the daemon would refuse to start
+    /// The config exists but does not load: the daemon would refuse to start, and
+    /// the TUI cannot open it either
+    FixConfig,
+    /// No sinks are configured (or no config exists yet): the daemon would refuse to
+    /// start
     AddSink,
     /// No systemd unit is installed: start it directly
     Direct,
@@ -66,14 +70,16 @@ pub enum StartHint {
 }
 
 impl StartHint {
-    /// The hint for a config with (`has_sinks`) or without sinks, and an installed or
-    /// missing user unit
+    /// The hint for a config that fails to load (`config_ok` false; a config that
+    /// does not exist yet counts as loaded, without sinks), one with (`has_sinks`) or
+    /// without sinks, and an installed or missing user unit
     #[must_use]
-    pub const fn new(has_sinks: bool, unit_installed: bool) -> Self {
-        match (has_sinks, unit_installed) {
-            (false, _) => Self::AddSink,
-            (true, false) => Self::Direct,
-            (true, true) => Self::Systemd,
+    pub const fn new(config_ok: bool, has_sinks: bool, unit_installed: bool) -> Self {
+        match (config_ok, has_sinks, unit_installed) {
+            (false, ..) => Self::FixConfig,
+            (true, false, _) => Self::AddSink,
+            (true, true, false) => Self::Direct,
+            (true, true, true) => Self::Systemd,
         }
     }
 
@@ -81,6 +87,7 @@ impl StartHint {
     #[must_use]
     pub const fn text(self) -> &'static str {
         match self {
+            Self::FixConfig => "Fix the config first: pwsw validate shows the error",
             Self::AddSink => "Add a sink first (pwsw tui)",
             Self::Direct => "Start it: pwsw daemon",
             Self::Systemd => "Start it: systemctl --user enable --now pwsw (or pwsw daemon)",

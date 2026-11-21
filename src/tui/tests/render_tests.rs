@@ -129,7 +129,7 @@ fn fixture() -> App {
         profile_sources: Vec::new(),
     });
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: vec![
             window("firefox", "Rust Book — Mozilla Firefox", Some(SONY_DESC)),
@@ -208,7 +208,7 @@ fn with_mics_and_monitors(app: &mut App) {
         w
     };
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: vec![
             placed(
@@ -525,6 +525,26 @@ fn test_footer_keeps_status_and_whole_hints() {
     );
     assert!(last.contains("a add"), "{last}");
     assert!(last.contains("q quit"), "{last}");
+}
+
+/// A status that fills the row is clipped with a visible ellipsis: the hints'
+/// trailing space at the right edge does not draw over it
+#[test]
+fn test_footer_clips_a_long_status_with_an_ellipsis() {
+    for width in [60, 80] {
+        let mut app = state("sinks");
+        app.set_status(
+            StatusKind::Warning,
+            format!(
+                "Used by rule 3 ({}): retarget or delete it first",
+                "x".repeat(80)
+            ),
+        );
+        let rows = draw_rows(&mut app, width, 24);
+        let last = rows.last().expect("footer");
+        assert!(last.contains("⚠ Used by rule 3 (xxx"), "{last:?}");
+        assert!(last.trim_end().ends_with('…'), "{width}: {last:?}");
+    }
 }
 
 #[test]
@@ -986,7 +1006,7 @@ fn test_dashboard_preselects_the_sensible_action() {
         "start when stopped"
     );
     let state = |running| AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running,
         windows: Vec::new(),
         unit_installed: true,
@@ -1168,7 +1188,7 @@ fn test_rule_editor_preview_follows_window_updates() {
     app.rules_screen.editor.app_id_pattern = tui_input::Input::new("^mpv$".to_string());
 
     let state = |windows| AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows,
         unit_installed: false,
@@ -1227,7 +1247,7 @@ fn test_esc_with_edits_asks_before_discarding() {
 fn windows_app(count: u64) -> App {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: (0..count)
             .map(|i| WindowInfo {
@@ -1402,7 +1422,7 @@ fn test_tiny_terminals_render_without_panic() {
 fn test_dashboard_shows_enable_with_installed_unit() {
     let mut app = App::with_config(make_config(vec![], vec![]));
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: Vec::new(),
         unit_installed: true,
@@ -1627,16 +1647,37 @@ fn test_rule_form_without_mics_says_to_configure_them() {
     );
     assert!(row_with(&rows, "Output ").contains("any monitor"));
     // The fixture's daemon is on ext: monitors are not tracked, and it says why
-    assert!(row_with(&rows, "Monitors: ").contains("not tracked: the daemon uses ext"));
+    assert!(row_with(&rows, "Monitors: ").contains("none (daemon on ext; see pwsw doctor)"));
 }
 
 #[test]
 fn test_rule_form_monitors_hint_on_wlr_without_monitors() {
     let mut app = state("rule edit");
-    app.daemon_monitor_info = true;
+    app.daemon_monitor_info = Some(true);
     let rows = draw_rows(&mut app, 80, 24);
     assert!(
         row_with(&rows, "Monitors: ").contains("none reported yet"),
+        "{}",
+        rows.join("\n")
+    );
+}
+
+/// The daemon runs but its status could not be read: the form does not claim it is
+/// on ext; the ext wording fits the narrowest layout
+#[test]
+fn test_rule_form_monitors_hint_when_the_status_is_unknown() {
+    let mut app = state("rule edit");
+    app.daemon_monitor_info = None;
+    let rows = draw_rows(&mut app, 80, 24);
+    let row = row_with(&rows, "Monitors: ");
+    assert!(row.contains("Monitors: none reported "), "{row}");
+    assert!(!row.contains("ext"), "{row}");
+
+    app.daemon_monitor_info = Some(false);
+    let rows = draw_rows(&mut app, 60, 24);
+    let row = row_with(&rows, "Monitors: ");
+    assert!(
+        row.contains("none (daemon on ext; see pwsw doctor)"),
         "{}",
         rows.join("\n")
     );

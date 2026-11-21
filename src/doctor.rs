@@ -180,8 +180,13 @@ fn plural(n: usize, word: &str) -> String {
 /// `--config` was given (to say where the config path comes from).
 pub async fn run(config_flag: bool) -> bool {
     let local = tokio::task::spawn_blocking(move || local_sections(config_flag)).await;
-    let (sections, monitor, has_sinks) = match local {
-        Ok(local) => (local.sections, local.monitor, local.has_sinks),
+    let (sections, monitor, config_ok, has_sinks) = match local {
+        Ok(local) => (
+            local.sections,
+            local.monitor,
+            local.config_ok,
+            local.has_sinks,
+        ),
         Err(e) => (
             vec![Section {
                 title: "Doctor",
@@ -191,6 +196,7 @@ pub async fn run(config_flag: bool) -> bool {
                 )],
             }],
             MonitorRules::default(),
+            true,
             false,
         ),
     };
@@ -199,7 +205,7 @@ pub async fn run(config_flag: bool) -> bool {
     let (service, unit_installed) = tokio::task::spawn_blocking(service_sections)
         .await
         .unwrap_or_default();
-    let start = StartHint::new(has_sinks, unit_installed);
+    let start = StartHint::new(config_ok, has_sinks, unit_installed);
     report.sections.push(daemon_checks(&facts, monitor, start));
     report.sections.extend(service);
     crate::style::write_stdout(format_args!("{}", report.render()));
@@ -219,6 +225,9 @@ struct MonitorRules {
 struct Local {
     sections: Vec<Section>,
     monitor: MonitorRules,
+    /// The config loaded, or does not exist yet (`pwsw tui` creates it); `false` when
+    /// it exists but fails to load (or its path cannot be determined)
+    config_ok: bool,
     /// The config loaded and has sinks (the daemon can start)
     has_sinks: bool,
 }
@@ -266,6 +275,10 @@ fn local_sections(config_flag: bool) -> Local {
     Local {
         sections,
         monitor,
+        config_ok: match &config {
+            Some(result) => result.is_ok(),
+            None => path.is_ok(),
+        },
         has_sinks: loaded.is_some_and(|c| !c.sinks.is_empty()),
     }
 }
@@ -383,14 +396,18 @@ fn wayland_checks(
                     "The daemon will use {}",
                     capabilities.backend().interface()
                 )));
-                checks.push(if monitor_info_offered(&probe) && output_rules {
+                // The daemon is on wlr when the config has `output` rules, or when
+                // the compositor offers nothing else
+                checks.push(if monitor_info_offered(&probe)
+                    && (output_rules || capabilities.monitor_info())
+                {
                     Check::ok(format!(
                         "Monitor rules: available ({})",
                         Backend::Wlr.name()
                     ))
                 } else if monitor_info_offered(&probe) {
-                    // Without `output` rules the daemon takes ext, which reports no
-                    // monitors (the TUI's rule form says so and points here)
+                    // Without `output` rules the daemon takes ext when offered, which
+                    // reports no monitors (the TUI's rule form says so and points here)
                     Check::ok(format!(
                         "Monitor rules: available: the daemon uses {} once a rule has \
                          `output` (restart it after adding the first)",
@@ -587,7 +604,9 @@ fn positional_check(refs: &[PositionalRef]) -> Option<Check> {
         .iter()
         .map(|r| {
             r.replacement().map(|text| {
-                if rules.len() == 1 {
+                // An element of a fallback list is named by its rule even when only
+                // one rule has positions
+                if rules.len() == 1 && !r.in_list {
                     text
                 } else {
                     format!("rule {}: {text}", r.rule)
@@ -980,7 +999,9 @@ mod tests {
 
     use super::*;
     use crate::compositor::AdvertisedGlobal;
-    use crate::test_utils::fixtures::{make_config, make_rule, make_sink};
+    use crate::test_utils::fixtures::{
+        make_config, make_rule, make_rule_with_fallbacks, make_sink,
+    };
 
     fn section(title: &'static str, checks: Vec<Check>) -> Section {
         Section { title, checks }
@@ -1085,6 +1106,30 @@ mod tests {
         );
         assert_eq!(gnome.checks[1].level, Level::Fail);
         assert_eq!(gnome.checks.len(), 2, "no daemon or monitor line");
+    }
+
+    /// A wlr-only compositor: the daemon is on wlr even without `output` rules, so
+    /// monitor rules simply work (no "restart after adding the first")
+    #[test]
+    fn test_wayland_checks_wlr_only_monitor_rules() {
+        let display = OsString::from("wayland-1");
+        let wlr_only = || {
+            Some(Ok(ProtocolProbe {
+                advertised: vec![AdvertisedGlobal {
+                    interface: "zwlr_foreign_toplevel_manager_v1".to_string(),
+                    version: 3,
+                }],
+            }))
+        };
+        for output_rules in [false, true] {
+            let section = wayland_checks(Some(&display), wlr_only(), output_rules);
+            let messages: Vec<&str> = section.checks.iter().map(|c| c.message.as_str()).collect();
+            assert_eq!(messages[2..], [
+                "The daemon will use zwlr_foreign_toplevel_manager_v1",
+                "Monitor rules: available (wlr)",
+            ]);
+            assert!(section.checks.iter().all(|c| c.level == Level::Ok));
+        }
     }
 
     /// An ext-only compositor: monitor rules are just unavailable, unless the config
@@ -1354,15 +1399,22 @@ mod tests {
                 .clone()
         };
         assert_eq!(
-            hint(StartHint::new(false, true)).as_deref(),
+            hint(StartHint::new(true, false, true)).as_deref(),
             Some("Add a sink first (pwsw tui)")
         );
+        // A config that does not load: the TUI cannot open it, so do not send them there
+        for unit in [false, true] {
+            assert_eq!(
+                hint(StartHint::new(false, false, unit)).as_deref(),
+                Some("Fix the config first: pwsw validate shows the error")
+            );
+        }
         assert_eq!(
-            hint(StartHint::new(true, false)).as_deref(),
+            hint(StartHint::new(true, true, false)).as_deref(),
             Some("Start it: pwsw daemon")
         );
         assert_eq!(
-            hint(StartHint::new(true, true)).as_deref(),
+            hint(StartHint::new(true, true, true)).as_deref(),
             Some("Start it: systemctl --user enable --now pwsw (or pwsw daemon)")
         );
     }
@@ -1417,6 +1469,8 @@ mod tests {
             kind: Endpoint::Source,
             position: "9".to_string(),
             desc: None,
+            in_list: false,
+            written: None,
         }];
         let check = positional_check(&unresolved).expect("a warning");
         assert_eq!(
@@ -1428,6 +1482,27 @@ mod tests {
             Some("Use the desc; saving the rule in pwsw tui does that")
         );
         assert!(positional_check(&[]).is_none());
+    }
+
+    /// A position among fallbacks: the advice replaces that element, not the whole
+    /// list (`sink = "Headphones"` would drop the fallbacks)
+    #[test]
+    fn test_positional_check_in_a_fallback_list() {
+        let config = make_config(
+            vec![
+                make_sink("a", "Speakers", true),
+                make_sink("b", "Headphones", false),
+            ],
+            vec![make_rule_with_fallbacks("x", None, &["2", "Speakers"])],
+        );
+        let check = positional_check(&config.positional_refs()).expect("a warning");
+        assert_eq!(
+            check.hint.as_deref(),
+            Some(
+                "Use the desc: rule 1: \"2\" → \"Headphones\" (saving the rule in pwsw tui \
+                 does that)"
+            )
+        );
     }
 
     /// A daemon on ext while the config has `output` rules and the compositor offers

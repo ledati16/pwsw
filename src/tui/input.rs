@@ -48,17 +48,6 @@ pub fn simulate_key_event(app: &mut crate::tui::app::App, key: crossterm::event:
     handle_key_event(app, key);
 }
 
-/// Check if any modal or editor is currently active
-fn is_modal_active(app: &App) -> bool {
-    // Check screen-specific modals
-    match app.current_screen {
-        Screen::Sinks => app.endpoint_screen().mode != ListMode::List,
-        Screen::Rules => app.rules_screen.mode != ListMode::List,
-        Screen::Settings => app.settings_screen.dialog_open(),
-        Screen::Dashboard => false,
-    }
-}
-
 /// Handle keyboard input
 // Input dispatch across all screens - cohesive routing logic
 fn handle_key_event(app: &mut App, key: KeyEvent) {
@@ -74,7 +63,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         let command = |c: char| {
             key.code == KeyCode::Char(c)
                 && key.modifiers == KeyModifiers::NONE
-                && !is_modal_active(app)
+                && !app.modal_active()
                 && !app.save_conflict
         };
         if ctrl_c || command('q') {
@@ -143,7 +132,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     }
 
     // If a modal is active (other than help), pass most keys to screen-specific handlers
-    if is_modal_active(app) {
+    if app.modal_active() {
         match key.code {
             // F1 opens help over a modal; so does ?, unless it is typed into a field
             KeyCode::F(1) => app.open_help(),
@@ -466,13 +455,17 @@ fn moved(app: &mut App, result: anyhow::Result<()>, what: &str, to: usize) {
 }
 
 /// Report the result of a config change made from a form or dialog: `done`
-/// on success (with a reminder that the change is not written yet), the reason
-/// (keeping the form open) on failure
+/// on success (with a reminder that the change is not written yet, unless the
+/// config now equals the saved one), the reason (keeping the form open) on failure
 fn changed(app: &mut App, result: anyhow::Result<()>, done: &str) -> bool {
     match result {
         Ok(()) => {
             app.mark_dirty();
-            app.set_status(StatusKind::Success, format!("{done} · Ctrl+S to save"));
+            if app.config_dirty {
+                app.set_status(StatusKind::Success, format!("{done} · Ctrl+S to save"));
+            } else {
+                app.set_status(StatusKind::Success, done);
+            }
             true
         }
         Err(e) => {
@@ -603,11 +596,15 @@ fn handle_sinks_input(app: &mut App, key: KeyEvent) {
             .config
             .endpoint_users(kind, app.endpoint_screen().selected);
         if !users.is_empty() {
-            let rule = if users.len() == 1 { "rule" } else { "rules" };
+            let (rule, them) = if users.len() == 1 {
+                ("rule", "it")
+            } else {
+                ("rules", "them")
+            };
             app.set_status(
                 StatusKind::Warning,
                 format!(
-                    "Used by {rule} {}, cannot delete (retarget or delete those rules first)",
+                    "Used by {rule} {}: retarget or delete {them} first",
                     users.join(", ")
                 ),
             );

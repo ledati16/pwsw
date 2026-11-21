@@ -187,7 +187,9 @@ async fn test_subscribe_reports_the_source() {
 
     h.open(1, "discord").await;
     h.wait_source("mic.headset").await;
-    // One update for the joint switch, with both halves in
+    // The update after the joint switch has both halves in (the watch channel keeps
+    // only the latest value, so this does not show that it was published once:
+    // `test_joint_switch_publishes_the_status_once` does)
     let update = sub.update().await;
     assert_eq!(
         update.sink,

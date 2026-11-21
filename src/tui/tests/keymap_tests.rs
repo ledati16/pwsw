@@ -67,7 +67,7 @@ fn base(dir: &Path) -> App {
             .collect(),
     ));
     app.handle_update(AppUpdate::DaemonState {
-        monitor_info: false,
+        monitor_info: Some(false),
         running: true,
         windows: (0..40)
             .map(|i| WindowInfo {

@@ -3037,6 +3037,11 @@ async fn test_failed_upgrade_check_is_not_retried_as_a_switch() {
     })
     .await;
 
+    // No retry is even scheduled (`serves` would drop it anyway: this guards the
+    // failure arm itself)
+    let snapshot = h.snapshot().await;
+    assert!(!snapshot.sink_retry_pending, "no retry scheduled");
+
     // Long past every retry backoff
     tokio::time::sleep(Duration::from_secs(10)).await;
     let snapshot = h.snapshot().await;
@@ -3122,6 +3127,57 @@ async fn test_sources_removed_and_added_back_switch_to_their_answer() {
     assert_eq!(
         h.switcher.current_source.lock().expect("lock").as_deref(),
         Some("mic.desk")
+    );
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A source job still running when a reload removes the sources: its result is not
+/// recorded for the switched-off lane, or adding the same sources back would look
+/// served (stale `applied`/`applied_for`) and skip the switch
+#[tokio::test(start_paused = true)]
+async fn test_source_result_after_sources_were_removed_is_not_recorded() {
+    const SINKS: &str = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\n\
+        default = true\n\n\
+        [[sinks]]\nname = \"headphones\"\ndesc = \"Headphones\"\n\n";
+    const MICS: &str = "[[sources]]\nname = \"mic.desk\"\ndesc = \"Desk Mic\"\n\
+        default = true\n\n\
+        [[sources]]\nname = \"mic.headset\"\ndesc = \"Headset Mic\"\n\n";
+    const RULE: &str = "[[rules]]\napp_id = \"^discord$\"\nsink = \"Headphones\"\n";
+    let (switcher, gate, mut started) = FakeSwitcher::gated();
+    let h = start(source_config(), with_desk_mic(switcher), Some("speakers"));
+    h.open(1, "discord").await;
+    // The joint job is held at its sink half
+    let first = within("the joint job to start", started.recv()).await;
+    assert_eq!(first.as_deref(), Some("headphones"));
+
+    // Meanwhile a reload removes the sources
+    std::fs::write(&h.config_path, format!("{SINKS}{RULE}")).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_for("sources gone", |s, _| !s.sources_configured)
+        .await;
+
+    // The held job finishes: the microphone was set, but the lane is off
+    drop(gate);
+    h.wait_for("both halves in", |s, _| {
+        !s.sink_in_flight && !s.source_in_flight
+    })
+    .await;
+    assert_eq!(h.source_calls(), vec!["mic.headset"]);
+
+    // The user picks another microphone; then the same sources come back
+    h.switcher.set_current_source("mic.desk");
+    let with_mics = format!("{SINKS}{MICS}{RULE}source = \"Headset Mic\"\n");
+    std::fs::write(&h.config_path, with_mics).expect("write config");
+    h.signal(Signal::Hangup).await;
+    h.wait_source("mic.headset").await;
+    assert_eq!(
+        h.source_calls(),
+        vec!["mic.headset", "mic.headset"],
+        "the re-enabled lane switched to its answer"
+    );
+    assert_eq!(
+        h.switcher.current_source.lock().expect("lock").as_deref(),
+        Some("mic.headset")
     );
     h.stop().await.expect("clean shutdown");
 }

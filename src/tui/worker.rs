@@ -120,12 +120,13 @@ impl Backend for System {
                     paused,
                     monitor_info,
                     ..
-                }) => (paused, monitor_info),
-                _ => (false, false),
+                }) => (paused, Some(monitor_info)),
+                // Unknown: the rule form must not claim the daemon is on ext
+                _ => (false, None),
             };
             (windows, paused, monitor_info)
         } else {
-            (Vec::new(), false, false)
+            (Vec::new(), false, None)
         };
         AppUpdate::DaemonState {
             running,
@@ -375,12 +376,16 @@ async fn run_action<B: Backend>(
             ),
         ),
         // A start that failed: `pwsw doctor` checks the whole setup
-        Err(e) if matches!(action, DaemonAction::Start | DaemonAction::Restart) => (
+        Err(e) if matches!(action, DaemonAction::Start) => (
             Err(format!(
-                "Daemon did not start (pwsw doctor shows why): {e:#}"
+                "Daemon did not start (pwsw doctor checks the setup): {e:#}"
             )),
             false,
         ),
+        // Its stop or its start may have failed: the error says which
+        Err(e) if matches!(action, DaemonAction::Restart) => {
+            (Err(format!("Restart failed: {e:#}")), false)
+        }
         Err(e) => (Err(format!("Failed: {e:#}")), false),
     };
     let _ = updates.send(AppUpdate::ActionResult(result));

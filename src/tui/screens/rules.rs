@@ -411,8 +411,9 @@ pub struct RulesRenderContext<'a> {
     /// Live preview of the editor's patterns (kept current by `App::refresh_preview`)
     pub preview: &'a PreviewView,
     pub daemon_running: bool,
-    /// Whether the daemon's protocol reports monitors (`wlr`; `ext` never does)
-    pub monitor_info: bool,
+    /// Whether the daemon's protocol reports monitors (`wlr`; `ext` never does);
+    /// `None` when its status could not be read
+    pub monitor_info: Option<bool>,
 }
 
 /// Rows of the rule form (one per field)
@@ -776,12 +777,13 @@ fn seen_monitors(windows: &[WindowInfo]) -> Vec<&str> {
 /// The hint under the form naming the monitors an Output pattern can match
 ///
 /// With no monitors seen it says why: the daemon is on `ext` (which never reports
-/// them; it uses `wlr` only when `output` rules exist at its start), or `wlr` has
-/// reported none yet, or the daemon is stopped.
+/// them; it uses `wlr` only when `output` rules exist at its start, or when the
+/// compositor offers nothing else), or `wlr` has reported none yet, or the daemon is
+/// stopped. When the daemon's status could not be read it claims nothing.
 fn monitors_hint(
     windows: &[WindowInfo],
     daemon_running: bool,
-    monitor_info: bool,
+    monitor_info: Option<bool>,
     width: usize,
 ) -> Line<'static> {
     const LABEL: &str = "Monitors: ";
@@ -790,10 +792,10 @@ fn monitors_hint(
     let value = if !monitors.is_empty() {
         Span::raw(ellipsize(&monitors.join(", "), room).into_owned())
     } else if daemon_running {
-        let why = if monitor_info {
-            "none reported yet"
-        } else {
-            "not tracked: the daemon uses ext (pwsw doctor explains)"
+        let why = match monitor_info {
+            Some(true) => "none reported yet",
+            Some(false) => "none (daemon on ext; see pwsw doctor)",
+            None => "none reported",
         };
         Span::styled(ellipsize(why, room).into_owned(), theme::dim())
     } else {

@@ -197,6 +197,12 @@ pub(crate) struct Snapshot {
     /// Whether a sink job is submitted and its result not in yet
     #[cfg(test)]
     pub sink_in_flight: bool,
+    /// Whether a source job is submitted and its result not in yet
+    #[cfg(test)]
+    pub source_in_flight: bool,
+    /// Whether a retry of a failed sink switch is scheduled
+    #[cfg(test)]
+    pub sink_retry_pending: bool,
     /// When the sink lane last submitted an upgrade check
     #[cfg(test)]
     pub last_upgrade_check: Option<Instant>,
@@ -1209,9 +1215,14 @@ impl Daemon {
         } else {
             None
         };
+        // A reload switched the lane off while the job ran (sources removed): the
+        // result is still logged and answered, but the lane records nothing, so
+        // sources added back later are switched to their answer again
+        let active = self.desired_names(kind).is_some();
 
         // A manual request looked at the real default first: that is the truth now
         if let Some(observed) = result.observed
+            && active
             && self.lane(kind).applied.as_deref() != Some(observed.as_str())
         {
             debug!(
@@ -1298,10 +1309,12 @@ impl Daemon {
                 if let Some(notice) = notice {
                     self.notifier.send(notice);
                 }
-                let lane = self.lane_mut(kind);
-                lane.applied = Some(name);
-                lane.applied_for = applied_for;
-                lane.applied_fallback = fallback;
+                if active {
+                    let lane = self.lane_mut(kind);
+                    lane.applied = Some(name);
+                    lane.applied_for = applied_for;
+                    lane.applied_fallback = fallback;
+                }
                 if fallback {
                     desc.push_str(" (fallback)");
                 }
@@ -1777,6 +1790,10 @@ impl Daemon {
             jobs_submitted: self.next_generation,
             #[cfg(test)]
             sink_in_flight: sink.submitted.is_some(),
+            #[cfg(test)]
+            source_in_flight: source.submitted.is_some(),
+            #[cfg(test)]
+            sink_retry_pending: sink.retry.is_some(),
             #[cfg(test)]
             last_upgrade_check: sink.last_upgrade_check,
         }

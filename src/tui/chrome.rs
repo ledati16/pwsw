@@ -153,7 +153,9 @@ pub(crate) fn render_footer(frame: &mut Frame, area: Rect, footer: &Footer) {
     let mut status_width = 0;
     if let Some(status) = footer.status {
         let (icon, style) = status_look(status.kind);
-        let room = width.saturating_sub(text_width(icon) + 1);
+        // The last column stays free (the hints' trailing space lands there), so a
+        // clipped message keeps its ellipsis
+        let room = width.saturating_sub(text_width(icon) + 2);
         let text = ellipsize(&status.text, room).into_owned();
         let line = Line::from(vec![
             Span::styled(icon, style),

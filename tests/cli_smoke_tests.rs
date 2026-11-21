@@ -902,6 +902,45 @@ fn cli_status_reports_missing_pipewire_tools() {
     sb.assert_default_locations_untouched();
 }
 
+/// A config that does not load is not "no sinks": the start hint sends the user to
+/// `pwsw validate` (the TUI cannot open it); a missing one still says to add a sink
+#[test]
+fn cli_start_hint_for_a_broken_or_missing_config() {
+    let sb = Sandbox::new();
+    let broken = sb.write_file("broken.toml", TWO_DEFAULTS_CONFIG);
+    let missing = sb.dir("files").join("missing.toml");
+    let empty_bin = sb.dir("cache");
+    let fix = "Fix the config first: pwsw validate shows the error";
+    let add = "Add a sink first (pwsw tui)";
+
+    for (config, expected, unexpected) in [(&broken, fix, add), (&missing, add, fix)] {
+        let output = run(sb
+            .cmd()
+            .env("PATH", &empty_bin)
+            .arg("--config")
+            .arg(config)
+            .arg("status"));
+        assert_exit(&output, 1);
+        let out = stdout(&output);
+        assert!(out.contains(&format!("  {expected}")), "{out}");
+        assert!(!out.contains(unexpected), "{out}");
+
+        let output = run(sb
+            .cmd()
+            .env("PATH", &empty_bin)
+            .arg("--config")
+            .arg(config)
+            .arg("doctor"));
+        assert_exit(&output, 1);
+        let out = stdout(&output);
+        assert!(
+            out.contains(&format!("⚠ The daemon is not running\n    → {expected}")),
+            "{out}"
+        );
+    }
+    sb.assert_default_locations_untouched();
+}
+
 #[test]
 fn cli_status_json_is_valid_without_pipewire_or_daemon() {
     let sb = Sandbox::new();

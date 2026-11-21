@@ -155,7 +155,7 @@ the TUI creates the config file for you and opens on the Sinks screen.
 | `pwsw status --watch [--json]` | Follow the daemon's status, one line per change (for bars) | optional |
 | `pwsw daemon [-f/--foreground]` | Start the daemon (background by default) | - |
 | `pwsw shutdown` | Stop the daemon | required |
-| `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then input devices (sources) | not needed |
+| `pwsw list-sinks [--json]` | Active and profile-switchable outputs, then mics (sources) | not needed |
 | `pwsw list-windows [--json]` | Open windows, tracked (matching a rule) or not | required |
 | `pwsw test-rule [PATTERN] [--output REGEX] [--json]` | Which windows a regex matches (`app_id` or title, and/or monitor) | required |
 | `pwsw validate` | Check the config file (never creates one) | not needed |
@@ -378,7 +378,7 @@ the log, and says how to fix each problem it finds. It changes nothing.
 - **A rule doesn't fire:** check the window's real `app_id` with `pwsw list-windows` and
   test the pattern with `pwsw test-rule`.
 - **"sink did not appear" after a profile switch:** some devices are slow; raise
-  `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (total wait is capped at 5 s).
+  `PROFILE_SWITCH_DELAY_MS` / `PROFILE_SWITCH_MAX_RETRIES` (their total sleep is capped at 5 s).
 - **After upgrading pwsw**, restart the daemon (`systemctl --user restart pwsw`);
   `pwsw status` tells you if the running daemon speaks a different protocol version.
 

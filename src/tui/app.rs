@@ -141,8 +141,8 @@ pub enum AppUpdate {
         /// Whether rule-driven switching is paused (`false` while not running)
         paused: bool,
         /// Whether the daemon's compositor protocol reports monitors (`wlr`);
-        /// `false` while not running
-        monitor_info: bool,
+        /// `None` while not running or when its status could not be read
+        monitor_info: Option<bool>,
     },
     /// Answer to [`BgCommand::TogglePause`]: whether rule-driven switching is
     /// paused now, or why the request failed
@@ -290,8 +290,9 @@ pub struct App {
     windows_generation: u64,
     /// Whether the daemon's rule-driven switching is paused (as last reported by it)
     pub(crate) daemon_paused: bool,
-    /// Whether the running daemon reports which monitors windows are on (`wlr`)
-    pub(crate) daemon_monitor_info: bool,
+    /// Whether the running daemon reports which monitors windows are on (`wlr`);
+    /// `None` while unknown (not running, or its status could not be read)
+    pub(crate) daemon_monitor_info: Option<bool>,
     /// Whether a pause/resume request sent to the background worker has not
     /// reported back yet
     pub(crate) pause_pending: bool,
@@ -397,7 +398,7 @@ impl App {
             profile_source_list: Vec::new(),
             pipewire_available: true, // Optimistic default until first poll
             daemon_paused: false,
-            daemon_monitor_info: false,
+            daemon_monitor_info: None,
             pause_pending: false,
             daemon_action_pending: false,
             save_pending: false,
@@ -764,15 +765,30 @@ impl App {
         );
     }
 
+    /// Whether a form, dialog or picker is open (keys go to it, not to the screen)
+    pub(crate) fn modal_active(&self) -> bool {
+        use super::screens::list::ListMode;
+        match self.current_screen {
+            Screen::Sinks => self.endpoint_screen().mode != ListMode::List,
+            Screen::Rules => self.rules_screen.mode != ListMode::List,
+            Screen::Settings => self.settings_screen.dialog_open(),
+            Screen::Dashboard => false,
+        }
+    }
+
     /// Request quit: quits at once without unsaved changes, otherwise asks for
     /// confirmation (the next key decides, see `input::handle_key_event`)
     pub(crate) fn request_quit(&mut self) {
         if self.config_dirty {
             self.confirm_quit = true;
-            self.set_status(
-                StatusKind::Warning,
-                "Unsaved changes: s save and quit · q quit without saving · other keys stay",
-            );
+            // In a form or dialog `s` and `q` are typed or used there: only Ctrl+C
+            // answers the prompt
+            let prompt = if self.modal_active() || self.save_conflict {
+                "Unsaved changes: Ctrl+C again quits without saving · other keys stay"
+            } else {
+                "Unsaved changes: s save and quit · q/Ctrl+C quit unsaved · other keys stay"
+            };
+            self.set_status(StatusKind::Warning, prompt);
         } else {
             self.quit();
         }
@@ -902,7 +918,7 @@ impl App {
                 monitor_info,
             } => {
                 self.daemon_paused = running && paused;
-                self.daemon_monitor_info = running && monitor_info;
+                self.daemon_monitor_info = monitor_info.filter(|_| running);
                 if running != self.daemon_running || !self.daemon_state_seen {
                     self.dashboard_screen.preselect_action(running);
                 }
