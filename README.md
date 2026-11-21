@@ -180,7 +180,7 @@ the daemon is back. Each line has the conventional `text`/`tooltip`/`class`/`alt
 plus structured ones (stable schema: STATUS STREAM in `man pwsw`):
 
 ```json
-{"text":"Headphones","tooltip":"Output: Headphones (alsa_output.usb-…)\nMic: Headset Mic\nRule: discord","class":"active","alt":"active","sink":{"desc":"Headphones","node":"alsa_output.usb-…","fallback":false,"window":{"app_id":"discord","title":"…","rule":"discord"}},"source":{"desc":"Headset Mic","node":"alsa_input.usb-…","fallback":false,"window":null},"paused":false,"daemon":"running","version":"v0.7.0+abc1234","protocol":2,"managed_by":"systemd"}
+{"text":"Headphones","tooltip":"Output: Headphones (alsa_output.usb-…)\nMic: Headset Mic\nRule: Voice chat (discord)","class":"active","alt":"active","sink":{"desc":"Headphones","node":"alsa_output.usb-…","fallback":false,"window":{"app_id":"discord","rule":"Voice chat","rule_index":4}},"source":{"desc":"Headset Mic","node":"alsa_input.usb-…","fallback":false,"window":null},"paused":false,"daemon":"running","version":"v0.7.0+abc1234","protocol":2,"managed_by":"systemd"}
 ```
 
 `class` is `active`, `fallback`, `paused` or `stopped`. Hooking it up:
@@ -272,7 +272,7 @@ sink = "Optical Out"  # (app_id optional; needs wlr-foreign-toplevel-management)
 All `[settings]` keys are optional; the values above are the defaults.
 
 **Sinks:** `name` is the PipeWire node name, `desc` a unique label (not a number), and
-exactly one sink has `default = true`: the fallback when no rule matches. Icons are
+exactly one sink has `default = true`: the default, used when no rule matches. Icons are
 auto-detected from the description (HDMI/TV/display → `video-display`;
 headphone/headset/Bluetooth → `audio-headphones`; otherwise `audio-speakers`).
 

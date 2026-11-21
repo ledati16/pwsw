@@ -19,7 +19,10 @@
 //! in use survives); a source's switch must keep the card's current output mappings
 //! (pwsw never takes the audio output away to get a microphone). When one job wants a
 //! sink and a source on the same card ([`plan_joint`]), one profile providing both is
-//! chosen; if none exists the sink wins and the source is reported unreachable.
+//! chosen; if none exists the sink wins and the source is reported unreachable. While
+//! sources are configured, the daemon's sink-only jobs take the source answer along, so
+//! a sink switch on the microphone's card ([`sink_switch_touches`]) is planned that
+//! way too and a dropped microphone is reported rather than silently lost.
 //!
 //! # Not supported
 //!
@@ -403,6 +406,32 @@ fn plan_card(snapshot: &Snapshot, kind: Endpoint, plan: &Plan) -> Option<(u32, S
     }
 }
 
+/// A source target's card and input mapping: of its node, else by its predicted name
+/// (its own resolution may fail only because it would drop an output a sink's switch
+/// replaces anyway)
+fn source_card(snapshot: &Snapshot, target: &str) -> Option<(u32, String)> {
+    match snapshot.node_by_name(Endpoint::Source, target) {
+        Some(node) => node.device_id.zip(node.profile_name.clone()),
+        None => card_for(snapshot, Endpoint::Source, target)
+            .map(|(d, mapping)| (d.id, mapping.to_string())),
+    }
+}
+
+/// Whether `plan`'s sink switches the profile of a card one of `sources` is on (so the
+/// switch decides whether that microphone survives)
+pub(crate) fn sink_switch_touches(
+    snapshot: &Snapshot,
+    plan: &JointPlan,
+    sources: &[String],
+) -> bool {
+    let Some((_, Plan::SwitchProfile(sw))) = &plan.sink else {
+        return false;
+    };
+    sources.iter().any(|target| {
+        source_card(snapshot, target).is_some_and(|(device, _)| device == sw.device_id)
+    })
+}
+
 /// How the job's source is reached
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SourceStep {
@@ -487,14 +516,7 @@ pub(crate) fn plan_joint(
     for (index, target) in sources.iter().enumerate() {
         let skip = |why: String| (target.clone(), why);
         let device = |id: u32| snapshot.devices.iter().find(|d| d.id == id);
-        // The source's card: of its node, else by its predicted name (its own
-        // resolution may fail only because it would drop an output the sink's switch
-        // replaces anyway)
-        let card = match snapshot.node_by_name(Endpoint::Source, target) {
-            Some(node) => node.device_id.zip(node.profile_name.clone()),
-            None => card_for(snapshot, Endpoint::Source, target)
-                .map(|(d, mapping)| (d.id, mapping.to_string())),
-        };
+        let card = source_card(snapshot, target);
 
         // The sink's switch is on this source's card: one profile for both
         if let (Some(sw), Some((device_id, mapping))) = (&sink_switch, &card)

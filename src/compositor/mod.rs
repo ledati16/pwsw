@@ -116,11 +116,21 @@ pub fn detected_capabilities<'a>(
 /// Window event from a compositor
 #[derive(Debug, Clone)]
 pub enum WindowEvent {
-    /// A new window was opened
+    /// A new window was opened, with its initial placement
+    ///
+    /// `outputs` and `minimized` are as in [`WindowEvent::Placement`] (empty and `false`
+    /// with the `ext` backend, or for a window that is on no output yet). Carrying them
+    /// here means a window that opens on a monitor arrives as one event, so the daemon
+    /// never acts on the window before it knows where it is.
     Opened {
         id: u64,
         app_id: String,
         title: String,
+        /// Connector names of the monitors the window is on when it opens (sorted,
+        /// deduplicated; see [`WindowEvent::Placement`])
+        outputs: Vec<String>,
+        /// The compositor's `minimized` flag when the window opens
+        minimized: bool,
     },
     /// An existing window's `app_id` or title changed
     Changed {
@@ -130,10 +140,10 @@ pub enum WindowEvent {
     },
     /// A window's placement changed: the monitors it is on, and whether it is minimized
     ///
-    /// Only the `wlr` backend reports placement ([`Backend::reports_placement`]). Sent
-    /// after the window's `Opened` once it is on any output or minimized, then whenever
-    /// that changes (on the compositor's `done`, or right away when an output it is on is
-    /// removed). A window that was never placed anywhere sends none.
+    /// Only the `wlr` backend reports placement ([`Backend::reports_placement`]). The
+    /// initial placement is part of the window's `Opened`; this is sent whenever it
+    /// changes after that (on the compositor's `done`, or right away when an output the
+    /// window is on is removed).
     Placement {
         id: u64,
         /// Connector names (`HDMI-A-1`, `DP-2`), sorted and deduplicated. An output
@@ -145,7 +155,23 @@ pub enum WindowEvent {
     },
     /// A window was closed
     Closed { id: u64 },
+    /// Every window that existed when the connection was set up has been reported
+    ///
+    /// Sent exactly once, early: after the toplevel protocol is bound, the Wayland thread
+    /// makes [`INITIAL_SYNC_ROUNDTRIPS`] roundtrips (the compositor announces existing
+    /// windows, with their first `done`, in reply to the bind), queues the windows it
+    /// learnt of, then this marker. Lets the daemon decide its startup baseline from the
+    /// windows that are already open instead of switching once per window as they
+    /// trickle in. A window whose first `done` comes later is reported after it.
+    InitialSync,
 }
+
+/// Roundtrips after binding the toplevel protocol before [`WindowEvent::InitialSync`]
+///
+/// One is enough for compositors that announce existing toplevels (and their `done`)
+/// right on bind, as `wlroots` does; the second covers ones that send the `done` in a
+/// later batch.
+pub const INITIAL_SYNC_ROUNDTRIPS: usize = 2;
 
 /// Capacity of the channel between the forwarder thread and the daemon
 ///
@@ -212,11 +238,14 @@ pub fn spawn_compositor_thread_with_preference(
 ///
 /// - Window IDs are assigned by `pwsw` from a counter and are never reused, even when
 ///   the compositor recycles protocol object IDs.
-/// - `Opened` is sent on a window's first `done`; `Changed` only when its `app_id` or
-///   title differ from what was last sent (focus/maximise-only updates are dropped).
-///   A window closed before its first `done` produces no events at all.
-/// - `Placement` (`wlr` only) follows the window's `Opened` when it is on any output or
-///   minimized, then comes only when its sorted output names or minimized flag change.
+/// - `Opened` is sent on a window's first `done`, with its initial placement;
+///   `Changed` only when its `app_id` or title differ from what was last sent
+///   (focus/maximise-only updates are dropped). A window closed before its first
+///   `done` produces no events at all.
+/// - `Placement` (`wlr` only) comes when the window's sorted output names or minimized
+///   flag change from what was last sent (in `Opened` or a previous `Placement`).
+/// - [`WindowEvent::InitialSync`] is sent once, after the windows that existed when the
+///   connection was set up.
 ///   With `wlr`, `wl_output` globals are bound (and rebound on hotplug); when one is
 ///   removed, windows on it get a `Placement` without it.
 /// - The Wayland thread never blocks on the daemon. Events go to an in-memory outbox
@@ -224,7 +253,8 @@ pub fn spawn_compositor_thread_with_preference(
 ///   the outbox coalesces per window: a newer `Changed` replaces an undelivered one (in
 ///   its queue position), a newer `Placement` likewise replaces an undelivered
 ///   `Placement`, and `Closed` cancels an undelivered `Opened` (both are dropped) or an
-///   undelivered `Changed`/`Placement`. Surviving events keep the order in which they
+///   undelivered `Changed`/`Placement`; a `Placement` for a window whose `Opened` is
+///   undelivered is folded into it. Surviving events keep the order in which they
 ///   were first queued. No event is ever lost that would leave the daemon with a stale
 ///   view: the daemon always ends up with each window's latest state, never sees
 ///   `Changed` or `Placement` before `Opened` or after `Closed`, and every `Opened` it
@@ -303,7 +333,7 @@ fn wayland_thread(
     tx_probe: &mpsc::Sender<WindowEvent>,
     ready: &SyncSender<Result<Backend>>,
 ) {
-    match run_wayland(conn, preference, Arc::clone(outbox), tx_probe, ready) {
+    match run_wayland(conn, preference, outbox, tx_probe, ready) {
         Ok(()) => info!("Wayland thread stopped"),
         Err(e) => error!("Wayland event loop ended: {e:#}"),
     }
@@ -318,11 +348,11 @@ fn wayland_thread(
 fn run_wayland(
     conn: &Connection,
     preference: ProtocolPreference,
-    outbox: Arc<EventOutbox>,
+    outbox: &Arc<EventOutbox>,
     tx_probe: &mpsc::Sender<WindowEvent>,
     ready: &SyncSender<Result<Backend>>,
 ) -> Result<()> {
-    let (mut queue, mut tracker) = match setup(conn, preference, outbox) {
+    let (mut queue, mut tracker) = match setup(conn, preference, Arc::clone(outbox)) {
         Ok((queue, tracker, protocol)) => {
             if ready.send(Ok(protocol)).is_err() {
                 debug!("Nobody waiting for Wayland setup, stopping");
@@ -336,6 +366,19 @@ fn run_wayland(
             return Ok(());
         }
     };
+
+    // Existing windows: the compositor announces them in reply to the bind
+    for _ in 0..INITIAL_SYNC_ROUNDTRIPS {
+        queue
+            .roundtrip(&mut tracker)
+            .context("Lost the Wayland connection while listing existing windows")?;
+        if tracker.is_finished() {
+            let _ = conn.flush();
+            eyre::bail!("Compositor stopped reporting windows (`finished` event)");
+        }
+    }
+    debug!("Initial window list complete");
+    outbox.push(WindowEvent::InitialSync);
 
     loop {
         // Flushes our requests (handle destroys), waits for and dispatches events.

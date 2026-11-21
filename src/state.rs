@@ -63,10 +63,10 @@ pub struct State {
 struct Window {
     app_id: String,
     title: String,
-    /// Connector names of the monitors the window is on (empty until a `Placement`,
-    /// and always with the `ext` backend)
+    /// Connector names of the monitors the window is on (from `Opened`, then
+    /// `Placement`; always empty with the `ext` backend)
     outputs: Vec<String>,
-    /// The compositor's minimized flag (from `Placement`)
+    /// The compositor's minimized flag (from `Opened`, then `Placement`)
     minimized: bool,
     /// Priority ordering: assigned on open, renewed when the window starts matching
     seq: u64,
@@ -337,14 +337,22 @@ impl State {
     /// matching window or made one stop matching.
     pub fn apply(&mut self, event: WindowEvent) -> Option<Departure> {
         match event {
-            WindowEvent::Opened { id, app_id, title }
-            | WindowEvent::Changed { id, app_id, title } => self.upsert(id, app_id, title),
+            WindowEvent::Opened {
+                id,
+                app_id,
+                title,
+                outputs,
+                minimized,
+            } => self.upsert(id, app_id, title, Some((outputs, minimized))),
+            WindowEvent::Changed { id, app_id, title } => self.upsert(id, app_id, title, None),
             WindowEvent::Placement {
                 id,
                 outputs,
                 minimized,
             } => self.place(id, outputs, minimized),
             WindowEvent::Closed { id } => self.close(id),
+            // Only marks a point in the stream (see `daemon::event_loop`)
+            WindowEvent::InitialSync => None,
         }
     }
 
@@ -400,25 +408,43 @@ impl State {
         }
     }
 
-    fn upsert(&mut self, id: u64, app_id: String, title: String) -> Option<Departure> {
+    /// A window opened (with its initial placement) or changed `app_id`/title
+    fn upsert(
+        &mut self,
+        id: u64,
+        app_id: String,
+        title: String,
+        placement: Option<(Vec<String>, bool)>,
+    ) -> Option<Departure> {
         debug!(
-            "Window: id={}, app_id='{}', title='{}'",
+            "Window: id={}, app_id='{}', title='{}'{}",
             id,
             for_log(&app_id),
-            for_log(&title)
+            for_log(&title),
+            placement
+                .as_ref()
+                .map_or_else(String::new, |(outputs, minimized)| format!(
+                    ", outputs=[{}], minimized={minimized}",
+                    for_log(&outputs.join(", "))
+                ))
         );
         if self.windows.contains_key(&id) {
             return self.refresh(id, |w| {
                 w.app_id = app_id;
                 w.title = title;
+                if let Some((outputs, minimized)) = placement {
+                    w.outputs = outputs;
+                    w.minimized = minimized;
+                }
             });
         }
         let seq = self.take_seq();
+        let (outputs, minimized) = placement.unwrap_or_default();
         let mut window = Window {
             app_id,
             title,
-            outputs: Vec::new(),
-            minimized: false,
+            outputs,
+            minimized,
             seq,
             matched: None,
         };
@@ -692,6 +718,8 @@ mod tests {
             id,
             app_id: app_id.to_string(),
             title: title.to_string(),
+            outputs: Vec::new(),
+            minimized: false,
         }
     }
 
@@ -1325,6 +1353,33 @@ mod tests {
         );
         config.settings.match_by_index = match_by_index;
         config
+    }
+
+    /// A window that opens on a monitor matches its output rule straight away (the
+    /// initial placement comes with `Opened`), not first a non-output rule
+    #[test]
+    fn test_opened_with_placement_matches_output_rule_at_once() {
+        let mut s = state(monitor_config(false));
+        s.apply(WindowEvent::Opened {
+            id: 1,
+            app_id: "firefox".into(),
+            title: "Video".into(),
+            outputs: vec!["HDMI-A-1".into()],
+            minimized: false,
+        });
+        assert_eq!(s.desired_sink().name, "tv");
+        assert_eq!(s.windows()[0].outputs, ["HDMI-A-1"]);
+
+        // Opening minimized there: the output rule does not apply
+        s.apply(WindowEvent::Opened {
+            id: 2,
+            app_id: "firefox".into(),
+            title: "Hidden".into(),
+            outputs: vec!["HDMI-A-1".into()],
+            minimized: true,
+        });
+        assert!(s.windows()[1].minimized);
+        assert_eq!(s.apply(WindowEvent::InitialSync), None);
     }
 
     #[test]

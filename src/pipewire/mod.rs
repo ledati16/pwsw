@@ -147,8 +147,36 @@ pub struct ConfiguredSinkJson {
 pub struct PipeWire;
 
 /// What one activation half did: the index of the candidate made default and its
-/// node name, `None` when an upgrade check found nothing better
+/// node name, `None` when an upgrade check (or a [`JobHalf::keep`] half) changed
+/// nothing
 pub type Activated = Option<(usize, String)>;
+
+/// One half (sink or source) of an activation job ([`PipeWire::activate_joint`])
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobHalf<'a> {
+    /// Configured node names, in priority order
+    pub candidates: &'a [String],
+    /// Candidate `k` is the default already: only a reachable earlier one is worth a
+    /// switch (an upgrade check)
+    pub upgrade_from: Option<usize>,
+    /// Source halves only: ride along with the sink half so its profile switch keeps
+    /// the microphone. Acted on only when the sink's planned switch is on the card of
+    /// one of `candidates` (then planned jointly: one profile for both, or this half
+    /// fails when none provides both); otherwise nothing is touched (`Ok(None)`).
+    pub keep: bool,
+}
+
+impl<'a> JobHalf<'a> {
+    /// A plain half: activate the first reachable of `candidates`
+    #[must_use]
+    pub const fn new(candidates: &'a [String]) -> Self {
+        Self {
+            candidates,
+            upgrade_from: None,
+            keep: false,
+        }
+    }
+}
 
 /// Serialises all sink and source activations in this process, so each one takes its snapshot
 /// and makes its decision with no other switch in flight. Guards no data, so a
@@ -257,21 +285,6 @@ impl PipeWire {
         resolve::list_profile_nodes(snapshot, Endpoint::Source, &active_names)
     }
 
-    /// Get the current default sink name (fresh query)
-    ///
-    /// Prefers `default.configured.audio.sink` when that sink exists, falling back
-    /// to the effective `default.audio.sink`.
-    ///
-    /// # Errors
-    /// Returns an error if `pw-dump` fails or no default sink is set in metadata.
-    pub fn get_default_sink_name() -> Result<String> {
-        let snapshot = Self::dump()?;
-        snapshot
-            .current_default()
-            .map(String::from)
-            .ok_or_else(|| eyre::eyre!("No default sink found in PipeWire metadata"))
-    }
-
     /// The current default sink and source as the user sees them (one `pw-dump`;
     /// see [`Snapshot::current_default`])
     ///
@@ -306,15 +319,25 @@ impl PipeWire {
     /// # Errors
     /// Returns why the sink cannot be activated (see [`Self::check_reachable`]).
     pub fn reachability(snapshot: &Snapshot, sink_name: &str) -> Result<Reachability> {
-        Ok(
-            match resolve::resolve_endpoint(snapshot, Endpoint::Sink, sink_name)? {
-                resolve::Plan::SetDefault { node_name } => Reachability::Present { node_name },
-                resolve::Plan::SwitchProfile(switch) => Reachability::ProfileSwitch {
-                    device_name: switch.device_name,
-                    profile_name: switch.profile_name,
-                },
+        Self::reachability_of(snapshot, Endpoint::Sink, sink_name)
+    }
+
+    /// Like [`Self::reachability`], for a configured sink or source
+    ///
+    /// # Errors
+    /// Returns why the node cannot be activated (see [`Self::check_reachable`]).
+    pub fn reachability_of(
+        snapshot: &Snapshot,
+        kind: Endpoint,
+        name: &str,
+    ) -> Result<Reachability> {
+        Ok(match resolve::resolve_endpoint(snapshot, kind, name)? {
+            resolve::Plan::SetDefault { node_name } => Reachability::Present { node_name },
+            resolve::Plan::SwitchProfile(switch) => Reachability::ProfileSwitch {
+                device_name: switch.device_name,
+                profile_name: switch.profile_name,
             },
-        )
+        })
     }
 
     /// Check whether a configured sink or source could be made the default right now
@@ -324,14 +347,6 @@ impl PipeWire {
     /// Returns why the node cannot be activated.
     pub fn check_reachable_endpoint(snapshot: &Snapshot, kind: Endpoint, name: &str) -> Result<()> {
         resolve::resolve_endpoint(snapshot, kind, name).map(|_| ())
-    }
-
-    /// Activate a sink by its configured node name (see [`PipeWire::activate`])
-    ///
-    /// # Errors
-    /// As [`PipeWire::activate`].
-    pub fn activate_sink(sink_name: &str) -> Result<String> {
-        Self::activate(Endpoint::Sink, sink_name)
     }
 
     /// Activate a sink or source by its configured node name, switching profiles if
@@ -350,7 +365,7 @@ impl PipeWire {
     /// out, or the node does not appear after the profile switch.
     pub fn activate(kind: Endpoint, name: &str) -> Result<String> {
         let candidates = [name.to_string()];
-        let request = Some((&candidates[..], None));
+        let request = Some(JobHalf::new(&candidates));
         let (sink, source) = match kind {
             Endpoint::Sink => Self::activate_joint(request, None),
             Endpoint::Source => Self::activate_joint(None, request),
@@ -370,20 +385,23 @@ impl PipeWire {
     /// profile providing both; if none does, the sink wins and the source half
     /// reports the source as unreachable. With `upgrade_from: Some(k)` (candidate `k`
     /// is that half's current default), the half does nothing unless an earlier
-    /// candidate is reachable now.
+    /// candidate is reachable now. A source half with `keep` does nothing unless the
+    /// sink's profile switch is on the card of one of its candidates (see
+    /// [`JobHalf::keep`]).
     ///
     /// Returns each half's result: the index of the activated candidate and the node
     /// made default, `Ok(None)` when an upgrade check found nothing better, or why no
     /// candidate could be activated (see [`PipeWire::activate`] for the causes).
     #[must_use]
     pub fn activate_joint(
-        sink: Option<(&[String], Option<usize>)>,
-        source: Option<(&[String], Option<usize>)>,
+        sink: Option<JobHalf<'_>>,
+        source: Option<JobHalf<'_>>,
     ) -> (Option<Result<Activated>>, Option<Result<Activated>>) {
-        fn request((candidates, upgrade_from): (&[String], Option<usize>)) -> Request<'_> {
+        fn request(half: JobHalf<'_>) -> Request<'_> {
             Request {
-                candidates,
-                upgrade_from,
+                candidates: half.candidates,
+                upgrade_from: half.upgrade_from,
+                keep: half.keep,
             }
         }
         let _guard = ACTIVATION_LOCK

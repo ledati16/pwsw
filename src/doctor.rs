@@ -18,7 +18,7 @@ use std::time::Duration;
 use color_eyre::eyre::Result;
 
 use crate::compositor::{Backend, ProtocolPreference, ProtocolProbe, probe_protocols};
-use crate::config::Config;
+use crate::config::{Config, Endpoint};
 use crate::daemon_manager::{DaemonManager, SYSTEMD_UNIT, output_with_timeout};
 use crate::ipc::{self, Request, Response};
 use crate::pipewire::{GraphInfo, PipeWire, Reachability, Snapshot};
@@ -215,7 +215,7 @@ struct Local {
     monitor: MonitorRules,
 }
 
-/// Wayland, `PipeWire`, config and sinks (blocking)
+/// Wayland, `PipeWire`, config, sinks and sources (blocking)
 fn local_sections(config_flag: bool) -> Local {
     let path = Config::get_config_path();
     let source = if config_flag {
@@ -251,9 +251,10 @@ fn local_sections(config_flag: bool) -> Local {
 
     let config_section = config_checks(path.as_deref().ok(), source, config.as_ref());
 
-    let sinks = sink_checks(loaded, dump.as_ref().ok().map(|(snapshot, _)| snapshot));
+    let snapshot = dump.as_ref().ok().map(|(snapshot, _)| snapshot);
     let mut sections = vec![wayland, pipewire, config_section];
-    sections.extend(sinks);
+    sections.extend(sink_checks(loaded, snapshot));
+    sections.extend(source_checks(loaded, snapshot));
     Local { sections, monitor }
 }
 
@@ -542,29 +543,53 @@ fn config_checks(path: Option<&Path>, source: &str, config: Option<&Result<Confi
     }
 }
 
-/// Judge each configured sink against one snapshot (`None` sections when there
-/// is no valid config with sinks)
+/// Judge each configured sink against one snapshot (`None` when there is no valid
+/// config with sinks)
 fn sink_checks(config: Option<&Config>, snapshot: Option<&Snapshot>) -> Option<Section> {
-    let config = config.filter(|c| !c.sinks.is_empty())?;
+    endpoint_checks(Endpoint::Sink, config, snapshot)
+}
+
+/// Judge each configured source (microphone) against one snapshot (`None` when there
+/// is no valid config with sources)
+fn source_checks(config: Option<&Config>, snapshot: Option<&Snapshot>) -> Option<Section> {
+    endpoint_checks(Endpoint::Source, config, snapshot)
+}
+
+/// Judge each configured sink or source against one snapshot
+fn endpoint_checks(
+    kind: Endpoint,
+    config: Option<&Config>,
+    snapshot: Option<&Snapshot>,
+) -> Option<Section> {
+    let config = config.filter(|c| !c.endpoints(kind).is_empty())?;
+    let (title, compare) = match kind {
+        Endpoint::Sink => (
+            "Sinks",
+            "Compare the configured node names with pwsw list-sinks (pwsw tui → 2 Sinks → e, \
+             Space on Node picks one)",
+        ),
+        Endpoint::Source => (
+            "Mics",
+            "Compare the configured [[sources]] node names with the sources pwsw list-sinks \
+             shows",
+        ),
+    };
     let mut checks = Vec::new();
     let Some(snapshot) = snapshot else {
         checks.push(Check::info("Not checked: PipeWire could not be queried"));
-        return Some(Section {
-            title: "Sinks",
-            checks,
-        });
+        return Some(Section { title, checks });
     };
     let mut reachable = 0;
-    for sink in &config.sinks {
-        let label = if sink.default {
-            format!("{} (fallback)", sink.desc)
+    for entry in config.endpoints(kind) {
+        let label = if entry.default {
+            format!("{} (default)", entry.desc)
         } else {
-            sink.desc.clone()
+            entry.desc.clone()
         };
-        match PipeWire::reachability(snapshot, &sink.name) {
+        match PipeWire::reachability_of(snapshot, kind, &entry.name) {
             Ok(Reachability::Present { node_name }) => {
                 reachable += 1;
-                checks.push(Check::ok(if node_name == sink.name {
+                checks.push(Check::ok(if node_name == entry.name {
                     format!("{label}: present")
                 } else {
                     format!("{label}: present as {node_name}")
@@ -588,15 +613,14 @@ fn sink_checks(config: Option<&Config>, snapshot: Option<&Snapshot>) -> Option<S
     }
     if reachable == 0 {
         checks.push(Check::fail(
-            "None of the configured sinks can be activated right now",
-            "Compare the configured node names with pwsw list-sinks (pwsw tui → 2 Sinks → e, \
-             Space on Node picks one)",
+            format!(
+                "None of the configured {} can be activated right now",
+                kind.plural()
+            ),
+            compare,
         ));
     }
-    Some(Section {
-        title: "Sinks",
-        checks,
-    })
+    Some(Section { title, checks })
 }
 
 // ============================================================================
@@ -1151,7 +1175,7 @@ mod tests {
             vec![],
         );
         let section = sink_checks(Some(&config), Some(&snapshot)).expect("a section");
-        assert_eq!(section.checks[0].message, "Here (fallback): present");
+        assert_eq!(section.checks[0].message, "Here (default): present");
         assert_eq!(section.checks[1].level, Level::Warn);
         assert!(
             section.checks[1].message.contains("Bluetooth"),
@@ -1166,6 +1190,36 @@ mod tests {
         assert!(sink_checks(None, Some(&snapshot)).is_none());
         let section = sink_checks(Some(&config), None).expect("a section");
         assert_eq!(section.checks[0].level, Level::Info);
+    }
+
+    /// `[[sources]]` get their own section, judged like sinks; none without sources
+    #[test]
+    fn test_source_checks() {
+        let json = include_bytes!("../tests/fixtures/pwdump-synthetic.json");
+        let snapshot = crate::pipewire::parse_snapshot(json).expect("fixture");
+        let present = PipeWire::get_active(&snapshot, Endpoint::Source);
+        let present = present.first().expect("an active source");
+        let sinks = vec![make_sink("nope", "Nope", true)];
+        assert!(
+            source_checks(Some(&make_config(sinks.clone(), vec![])), Some(&snapshot)).is_none()
+        );
+
+        let config = make_config(sinks, vec![]).with_sources(vec![
+            make_sink(&present.name, "Desk Mic", true),
+            make_sink("bluez_input.00_00_00_00_00_00.0", "Headset Mic", false),
+        ]);
+        let section = source_checks(Some(&config), Some(&snapshot)).expect("a section");
+        assert_eq!(section.title, "Mics");
+        assert_eq!(section.checks[0].message, "Desk Mic (default): present");
+        assert_eq!(section.checks[1].level, Level::Warn);
+        assert_eq!(section.checks.len(), 2, "one source is reachable");
+
+        let none = make_config(vec![make_sink("nope", "Nope", true)], vec![])
+            .with_sources(vec![make_sink("alsa_input.nope", "Nope Mic", true)]);
+        let section = source_checks(Some(&none), Some(&snapshot)).expect("a section");
+        let last = section.checks.last().expect("checks");
+        assert_eq!(last.level, Level::Fail);
+        assert!(last.message.contains("configured sources"), "{last:?}");
     }
 
     #[test]

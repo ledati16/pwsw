@@ -4,7 +4,7 @@
 //! [`Snapshot`] or hand it a switch [`Command`], so a slow client never stalls the
 //! loop and the loop never blocks on a client.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use color_eyre::eyre::Result;
@@ -29,6 +29,32 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
 /// A status subscriber that does not take an update within this time is dropped
 /// (it stopped reading; its socket buffer is full)
 pub(crate) const SUBSCRIBER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Clients (process ids) already told at `info` level that the status stream is full:
+/// a `status --watch` that is refused retries every few seconds, forever, so only its
+/// first refusal is logged at `info` (the others at `debug`)
+static REFUSED_SUBSCRIBERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+/// How many refused clients [`REFUSED_SUBSCRIBERS`] remembers (oldest forgotten first)
+const MAX_REMEMBERED_REFUSALS: usize = 64;
+
+/// Whether this refusal of client `pid` is the first one worth logging at `info`
+/// (always for a client whose process id is unknown)
+fn first_refusal(pid: Option<i32>) -> bool {
+    let Some(pid) = pid else {
+        return true;
+    };
+    let mut seen = REFUSED_SUBSCRIBERS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if seen.contains(&pid) {
+        return false;
+    }
+    if seen.len() >= MAX_REMEMBERED_REFUSALS {
+        seen.remove(0);
+    }
+    seen.push(pid);
+    true
+}
 
 /// Facts about the daemon that never change while it runs
 #[derive(Debug, Clone)]
@@ -128,7 +154,16 @@ async fn stream_status(
         return ipc::write_response(&mut stream, &shutting_down()).await;
     };
     let Some(mut live) = subscription else {
-        info!("Refused a status subscriber: {MAX_STATUS_SUBSCRIBERS} already connected");
+        let pid = stream.peer_cred().ok().and_then(|c| c.pid());
+        if first_refusal(pid) {
+            info!(
+                "Refused a status subscriber{}: {MAX_STATUS_SUBSCRIBERS} already connected \
+                 (its retries are logged at debug)",
+                pid.map_or_else(String::new, |p| format!(" (pid {p})"))
+            );
+        } else {
+            debug!("Refused a status subscriber again: {MAX_STATUS_SUBSCRIBERS} already connected");
+        }
         return ipc::write_response(&mut stream, &Response::Error {
             message: format!(
                 "Too many clients follow the status already (at most {MAX_STATUS_SUBSCRIBERS})"
@@ -335,4 +370,20 @@ fn test_rule_response(windows: &[WindowInfo], pattern: String) -> Response {
         })
         .collect();
     Response::RuleMatches { pattern, matches }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A refused client's retries are logged at `info` once; unknown clients always
+    #[test]
+    fn test_first_refusal_per_client() {
+        let pid = i32::MAX - 7;
+        assert!(first_refusal(Some(pid)));
+        assert!(!first_refusal(Some(pid)));
+        assert!(first_refusal(Some(pid - 1)));
+        assert!(first_refusal(None));
+        assert!(first_refusal(None));
+    }
 }

@@ -112,25 +112,30 @@ pub(super) fn forward_events(outbox: &EventOutbox, tx: &mpsc::Sender<WindowEvent
     }
 }
 
-const fn event_id(event: &WindowEvent) -> u64 {
+const fn event_id(event: &WindowEvent) -> Option<u64> {
     match event {
         WindowEvent::Opened { id, .. }
         | WindowEvent::Changed { id, .. }
         | WindowEvent::Placement { id, .. }
-        | WindowEvent::Closed { id } => *id,
+        | WindowEvent::Closed { id } => Some(*id),
+        WindowEvent::InitialSync => None,
     }
 }
 
 /// Append `event` to `queue`, dropping events it makes redundant
 ///
 /// Rules (all per window id):
-/// - `Opened` is always appended.
+/// - `Opened` is always appended, and so is [`WindowEvent::InitialSync`] (it belongs to
+///   no window and is never dropped or moved).
 /// - `Changed` replaces a queued `Changed` for the same window **in place** (the newest
 ///   state wins, but keeps the queue slot of the oldest undelivered change); with no
 ///   queued `Changed` it is appended. At most one `Changed` per window is ever queued.
-/// - `Placement` follows the same rule among `Placement`s: it replaces a queued
-///   `Placement` for the same window in place, or is appended. `Changed` and
-///   `Placement` never replace each other (they carry different attributes).
+/// - `Placement` for a window whose `Opened` is still queued is folded into that
+///   `Opened` (which carries the window's initial placement), so the daemon learns of
+///   the window and where it is in one event. Otherwise it follows the same rule among
+///   `Placement`s as `Changed` among `Changed`s: it replaces a queued `Placement` for
+///   the same window in place, or is appended. `Changed` and `Placement` never replace
+///   each other (they carry different attributes).
 /// - `Closed` removes any queued `Changed` and `Placement`. If the window's `Opened` is
 ///   still queued, the daemon never learnt about the window, so the `Opened` is removed
 ///   and no `Closed` is queued either. Otherwise `Closed` is appended.
@@ -152,19 +157,44 @@ const fn event_id(event: &WindowEvent) -> u64 {
 /// `Opened` or after its `Closed`, and every `Opened` it does see is eventually followed
 /// by that window's `Closed`.
 fn coalesce_push(queue: &mut VecDeque<WindowEvent>, event: WindowEvent) {
-    let id = event_id(&event);
+    let Some(id) = event_id(&event) else {
+        queue.push_back(event);
+        return;
+    };
     match event {
-        WindowEvent::Opened { .. } => queue.push_back(event),
+        WindowEvent::Opened { .. } | WindowEvent::InitialSync => queue.push_back(event),
         WindowEvent::Changed { .. } => replace_or_append(
             queue,
             event,
             |e| matches!(e, WindowEvent::Changed { id: other, .. } if *other == id),
         ),
-        WindowEvent::Placement { .. } => replace_or_append(
-            queue,
-            event,
-            |e| matches!(e, WindowEvent::Placement { id: other, .. } if *other == id),
-        ),
+        WindowEvent::Placement {
+            id,
+            outputs,
+            minimized,
+        } => {
+            if let Some(WindowEvent::Opened {
+                outputs: opened_outputs,
+                minimized: opened_minimized,
+                ..
+            }) = queue
+                .iter_mut()
+                .find(|e| matches!(e, WindowEvent::Opened { id: other, .. } if *other == id))
+            {
+                *opened_outputs = outputs;
+                *opened_minimized = minimized;
+            } else {
+                replace_or_append(
+                    queue,
+                    WindowEvent::Placement {
+                        id,
+                        outputs,
+                        minimized,
+                    },
+                    |e| matches!(e, WindowEvent::Placement { id: other, .. } if *other == id),
+                );
+            }
+        }
         WindowEvent::Closed { .. } => {
             queue.retain(|e| {
                 !matches!(
@@ -226,8 +256,7 @@ struct TrackedWindow {
     outputs: HashSet<ObjectId>,
     /// Minimized flag as of the last `done`
     minimized: bool,
-    /// Placement last reported to the daemon (the default - no outputs, not minimized -
-    /// until a `Placement` was sent, so a window that is nowhere sends none)
+    /// Placement last reported to the daemon (in `Opened`, then by `Placement`)
     reported_placement: Placement,
 }
 
@@ -343,27 +372,36 @@ impl WindowTracker {
 
     /// The compositor finished a batch of updates for this handle
     ///
-    /// Emits `Opened` on the first `done`, then `Changed` only when `app_id` or title
-    /// differ from what was last reported (state-only updates such as focus or
-    /// maximisation emit nothing). After that, `Placement` when the window's outputs or
-    /// minimized flag differ from what was last reported (for a new window: when it is on
-    /// any output or minimized).
+    /// Emits `Opened` on the first `done`, carrying the window's initial placement (so
+    /// a window opening on a monitor is one event, not an `Opened` the daemon could act
+    /// on before the `Placement` that follows). After that, `Changed` only when `app_id`
+    /// or title differ from what was last reported (state-only updates such as focus or
+    /// maximisation emit nothing), then `Placement` when the window's outputs or
+    /// minimized flag differ from what was last reported.
     pub(super) fn done(&mut self, key: &ObjectId) {
         let Some(window) = self.windows.get_mut(key) else {
             return;
         };
+        window.outputs.clone_from(&window.pending_outputs);
+        window.minimized = window.pending_minimized;
         let event = match &window.reported {
             None => {
+                let placement = placement_of(&self.outputs, window);
                 debug!(
-                    "Window opened: id={}, app_id='{}', title='{}'",
+                    "Window opened: id={}, app_id='{}', title='{}', outputs=[{}], minimized={}",
                     window.id,
                     for_log(&window.app_id),
-                    for_log(&window.title)
+                    for_log(&window.title),
+                    for_log(&placement.outputs.join(", ")),
+                    placement.minimized
                 );
+                window.reported_placement = placement.clone();
                 Some(WindowEvent::Opened {
                     id: window.id,
                     app_id: window.app_id.clone(),
                     title: window.title.clone(),
+                    outputs: placement.outputs,
+                    minimized: placement.minimized,
                 })
             }
             Some((app_id, title)) if *app_id == window.app_id && *title == window.title => {
@@ -388,9 +426,6 @@ impl WindowTracker {
             window.reported = Some((window.app_id.clone(), window.title.clone()));
             self.outbox.push(event);
         }
-
-        window.outputs.clone_from(&window.pending_outputs);
-        window.minimized = window.pending_minimized;
         report_placement(&self.outbox, &self.outputs, window);
     }
 
@@ -484,8 +519,24 @@ impl WindowTracker {
     }
 }
 
+/// `window`'s applied placement: the labels of its (still bound) outputs, sorted and
+/// deduplicated, and its minimized flag
+fn placement_of(outputs: &HashMap<ObjectId, TrackedOutput>, window: &TrackedWindow) -> Placement {
+    let mut labels: Vec<String> = window
+        .outputs
+        .iter()
+        .filter_map(|key| outputs.get(key).map(TrackedOutput::label))
+        .collect();
+    labels.sort_unstable();
+    labels.dedup();
+    Placement {
+        outputs: labels,
+        minimized: window.minimized,
+    }
+}
+
 /// Queue a `Placement` for `window` if its applied placement differs from the last one
-/// reported (only after its `Opened`, which `done` queues first)
+/// reported (only after its `Opened`, which carries the initial placement)
 fn report_placement(
     outbox: &EventOutbox,
     outputs: &HashMap<ObjectId, TrackedOutput>,
@@ -494,17 +545,7 @@ fn report_placement(
     if window.reported.is_none() {
         return;
     }
-    let mut labels: Vec<String> = window
-        .outputs
-        .iter()
-        .filter_map(|key| outputs.get(key).map(TrackedOutput::label))
-        .collect();
-    labels.sort_unstable();
-    labels.dedup();
-    let placement = Placement {
-        outputs: labels,
-        minimized: window.minimized,
-    };
+    let placement = placement_of(outputs, window);
     if placement == window.reported_placement {
         return;
     }
@@ -533,6 +574,8 @@ mod tests {
             id,
             app_id: "app".into(),
             title: title.into(),
+            outputs: Vec::new(),
+            minimized: false,
         }
     }
 
@@ -556,7 +599,21 @@ mod tests {
         queue
             .iter()
             .map(|e| match e {
-                WindowEvent::Opened { id, title, .. } => format!("O{id}:{title}"),
+                WindowEvent::Opened {
+                    id,
+                    title,
+                    outputs,
+                    minimized,
+                    ..
+                } => format!(
+                    "O{id}:{title}{}{}",
+                    if outputs.is_empty() {
+                        String::new()
+                    } else {
+                        format!("@{}", outputs.join("+"))
+                    },
+                    if *minimized { ":min" } else { "" }
+                ),
                 WindowEvent::Changed { id, title, .. } => format!("C{id}:{title}"),
                 WindowEvent::Placement {
                     id,
@@ -568,6 +625,7 @@ mod tests {
                     if *minimized { ":min" } else { "" }
                 ),
                 WindowEvent::Closed { id } => format!("X{id}"),
+                WindowEvent::InitialSync => "SYNC".to_string(),
             })
             .collect()
     }
@@ -625,15 +683,43 @@ mod tests {
 
     #[test]
     fn test_placement_supersedes_queued_placement_in_place() {
+        // Window 1's `Opened` was already delivered
         let got = push_all(vec![
-            opened(1, "a"),
             placement(1, &["HDMI-A-1"], false),
             opened(2, "x"),
             placement(1, &["DP-1"], false),
             placement(1, &["DP-1"], true),
         ]);
         // The newest placement, at the slot of the first undelivered one
-        assert_eq!(got, vec!["O1:a", "P1:DP-1:min", "O2:x"]);
+        assert_eq!(got, vec!["P1:DP-1:min", "O2:x"]);
+    }
+
+    /// While a window's `Opened` is undelivered, its placements are folded into it: the
+    /// daemon learns where a new window is together with the window itself
+    #[test]
+    fn test_placement_folds_into_queued_opened() {
+        let got = push_all(vec![
+            opened(1, "a"),
+            opened(2, "x"),
+            placement(1, &["HDMI-A-1"], false),
+            changed(1, "b"),
+            placement(1, &["DP-1"], true),
+        ]);
+        assert_eq!(got, vec!["O1:a@DP-1:min", "O2:x", "C1:b"]);
+    }
+
+    /// The startup marker is never dropped or moved, whatever is coalesced around it
+    #[test]
+    fn test_initial_sync_is_kept_in_order() {
+        let got = push_all(vec![
+            opened(1, "a"),
+            WindowEvent::InitialSync,
+            changed(1, "b"),
+            placement(1, &["DP-1"], false),
+            opened(2, "x"),
+            WindowEvent::Closed { id: 2 },
+        ]);
+        assert_eq!(got, vec!["O1:a@DP-1", "SYNC", "C1:b"]);
     }
 
     /// `Changed` and `Placement` keep separate slots: neither replaces the other, and both
@@ -644,11 +730,12 @@ mod tests {
             placement(1, &["HDMI-A-1"], false),
             changed(1, "b"),
             opened(2, "x"),
+            changed(2, "y"),
             placement(2, &["DP-1"], false),
             changed(1, "c"),
             placement(1, &["DP-1", "HDMI-A-1"], false),
         ]);
-        assert_eq!(got, vec!["P1:DP-1+HDMI-A-1", "C1:c", "O2:x", "P2:DP-1"]);
+        assert_eq!(got, vec!["P1:DP-1+HDMI-A-1", "C1:c", "O2:x@DP-1", "C2:y"]);
     }
 
     #[test]
@@ -670,7 +757,7 @@ mod tests {
             placement(2, &["DP-1"], true),
             WindowEvent::Closed { id: 1 },
         ]);
-        assert_eq!(got, vec!["O2:x", "P2:DP-1:min"]);
+        assert_eq!(got, vec!["O2:x@DP-1:min"]);
     }
 
     #[test]

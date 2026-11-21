@@ -48,7 +48,7 @@ The **[[sinks]]** list defines the audio outputs PWSW should manage. An empty li
 :   A friendly description for the sink used in rules and notifications. Must be non-empty, unique, not a number, and not equal to another sink's `name`.
 
 **default** (boolean, default: false)
-:   Whether this is the fallback sink, used when no window matches a rule. The first sink added in the TUI becomes the default automatically.
+:   Whether this is the default sink, used when no window matches a rule. The first sink added in the TUI becomes the default automatically.
 
 **icon** (string, optional)
 :   The icon name to use in notifications. Without it, the icon is chosen from the description and node name: `video-display` for HDMI/TV/display, `audio-headphones` for headphones, headsets and Bluetooth, otherwise `audio-speakers`.

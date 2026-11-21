@@ -19,7 +19,11 @@ the daemon switches less eagerly than before.
   window event. A manual `set-sink`/`next-sink`/`prev-sink` holds the same way.
 - **`default_on_startup = false` is now honoured**: the daemon no longer switches on the
   first window event after start-up. With `true` it switches to the sink the rules want
-  (the default sink if nothing matches).
+  (the default sink if nothing matches). Either way the windows already open count:
+  the daemon waits (up to 2 s) for the compositor to list them before deciding, so
+  start-up switches at most once per sink/source instead of once per existing window.
+  Likewise a window opening on a monitor an `output` rule names switches once, straight
+  to that rule's sink, and window events that queue up are applied together.
 - **Unknown config keys are errors.** A typo such as `defualt = true` used to be ignored;
   now loading fails with the key, line and file. Also rejected: empty sink names,
   descriptions or rule sink references, numeric sink descriptions, and a string that is
@@ -76,7 +80,9 @@ the daemon switches less eagerly than before.
   with the conventional `text`/`tooltip`/`class`/`alt` fields (`class`: `active`,
   `fallback`, `paused`, `stopped`) plus structured `sink`, `source`, `paused`, `daemon`
   and `version` fields; the schema is documented as stable in `man pwsw` (STATUS
-  STREAM). It keeps running while the daemon is down (one `stopped` line, then
+  STREAM). The deciding rule is named by its `desc` (else its position) and the
+  window's `app_id`, never by the window title, so browser tab changes neither print
+  new lines nor put page titles into the bar. It keeps running while the daemon is down (one `stopped` line, then
   reconnects with backoff) and exits quietly on `SIGINT`/`SIGTERM` or a closed pipe.
   Without `--json` it prints `Headphones · Mic: Headset Mic · paused`. The daemon serves
   up to 16 followers and drops one that stops reading. A Noctalia plugin is in
@@ -115,8 +121,10 @@ the daemon switches less eagerly than before.
   moves the mic. Fallbacks, upgrades, retries, manual choice, pause and the settle delay
   work for it exactly as for sinks. When one switch needs a sink and a source on the
   same card, the card is switched once to a profile providing both (if none exists the
-  sink wins and the source is reported unreachable); a source-only switch always keeps
-  the card's current output. Without `[[sources]]` pwsw never touches the default
+  sink wins and the source is reported unreachable); a sink-only switch of the managed
+  microphone's card is planned the same way (and a microphone it drops is reported as
+  unknown rather than still claimed); a source-only switch always keeps the card's
+  current output. Without `[[sources]]` pwsw never touches the default
   source. New `pwsw set-source <ref>`; `pwsw list-sinks` gains an *INPUT DEVICES /
   SOURCES* section (and `*_sources` JSON fields); `status` shows the input, `status
   --json` adds `current_source`, `sources_configured`, `pipewire.current_source`,
@@ -141,7 +149,8 @@ the daemon switches less eagerly than before.
   **Switch Delay** (Enter, type the milliseconds, Enter).
 - `pwsw doctor`: one read-only command that checks the Wayland session and the
   compositor's window protocols, the PipeWire tools, version and WirePlumber, the config,
-  whether each configured sink can be activated now (and by which profile switch), the
+  whether each configured sink and source can be activated now (and by which profile
+  switch; sources in their own *Mics* section, only when configured), the
   daemon (version, protocol, systemd or direct), the systemd unit and the last log
   warning, printing ✓/⚠/✗ lines with a one-line fix for each problem. Exits 1 if
   anything is broken.

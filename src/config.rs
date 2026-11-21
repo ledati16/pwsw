@@ -281,7 +281,7 @@ pub struct SinkConfig {
     pub desc: String,
     /// Optional icon for status bars (if not set, auto-detected)
     pub icon: Option<String>,
-    /// Whether this is the default fallback sink (source)
+    /// Whether this is the default sink (source), used when no rule decides
     pub default: bool,
 }
 
@@ -699,6 +699,10 @@ switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle
 # name = "alsa_output.pci-0000_00_1f.3.hdmi-stereo"
 # desc = "HDMI"
 # icon = "video-display"  # Optional: override auto-detected icon
+#
+# [[sinks]]
+# name = "alsa_output.usb-SteelSeries_Arctis-00.analog-stereo"
+# desc = "Headphones"
 
 # Microphones (optional) - only if you want rules to switch the default input too.
 # Without any [[sources]], pwsw never touches the default source.
@@ -740,7 +744,7 @@ switch_delay_ms = 0        # Wait this long (ms) for the rules' answer to settle
 #
 # [[rules]]
 # output = "^HDMI-A-1$"  # Any window on this monitor (connector name; regex); app_id optional
-# sink = "TV"            # Needs a wlr-foreign-toplevel-management compositor: pwsw doctor
+# sink = "HDMI"          # Needs a wlr-foreign-toplevel-management compositor: pwsw doctor
 "#;
 
 // ============================================================================
@@ -3098,6 +3102,43 @@ desc = "HDMI"
         assert!(err.to_string().contains("pwsw init"), "{err}");
         assert!(!path.exists());
         assert!(!dir.path().join("pwsw").exists());
+    }
+
+    /// The template with every example uncommented (each `# Example:` block, up to the
+    /// next blank line, loses its leading `# `)
+    fn uncommented_template() -> String {
+        let mut out = String::new();
+        let mut in_example = false;
+        for line in DEFAULT_CONFIG_TEMPLATE.lines() {
+            let line = if line.trim().is_empty() {
+                in_example = false;
+                line
+            } else if in_example {
+                line.strip_prefix("# ")
+                    .unwrap_or_else(|| line.strip_prefix('#').unwrap_or(line))
+            } else {
+                in_example = line == "# Example:";
+                line
+            };
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Uncommenting all of the template's examples yields a valid config that uses
+    /// every documented feature
+    #[test]
+    fn test_default_template_examples_validate_when_uncommented() {
+        let text = uncommented_template();
+        let cfg = Config::parse_str(&text, Path::new("template"))
+            .unwrap_or_else(|e| panic!("uncommented template must validate: {e:#}\n{text}"));
+        assert_eq!(cfg.sinks.len(), 3);
+        assert_eq!(cfg.sources.len(), 2);
+        assert_eq!(cfg.rules.len(), 3);
+        assert!(cfg.has_output_rules());
+        assert!(cfg.rules.iter().any(|r| !r.fallback_refs.is_empty()));
+        assert!(cfg.rules.iter().any(|r| !r.source_refs.is_empty()));
     }
 
     #[test]

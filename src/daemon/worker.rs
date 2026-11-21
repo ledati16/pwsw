@@ -29,9 +29,10 @@ use crate::config::{Config, Endpoint};
 use crate::manual::{self, ManualSwitch, ManualTarget, Probe};
 use crate::pipewire::PipeWire;
 
-/// One half of an activation: candidates (configured node names, in priority order)
-/// and, for an upgrade check, the index of the candidate that is the default already
-pub type Half<'a> = (&'a [String], Option<usize>);
+/// One half of an activation: candidates (configured node names, in priority order),
+/// for an upgrade check the index of the candidate that is the default already, and
+/// whether it only rides along with the sink half ([`Target::Keep`])
+pub type Half<'a> = crate::pipewire::JobHalf<'a>;
 
 /// What one half did: the index of the candidate made default and the node name, or
 /// `None` when an upgrade check found no better candidate reachable
@@ -46,7 +47,10 @@ pub trait SinkSwitcher: Send + Sync + 'static {
     /// Within a half, an activation that fails moves on to the next reachable
     /// candidate. With `upgrade_from: Some(k)` (candidate `k` is the default already),
     /// the half returns `Ok(None)` without changing anything unless a candidate
-    /// before `k` is reachable. A half's error means no candidate could be activated.
+    /// before `k` is reachable. A source half with `keep` returns `Ok(None)` unless
+    /// the sink half's profile switch is on its card (see
+    /// [`crate::pipewire::JobHalf::keep`]). A half's error means no candidate could be
+    /// activated.
     fn activate(
         &self,
         sink: Option<Half<'_>>,
@@ -94,6 +98,10 @@ pub(crate) enum Target {
         request: ManualSwitch,
         config: Arc<Config>,
     },
+    /// Source slot only, riding along with a sink job: keep these sources (the source
+    /// lane's current answer) working across the sink's profile switch. Touches
+    /// nothing ([`Outcome::Unchanged`]) unless that switch is on their card.
+    Keep { candidates: Vec<String> },
 }
 
 /// An activation request
@@ -157,6 +165,7 @@ enum Prepared {
     Activate {
         tried: Vec<String>,
         upgrade_from: Option<usize>,
+        keep: bool,
         observed: Option<String>,
     },
     Finished(JobResult),
@@ -185,6 +194,13 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
         } => Prepared::Activate {
             tried: candidates,
             upgrade_from,
+            keep: false,
+            observed: None,
+        },
+        Target::Keep { candidates } => Prepared::Activate {
+            tried: candidates,
+            upgrade_from: None,
+            keep: true,
             observed: None,
         },
         Target::Manual { request, config } => {
@@ -208,6 +224,7 @@ fn prepare<S: SinkSwitcher>(switcher: &S, job: Job, probe: &mut Option<Probe>) -
                 Ok(ManualTarget::Switch(target)) => Prepared::Activate {
                     tried: vec![target.name.clone()],
                     upgrade_from: None,
+                    keep: false,
                     observed,
                 },
                 Ok(ManualTarget::Done(message)) => finished(observed, Outcome::Done(message)),
@@ -233,13 +250,23 @@ fn outcome_of(result: Option<HalfResult>, tried: &[String]) -> Outcome {
     }
 }
 
-/// A job to activate: (generation, tried, `upgrade_from`, observed)
-type Ready = (u64, Vec<String>, Option<usize>, Option<String>);
+/// A job to activate
+struct Ready {
+    generation: u64,
+    tried: Vec<String>,
+    upgrade_from: Option<usize>,
+    keep: bool,
+    observed: Option<String>,
+}
 
 /// Run the pending jobs (at most one per slot) as one joint activation (blocking)
 fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
     fn half(slot: Option<&Ready>) -> Option<Half<'_>> {
-        slot.map(|(_, tried, upgrade_from, _)| (tried.as_slice(), *upgrade_from))
+        slot.map(|ready| Half {
+            candidates: &ready.tried,
+            upgrade_from: ready.upgrade_from,
+            keep: ready.keep,
+        })
     }
 
     let mut probe = None;
@@ -251,8 +278,17 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
             Prepared::Activate {
                 tried,
                 upgrade_from,
+                keep,
                 observed,
-            } => halves[kind.index()] = Some((generation, tried, upgrade_from, observed)),
+            } => {
+                halves[kind.index()] = Some(Ready {
+                    generation,
+                    tried,
+                    upgrade_from,
+                    keep,
+                    observed,
+                });
+            }
             Prepared::Finished(result) => results.push(result),
         }
     }
@@ -261,7 +297,13 @@ fn execute<S: SinkSwitcher>(switcher: &S, jobs: Vec<Job>) -> Vec<JobResult> {
     }
     let (sink, source) = switcher.activate(half(halves[0].as_ref()), half(halves[1].as_ref()));
     for (kind, result) in [(Endpoint::Sink, sink), (Endpoint::Source, source)] {
-        if let Some((generation, tried, _, observed)) = halves[kind.index()].take() {
+        if let Some(Ready {
+            generation,
+            tried,
+            observed,
+            ..
+        }) = halves[kind.index()].take()
+        {
             let outcome = outcome_of(result, &tried);
             results.push(JobResult {
                 generation,
@@ -308,6 +350,12 @@ async fn run<S: SinkSwitcher>(
                 Target::Manual { request, .. } => {
                     debug!("Manual request {request:?} (job {})", job.generation);
                 }
+                Target::Keep { candidates } => debug!(
+                    "Keeping the {} [{}] across the sink's activation (job {})",
+                    job.kind.noun(),
+                    candidates.join(", "),
+                    job.generation
+                ),
             }
         }
 
@@ -316,7 +364,9 @@ async fn run<S: SinkSwitcher>(
             .iter()
             .map(|job| {
                 let tried = match &job.target {
-                    Target::Rule { candidates, .. } => candidates.clone(),
+                    Target::Rule { candidates, .. } | Target::Keep { candidates } => {
+                        candidates.clone()
+                    }
                     Target::Manual { .. } => Vec::new(),
                 };
                 (job.generation, job.kind, tried)

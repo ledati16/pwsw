@@ -106,6 +106,15 @@ enum ServerCommand {
     StateOnlyUpdate {
         id: u32,
     },
+    /// Remember a window that exists before any client binds: announced (with its
+    /// outputs and a `done`) to every client right when it binds the manager/list, the
+    /// way compositors report the windows already open
+    Preexisting {
+        id: u32,
+        title: String,
+        app_id: String,
+        outputs: Vec<String>,
+    },
     /// For each round and window: new title + `done` (last round's title is `final-<id>`)
     Burst {
         ids: Vec<u32>,
@@ -135,6 +144,8 @@ enum Notice {
     OutputBound(String),
     /// A client released its `wl_output` object for this name
     OutputReleased(String),
+    /// A [`ServerCommand::Preexisting`] window was stored
+    Stored(u32),
 }
 
 /// A `wl_output` global of the mock: connector name and advertised version
@@ -285,6 +296,17 @@ impl MockCompositor {
         self.send(ServerCommand::CloseWindow { id });
     }
 
+    /// A window open before the client connects (see [`ServerCommand::Preexisting`])
+    fn preexisting_window(&mut self, id: u32, title: &str, app_id: &str, outputs: &[&str]) {
+        self.send(ServerCommand::Preexisting {
+            id,
+            title: title.into(),
+            app_id: app_id.into(),
+            outputs: strings(outputs),
+        });
+        self.wait_notice(|n| *n == Notice::Stored(id));
+    }
+
     /// Wait for (and consume) the first notice matching `pred`
     fn wait_notice(&mut self, pred: impl Fn(&Notice) -> bool) -> Notice {
         if let Some(pos) = self.seen.iter().position(&pred) {
@@ -340,6 +362,8 @@ struct ServerState {
     // Live window handles, tagged with the mock's window id
     wlr_handles: Vec<(u32, ZwlrForeignToplevelHandleV1)>,
     ext_handles: Vec<(u32, ExtForeignToplevelHandleV1)>,
+    /// Windows announced to each client on bind: (id, title, `app_id`, outputs)
+    preexisting: Vec<(u32, String, String, Vec<String>)>,
 }
 
 impl ServerState {
@@ -502,6 +526,49 @@ impl ServerState {
         }
     }
 
+    /// Announce the preexisting windows to a client that just bound `manager`
+    fn announce_preexisting_wlr(
+        &mut self,
+        dh: &DisplayHandle,
+        manager: &ZwlrForeignToplevelManagerV1,
+    ) {
+        let client = manager.client().expect("manager client");
+        for (id, title, app_id, outputs) in self.preexisting.clone() {
+            let handle = client
+                .create_resource::<ZwlrForeignToplevelHandleV1, u32, Self>(
+                    dh,
+                    manager.version(),
+                    id,
+                )
+                .expect("create wlr handle");
+            manager.toplevel(&handle);
+            handle.title(title);
+            handle.app_id(app_id);
+            for name in &outputs {
+                if let Some(output) = self.output_for(name, handle.client()) {
+                    handle.output_enter(&output);
+                }
+            }
+            handle.done();
+            self.wlr_handles.push((id, handle));
+        }
+    }
+
+    /// Announce the preexisting windows to a client that just bound `list`
+    fn announce_preexisting_ext(&mut self, dh: &DisplayHandle, list: &ExtForeignToplevelListV1) {
+        let client = list.client().expect("list client");
+        for (id, title, app_id, _) in self.preexisting.clone() {
+            let handle = client
+                .create_resource::<ExtForeignToplevelHandleV1, u32, Self>(dh, list.version(), id)
+                .expect("create ext handle");
+            list.toplevel(&handle);
+            handle.title(title);
+            handle.app_id(app_id);
+            handle.done();
+            self.ext_handles.push((id, handle));
+        }
+    }
+
     fn close_window(&mut self, id: u32) {
         self.wlr_handles.retain(|(w, h)| {
             if *w == id {
@@ -564,6 +631,7 @@ fn run_server(
         ext_lists: Vec::new(),
         wlr_handles: Vec::new(),
         ext_handles: Vec::new(),
+        preexisting: Vec::new(),
     };
 
     if matches!(mode, ProtocolMode::Wlr | ProtocolMode::Both) {
@@ -622,6 +690,15 @@ fn run_server(
                     }
                 }
                 ServerCommand::CloseWindow { id } => state.close_window(id),
+                ServerCommand::Preexisting {
+                    id,
+                    title,
+                    app_id,
+                    outputs,
+                } => {
+                    state.preexisting.push((id, title, app_id, outputs));
+                    state.notify(Notice::Stored(id));
+                }
                 ServerCommand::Finish => state.finish(),
             }
         }
@@ -645,13 +722,15 @@ fn run_server(
 impl GlobalDispatch<ZwlrForeignToplevelManagerV1, ()> for ServerState {
     fn bind(
         state: &mut Self,
-        _handle: &DisplayHandle,
+        handle: &DisplayHandle,
         _client: &Client,
         resource: New<ZwlrForeignToplevelManagerV1>,
         _global_data: &(),
         data_init: &mut DataInit<'_, Self>,
     ) {
-        state.wlr_managers.push(data_init.init(resource, ()));
+        let manager = data_init.init(resource, ());
+        state.announce_preexisting_wlr(handle, &manager);
+        state.wlr_managers.push(manager);
         state.notify(Notice::Bound(WLR));
     }
 }
@@ -691,13 +770,15 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, u32> for ServerState {
 impl GlobalDispatch<ExtForeignToplevelListV1, ()> for ServerState {
     fn bind(
         state: &mut Self,
-        _handle: &DisplayHandle,
+        handle: &DisplayHandle,
         _client: &Client,
         resource: New<ExtForeignToplevelListV1>,
         _global_data: &(),
         data_init: &mut DataInit<'_, Self>,
     ) {
-        state.ext_lists.push(data_init.init(resource, ()));
+        let list = data_init.init(resource, ());
+        state.announce_preexisting_ext(handle, &list);
+        state.ext_lists.push(list);
         state.notify(Notice::Bound(EXT));
     }
 }
@@ -794,7 +875,21 @@ enum Recv {
     TimedOut,
 }
 
+/// Next event within `timeout`, skipping the startup marker
+/// ([`WindowEvent::InitialSync`], checked by its own test)
 fn recv_within(rx: &mut Receiver<WindowEvent>, timeout: Duration) -> Recv {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match recv_within_raw(rx, left) {
+            Recv::Event(WindowEvent::InitialSync) => {}
+            other => return other,
+        }
+    }
+}
+
+/// Next event within `timeout`, the startup marker included
+fn recv_within_raw(rx: &mut Receiver<WindowEvent>, timeout: Duration) -> Recv {
     let deadline = Instant::now() + timeout;
     loop {
         match rx.try_recv() {
@@ -814,10 +909,31 @@ fn recv(rx: &mut Receiver<WindowEvent>) -> WindowEvent {
     }
 }
 
+/// `Opened` for a window that is on no output and not minimized
 fn expect_opened(rx: &mut Receiver<WindowEvent>, app: &str, title_expected: &str) -> u64 {
+    expect_opened_on(rx, app, title_expected, &[], false)
+}
+
+/// `Opened` with its initial placement
+fn expect_opened_on(
+    rx: &mut Receiver<WindowEvent>,
+    app: &str,
+    title_expected: &str,
+    want_outputs: &[&str],
+    want_minimized: bool,
+) -> u64 {
     match recv(rx) {
-        WindowEvent::Opened { id, app_id, title } => {
-            assert_eq!((app_id.as_str(), title.as_str()), (app, title_expected));
+        WindowEvent::Opened {
+            id,
+            app_id,
+            title,
+            outputs,
+            minimized,
+        } => {
+            assert_eq!(
+                (app_id.as_str(), title.as_str(), outputs, minimized),
+                (app, title_expected, strings(want_outputs), want_minimized)
+            );
             id
         }
         other => panic!("expected Opened({app}), got {other:?}"),
@@ -891,6 +1007,48 @@ fn test_backend_lifecycle_and_handle_destroy(mode: ProtocolMode) {
 
     // The client must destroy the handle after `closed`
     mock.wait_notice(|n| matches!(n, Notice::HandleDestroyed { window: 101, .. }));
+
+    mock.stop();
+}
+
+/// Windows open before the client connects are reported (with their initial placement
+/// in `Opened`, for `wlr`), then the `InitialSync` marker, exactly once, before any
+/// window that opens later
+#[test_case(ProtocolMode::Wlr ; "wlr")]
+#[test_case(ProtocolMode::Ext ; "ext")]
+fn test_initial_sync_follows_existing_windows(mode: ProtocolMode) {
+    let mut mock = MockCompositor::with_outputs(mode, outputs(&[("HDMI-A-1", 4)]));
+    mock.preexisting_window(1, "video", "mpv", &["HDMI-A-1"]);
+    mock.preexisting_window(2, "shell", "foot", &[]);
+    let mut rx = mock.spawn_client(mode);
+
+    let on_tv: &[&str] = match mode {
+        ProtocolMode::Wlr => &["HDMI-A-1"],
+        ProtocolMode::Ext | ProtocolMode::Both => &[],
+    };
+    let mut seen = Vec::new();
+    loop {
+        match recv_within_raw(&mut rx, TIMEOUT) {
+            Recv::Event(WindowEvent::InitialSync) => break,
+            Recv::Event(WindowEvent::Opened {
+                app_id,
+                outputs,
+                minimized: false,
+                ..
+            }) => seen.push((app_id, outputs)),
+            other => panic!("expected an existing window or InitialSync, got {other:?}"),
+        }
+    }
+    assert_eq!(seen, vec![
+        ("mpv".to_string(), strings(on_tv)),
+        ("foot".to_string(), Vec::new())
+    ]);
+
+    mock.create_window(3, "later", "app");
+    match recv_within_raw(&mut rx, TIMEOUT) {
+        Recv::Event(WindowEvent::Opened { app_id, .. }) => assert_eq!(app_id, "app"),
+        other => panic!("expected the new window (no second marker), got {other:?}"),
+    }
 
     mock.stop();
 }
@@ -1117,7 +1275,9 @@ fn test_burst_with_slow_consumer(mode: ProtocolMode) {
     let mut apply = |event: WindowEvent, model: &mut HashMap<u64, (String, String)>| {
         received += 1;
         match event {
-            WindowEvent::Opened { id, app_id, title } => {
+            WindowEvent::Opened {
+                id, app_id, title, ..
+            } => {
                 assert!(!closed.contains(&id), "Opened after Closed for {id}");
                 assert!(
                     model.insert(id, (app_id, title)).is_none(),
@@ -1140,6 +1300,7 @@ fn test_burst_with_slow_consumer(mode: ProtocolMode) {
                 );
                 closed.push(id);
             }
+            WindowEvent::InitialSync => {}
         }
     };
 
@@ -1192,9 +1353,9 @@ fn test_wlr_placement_follows_outputs_and_minimized() {
         MockCompositor::with_outputs(ProtocolMode::Wlr, outputs(&[("HDMI-A-1", 4), ("DP-1", 4)]));
     let mut rx = mock.spawn_client(ProtocolMode::Wlr);
 
+    // The initial placement comes with `Opened`
     mock.create_window_on(1, "title", "app", &["HDMI-A-1"]);
-    let id = expect_opened(&mut rx, "app", "title");
-    expect_placement(&mut rx, id, &["HDMI-A-1"], false);
+    let id = expect_opened_on(&mut rx, "app", "title", &["HDMI-A-1"], false);
 
     // Moved: one Placement for the whole batch, nothing for the intermediate state
     mock.place(1, &["DP-1"], &["HDMI-A-1"], None);
@@ -1251,11 +1412,9 @@ fn test_wlr_output_hotplug() {
     let mut rx = mock.spawn_client(ProtocolMode::Wlr);
 
     mock.create_window_on(1, "both", "app", &["HDMI-A-1", "DP-1"]);
-    let id = expect_opened(&mut rx, "app", "both");
-    expect_placement(&mut rx, id, &["DP-1", "HDMI-A-1"], false);
+    let id = expect_opened_on(&mut rx, "app", "both", &["DP-1", "HDMI-A-1"], false);
     mock.create_window_on(2, "elsewhere", "app", &["HDMI-A-1"]);
-    let other = expect_opened(&mut rx, "app", "elsewhere");
-    expect_placement(&mut rx, other, &["HDMI-A-1"], false);
+    let other = expect_opened_on(&mut rx, "app", "elsewhere", &["HDMI-A-1"], false);
 
     mock.send(ServerCommand::RemoveOutput {
         name: "DP-1".into(),
@@ -1285,14 +1444,14 @@ fn test_wlr_output_without_name_gets_fallback_label() {
     let mut rx = mock.spawn_client(ProtocolMode::Wlr);
 
     mock.create_window_on(1, "title", "app", &["unnamed"]);
-    let id = expect_opened(&mut rx, "app", "title");
-    let first = match recv(&mut rx) {
-        WindowEvent::Placement {
-            id: got,
+    let (id, first) = match recv(&mut rx) {
+        WindowEvent::Opened {
+            id,
             outputs,
             minimized: false,
-        } if got == id && outputs.len() == 1 => outputs[0].clone(),
-        other => panic!("expected one fallback-labelled output, got {other:?}"),
+            ..
+        } if outputs.len() == 1 => (id, outputs[0].clone()),
+        other => panic!("expected Opened on one fallback-labelled output, got {other:?}"),
     };
     let global = first
         .strip_prefix("output-")
@@ -1342,8 +1501,7 @@ fn test_prefer_wlr_picks_wlr_when_both_advertised() {
 
     // Reported exactly once (the mock reports windows on every bound manager/list)
     mock.create_window_on(1, "title", "app", &["DP-1"]);
-    let id = expect_opened(&mut rx, "app", "title");
-    expect_placement(&mut rx, id, &["DP-1"], false);
+    let id = expect_opened_on(&mut rx, "app", "title", &["DP-1"], false);
     mock.close_window(1);
     expect_closed(&mut rx, id);
     mock.wait_notice(|n| matches!(n, Notice::HandleDestroyed { window: 1, .. }));

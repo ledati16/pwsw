@@ -18,7 +18,9 @@ use notify::{Event, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use self::event_loop::{CompositorInfo, Daemon, Hooks, Inputs, Signal, output_rules_warning};
+use self::event_loop::{
+    CompositorInfo, Daemon, Hooks, INITIAL_SYNC_TIMEOUT, Inputs, Signal, output_rules_warning,
+};
 use self::ipc_handler::ServerInfo;
 use self::lock::InstanceLock;
 use self::notifier::{Notice, NoticeKind, Notifier};
@@ -380,7 +382,10 @@ pub async fn run(config: Arc<Config>, foreground: bool) -> Result<()> {
         applied,
     )
     .with_applied_source(applied_source)
-    .with_compositor(compositor);
+    .with_compositor(compositor)
+    // The baseline (and `default_on_startup`) takes the windows already open into
+    // account, instead of switching once per window as they are reported
+    .with_initial_sync(INITIAL_SYNC_TIMEOUT);
 
     // No-op unless started by systemd with `Type=notify`
     if let Err(e) = sd_notify::notify(&[sd_notify::NotifyState::Ready]) {

@@ -796,9 +796,9 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                                 "  {} {}: {}",
                                 "•".success(),
                                 "app_id".dim(),
-                                window.app_id
+                                term(&window.app_id)
                             );
-                            crate::outln!("    {}: {}", "title".dim(), window.title);
+                            crate::outln!("    {}: {}", "title".dim(), term(&window.title));
                             print_placement(window, "    ");
                             crate::outln!(
                                 "    {} {}: {}",
@@ -819,8 +819,13 @@ pub async fn list_windows(json_output: bool) -> Result<()> {
                         untracked.len().to_string().technical()
                     );
                     for window in &untracked {
-                        crate::outln!("  {} {}: {}", "•".dim(), "app_id".dim(), window.app_id);
-                        crate::outln!("    {}: {}", "title".dim(), window.title);
+                        crate::outln!(
+                            "  {} {}: {}",
+                            "•".dim(),
+                            "app_id".dim(),
+                            term(&window.app_id)
+                        );
+                        crate::outln!("    {}: {}", "title".dim(), term(&window.title));
                         print_placement(window, "    ");
                     }
                 }
@@ -848,7 +853,7 @@ fn placement_text(window: &ipc::WindowInfo) -> Option<String> {
     match (window.outputs.as_slice(), window.minimized) {
         ([], false) => None,
         ([], true) => Some("none (minimized)".to_string()),
-        (outputs, _) => Some(format!("{}{minimized}", outputs.join(", "))),
+        (outputs, _) => Some(format!("{}{minimized}", term(&outputs.join(", ")))),
     }
 }
 
@@ -878,6 +883,24 @@ fn print_sources(tracked: &ipc::TrackedInfo, indent: &str) {
         "source".dim(),
         descs.join(", then ").as_str().bold()
     );
+}
+
+/// The note `test-rule --output` prints when the daemon reports no monitors (the `ext`
+/// backend, or a daemon from before protocol 2 that does not send them at all)
+const fn no_monitor_info_hint(protocol: u32, monitor_info: bool) -> Option<&'static str> {
+    if protocol >= 2 && monitor_info {
+        return None;
+    }
+    Some(
+        "Note: this daemon reports no monitor information (ext backend or older version), \
+         so --output matches no window",
+    )
+}
+
+/// Untrusted window text (title, `app_id`, monitor name) for the terminal: control
+/// characters escaped, so it can neither break the layout nor send escape sequences
+fn term(text: &str) -> std::borrow::Cow<'_, str> {
+    crate::sanitize::for_log(text)
 }
 
 /// Test a regex pattern (against `app_id` and title) and/or an `output` regex (against
@@ -913,6 +936,17 @@ pub async fn test_rule(
     if let Some(regex) = &output_regex {
         // Same semantics as `Rule::matches`: never a minimized or unplaced window
         matches.retain(|w| !w.minimized && w.outputs.iter().any(|o| regex.is_match(o)));
+        // Without monitor information every window has no outputs: say why nothing
+        // matches (on stderr, so `--json` stays parseable)
+        if let Ok(Response::Status {
+            protocol,
+            monitor_info,
+            ..
+        }) = ipc::send_request(Request::Status).await
+            && let Some(hint) = no_monitor_info_hint(protocol, monitor_info)
+        {
+            crate::errln!("{}", hint.warning().to_stderr());
+        }
     }
 
     if json_output {
@@ -946,7 +980,7 @@ pub async fn test_rule(
                     "{}. {}: {}{}",
                     (i + 1).to_string().dim(),
                     "app_id".dim(),
-                    window.app_id,
+                    term(&window.app_id),
                     if matched_on == "app_id" || matched_on == "both" {
                         format!(" {}", "✓".success())
                     } else {
@@ -956,7 +990,7 @@ pub async fn test_rule(
                 crate::outln!(
                     "   {}: {}{}",
                     "title".dim(),
-                    window.title,
+                    term(&window.title),
                     if matched_on == "title" || matched_on == "both" {
                         format!(" {}", "✓".success())
                     } else {
@@ -967,7 +1001,7 @@ pub async fn test_rule(
                     crate::outln!(
                         "   {}: {} {}",
                         "monitor".dim(),
-                        window.outputs.join(", "),
+                        term(&window.outputs.join(", ")),
                         "✓".success()
                     );
                 }
@@ -1019,5 +1053,28 @@ mod tests {
             placement_text(&window(&[], true)).as_deref(),
             Some("none (minimized)")
         );
+        // A monitor name is untrusted text: it never reaches the terminal raw
+        let shown = placement_text(&window(&["DP-1\n\u{1b}[2J"], false)).expect("placed");
+        assert!(
+            !shown.contains('\n') && !shown.contains('\u{1b}'),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn test_term_escapes_control_characters() {
+        assert_eq!(term("Firefox"), "Firefox");
+        let title = term("evil\ntitle\u{1b}]0;x\u{7}");
+        assert!(!title.chars().any(char::is_control), "{title:?}");
+    }
+
+    /// `test-rule --output` explains an empty result when the daemon has no monitor
+    /// information
+    #[test]
+    fn test_no_monitor_info_hint() {
+        assert_eq!(no_monitor_info_hint(2, true), None);
+        assert!(no_monitor_info_hint(2, false).is_some(), "ext backend");
+        assert!(no_monitor_info_hint(1, false).is_some(), "older daemon");
+        assert!(no_monitor_info_hint(0, true).is_some());
     }
 }

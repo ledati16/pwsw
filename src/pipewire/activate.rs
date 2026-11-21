@@ -125,6 +125,11 @@ pub(crate) struct Chosen {
 pub(crate) struct Request<'a> {
     pub(crate) candidates: &'a [String],
     pub(crate) upgrade_from: Option<usize>,
+    /// A source half that only rides along with the sink half, so a profile switch for
+    /// the sink keeps the microphone: it is acted on (planned jointly, as any source
+    /// half) only when the sink's planned switch is on the card of one of its
+    /// candidates, and left alone (`Ok(None)`) otherwise
+    pub(crate) keep: bool,
 }
 
 /// What a job did for each half it was given (`None`: the half was not asked for)
@@ -177,6 +182,7 @@ pub(crate) fn activate_first(
     let request = Request {
         candidates,
         upgrade_from,
+        keep: false,
     };
     activate_joint(backend, clock, policy, Some(request), None)
         .sink
@@ -196,6 +202,10 @@ pub(crate) fn activate_first(
 ///
 /// With `upgrade_from: Some(k)` a half does nothing (`Ok(None)`) unless a candidate
 /// before `k` is reachable now; if one is, it proceeds as above over its whole list.
+/// A source half with `keep` does nothing (`Ok(None)`) unless the sink's planned
+/// profile switch is on the card of one of its candidates; then it is planned with the
+/// sink like any source half (one profile for both, or the source reported as
+/// unreachable when none provides both: the sink's switch drops it).
 pub(crate) fn activate_joint(
     backend: &dyn AudioBackend,
     clock: &dyn Clock,
@@ -233,6 +243,7 @@ pub(crate) fn activate_joint(
         if let Some(Request {
             candidates,
             upgrade_from: Some(current),
+            ..
         }) = *half
             && !candidates[..current.min(candidates.len())]
                 .iter()
@@ -242,10 +253,16 @@ pub(crate) fn activate_joint(
             *outcome.slot(kind) = Some(Ok(None));
         }
     }
-    let [sink, source] = halves;
+    let [sink, mut source] = halves;
     let sinks = sink.map_or(&[][..], |r| r.candidates);
     let sources = source.map_or(&[][..], |r| r.candidates);
     let plan = resolve::plan_joint(&snapshot, sinks, sources, None, &HashSet::new());
+    // A source riding along matters only if the sink's switch is on its card
+    if source.is_some_and(|r| r.keep) && !resolve::sink_switch_touches(&snapshot, &plan, sources) {
+        debug!("The sink's activation leaves the microphone's card alone");
+        source = None;
+        outcome.source = Some(Ok(None));
+    }
 
     // Cards switched in this job (attempted or done)
     let mut frozen: HashSet<u32> = HashSet::new();
@@ -971,6 +988,7 @@ mod tests {
             (!c.is_empty()).then_some(Request {
                 candidates: c,
                 upgrade_from: None,
+                keep: false,
             })
         }
         let (sinks, sources) = (names(sinks), names(sources));
@@ -1040,6 +1058,82 @@ mod tests {
         );
     }
 
+    /// A sink job with the source lane's answer riding along (`keep`)
+    fn joint_keep(
+        backend: &FakeBackend,
+        sinks: &[&str],
+        sources: &[&str],
+    ) -> (HalfOutcome, HalfOutcome) {
+        let (sinks, sources) = (names(sinks), names(sources));
+        let outcome = activate_joint(
+            backend,
+            &FakeClock::new(),
+            POLICY,
+            Some(Request {
+                candidates: &sinks,
+                upgrade_from: None,
+                keep: false,
+            }),
+            Some(Request {
+                candidates: &sources,
+                upgrade_from: None,
+                keep: true,
+            }),
+        );
+        (outcome.sink, outcome.source)
+    }
+
+    /// The managed microphone is on the card a sink-only job switches, and the sink's
+    /// only profile has no input: the switch still happens (the sink wins), and the
+    /// source half reports the microphone lost instead of claiming it is still there
+    #[test]
+    fn test_keep_reports_a_microphone_the_sink_switch_drops() {
+        let backend = FakeBackend::with_fixture(SYNTH, Some(0));
+        let surround = "alsa_output.pci-0000_00_1f.3.analog-surround-51";
+        let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+        let (sink, source) = joint_keep(&backend, &[surround], &[mic]);
+        assert_eq!(chosen(sink).activation.node_name, surround);
+        let err = source.expect("asked").unwrap_err().to_string();
+        assert!(
+            err.contains("not reachable together with the sink"),
+            "{err}"
+        );
+        assert_eq!(backend.switches(), vec![Call::SetProfile(70, 9)]);
+    }
+
+    /// The sink's switch is on the microphone's card and a profile keeps both: one
+    /// switch to it, and the microphone is set again once it reappears
+    #[test]
+    fn test_keep_plans_the_microphone_with_the_sink_switch() {
+        let backend = FakeBackend::new(Some(1));
+        let (sink, source) = joint_keep(&backend, &[ANALOG], &[IN_ANALOG]);
+        assert_eq!(chosen(sink).activation.node_name, ANALOG);
+        assert_eq!(chosen(source).activation.node_name, IN_ANALOG);
+        assert_eq!(backend.switches(), vec![Call::SetProfile(43, 1)]);
+    }
+
+    /// The sink is on another card (or needs no switch): the riding source is left
+    /// alone, nothing is set for it
+    #[test]
+    fn test_keep_leaves_the_microphone_alone_when_its_card_is_not_switched() {
+        let backend = FakeBackend::with_fixture(SYNTH, Some(0));
+        let headset = "alsa_output.usb-Example_USB_Headset-00.analog-stereo";
+        let mic = "alsa_input.pci-0000_00_1f.3.analog-stereo";
+        let (sink, source) = joint_keep(&backend, &[headset], &[mic]);
+        assert_eq!(chosen(sink).activation.node_name, headset);
+        assert!(matches!(source, Some(Ok(None))), "{source:?}");
+        assert!(
+            !backend
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::SetSource(_)))
+        );
+
+        let (sink, source) = joint_keep(&backend, &[headset], &[mic]);
+        assert!(chosen(sink).activation.profile_switch.is_none());
+        assert!(matches!(source, Some(Ok(None))), "{source:?}");
+    }
+
     #[test]
     fn test_joint_different_cards_are_activated_independently() {
         let backend = FakeBackend::with_fixture(SYNTH, Some(0));
@@ -1097,10 +1191,12 @@ mod tests {
             Some(Request {
                 candidates: &sinks,
                 upgrade_from: Some(1),
+                keep: false,
             }),
             Some(Request {
                 candidates: &sources,
                 upgrade_from: None,
+                keep: false,
             }),
         );
         assert!(matches!(outcome.sink, Some(Ok(None))));

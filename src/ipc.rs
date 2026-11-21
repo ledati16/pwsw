@@ -203,14 +203,19 @@ pub struct EndpointStatus {
     pub window: Option<RuleWindow>,
 }
 
-/// The window behind a rule's choice; all text is sanitised (control characters
-/// escaped, length capped), since window titles and `app_id`s are untrusted
+/// The window behind a rule's choice, and the rule
+///
+/// Carries no window title: titles change all the time (browser tabs) and would leak
+/// page titles into status bars. All text is sanitised (control characters escaped,
+/// length capped), since `app_id`s and descriptions are untrusted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuleWindow {
     pub app_id: String,
-    pub title: String,
-    /// The rule's `desc`, else the window title when the rule matched
+    /// The rule's `desc`, else `#<rule_index>`
     pub rule: String,
+    /// The rule's position in the config, 1-based (`0` from older daemons)
+    #[serde(default)]
+    pub rule_index: usize,
 }
 
 /// Window information for IPC responses
@@ -1616,8 +1621,8 @@ mod tests {
                 fallback: true,
                 window: Some(RuleWindow {
                     app_id: "discord".to_string(),
-                    title: "Voice".to_string(),
                     rule: "Discord".to_string(),
+                    rule_index: 2,
                 }),
             }),
             source: None,
@@ -1625,6 +1630,10 @@ mod tests {
         };
         let json = serde_json::to_string(&Response::StatusUpdate(update.clone())).expect("ser");
         assert!(json.starts_with(r#"{"type":"StatusUpdate","#), "{json}");
+        assert!(
+            !json.contains("title"),
+            "no window title on the wire: {json}"
+        );
         match serde_json::from_str::<Response>(&json) {
             Ok(Response::StatusUpdate(parsed)) => assert_eq!(parsed, update),
             other => panic!("expected a status update, got {other:?}"),

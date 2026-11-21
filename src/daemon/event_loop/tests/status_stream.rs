@@ -102,12 +102,13 @@ fn applied(desc: &str, node: &str, window: Option<RuleWindow>) -> EndpointStatus
     }
 }
 
-/// The window [`Harness::open`] opens for `app_id`, as the stream reports it
-fn window(app_id: &str) -> RuleWindow {
+/// The deciding window of `app_id` and its rule (1-based `rule_index`, no `desc`), as
+/// the stream reports it: no title
+fn window(app_id: &str, rule_index: usize) -> RuleWindow {
     RuleWindow {
         app_id: app_id.to_string(),
-        title: format!("{app_id} window"),
-        rule: format!("{app_id} window"),
+        rule: format!("#{rule_index}"),
+        rule_index,
     }
 }
 
@@ -135,15 +136,34 @@ async fn test_subscribe_sends_state_then_each_change() {
     let update = sub.update().await;
     assert_eq!(
         update.sink,
-        Some(applied("Headphones", "headphones", Some(window("firefox"))))
+        Some(applied(
+            "Headphones",
+            "headphones",
+            Some(window("firefox", 3))
+        ))
     );
+
+    // Title changes (a browser switching tabs) change nothing the stream reports
+    for title in ["Inbox", "Some private page"] {
+        h.event(WindowEvent::Changed {
+            id: 2,
+            app_id: "firefox".to_string(),
+            title: title.to_string(),
+        })
+        .await;
+    }
+    h.wait_windows(2).await;
 
     h.pause().await;
     let update = sub.update().await;
-    assert!(update.paused);
+    assert!(update.paused, "the next update is the pause, not a title");
     assert_eq!(
         update.sink,
-        Some(applied("Headphones", "headphones", Some(window("firefox"))))
+        Some(applied(
+            "Headphones",
+            "headphones",
+            Some(window("firefox", 3))
+        ))
     );
 
     // A manual choice is not attributed to the window
@@ -184,14 +204,18 @@ async fn test_subscribe_reports_the_source() {
         .await;
     assert_eq!(
         update.sink,
-        Some(applied("Headphones", "headphones", Some(window("discord"))))
+        Some(applied(
+            "Headphones",
+            "headphones",
+            Some(window("discord", 4))
+        ))
     );
     assert_eq!(
         update.source,
         Some(applied(
             "Headset Mic",
             "mic.headset",
-            Some(window("discord"))
+            Some(window("discord", 4))
         ))
     );
     h.stop().await.expect("clean shutdown");

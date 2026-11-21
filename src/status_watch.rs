@@ -57,30 +57,48 @@ fn fallback_mark(endpoint: &EndpointStatus) -> &'static str {
     if endpoint.fallback { " (fallback)" } else { "" }
 }
 
+/// Daemon-supplied text for a line or tooltip line: control characters escaped, so a
+/// node name or description can never split or forge a line
+fn safe(text: &str) -> std::borrow::Cow<'_, str> {
+    crate::sanitize::for_log(text)
+}
+
 /// Multi-line tooltip: output, microphone, deciding rules, pause state
 fn tooltip(update: &StatusUpdate) -> String {
     let mut lines = vec![match &update.sink {
         Some(sink) => format!(
             "Output: {} ({}){}",
-            sink.desc,
-            sink.node,
+            safe(&sink.desc),
+            safe(&sink.node),
             fallback_mark(sink)
         ),
         None => "Output: unknown".to_string(),
     }];
     if let Some(source) = &update.source {
-        lines.push(format!("Mic: {}{}", source.desc, fallback_mark(source)));
+        lines.push(format!(
+            "Mic: {}{}",
+            safe(&source.desc),
+            fallback_mark(source)
+        ));
     } else if update.sources_configured {
         lines.push("Mic: unknown".to_string());
     }
     let sink_window = update.sink.as_ref().and_then(|s| s.window.as_ref());
     if let Some(window) = sink_window {
-        lines.push(format!("Rule: {}", window.rule));
+        lines.push(format!(
+            "Rule: {} ({})",
+            safe(&window.rule),
+            safe(&window.app_id)
+        ));
     }
     if let Some(window) = update.source.as_ref().and_then(|s| s.window.as_ref())
         && sink_window != Some(window)
     {
-        lines.push(format!("Mic rule: {}", window.rule));
+        lines.push(format!(
+            "Mic rule: {} ({})",
+            safe(&window.rule),
+            safe(&window.app_id)
+        ));
     }
     if update.paused {
         lines.push("Paused: rules do not switch".to_string());
@@ -96,8 +114,8 @@ fn endpoint_json(endpoint: Option<&EndpointStatus>) -> Value {
             "fallback": e.fallback,
             "window": e.window.as_ref().map(|w| json!({
                 "app_id": w.app_id,
-                "title": w.title,
                 "rule": w.rule,
+                "rule_index": w.rule_index,
             })),
         })
     })
@@ -153,11 +171,15 @@ fn human_line(line: Line<'_>) -> String {
     match line {
         Line::Running(update) => {
             let mut parts = vec![match &update.sink {
-                Some(sink) => format!("{}{}", sink.desc, fallback_mark(sink)),
+                Some(sink) => format!("{}{}", safe(&sink.desc), fallback_mark(sink)),
                 None => "unknown output".to_string(),
             }];
             if let Some(source) = &update.source {
-                parts.push(format!("Mic: {}{}", source.desc, fallback_mark(source)));
+                parts.push(format!(
+                    "Mic: {}{}",
+                    safe(&source.desc),
+                    fallback_mark(source)
+                ));
             }
             if update.paused {
                 parts.push("paused".to_string());
@@ -304,8 +326,8 @@ mod tests {
             sink: Some(EndpointStatus {
                 window: Some(RuleWindow {
                     app_id: "discord".to_string(),
-                    title: "Discord".to_string(),
-                    rule: "discord".to_string(),
+                    rule: "Voice chat".to_string(),
+                    rule_index: 4,
                 }),
                 ..endpoint("Headphones", "alsa_output.usb", sink_fallback)
             }),
@@ -335,14 +357,14 @@ mod tests {
             line,
             json!({
                 "text": "Headphones",
-                "tooltip": "Output: Headphones (alsa_output.usb)\nMic: Headset Mic\nRule: discord",
+                "tooltip": "Output: Headphones (alsa_output.usb)\nMic: Headset Mic\nRule: Voice chat (discord)",
                 "class": "active",
                 "alt": "active",
                 "sink": {
                     "desc": "Headphones",
                     "node": "alsa_output.usb",
                     "fallback": false,
-                    "window": {"app_id": "discord", "title": "Discord", "rule": "discord"},
+                    "window": {"app_id": "discord", "rule": "Voice chat", "rule_index": 4},
                 },
                 "source": {
                     "desc": "Headset Mic",
@@ -366,7 +388,7 @@ mod tests {
         assert_eq!(line["source"], Value::Null);
         assert_eq!(
             line["tooltip"],
-            "Output: Headphones (alsa_output.usb) (fallback)\nRule: discord\nPaused: rules do not switch"
+            "Output: Headphones (alsa_output.usb) (fallback)\nRule: Voice chat (discord)\nPaused: rules do not switch"
         );
         status.sink = None;
         let line = json_line(Line::Running(&status));
@@ -407,6 +429,17 @@ mod tests {
             "Headphones (fallback)"
         );
         assert_eq!(human_line(Line::Stopped), "pwsw stopped");
+
+        // Daemon-supplied names never split a line
+        let mut status = update(false, None, false);
+        if let Some(sink) = &mut status.sink {
+            sink.desc = "Evil\nForged line".to_string();
+            sink.node = "node\r\n".to_string();
+        }
+        let human = human_line(Line::Running(&status));
+        assert!(!human.contains('\n'), "{human}");
+        let tooltip = tooltip(&status);
+        assert_eq!(tooltip.lines().count(), 2, "{tooltip}");
     }
 
     #[test]

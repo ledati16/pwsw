@@ -9,9 +9,12 @@
 //! Switching only on a change of the rules' answer means pwsw never fights the user:
 //! a default changed outside pwsw (e.g. `pavucontrol`, a `WirePlumber` auto-switch)
 //! stays until the rules want something else. At startup the rules' answer is the
-//! baseline; with `default_on_startup` it is activated, otherwise nothing happens
-//! until it changes. A failed rule-driven activation is retried with backoff, then
-//! once more on the next event or reload.
+//! baseline - taken once the compositor has reported the windows already open (its
+//! [`WindowEvent::InitialSync`], waited for at most [`INITIAL_SYNC_TIMEOUT`]), so they
+//! do not each switch as they arrive; with `default_on_startup` it is activated,
+//! otherwise nothing happens until it changes. Window events already queued when the
+//! loop wakes up are applied together before one reconcile. A failed rule-driven
+//! activation is retried with backoff, then once more on the next event or reload.
 //!
 //! `applied` is pwsw's view of the default sink: what it last activated, found at
 //! startup, or saw when a manual request probed `PipeWire`. Manual requests are
@@ -78,6 +81,15 @@ pub(crate) const UPGRADE_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Most clients following the status stream at once ([`Command::Subscribe`])
 pub(crate) const MAX_STATUS_SUBSCRIBERS: usize = 16;
+
+/// How long startup waits for the compositor's list of already-open windows
+/// ([`WindowEvent::InitialSync`]) before taking the baseline without it
+pub(crate) const INITIAL_SYNC_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Most window events applied in one step before reconciling: everything already
+/// queued when the loop wakes up for one (a window opening on a monitor, a burst of
+/// title changes) is folded into the state first, so it switches at most once
+const WINDOW_EVENT_BATCH: usize = 256;
 
 /// Notification title for sink switches
 const SWITCH_TITLE: &str = "Audio Output";
@@ -255,6 +267,9 @@ enum Origin {
     Manual {
         restore_override: bool,
     },
+    /// The source lane's answer riding along with a sink job ([`Target::Keep`]), so a
+    /// profile switch for the sink keeps the microphone (or says that it did not)
+    Keep,
 }
 
 /// The notification for a rule-driven switch, completed once the worker said which
@@ -294,11 +309,14 @@ struct Settle {
     notice: Option<RuleNotice>,
 }
 
-/// A rule-driven job replaced by a manual request before its result came in
+/// A rule-driven job replaced by a manual request before its result came in (or a
+/// settle wait the request took over)
 #[derive(Debug)]
 struct Superseded {
     candidates: Vec<String>,
     notice: Option<RuleNotice>,
+    /// When the settle wait it was would have ended (`None`: a submitted job)
+    settle_at: Option<Instant>,
 }
 
 /// One default pwsw manages: the sink, or the source when sources are configured
@@ -372,6 +390,9 @@ pub(crate) struct Daemon {
     replies: Vec<(Endpoint, u64, oneshot::Sender<Response>)>,
     /// The compositor connection (`None` in tests that do not set one)
     compositor: Option<CompositorInfo>,
+    /// Wait (at most this long) for [`WindowEvent::InitialSync`] before the startup
+    /// baseline; `None`: take it at once (tests that do not model the marker)
+    initial_sync: Option<Duration>,
 }
 
 impl Daemon {
@@ -404,7 +425,17 @@ impl Daemon {
             next_generation: 0,
             replies: Vec::new(),
             compositor: None,
+            initial_sync: None,
         }
+    }
+
+    /// Apply the windows the compositor reports as already open (up to its
+    /// [`WindowEvent::InitialSync`], waiting at most `timeout`) before taking the
+    /// startup baseline, so existing windows do not each switch once as they arrive
+    #[must_use]
+    pub(crate) const fn with_initial_sync(mut self, timeout: Duration) -> Self {
+        self.initial_sync = Some(timeout);
+        self
     }
 
     /// The compositor connection the window events come from (for the reload check
@@ -442,10 +473,72 @@ impl Daemon {
     /// Returns an error if the compositor connection is lost (the window event
     /// channel closes), so the process exits non-zero and a supervisor restarts it.
     pub(crate) async fn run(mut self, mut inputs: Inputs) -> Result<()> {
-        self.start();
+        let result = match self.await_initial_windows(&mut inputs.windows).await {
+            Ok(()) => {
+                self.start();
+                self.event_loop(&mut inputs).await
+            }
+            Err(e) => Err(e),
+        };
+
+        self.sd_notify(&[sd_notify::NotifyState::Stopping]);
+        if result.is_ok() && self.state.config().settings.notify_manual {
+            self.notifier.send(Notice {
+                kind: NoticeKind::Daemon,
+                summary: "PWSW Stopped".to_string(),
+                body: "Audio switcher stopped".to_string(),
+                icon: None,
+            });
+        }
+        let Self { notifier, jobs, .. } = self;
+        drop(jobs);
+        notifier.shutdown().await;
+        result
+    }
+
+    /// Startup, before the baseline: apply window events up to the compositor's
+    /// [`WindowEvent::InitialSync`] (with [`Daemon::with_initial_sync`]; at most its
+    /// timeout, then carry on with a warning)
+    ///
+    /// # Errors
+    /// Returns an error if the window event channel closes meanwhile.
+    async fn await_initial_windows(
+        &mut self,
+        windows: &mut mpsc::Receiver<WindowEvent>,
+    ) -> Result<()> {
+        let Some(timeout) = self.initial_sync else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + timeout;
+        let mut events = 0usize;
+        loop {
+            match tokio::time::timeout_at(deadline, windows.recv()).await {
+                Err(_) => {
+                    warn!(
+                        "The compositor did not finish listing the open windows within {} ms; \
+                         starting with the {events} window events received so far",
+                        timeout.as_millis()
+                    );
+                    return Ok(());
+                }
+                Ok(None) => return Err(compositor_lost()),
+                Ok(Some(WindowEvent::InitialSync)) => {
+                    debug!("Startup: open windows known ({events} window events)");
+                    return Ok(());
+                }
+                Ok(Some(event)) => {
+                    events += 1;
+                    self.state.apply(event);
+                }
+            }
+        }
+    }
+
+    /// The main loop, after startup; returns how it ended
+    async fn event_loop(&mut self, inputs: &mut Inputs) -> Result<()> {
         let mut reload_at: Option<Instant> = None;
 
-        let result = loop {
+        loop {
             self.flush_jobs();
             let retry_at = self
                 .lanes
@@ -460,12 +553,9 @@ impl Daemon {
             tokio::select! {
                 event = inputs.windows.recv() => {
                     let Some(event) = event else {
-                        error!("Compositor connection lost (window event channel closed)");
-                        break Err(eyre::eyre!(
-                            "Compositor connection lost: the window event channel closed"
-                        ));
+                        break Err(compositor_lost());
                     };
-                    let departure = self.state.apply(event);
+                    let departure = self.apply_window_events(event, &mut inputs.windows);
                     self.reconcile(departure.as_ref());
                 }
                 Some(result) = self.results.recv() => self.on_result(result),
@@ -512,21 +602,30 @@ impl Daemon {
                     }
                 },
             }
-        };
-
-        self.sd_notify(&[sd_notify::NotifyState::Stopping]);
-        if result.is_ok() && self.state.config().settings.notify_manual {
-            self.notifier.send(Notice {
-                kind: NoticeKind::Daemon,
-                summary: "PWSW Stopped".to_string(),
-                body: "Audio switcher stopped".to_string(),
-                icon: None,
-            });
         }
-        let Self { notifier, jobs, .. } = self;
-        drop(jobs);
-        notifier.shutdown().await;
-        result
+    }
+
+    /// Apply `first` and every window event already queued behind it (at most
+    /// [`WINDOW_EVENT_BATCH`] in all), so one reconcile sees their combined effect
+    ///
+    /// Returns the last departure among them (the window whose end is named if the
+    /// rules fall back to the default).
+    fn apply_window_events(
+        &mut self,
+        first: WindowEvent,
+        windows: &mut mpsc::Receiver<WindowEvent>,
+    ) -> Option<Departure> {
+        let mut departure = self.state.apply(first);
+        for _ in 1..WINDOW_EVENT_BATCH {
+            // Empty, or closed (the next `recv` reports that)
+            let Ok(event) = windows.try_recv() else {
+                break;
+            };
+            if let Some(departed) = self.state.apply(event) {
+                departure = Some(departed);
+            }
+        }
+        departure
     }
 
     /// Hand the jobs submitted since the last call to the worker, all at once
@@ -534,6 +633,7 @@ impl Daemon {
         if self.outbox.iter().all(Option::is_none) {
             return;
         }
+        self.attach_source_keep();
         let outbox = std::mem::take(&mut self.outbox);
         self.jobs.send_modify(|pending| {
             for (slot, job) in pending.iter_mut().zip(outbox) {
@@ -542,6 +642,43 @@ impl Daemon {
                 }
             }
         });
+    }
+
+    /// A sink job going out alone while sources are configured takes the source lane's
+    /// current answer along ([`Target::Keep`]): a sink's profile switch on the card of
+    /// the managed microphone is then planned together with it (one profile keeping
+    /// both, if any), and the source lane learns whether the microphone survived
+    ///
+    /// The answer is the rules' candidates while the lane follows them, else just the
+    /// source that is applied (a manual choice, a settle wait, paused). Nothing rides
+    /// along while the lane has a job of its own pending or running.
+    fn attach_source_keep(&mut self) {
+        let (sink, source) = (Endpoint::Sink.index(), Endpoint::Source.index());
+        if self.outbox[sink].is_none()
+            || self.outbox[source].is_some()
+            || self.state.config().sources.is_empty()
+        {
+            return;
+        }
+        let lane = self.lane(Endpoint::Source);
+        if lane.submitted.is_some() {
+            return;
+        }
+        let following = !self.paused && !lane.manual_override && lane.settle.is_none();
+        let candidates = match (&lane.last_desired, &lane.applied) {
+            (Some(desired), _) if following => desired.clone(),
+            (_, Some(applied)) => vec![applied.clone()],
+            _ => return,
+        };
+        self.submit_job(
+            Endpoint::Source,
+            Target::Keep {
+                candidates: candidates.clone(),
+            },
+            Some(candidates),
+            Origin::Keep,
+            None,
+        );
     }
 
     /// Startup: take the rules' answers as the baseline and, with
@@ -640,8 +777,18 @@ impl Daemon {
     /// Switch when the rules changed their mind (or a stalled target gets another try,
     /// or an applied fallback may be upgraded), for each lane
     fn reconcile(&mut self, departure: Option<&Departure>) {
-        if !self.paused {
-            for kind in Endpoint::ALL {
+        for kind in Endpoint::ALL {
+            // A lane whose endpoints were removed is dropped even while paused (a
+            // manual choice or retry for sources that no longer exist must not linger)
+            if self.desired_names(kind).is_none() {
+                if self.lane(kind).last_desired.is_some() {
+                    debug!(
+                        "No {} configured any more; not managing them",
+                        kind.plural()
+                    );
+                    self.lane_mut(kind).deactivate();
+                }
+            } else if !self.paused {
                 self.reconcile_lane(kind, departure);
             }
         }
@@ -652,15 +799,9 @@ impl Daemon {
         }
     }
 
+    /// Reconcile an active lane (it has an answer)
     fn reconcile_lane(&mut self, kind: Endpoint, departure: Option<&Departure>) {
         let Some(names) = self.desired_names(kind) else {
-            if self.lane(kind).last_desired.is_some() {
-                debug!(
-                    "No {} configured any more; not managing them",
-                    kind.plural()
-                );
-                self.lane_mut(kind).deactivate();
-            }
             return;
         };
         let lane = self.lane(kind);
@@ -1058,7 +1199,12 @@ impl Daemon {
                         self.lane_mut(kind).superseded = None;
                         self.manual_notice(kind, &name)
                     }
-                    None => None,
+                    // The microphone was set again after the sink's profile switch
+                    Some(Submitted {
+                        origin: Origin::Keep,
+                        ..
+                    })
+                    | None => None,
                 };
                 let lane = self.lane_mut(kind);
                 if lane
@@ -1087,6 +1233,11 @@ impl Daemon {
                     message: format!("Internal error: activation result without its {noun}"),
                 }
             }
+            Outcome::Unchanged if submitted.as_ref().is_some_and(|s| s.origin == Origin::Keep) => {
+                Response::Ok {
+                    message: format!("The sink's activation left the {noun} alone"),
+                }
+            }
             Outcome::Unchanged => {
                 let message = format!(
                     "No higher-priority {noun} reachable; staying on {}",
@@ -1102,6 +1253,12 @@ impl Daemon {
                 info!("{message}");
                 self.settle_manual(kind, submitted.as_ref());
                 Response::Ok { message }
+            }
+            Outcome::Failed(message)
+                if submitted.as_ref().is_some_and(|s| s.origin == Origin::Keep) =>
+            {
+                self.keep_failed(kind, &tried, &message);
+                Response::Error { message }
             }
             Outcome::Failed(message) => {
                 let message = match tried.as_slice() {
@@ -1142,12 +1299,32 @@ impl Daemon {
         self.answer(kind, result.generation, &response);
     }
 
+    /// The sink's profile switch did not keep the `kind` (microphone) `tried` it rode
+    /// along with: pwsw no longer knows what the default is; while the lane follows
+    /// the rules, their target gets another try on the next event or reload
+    fn keep_failed(&mut self, kind: Endpoint, tried: &[String], message: &str) {
+        warn!(
+            "The sink's profile switch did not keep the {} ({}): {message}",
+            kind.noun(),
+            self.candidates_desc(kind, tried)
+        );
+        let following = !self.paused;
+        let lane = self.lane_mut(kind);
+        lane.applied = None;
+        lane.applied_fallback = false;
+        if following && !lane.manual_override && lane.last_desired.as_deref() == Some(tried) {
+            lane.stalled = true;
+        }
+    }
+
     /// A manual request that switched nothing: the default stays where it was, and
     /// so does the override state from before the request
     ///
     /// If the request had replaced a rule-driven switch (or that switch failed while
     /// the request waited behind it), that switch is submitted again now: the rules'
-    /// answer already changed, so no later reconcile would bring it back.
+    /// answer already changed, so no later reconcile would bring it back. If it had
+    /// taken over a settle wait, the wait resumes for the time it had left (and the
+    /// switch is submitted at once only if that time has passed).
     fn settle_manual(&mut self, kind: Endpoint, submitted: Option<&Submitted>) {
         let Some(Submitted {
             origin: Origin::Manual { restore_override },
@@ -1168,6 +1345,18 @@ impl Daemon {
             && lane.last_desired.as_ref() == Some(&superseded.candidates)
             && lane.applied.as_deref() != superseded.candidates.first().map(String::as_str)
         {
+            if let Some(at) = superseded.settle_at.filter(|at| *at > Instant::now()) {
+                debug!(
+                    "Resuming the settle wait for {} the manual request replaced",
+                    self.candidates_desc(kind, &superseded.candidates)
+                );
+                self.lane_mut(kind).settle = Some(Settle {
+                    candidates: superseded.candidates,
+                    at,
+                    notice: superseded.notice,
+                });
+                return;
+            }
             info!(
                 "Resuming the switch to {} the manual request replaced",
                 self.candidates_desc(kind, &superseded.candidates)
@@ -1283,6 +1472,7 @@ impl Daemon {
             lane.superseded = Some(Superseded {
                 candidates: settle.candidates,
                 notice: settle.notice,
+                settle_at: Some(settle.at),
             });
         } else if let Some(Submitted {
             origin: Origin::Rule | Origin::Upgrade,
@@ -1294,6 +1484,7 @@ impl Daemon {
             lane.superseded = Some(Superseded {
                 candidates: candidates.clone(),
                 notice: notice.clone(),
+                settle_at: None,
             });
         }
         // A pending rule retry becomes a stall: if this request switches nothing,
@@ -1312,15 +1503,19 @@ impl Daemon {
     }
 
     /// `Sink: X`, `Mic: Y`: one part of the status line
+    ///
+    /// Descriptions and node names are sanitised: the line goes to `sd_notify`, where a
+    /// newline would start another `KEY=value` assignment.
     fn status_part(&self, kind: Endpoint, label: &str) -> String {
+        use crate::sanitize::for_log;
         let lane = self.lane(kind);
         match lane.applied.as_deref() {
             Some(name) => match self.configured(kind, name) {
                 Some(entry) if lane.applied_fallback => {
-                    format!("{label}: {} (fallback)", entry.desc)
+                    format!("{label}: {} (fallback)", for_log(&entry.desc))
                 }
-                Some(entry) => format!("{label}: {}", entry.desc),
-                None => format!("{label}: {name} (not in config)"),
+                Some(entry) => format!("{label}: {}", for_log(&entry.desc)),
+                None => format!("{label}: {} (not in config)", for_log(name)),
             },
             None => format!("{label}: unknown"),
         }
@@ -1345,16 +1540,30 @@ impl Daemon {
         let lane = self.lane(kind);
         let node = lane.applied.clone()?;
         // The deciding window, when the applied value is what its rule wants (not a
-        // manual choice or a default found at startup that the rules differ from)
+        // manual choice or a default found at startup that the rules differ from).
+        // No title: it changes with every browser tab (a new stream line each time)
+        // and would put page titles into status bars.
         let window = self
             .state
             .desired_for(kind)
             .filter(|d| !lane.manual_override && d.candidates.iter().any(|c| c.name == node))
             .and_then(|d| d.window)
-            .map(|w| RuleWindow {
-                app_id: crate::sanitize::for_log(w.app_id).into_owned(),
-                title: crate::sanitize::for_log(w.title).into_owned(),
-                rule: crate::sanitize::for_log(w.trigger).into_owned(),
+            .map(|w| {
+                let rule_index = w.rule_index + 1;
+                let desc = self
+                    .state
+                    .config()
+                    .rules
+                    .get(w.rule_index)
+                    .and_then(|r| r.desc.as_deref());
+                RuleWindow {
+                    app_id: crate::sanitize::for_log(w.app_id).into_owned(),
+                    rule: desc.map_or_else(
+                        || format!("#{rule_index}"),
+                        |d| crate::sanitize::for_log(d).into_owned(),
+                    ),
+                    rule_index,
+                }
             });
         Some(EndpointStatus {
             desc: self.endpoint_desc(kind, &node),
@@ -1560,6 +1769,12 @@ impl Daemon {
             debug!("sd_notify failed: {e}");
         }
     }
+}
+
+/// The compositor's window event channel closed (logged here)
+fn compositor_lost() -> eyre::Report {
+    error!("Compositor connection lost (window event channel closed)");
+    eyre::eyre!("Compositor connection lost: the window event channel closed")
 }
 
 async fn sleep_until(at: Option<Instant>) {

@@ -93,7 +93,14 @@ struct FakeSwitcher {
     /// The real default source
     current_source: Mutex<Option<String>>,
     /// For every `activate` call: whether it carried a sink half and a source half
+    /// (a source half riding along, `keep`, is not counted: see `keeps`)
     halves: Mutex<Vec<(bool, bool)>>,
+    /// Every source half that rode along with a sink half (`keep`): its candidates
+    keeps: Mutex<Vec<Vec<String>>>,
+    /// What a `keep` half answers: `None` leaves the source alone (the sink's switch
+    /// was elsewhere), `Some(Ok(()))` sets the first candidate again, `Some(Err(m))`
+    /// reports it lost
+    keep_answer: Mutex<Option<std::result::Result<(), String>>>,
 }
 
 impl FakeSwitcher {
@@ -199,6 +206,24 @@ impl FakeSwitcher {
         eyre::bail!("{}", errors.join("; "))
     }
 
+    /// A source half riding along with a sink half, answered as `keep_answer` says
+    fn keep_half(&self, candidates: &[String]) -> worker::HalfResult {
+        self.keeps.lock().expect("lock").push(candidates.to_vec());
+        match self.keep_answer.lock().expect("lock").clone() {
+            None => Ok(None),
+            Some(Ok(())) => {
+                let first = &candidates[0];
+                self.source_calls.lock().expect("lock").push(first.clone());
+                *self.current_source.lock().expect("lock") = Some(first.clone());
+                Ok(Some((0, format!("node.{first}"))))
+            }
+            Some(Err(message)) => {
+                *self.current_source.lock().expect("lock") = None;
+                eyre::bail!("{message}")
+            }
+        }
+    }
+
     /// Set the real default source, as an outside program would
     fn set_current_source(&self, source: &str) {
         *self.current_source.lock().expect("lock") = Some(source.to_string());
@@ -211,26 +236,32 @@ impl SinkSwitcher for FakeSwitcher {
         sink: Option<worker::Half<'_>>,
         source: Option<worker::Half<'_>>,
     ) -> (Option<worker::HalfResult>, Option<worker::HalfResult>) {
+        let keep = source.filter(|h| h.keep);
+        let source = source.filter(|h| !h.keep);
         self.halves
             .lock()
             .expect("lock")
             .push((sink.is_some(), source.is_some()));
-        if let Some((candidates, upgrade_from)) = sink {
+        if let Some(half) = sink {
             self.requests
                 .lock()
                 .expect("lock")
-                .push((candidates.to_vec(), upgrade_from));
+                .push((half.candidates.to_vec(), half.upgrade_from));
         }
-        if let Some((candidates, upgrade_from)) = source {
+        if let Some(half) = source {
             self.source_requests
                 .lock()
                 .expect("lock")
-                .push((candidates.to_vec(), upgrade_from));
+                .push((half.candidates.to_vec(), half.upgrade_from));
         }
-        (
-            sink.map(|(c, u)| self.activate_half(Endpoint::Sink, c, u)),
-            source.map(|(c, u)| self.activate_half(Endpoint::Source, c, u)),
-        )
+        let sink = sink.map(|h| self.activate_half(Endpoint::Sink, h.candidates, h.upgrade_from));
+        let source = match keep {
+            Some(half) => Some(self.keep_half(half.candidates)),
+            None => {
+                source.map(|h| self.activate_half(Endpoint::Source, h.candidates, h.upgrade_from))
+            }
+        };
+        (sink, source)
     }
 
     fn probe(&self, config: &Config) -> Result<crate::manual::Probe> {
@@ -293,6 +324,22 @@ fn start_with(
     applied: Option<&str>,
     compositor: Option<CompositorInfo>,
 ) -> Harness {
+    start_full(config, switcher, applied, compositor, None)
+}
+
+/// [`start`] like the real daemon: the baseline waits for [`WindowEvent::InitialSync`]
+/// (at most [`INITIAL_SYNC_TIMEOUT`])
+fn start_synced(config: Config, switcher: FakeSwitcher, applied: Option<&str>) -> Harness {
+    start_full(config, switcher, applied, None, Some(INITIAL_SYNC_TIMEOUT))
+}
+
+fn start_full(
+    config: Config,
+    switcher: FakeSwitcher,
+    applied: Option<&str>,
+    compositor: Option<CompositorInfo>,
+    initial_sync: Option<Duration>,
+) -> Harness {
     let watchdog = Watchdog::arm();
     let dir = tempfile::tempdir().expect("tempdir");
     let config_path = dir.path().join("config.toml");
@@ -337,6 +384,10 @@ fn start_with(
         Some(compositor) => daemon.with_compositor(compositor),
         None => daemon,
     };
+    let daemon = match initial_sync {
+        Some(timeout) => daemon.with_initial_sync(timeout),
+        None => daemon,
+    };
     let task = tokio::spawn(daemon.run(Inputs {
         windows: windows_rx,
         commands: commands_rx,
@@ -368,10 +419,17 @@ impl Harness {
     }
 
     async fn open(&self, id: u64, app_id: &str) {
+        self.open_on(id, app_id, &[]).await;
+    }
+
+    /// Open a window that is on `outputs` from the start
+    async fn open_on(&self, id: u64, app_id: &str, outputs: &[&str]) {
         self.event(WindowEvent::Opened {
             id,
             app_id: app_id.to_string(),
             title: format!("{app_id} window"),
+            outputs: outputs.iter().map(|o| (*o).to_string()).collect(),
+            minimized: false,
         })
         .await;
     }
@@ -1433,6 +1491,11 @@ async fn test_status_is_published_at_startup() {
             "Sink: alsa_output.other (not in config)",
         ),
         (None, "Sink: unknown"),
+        // A node name never splits the `STATUS=` line
+        (
+            Some("evil\nREADY=1"),
+            "Sink: evil\\nREADY=1 (not in config)",
+        ),
     ] {
         let h = start(base_config(), FakeSwitcher::default(), applied);
         let _ = h.snapshot().await; // the loop has started
@@ -1877,6 +1940,33 @@ async fn test_settle_manual_switch_is_immediate_and_holds() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// A manual request that changes nothing (the sink it asks for is the current one)
+/// while a switch waits for the settle delay: the wait goes on for the time it had
+/// left, the switch is neither dropped nor made at once
+#[tokio::test(start_paused = true)]
+async fn test_settle_noop_manual_request_resumes_the_remaining_wait() {
+    let h = start(settle_config(), FakeSwitcher::default(), Some("speakers"));
+    let t0 = Instant::now();
+    h.open(1, "firefox").await;
+    h.wait_windows(1).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let response = h.switch(ManualSwitch::Set("Speakers".to_string())).await;
+    assert!(matches!(response, Response::Ok { .. }), "got {response:?}");
+    let snapshot = h.snapshot().await;
+    assert_eq!(snapshot.settling, Some(names(&["headphones"])));
+    assert!(!snapshot.manual_override);
+    assert_eq!(h.calls(), Vec::<String>::new(), "not switched at once");
+    h.wait_applied("headphones").await;
+    assert!(t0.elapsed() >= SETTLE, "switched after {:?}", t0.elapsed());
+    assert!(
+        t0.elapsed() < SETTLE + Duration::from_millis(100),
+        "the wait did not start over: {:?}",
+        t0.elapsed()
+    );
+    assert_eq!(h.calls(), vec!["headphones"]);
+    h.stop().await.expect("clean shutdown");
+}
+
 /// Startup activation and resume are not delayed; pausing cancels a pending wait
 #[tokio::test(start_paused = true)]
 async fn test_settle_not_applied_to_startup_and_resume() {
@@ -1934,6 +2024,62 @@ fn source_config() -> Config {
 fn with_desk_mic(switcher: FakeSwitcher) -> FakeSwitcher {
     switcher.set_current_source("mic.desk");
     switcher
+}
+
+/// A sink-only switch takes the source lane's answer along (`keep`): when the sink's
+/// profile switch leaves the microphone alone, nothing changes for the source
+#[tokio::test(start_paused = true)]
+async fn test_sink_job_carries_the_source_answer() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.open(1, "firefox").await;
+    let snapshot = h.wait_applied("headphones").await;
+    assert_eq!(h.switcher.keeps.lock().expect("lock").clone(), vec![vec![
+        "mic.desk".to_string()
+    ]]);
+    assert_eq!(snapshot.applied_source.as_deref(), Some("mic.desk"));
+    assert_eq!(h.source_calls(), Vec::<String>::new());
+    // A job of the source lane's own is not doubled by a riding one
+    h.open(2, "discord").await;
+    h.wait_source("mic.headset").await;
+    assert_eq!(h.switcher.keeps.lock().expect("lock").len(), 1);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// The sink's profile switch dropped the microphone (its only profile has no input):
+/// the source lane no longer claims the microphone, and the next event tries the
+/// rules' source again
+#[tokio::test(start_paused = true)]
+async fn test_sink_switch_dropping_the_microphone_is_noticed() {
+    let switcher = with_desk_mic(FakeSwitcher::default());
+    *switcher.keep_answer.lock().expect("lock") = Some(Err(
+        "not reachable together with the sink (the sink wins)".to_string(),
+    ));
+    let h = start(source_config(), switcher, Some("speakers"));
+    h.open(1, "firefox").await;
+    let snapshot = h
+        .wait_for("the source to be unknown", |s, _| {
+            s.applied.as_deref() == Some("headphones") && s.applied_source.is_none()
+        })
+        .await;
+    assert!(!snapshot.source_fallback);
+    assert_eq!(
+        h.statuses().last().map(String::as_str),
+        Some("Sink: Headphones · Mic: unknown")
+    );
+
+    // The card has its microphone back: the next event sets it again
+    *h.switcher.keep_answer.lock().expect("lock") = None;
+    h.open(2, "zsh").await;
+    h.wait_source("mic.desk").await;
+    assert_eq!(h.source_requests(), vec![(
+        vec!["mic.desk".to_string()],
+        None
+    )]);
+    h.stop().await.expect("clean shutdown");
 }
 
 /// No sources configured: pwsw never asks for a source, and the status line has no mic
@@ -2184,6 +2330,36 @@ async fn test_manual_set_source_holds_until_the_source_answer_changes() {
     h.stop().await.expect("clean shutdown");
 }
 
+/// Sources removed by a reload while paused: the source lane is dropped at once
+/// (here: the manual microphone choice ends), not on the next event after resuming
+#[tokio::test(start_paused = true)]
+async fn test_reload_removing_sources_while_paused_drops_the_lane() {
+    let h = start(
+        source_config(),
+        with_desk_mic(FakeSwitcher::default()),
+        Some("speakers"),
+    );
+    h.switch(ManualSwitch::SetSource("Headset Mic".to_string()))
+        .await;
+    let snapshot = h.wait_source("mic.headset").await;
+    assert!(snapshot.source_manual_override);
+    h.pause().await;
+
+    let without = "[[sinks]]\nname = \"speakers\"\ndesc = \"Speakers\"\ndefault = true\n";
+    std::fs::write(&h.config_path, without).expect("write config");
+    h.signal(Signal::Hangup).await;
+    let snapshot = h
+        .wait_for("sources gone", |s, _| !s.sources_configured)
+        .await;
+    assert!(snapshot.paused);
+    assert!(
+        !snapshot.source_manual_override,
+        "the removed lane's manual choice is gone"
+    );
+    assert_eq!(snapshot.desired_source, None);
+    h.stop().await.expect("clean shutdown");
+}
+
 /// Sources added by a reload become a managed dimension; removing them stops it
 #[tokio::test(start_paused = true)]
 async fn test_reload_adds_and_removes_the_source_lane() {
@@ -2318,6 +2494,114 @@ async fn test_placement_event_switches() {
     let snapshot = h.wait_applied("speakers").await;
     assert!(snapshot.windows[0].minimized);
     assert_eq!(h.calls(), vec!["hdmi", "speakers"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A window opening on the monitor an `output` rule names switches once, straight to
+/// that rule's sink, never first to a rule without `output` it also matches: whether
+/// the placement comes with `Opened` or as a `Placement` queued right behind it
+#[tokio::test(start_paused = true)]
+async fn test_window_opening_on_a_monitor_switches_once() {
+    // firefox → headphones, but it opens on the TV
+    let h = start(monitor_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open_on(1, "firefox", &["HDMI-A-1"]).await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.close(1).await;
+    h.wait_applied("speakers").await;
+
+    // Two events, both queued before the loop wakes up: applied together
+    h.open(2, "firefox").await;
+    h.event(WindowEvent::Placement {
+        id: 2,
+        outputs: vec!["HDMI-A-1".to_string()],
+        minimized: false,
+    })
+    .await;
+    h.wait_applied("hdmi").await;
+    h.wait_windows(1).await;
+    assert_eq!(h.calls(), vec!["hdmi", "speakers", "hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A burst of window events queued while the loop was busy is applied as one step:
+/// only the final answer is switched to
+#[tokio::test(start_paused = true)]
+async fn test_queued_window_events_reconcile_once() {
+    let h = start(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.open(2, "mpv").await;
+    h.open(3, "steam").await;
+    h.close(2).await;
+    h.wait_applied("hdmi").await;
+    h.wait_windows(2).await;
+    assert_eq!(h.calls(), vec!["hdmi"]);
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Startup with windows already open: they are applied up to the compositor's
+/// `InitialSync` (even when they arrive over several loop wakeups) before the
+/// baseline, so `default_on_startup` makes at most one activation per endpoint - the
+/// rules' answer for all of them - instead of the default first and then one per window
+#[tokio::test(start_paused = true)]
+async fn test_startup_waits_for_existing_windows() {
+    let mut config = source_config();
+    config.settings.default_on_startup = true;
+    let h = start_synced(config, with_desk_mic(FakeSwitcher::default()), Some("usb"));
+    h.open(1, "discord").await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    h.open(2, "firefox").await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    assert_eq!(h.calls(), Vec::<String>::new(), "nothing before the marker");
+    h.event(WindowEvent::InitialSync).await;
+    h.wait_applied("headphones").await;
+    h.wait_source("mic.headset").await;
+    // Later events still switch as usual; a stray marker is ignored
+    h.event(WindowEvent::InitialSync).await;
+    h.open(3, "steam").await;
+    h.wait_applied("hdmi").await;
+    assert_eq!(h.calls(), vec!["headphones", "hdmi"]);
+    assert_eq!(h.source_calls(), vec!["mic.headset"]);
+    assert_eq!(h.halves()[0], (true, true), "one joint startup activation");
+    h.stop().await.expect("clean shutdown");
+}
+
+/// Without `default_on_startup`, windows already open are part of the baseline:
+/// nothing switches at startup, and the next change of the rules' answer does
+#[tokio::test(start_paused = true)]
+async fn test_startup_baseline_includes_existing_windows() {
+    let h = start_synced(base_config(), FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.event(WindowEvent::InitialSync).await;
+    let snapshot = h.wait_windows(1).await;
+    assert_eq!(snapshot.desired, "headphones");
+    assert_eq!(h.calls(), Vec::<String>::new());
+    h.close(1).await;
+    h.wait_windows(0).await;
+    // Back to the default, which is what is applied: nothing to do
+    assert_eq!(h.calls(), Vec::<String>::new());
+    h.open(2, "mpv").await;
+    h.wait_applied("usb").await;
+    h.stop().await.expect("clean shutdown");
+}
+
+/// A compositor that never sends `InitialSync`: startup goes ahead after the timeout
+/// with the windows known by then, and warns
+#[tokio::test(start_paused = true)]
+async fn test_startup_without_initial_sync_times_out() {
+    let logs = LogCapture::start();
+    let mut config = base_config();
+    config.settings.default_on_startup = true;
+    let h = start_synced(config, FakeSwitcher::default(), Some("speakers"));
+    h.open(1, "firefox").await;
+    h.wait_applied("headphones").await;
+    assert_eq!(h.calls(), vec!["headphones"]);
+    assert!(
+        logs.text()
+            .contains("did not finish listing the open windows"),
+        "{}",
+        logs.text()
+    );
     h.stop().await.expect("clean shutdown");
 }
 
